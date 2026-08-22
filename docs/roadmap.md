@@ -1,7 +1,8 @@
 # Roadmap
 
-Current state: **design phase**. [architecture.md](architecture.md) is the binding
-architectural contract; no implementation code exists yet.
+Current state: **repository bootstrap (Milestone 0) complete**. [architecture.md](architecture.md)
+is the binding architectural contract; only the package skeleton exists — engine and CLI
+functionality start with Milestone 1.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
@@ -16,11 +17,12 @@ committed core milestone beyond the MVP.
 - [x] license (MIT)
 - [x] contributing guide, `.gitignore`
 - [x] architecture contract (`docs/architecture.md`)
-- [ ] npm workspaces monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`,
+- [x] npm workspaces monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`,
   cross-package `tests/`), `tsconfig.base.json` (TypeScript 5.x strict:
   `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`), eslint
-  (+ `@typescript-eslint`, static-safety rules), prettier, vitest
-- [ ] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
+  (+ `@typescript-eslint`, static-safety rules), prettier, vitest,
+  dependency-cruiser import boundaries
+- [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
   (no Electron in core jobs)
 
 ## Milestone 1 — engine core and non-interactive execution (→ 0.1.0)

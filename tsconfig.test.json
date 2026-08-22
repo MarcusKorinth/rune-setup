@@ -1,0 +1,12 @@
+{
+  "extends": ["./tsconfig.base.json", "./tsconfig.paths.json"],
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true
+  },
+  "include": ["tests/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts"]
+}

@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@rune/engine": ["packages/engine/src/index.ts"],
+      "@rune/cli": ["packages/cli/src/cli.ts"],
+      "@rune/gui-shell": ["packages/gui-shell/src/main/index.ts"]
+    }
+  }
+}
