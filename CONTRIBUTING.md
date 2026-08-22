@@ -1,0 +1,259 @@
+# Contributing to RUNE
+
+Thanks for contributing.
+
+## Start here
+
+1. read `README.md` for usage and scope
+2. read `docs/architecture.md` for canonical semantics and invariants
+3. keep changes minimal, explicit, and reviewable
+
+By participating in this project you agree to abide by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Developer Certificate of Origin
+
+All code contributions must be made with Developer Certificate of
+Origin (DCO) sign-off. Add a `Signed-off-by` trailer to every commit:
+
+```text
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+The usual Git command is:
+
+```bash
+git commit -s
+```
+
+By signing off, you assert that you have the right to submit the
+contribution under the project license. Pull requests with unsigned
+commits are not accepted.
+
+## Project-specific expectations
+
+These rules are critical and must be preserved:
+
+- preserve mode parity:
+  - the GUI wizard, the interactive CLI, and non-interactive runs must
+    share identical engine semantics
+- keep the engine boundary strict:
+  - no execution, interpolation, or condition logic in frontend code
+- never write unmasked secret values to logs, result files, or console output
+- commands are executed as argv arrays, never through an implicit shell
+- add or update tests when behavior changes
+- update documentation when user-visible behavior or guarantees change
+
+## Development workflow
+
+### Branching strategy
+
+- `main` should remain integration-ready and green
+- no direct commits to `main`
+- keep each pull request focused on one concern
+- avoid mixing refactors and behavior changes unless the coupling is real and
+  unavoidable
+
+### Branch naming
+
+Use the following pattern:
+
+```text
+<type>/<short-description>
+```
+
+Examples:
+
+```text
+feat/directory-input-validation
+fix/exit-code-mapping
+refactor/step-planner
+docs/readme-operating-modes
+test/non-interactive-run
+chore/repo-bootstrap
+```
+
+### Working process
+
+1. create a branch from `main`
+2. implement your change
+3. write clean commits
+4. ensure tests pass
+5. open a pull request
+
+## Commit message policy
+
+This project uses Conventional Commits.
+
+### Format
+
+```text
+<type>(<scope>): <summary>
+
+[optional body]
+
+[optional footer]
+```
+
+### Header rules
+
+- use imperative mood, for example `add`, not `added`
+- do not end the header with a period
+- maximum 72 characters
+- keep it concise and descriptive
+- scope is recommended but optional
+
+Examples:
+
+```text
+feat(engine): add step timeout handling
+fix(runner): prevent secret values in process logs
+refactor(config): split schema loading and validation
+docs(readme): clarify operating modes
+```
+
+### Allowed types
+
+```text
+feat      new functionality
+fix       bug fix
+refactor  internal restructuring without behavior change
+docs      documentation changes
+test      tests
+build     build system or dependencies
+ci        CI/CD changes
+perf      performance improvements
+chore     maintenance tasks
+revert    revert previous commit
+```
+
+### Commit body guidelines
+
+The commit body should explain context, not repeat the diff.
+
+It should answer:
+
+- why was this change necessary?
+- what was changed conceptually?
+
+Recommended structure:
+
+```text
+Why:
+- describe the problem or motivation
+
+What:
+- describe the key changes
+- mention important design decisions
+```
+
+### When a body is required
+
+A commit body is required for:
+
+- `feat`
+- `fix`
+- `refactor`
+- any change affecting behavior, API, lifecycle, or semantics
+
+A commit body is optional for:
+
+- `docs`
+- small `test` changes
+- trivial `chore` or `ci` updates
+
+### Readability
+
+- header: max 72 characters
+- body: keep paragraphs readable in GitHub and terminal tools; avoid
+  very long lines, but wrap where it improves clarity rather than to
+  satisfy a fixed column count
+
+### Footer
+
+Use footers for metadata when relevant:
+
+```text
+BREAKING CHANGE: description
+Refs: #123
+Closes: #123
+```
+
+## Pull requests
+
+### General rules
+
+- pull requests must be focused on a single concern
+- avoid mixing refactoring and behavior changes
+- prefer small to medium-sized pull requests
+- ensure the change is reviewable
+
+### PR title
+
+PR titles should follow Conventional Commits:
+
+```text
+<type>(<scope>): <summary>
+```
+
+### PR expectations
+
+Before opening a PR:
+
+- tests pass
+- documentation is updated if needed
+- changes are cleanly structured
+
+A good PR should clearly explain:
+
+- what was changed
+- why it was changed
+- any important side effects or constraints
+
+### Labels
+
+Issues and pull requests use scoped labels to describe different review
+questions:
+
+- use exactly one `type:*` label for the intended change kind, matching the
+  Conventional Commit type when possible
+- use zero or more `area:*` labels for the affected subsystem or project
+  surface
+- use `severity:*` labels for defects, findings, security work, or other
+  risk-bearing changes where priority matters
+
+`type:*` and `area:*` labels may intentionally overlap. For example, a CI
+workflow change can use both `type:ci` (the change kind) and `area:ci` (the
+affected project area).
+
+## Testing
+
+- add tests for new behavior
+- add regression tests for bug fixes
+- ensure the relevant test slice passes before opening a pull request
+- run `npm run lint` and `npm run typecheck` for changes that affect source code or API
+
+## Documentation
+
+Documentation must be updated when:
+
+- behavior changes
+- APIs change
+- guarantees or invariants change
+
+## Versioning
+
+This project follows Semantic Versioning:
+
+- `fix` -> patch
+- `feat` -> minor
+- breaking changes -> major
+
+## Final notes
+
+- prefer clarity over cleverness
+- prefer explicit design over implicit behavior
+- prefer behaviorally strong tests over incidental implementation checks
+
+Consistency in history and structure is critical for long-term
+maintainability.

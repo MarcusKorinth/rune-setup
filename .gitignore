@@ -1,0 +1,35 @@
+# Ignore everything by default, then allow only repository-owned paths.
+*
+
+# Repository configuration
+!/.gitignore
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/tsconfig.*.json
+!/.github/
+!/.github/**
+
+# Root documentation and project metadata
+!/CHANGELOG.md
+!/CODE_OF_CONDUCT.md
+!/CONTRIBUTING.md
+!/LICENSE
+!/README.md
+
+# Source packages, tests, and docs
+!/docs/
+!/docs/**
+!/packages/
+!/packages/**
+!/tests/
+!/tests/**
+
+# Generated Node/TypeScript/Electron build artifacts inside allowed directories
+**/node_modules/
+**/dist/
+**/build/
+**/out/
+**/coverage/
+**/*.tsbuildinfo
+.eslintcache
