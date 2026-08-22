@@ -11,9 +11,10 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is in the **design phase**. The architectural contract is complete —
-see [docs/architecture.md](docs/architecture.md) — and implementation has not started
-yet. [docs/roadmap.md](docs/roadmap.md) tracks the MVP scope and what comes after.
+RUNE is in its **bootstrap phase**: the architectural contract is complete — see
+[docs/architecture.md](docs/architecture.md) — and the monorepo scaffold exists; engine and
+CLI functionality begin with Milestone 1. [docs/roadmap.md](docs/roadmap.md) tracks the MVP
+scope and what comes after.
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
@@ -122,6 +123,22 @@ two CLI modes.
   machine-readable result file
 - **Extensible** — input types and runners sit behind small, defined seams; new
   capabilities land as new schema versions, never as silent reinterpretation
+
+## Development
+
+Requires Node 22 LTS. The repository is an npm-workspaces monorepo
+(`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package suites in
+`tests/`).
+
+```bash
+npm ci
+```
+
+The local gate is exactly what CI runs (`npm run format` fixes formatting):
+
+```bash
+npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test
+```
 
 ## Contributing
 

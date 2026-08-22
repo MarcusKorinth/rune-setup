@@ -231,7 +231,11 @@ affected project area).
 - add tests for new behavior
 - add regression tests for bug fixes
 - ensure the relevant test slice passes before opening a pull request
-- run `npm run lint` and `npm run typecheck` for changes that affect source code or API
+- run the full gate before opening a pull request — exactly what CI runs:
+  `npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test`
+  (`npm run format` fixes formatting)
+- unit tests live in `packages/<pkg>/test/` (vitest), cross-package suites in `tests/`;
+  `packages/gui-shell/tests/` is reserved for the Playwright smoke suite
 
 ## Documentation
 
