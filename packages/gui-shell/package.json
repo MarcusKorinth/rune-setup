@@ -1,0 +1,17 @@
+{
+  "name": "@rune/gui-shell",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RUNE GUI shell — Electron wizard; main process hosts the engine, renderer is a pure renderer",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@rune/engine": "0.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}
