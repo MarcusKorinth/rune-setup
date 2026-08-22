@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@rune/engine": ["packages/engine/src/index.ts"]
+    }
+  },
+  "include": ["tests/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts"]
+}
