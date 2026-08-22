@@ -3,10 +3,18 @@
 
 # Repository configuration
 !/.gitignore
+!/.gitattributes
+!/.editorconfig
+!/.nvmrc
+!/.npmrc
 !/package.json
 !/package-lock.json
 !/tsconfig.json
 !/tsconfig.*.json
+!/eslint.config.js
+!/.prettierignore
+!/vitest.config.ts
+!/.dependency-cruiser.cjs
 !/.github/
 !/.github/**
 
@@ -33,3 +41,16 @@
 **/coverage/
 **/*.tsbuildinfo
 .eslintcache
+
+# Never commit local environment files, logs, packed tarballs, OS cruft, or tool outputs
+# inside the allowed subtrees
+**/.env
+**/.env.*
+**/*.log
+**/*.tgz
+**/.DS_Store
+**/Thumbs.db
+**/.vite/
+**/test-results/
+**/playwright-report/
+**/release/
