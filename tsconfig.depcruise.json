@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@rune/engine": ["packages/engine/src/index.ts"]
+    }
+  }
+}
