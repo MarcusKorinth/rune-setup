@@ -46,6 +46,7 @@
 # inside the allowed subtrees
 **/.env
 **/.env.*
+!**/.env.example
 **/*.log
 **/*.tgz
 **/.DS_Store
