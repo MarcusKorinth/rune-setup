@@ -1,0 +1,25 @@
+{
+  "name": "@rune/cli",
+  "version": "0.0.0",
+  "description": "rune — the RUNE command line (interactive and non-interactive runs, validate, schema)",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "rune": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@rune/engine": "0.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}
