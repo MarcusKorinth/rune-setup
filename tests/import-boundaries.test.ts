@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { cruise, type ICruiseResult } from 'dependency-cruiser';
 import extractDepcruiseConfig from 'dependency-cruiser/config-utl/extract-depcruise-config';
 import extractTSConfig from 'dependency-cruiser/config-utl/extract-ts-config';
@@ -5,17 +8,47 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Guards the import-boundary gate of docs/architecture.md §14 against going vacuous:
- * dependency-cruiser must see `import ... from '@rune/engine'` resolved to the engine
- * sources (not dropped as unresolvable or excluded as dist output), otherwise rules such as
- * renderer-never-imports-engine would pass without ever being applied.
+ * dependency-cruiser must see every `import ... from '@rune/*'` resolved to that package's
+ * sources. An unmapped package name resolves into its `dist/` output instead, which
+ * `options.exclude` drops — and a dropped edge makes rules such as
+ * engine-never-imports-frontends pass without ever being applied.
  */
+
+/** Repository-root-relative path, independent of the process working directory. */
+const repoPath = (relativePath: string): string =>
+  fileURLToPath(new URL(relativePath, import.meta.url));
+
+const readJson = (relativePath: string): unknown =>
+  JSON.parse(readFileSync(repoPath(relativePath), 'utf8'));
+
 describe('import boundaries (dependency-cruiser gate)', () => {
+  it('maps every workspace package name to that package sources', () => {
+    const { compilerOptions } = readJson('../tsconfig.paths.json') as {
+      compilerOptions: { paths: Record<string, string[]> };
+    };
+    const packageDirs = readdirSync(repoPath('../packages'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+
+    expect(packageDirs.length, 'packages/ must contain at least one workspace').toBeGreaterThan(0);
+
+    for (const dir of packageDirs) {
+      const { name } = readJson(`../packages/${dir}/package.json`) as { name: string };
+      const target = compilerOptions.paths[name]?.[0];
+
+      expect(target, `${name} must be mapped in tsconfig.paths.json`).toBeDefined();
+      expect(target, `${name} must be mapped to packages/${dir}/src/`).toMatch(
+        `packages/${dir}/src/`,
+      );
+    }
+  });
+
   it('resolves workspace imports of @rune/engine to the engine sources', async () => {
-    const config = await extractDepcruiseConfig('./.dependency-cruiser.cjs');
-    const tsConfig = extractTSConfig('./tsconfig.depcruise.json');
+    const config = await extractDepcruiseConfig(repoPath('../.dependency-cruiser.cjs'));
+    const tsConfig = extractTSConfig(repoPath('../tsconfig.depcruise.json'));
     // Same composition the depcruise CLI performs: the config's `options` become the cruise
     // options (incl. tsConfig → tsconfig paths), the config itself is the rule set.
-    const { output, exitCode } = await cruise(
+    const { output } = await cruise(
       ['packages', 'tests'],
       { ...config.options, ruleSet: config, validate: true, outputType: 'json' },
       undefined,
@@ -23,7 +56,11 @@ describe('import boundaries (dependency-cruiser gate)', () => {
     );
     const result: ICruiseResult = typeof output === 'string' ? JSON.parse(output) : output;
 
-    expect(exitCode, 'the current tree must be free of boundary violations').toBe(0);
+    // Naming the offending rule and edge here saves a manual `npm run depcruise` on failure.
+    const violations = result.summary.violations.map(
+      (violation) => `${violation.rule.name}: ${violation.from} → ${violation.to}`,
+    );
+    expect(violations, 'the current tree must be free of boundary violations').toEqual([]);
 
     const cli = result.modules.find((m) => m.source === 'packages/cli/src/cli.ts');
     expect(cli, 'packages/cli/src/cli.ts must be part of the cruise').toBeDefined();
