@@ -43,8 +43,12 @@ export {
   parseManifest,
   parseManifestText,
   SUPPORTED_SCHEMA_VERSIONS,
+  validateManifest,
 } from './manifest/index.js';
-export type { Manifest, ParseManifestOptions } from './manifest/index.js';
+export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
+
+export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
+export type { ValueType } from './engine/context.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 
@@ -65,3 +69,4 @@ export type {
 } from './manifest/v1/schema.js';
 
 export { environmentName } from './manifest/v1/rules.js';
+export type { EnvironmentUse } from './manifest/v1/rules.js';
