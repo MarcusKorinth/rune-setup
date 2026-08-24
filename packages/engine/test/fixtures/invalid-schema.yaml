@@ -1,0 +1,27 @@
+schemaVersion: 1
+product:
+  name: Example
+  descripton: a typo, and version is missing
+inputs:
+  installDirectory:
+    type: directory
+    titel: Installation directory
+  apiToken:
+    type: secret
+    default: hunter2
+  environment:
+    type: select
+    options: prod
+execution:
+  failFast: yes
+  elevation: auto
+steps:
+  - id: install
+    run:
+      command: setup.exe
+      args: install
+      shell: true
+  - id: legacy
+    run:
+      macos:
+        command: brew
