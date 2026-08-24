@@ -1,0 +1,23 @@
+schemaVersion: 1
+product:
+  name: Example
+  version: 1.0.0
+inputs:
+  home:
+    type: text
+  environment:
+    type: select
+    options: [dev, dev]
+    default: staging
+  port:
+    type: text
+    patternHint: digits only
+steps:
+  - id: prepare
+    run:
+      command: a
+  - id: install
+    run:
+      command: b
+  - id: install
+    run: {}

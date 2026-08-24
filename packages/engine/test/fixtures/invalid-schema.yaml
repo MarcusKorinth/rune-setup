@@ -1,0 +1,36 @@
+schemaVersion: 1
+license: LICENSE.txt
+product:
+  name: Example
+  descripton: a typo, and version is missing
+inputs:
+  installDirectory:
+    type: directory
+    titel: Installation directory
+    group: paths
+  apiToken:
+    type: secret
+    default: hunter2
+  environment:
+    type: select
+    options:
+      - value: production
+        labell: Produktivumgebung
+execution:
+  failFast: yes
+  elevation: auto
+steps:
+  - id: install
+    dependsOn: [prepare]
+    run:
+      command: setup.exe
+      args: install
+      shell: true
+      timeoutSeconds: 0
+  - id: Legacy
+    run:
+      macos:
+        command: brew
+  - id: mistyped
+    run:
+      comand: setup.exe
