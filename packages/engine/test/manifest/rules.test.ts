@@ -95,7 +95,9 @@ describe('input rules', () => {
       'steps: []',
     ]);
 
-    expect(messages[0]).toContain('inputs.environment.options[1] repeats the option value "dev"');
+    expect(messages[0]).toContain(
+      'inputs.environment.options[1] repeats the option value "dev", already declared by inputs.environment.options[0]',
+    );
   });
 
   it('rejects a default that is not one of the option values', () => {

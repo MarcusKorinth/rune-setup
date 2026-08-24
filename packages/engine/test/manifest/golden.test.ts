@@ -67,7 +67,7 @@ describe('invalid-semantics.yaml', () => {
   it('reports every semantic problem, located, in source order', () => {
     expect(report('invalid-semantics.yaml')).toEqual([
       'invalid-semantics.yaml:6:3 input id "home" collides with the built-in variable ${home}',
-      'invalid-semantics.yaml:10:20 inputs.environment.options[1] repeats the option value "dev" — values are what scripts and --set receive, so they must be unique',
+      'invalid-semantics.yaml:10:20 inputs.environment.options[1] repeats the option value "dev", already declared by inputs.environment.options[0] — values are what scripts and --set receive, so they must be unique',
       'invalid-semantics.yaml:11:5 inputs.environment.default is "staging", which is not one of the option values ("dev")',
       'invalid-semantics.yaml:14:5 inputs.port.patternHint has no effect without inputs.port.pattern',
       'invalid-semantics.yaml:22:5 steps[2].id "install" is already used by steps[1] — step ids identify steps in logs and result files, so they must be unique',

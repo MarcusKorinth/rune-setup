@@ -99,18 +99,20 @@ function checkOptions(
 ): void {
   const optionsPath = [...path, 'options'];
   const values = input.options.map(optionValue);
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   values.forEach((value, index) => {
-    if (seen.has(value)) {
+    const first = seen.get(value);
+    if (first !== undefined) {
       issues.push(
         issue(
-          `${formatPath([...optionsPath, index])} repeats the option value "${value}" — values are what scripts and --set receive, so they must be unique`,
+          `${formatPath([...optionsPath, index])} repeats the option value "${value}", already declared by ${formatPath([...optionsPath, first])} — values are what scripts and --set receive, so they must be unique`,
           [...optionsPath, index],
           ctx,
         ),
       );
+    } else {
+      seen.set(value, index);
     }
-    seen.add(value);
   });
 
   const defaults =
@@ -124,7 +126,7 @@ function checkOptions(
     if (!seen.has(value)) {
       issues.push(
         issue(
-          `${formatPath(defaultPath)} is "${value}", which is not one of the option values (${[...seen].map((option) => `"${option}"`).join(', ')})`,
+          `${formatPath(defaultPath)} is "${value}", which is not one of the option values (${[...seen.keys()].map((option) => `"${option}"`).join(', ')})`,
           defaultPath,
           ctx,
         ),
