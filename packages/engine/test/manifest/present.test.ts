@@ -207,4 +207,19 @@ describe('run blocks', () => {
       messageOf(['steps:', '  - id: a', '    run:', '      darwin:', '        command: x']),
     ).toBe('steps[0].run.darwin is reserved; accepted in a later schemaVersion');
   });
+
+  it('says the same about macOS when the block also names a command', () => {
+    // A `run:` that names a command reads as the command form, whose key set does not contain
+    // the platforms — the author still gets "reserved", not "you mistyped one of my keys".
+    expect(
+      messageOf([
+        'steps:',
+        '  - id: a',
+        '    run:',
+        '      command: x',
+        '      macos:',
+        '        command: y',
+      ]),
+    ).toBe('steps[0].run.macos is reserved; accepted in a later schemaVersion');
+  });
 });

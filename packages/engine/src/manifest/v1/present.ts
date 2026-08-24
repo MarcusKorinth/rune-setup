@@ -79,6 +79,10 @@ const RESERVED_KEYS: Readonly<Record<string, readonly string[]>> = {
   // `darwin` alongside `macos`: it is what Node calls the platform, so authors write both.
   platformRun: ['macos', 'darwin'],
   run: ['macos', 'darwin'],
+  // A `run:` that already names a command reads as the command form, so the same two names
+  // have to be reserved here too: an author reaching for macOS is told that it is coming, not
+  // that they mistyped one of `command`'s keys.
+  command: ['macos', 'darwin'],
   input: ['validate', 'group', 'page', 'hidden'],
 };
 
