@@ -9,8 +9,14 @@ import { readFileSync, statSync } from 'node:fs';
 
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
 
-import { ManifestError } from '../errors.js';
-import { SourceMapBuilder, type Location, type PathSegment, type SourceMap } from './source.js';
+import { ManifestError, type RuneIssue } from '../errors.js';
+import {
+  formatLocation,
+  SourceMapBuilder,
+  type Location,
+  type PathSegment,
+  type SourceMap,
+} from './source.js';
 
 /** Refuse absurd inputs long before the parser sees them. */
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
@@ -36,8 +42,16 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
     lineCounter,
     schema: 'core',
     customTags: [],
-    uniqueKeys: true,
+    // The parser's own duplicate-key check scans every key of a mapping for every new key,
+    // which is quadratic: a one-megabyte flat mapping takes tens of seconds and the size cap
+    // would not bound it. Duplicates are detected in the walk below instead, in one pass.
+    uniqueKeys: false,
     merge: false,
+    // Without this, explicitly tagged YAML 1.1 types (`!!binary`, `!!timestamp`, `!!merge`,
+    // `!!omap`, `!!pairs`, `!!set`) still resolve — to a Buffer, a Date, a merged mapping —
+    // even under the core schema. Leaving them unresolved turns them into warnings, which
+    // this loader treats as errors: RUNE reads plain YAML and nothing else.
+    resolveKnownTags: false,
     version: '1.2',
   });
 
@@ -59,28 +73,22 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
   try {
     value = document.toJS({ maxAliasCount: MAX_ALIAS_COUNT });
   } catch (cause) {
-    throw new ManifestError('RUNE-101', messageOf(cause), { cause });
+    // Mostly the alias-expansion cap. Name the file like every other error here does.
+    throw new ManifestError('RUNE-101', `${file}: ${messageOf(cause)}`, {
+      cause,
+      location: { file, line: 1, column: 1 },
+    });
   }
 
   const builder = new SourceMapBuilder();
-  const unsafeKeys: Location[] = [];
+  const keyProblems: RuneIssue[] = [];
   const contents: unknown = document.contents;
   if (contents !== null && contents !== undefined) {
-    walk(contents as Node, [], builder, file, lineCounter, undefined, unsafeKeys);
+    walk(contents as Node, [], builder, file, lineCounter, undefined, keyProblems);
   }
 
-  // A `__proto__` key cannot survive the conversion to plain data — it would set an object's
-  // prototype instead of becoming a property, so the entry would silently disappear. Nothing
-  // in a RUNE document may vanish without a word (invariant 12).
-  if (unsafeKeys.length > 0) {
-    throw ManifestError.fromIssues(
-      'RUNE-101',
-      unsafeKeys.map((location) => ({
-        code: 'RUNE-101' as const,
-        message: '__proto__ is not allowed as a key',
-        location,
-      })),
-    );
+  if (keyProblems.length > 0) {
+    throw ManifestError.fromIssues('RUNE-101', keyProblems);
   }
 
   return { file, value, sourceMap: builder.build() };
@@ -142,7 +150,12 @@ function positionOf(
   return { file, line, column: col };
 }
 
-/** Records the position of every mapping key, mapping value and sequence item. */
+/**
+ * Records the position of every mapping key, mapping value and sequence item, and reports
+ * the two kinds of key that must never reach the data: duplicates (the second would silently
+ * replace the first) and `__proto__` (which would set an object's prototype instead of
+ * becoming a property, so the entry would vanish). Nothing may disappear without a word.
+ */
 function walk(
   node: Node,
   path: readonly PathSegment[],
@@ -150,7 +163,7 @@ function walk(
   file: string,
   lineCounter: LineCounter,
   keyLocation: Location | undefined,
-  unsafeKeys: Location[],
+  keyProblems: RuneIssue[],
 ): void {
   const valueLocation = positionOf(node.range?.[0], file, lineCounter);
   if (valueLocation) {
@@ -158,17 +171,38 @@ function walk(
   }
 
   if (isMap(node)) {
+    const seen = new Map<string, Location | undefined>();
+
     for (const pair of node.items) {
       const key: unknown = pair.key;
       if (!isScalar(key) || key.value === null || key.value === undefined) {
         continue;
       }
+
       const name = String(key.value);
       const childPath = [...path, name];
       const childKeyLocation = positionOf(key.range?.[0], file, lineCounter);
-      if (name === '__proto__' && childKeyLocation) {
-        unsafeKeys.push(childKeyLocation);
+
+      if (name === '__proto__') {
+        keyProblems.push({
+          code: 'RUNE-101',
+          message: '__proto__ is not allowed as a key',
+          location: childKeyLocation,
+        });
+        continue;
       }
+
+      if (seen.has(name)) {
+        const first = seen.get(name);
+        keyProblems.push({
+          code: 'RUNE-101',
+          message: `duplicate key "${name}"${first ? ` — first defined at ${formatLocation(first)}` : ''}`,
+          location: childKeyLocation,
+        });
+        continue;
+      }
+      seen.set(name, childKeyLocation);
+
       const child: unknown = pair.value;
       if (child === null || child === undefined) {
         // `key:` with no value — record the key so messages can still point at it.
@@ -177,7 +211,7 @@ function walk(
         }
         continue;
       }
-      walk(child as Node, childPath, builder, file, lineCounter, childKeyLocation, unsafeKeys);
+      walk(child as Node, childPath, builder, file, lineCounter, childKeyLocation, keyProblems);
     }
     return;
   }
@@ -185,7 +219,7 @@ function walk(
   if (isSeq(node)) {
     node.items.forEach((item: unknown, index: number) => {
       if (item !== null && item !== undefined) {
-        walk(item as Node, [...path, index], builder, file, lineCounter, undefined, unsafeKeys);
+        walk(item as Node, [...path, index], builder, file, lineCounter, undefined, keyProblems);
       }
     });
   }

@@ -39,7 +39,7 @@ describe('loadYamlText', () => {
   it('rejects duplicate keys instead of silently keeping the last one', () => {
     let thrown: unknown;
     try {
-      loadYamlText('a: 1\na: 2\n', 'f.yaml');
+      loadYamlText('a: 1\nb: 2\na: 3\n', 'f.yaml');
     } catch (error) {
       thrown = error;
     }
@@ -47,14 +47,48 @@ describe('loadYamlText', () => {
     expect(thrown).toBeInstanceOf(ManifestError);
     const error = thrown as ManifestError;
     expect(error.code).toBe('RUNE-101');
-    expect(error.message).toMatch(/unique/i);
-    expect(error.issues[0]?.location).toMatchObject({ file: 'f.yaml', line: 2, column: 1 });
+    expect(error.issues[0]).toMatchObject({
+      message: 'duplicate key "a" — first defined at f.yaml:1:1',
+      location: { file: 'f.yaml', line: 3, column: 1 },
+    });
+  });
+
+  it('detects duplicates in nested mappings too', () => {
+    expect(() => loadYamlText('product:\n  name: A\n  name: B\n', 'f.yaml')).toThrow(
+      /duplicate key "name"/,
+    );
+  });
+
+  it('parses a large flat mapping without a quadratic slowdown', () => {
+    const lines = Array.from({ length: 20_000 }, (_unused, index) => `key${index}: value`);
+    const started = Date.now();
+
+    loadYamlText(`${lines.join('\n')}\n`, 'big.yaml');
+
+    // The size cap alone would not bound the cost if duplicate detection scanned every key
+    // for every key: that shape used to take tens of seconds at a megabyte.
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it('does not execute custom tags', () => {
     expect(() => loadYamlText('a: !!js/function "function () {}"\n', 'f.yaml')).toThrow(
-      ManifestError,
+      /[Uu]nresolved tag/,
     );
+  });
+
+  it('reads plain YAML only: tagged types stay unresolved rather than becoming objects', () => {
+    // Without this guard these resolve to a Buffer, a Date and a merged mapping even under
+    // the core schema — values a manifest author never wrote.
+    expect(() => loadYamlText('a: !!binary aGk=\n', 'f.yaml')).toThrow(/[Uu]nresolved tag/);
+    expect(() => loadYamlText('a: !!timestamp 2020-01-01\n', 'f.yaml')).toThrow(
+      /[Uu]nresolved tag/,
+    );
+  });
+
+  it('does not merge mappings: a << key stays an ordinary key the schema then rejects', () => {
+    const { value } = loadYamlText('base: &b { x: 1 }\nd:\n  <<: *b\n', 'f.yaml');
+
+    expect(value).toEqual({ base: { x: 1 }, d: { '<<': { x: 1 } } });
   });
 
   it('caps alias expansion so a small document cannot explode', () => {
@@ -66,7 +100,15 @@ describe('loadYamlText', () => {
       '',
     ].join('\n');
 
-    expect(() => loadYamlText(bomb, 'f.yaml')).toThrow(ManifestError);
+    let thrown: unknown;
+    try {
+      loadYamlText(bomb, 'f.yaml');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as ManifestError).code).toBe('RUNE-101');
+    expect((thrown as ManifestError).message).toMatch(/f\.yaml: .*alias/i);
   });
 
   it('rejects a __proto__ key instead of letting the entry disappear', () => {
@@ -169,6 +211,13 @@ describe('loadYamlFile', () => {
     const path = tempFile('huge.yaml', 'a: 1\n'.padEnd(MAX_DOCUMENT_BYTES + 1, ' '));
 
     expect(() => loadYamlFile(path)).toThrow(/larger than/);
+  });
+
+  it('refuses a path that is not a file', () => {
+    const path = tempFile('installer.yaml', 'a: 1\n');
+    const directory = join(path, '..');
+
+    expect(() => loadYamlFile(directory)).toThrow(/is not a file/);
   });
 
   it('reports a missing file as a manifest error', () => {
