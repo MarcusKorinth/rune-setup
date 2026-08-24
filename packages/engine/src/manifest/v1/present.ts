@@ -9,7 +9,7 @@
 
 import type { RuneIssue } from '../../errors.js';
 import { formatPath, type Location, type PathSegment, type SourceMap } from '../source.js';
-import { KNOWN_KEYS } from './schema.js';
+import { INPUT_ID, KNOWN_KEYS } from './schema.js';
 
 /**
  * The structural part of a validation issue this module relies on. Depending on a shape
@@ -27,11 +27,25 @@ interface IssueLike {
   readonly errors?: readonly (readonly IssueLike[])[] | undefined;
   readonly minimum?: number | bigint | undefined;
   readonly maximum?: number | bigint | undefined;
+  readonly inclusive?: boolean | undefined;
   readonly origin?: string | undefined;
   readonly format?: string | undefined;
+  readonly pattern?: string | undefined;
   /** Set when a discriminated union found no matching branch. */
   readonly options?: readonly unknown[] | undefined;
   readonly discriminator?: string | undefined;
+  /** Set when a mapping key itself failed validation; carries the key's own problems. */
+  readonly issues?: readonly IssueLike[] | undefined;
+}
+
+/** Origins whose bound is a size; everything else is bounded by value, not by length. */
+function isSized(origin: string | undefined): boolean {
+  return origin === undefined || ['string', 'array', 'set', 'map', 'file'].includes(origin);
+}
+
+/** `/^[a-z]+$/` as written in a message: without the delimiters a reader does not need. */
+function patternSource(pattern: string): string {
+  return pattern.replace(/^\//, '').replace(/\/[a-z]*$/, '');
 }
 
 export interface PresentContext {
@@ -58,6 +72,7 @@ const RESERVED_KEYS: Readonly<Record<string, readonly string[]>> = {
   ],
   // `darwin` alongside `macos`: it is what Node calls the platform, so authors write both.
   platformRun: ['macos', 'darwin'],
+  run: ['macos', 'darwin'],
   input: ['validate', 'group', 'page', 'hidden'],
 };
 
@@ -82,6 +97,8 @@ type MappingKind =
   | 'step'
   | 'command'
   | 'platformRun'
+  /** A `run:` mapping that named neither a command nor a platform — it could be either. */
+  | 'run'
   | 'option'
   | 'unknown';
 
@@ -125,9 +142,16 @@ function flatten(issues: readonly IssueLike[], ctx: PresentContext): IssueLike[]
       continue;
     }
 
-    let best = branches[0] ?? [];
-    for (const branch of branches) {
-      if (weigh(branch) < weigh(best)) {
+    // A branch whose only complaint is "this is not my type" never looked inside the value,
+    // so it cannot describe what is actually wrong with it. Drop those as long as another
+    // branch did look inside; if none did, every branch really rejected the type and the
+    // full list is the right input again.
+    const inspected = branches.filter((branch) => !rejectsOutright(branch, issue.path));
+    const candidates = inspected.length > 0 ? inspected : branches;
+
+    let best = candidates[0] ?? [];
+    for (const branch of candidates) {
+      if (isBetterMatch(branch, best, issue.path.length)) {
         best = branch;
       }
     }
@@ -147,6 +171,46 @@ function weigh(issues: readonly IssueLike[]): number {
       total + (issue.code === 'unrecognized_keys' && issue.keys ? issue.keys.length : 1),
     0,
   );
+}
+
+/**
+ * What a branch holds against the value *itself*: that it is not of this branch's type, or
+ * that it carries keys this branch does not know. Problems reported deeper inside the value
+ * do not count — a branch that got past the shape and only objects to the contents is the
+ * form the author meant, however much detail it then reports.
+ */
+function shapeWeight(issues: readonly IssueLike[], depth: number): number {
+  let total = 0;
+  for (const issue of issues) {
+    if (issue.path.length !== depth) {
+      continue;
+    }
+    if (issue.code === 'unrecognized_keys' && issue.keys) {
+      total += issue.keys.length;
+    } else if (issue.code === 'invalid_type') {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+/** True when a branch rejected the value as a whole rather than objecting to its contents. */
+function rejectsOutright(issues: readonly IssueLike[], unionPath: readonly PropertyKey[]): boolean {
+  const only = issues.length === 1 ? issues[0] : undefined;
+  return only !== undefined && only.code === 'invalid_type' && samePath(only.path, unionPath);
+}
+
+/** Prefers the branch that recognized the value's shape, then the one with fewer problems. */
+function isBetterMatch(
+  candidate: readonly IssueLike[],
+  incumbent: readonly IssueLike[],
+  depth: number,
+): boolean {
+  const candidateShape = shapeWeight(candidate, depth);
+  const incumbentShape = shapeWeight(incumbent, depth);
+  return candidateShape === incumbentShape
+    ? weigh(candidate) < weigh(incumbent)
+    : candidateShape < incumbentShape;
 }
 
 /**
@@ -225,15 +289,38 @@ function describeIssue(
       return `${where} must be one of: ${values.map((value) => JSON.stringify(value)).join(', ')}`;
     }
     case 'too_small': {
+      if (!isSized(issue.origin)) {
+        return `${where} must be ${issue.inclusive ? 'at least' : 'greater than'} ${String(issue.minimum)}`;
+      }
       if (issue.minimum !== undefined && Number(issue.minimum) <= 1) {
         return `${where} must not be empty`;
       }
       return `${where} must have at least ${String(issue.minimum)} entries`;
     }
-    case 'too_big':
+    case 'too_big': {
+      if (!isSized(issue.origin)) {
+        return `${where} must be ${issue.inclusive ? 'at most' : 'less than'} ${String(issue.maximum)}`;
+      }
       return `${where} must have at most ${String(issue.maximum)} entries`;
-    case 'invalid_format':
+    }
+    case 'invalid_format': {
+      if (issue.format === 'regex' && issue.pattern !== undefined) {
+        const value = valueAt(ctx.raw, path);
+        const quoted = typeof value === 'string' ? ` "${value}"` : '';
+        return `${where}${quoted} must match ${patternSource(issue.pattern)}`;
+      }
       return `${where} is not a valid ${issue.format ?? 'value'}`;
+    }
+    case 'invalid_key': {
+      const inner = issue.issues?.[0];
+      if (path[0] === 'inputs' && path.length === 2) {
+        const id = String(path[1]);
+        return `input id "${id}" must match ${INPUT_ID.source} — it is used as \${${id}} in commands and conditions`;
+      }
+      return inner?.pattern === undefined
+        ? `${where} is not an allowed key`
+        : `${where} must match ${patternSource(inner.pattern)}`;
+    }
     default:
       return `${where}: ${issue.message}`;
   }
@@ -278,7 +365,7 @@ function describeUnknownKey(
   const where = formatPath([...path, key]);
   const kind = kindOf(path, ctx.raw);
 
-  const forbidden = kind === 'command' ? FORBIDDEN_KEYS.get(key) : undefined;
+  const forbidden = kind === 'command' || kind === 'run' ? FORBIDDEN_KEYS.get(key) : undefined;
   if (forbidden) {
     return `${where} is not allowed: ${forbidden}`;
   }
@@ -338,7 +425,15 @@ function kindOf(path: readonly PathSegment[], raw: unknown): MappingKind {
   if (first === 'steps' && path.length === 2) return 'step';
   if (first === 'steps' && path.length === 3 && third === 'run') {
     const run = valueAt(raw, path);
-    return isRecord(run) && 'command' in run ? 'command' : 'platformRun';
+    if (!isRecord(run)) {
+      return 'run';
+    }
+    if ('command' in run) {
+      return 'command';
+    }
+    // Neither form is recognizable — a misspelled `command` is as likely as a misspelled
+    // platform, so both key sets are offered as candidates.
+    return 'windows' in run || 'linux' in run ? 'platformRun' : 'run';
   }
   if (
     first === 'steps' &&
@@ -371,6 +466,8 @@ function knownKeys(
       return KNOWN_KEYS.command;
     case 'platformRun':
       return KNOWN_KEYS.platformRun;
+    case 'run':
+      return [...KNOWN_KEYS.command, ...KNOWN_KEYS.platformRun];
     case 'option':
       return KNOWN_KEYS.option;
     case 'input': {
@@ -391,8 +488,10 @@ function suggest(key: string, candidates: readonly string[]): string | undefined
   const limit = key.length <= 4 ? 1 : 2;
 
   for (const candidate of candidates) {
+    // Never suggest the key the author already wrote — it is a known key *somewhere else*,
+    // and "did you mean windows?" about `windows:` reads like a broken tool.
     if (candidate.toLowerCase() === key.toLowerCase()) {
-      return candidate;
+      return undefined;
     }
     const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
     if (distance < bestDistance) {
@@ -465,6 +564,12 @@ function dedupe(issues: readonly RuneIssue[]): RuneIssue[] {
     (a, b) =>
       (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
       (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
-      a.message.localeCompare(b.message),
+      // Code-unit order, not locale order: the golden files must read the same on every
+      // machine, whatever locale it runs in and whether its Node carries the full ICU data.
+      compareCodeUnits(a.message, b.message),
   );
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
