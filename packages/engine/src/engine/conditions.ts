@@ -12,7 +12,10 @@
 import { ConditionError } from '../errors.js';
 import type { ValueType } from './context.js';
 
-/** Guards against a pathological expression; a real condition is a line, not a page. */
+/**
+ * Guards against a pathological expression; a real condition is a line, not a page. Counted
+ * in bytes, so the cap is the 4 KiB the architecture states whatever alphabet is used.
+ */
 export const MAX_CONDITION_LENGTH = 4096;
 
 /** Guards the recursive-descent parser against a deeply nested expression. */
@@ -95,14 +98,20 @@ interface Token {
 }
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const WORDS: Readonly<Record<string, TokenKind>> = {
-  and: 'and',
-  or: 'or',
-  not: 'not',
-  in: 'in',
-  true: 'boolean',
-  false: 'boolean',
-};
+
+/**
+ * The words the language has. A `Map` rather than an object literal: a plain object answers
+ * for every name on `Object.prototype`, so `toString` and `constructor` would tokenize as
+ * keywords instead of being reported as the bare words they are.
+ */
+const WORDS = new Map<string, TokenKind>([
+  ['and', 'and'],
+  ['or', 'or'],
+  ['not', 'not'],
+  ['in', 'in'],
+  ['true', 'boolean'],
+  ['false', 'boolean'],
+]);
 
 interface TokenizeFailure {
   readonly message: string;
@@ -201,7 +210,7 @@ function tokenize(text: string): { tokens: Token[] } | { failure: TokenizeFailur
 
     const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(index));
     if (word) {
-      const kind = WORDS[word[0]];
+      const kind = WORDS.get(word[0]);
       if (kind === undefined) {
         return {
           failure: {
@@ -270,10 +279,10 @@ function readQuoted(
 
 /** Parses a condition. Reports the first problem: an expression is one line, not a document. */
 export function parseCondition(text: string): ParseResult {
-  if (text.length > MAX_CONDITION_LENGTH) {
+  if (Buffer.byteLength(text, 'utf8') > MAX_CONDITION_LENGTH) {
     return {
       ok: false,
-      message: `a condition may be at most ${MAX_CONDITION_LENGTH} characters`,
+      message: `a condition may be at most ${MAX_CONDITION_LENGTH} bytes`,
       offset: 0,
     };
   }
@@ -350,6 +359,16 @@ class Parser {
   }
 
   #parseNot(depth: number): ConditionNode {
+    // The cap belongs on every recursive descent, not only where parentheses re-enter the
+    // grammar: `!` is one character, so an unguarded chain of them fits inside the length
+    // cap and would hand a tree thousands of levels deep to the checker and the evaluator.
+    if (depth > MAX_CONDITION_DEPTH) {
+      throw new ParseFailure(
+        `a condition may not nest deeper than ${MAX_CONDITION_DEPTH} levels`,
+        this.#peek().offset,
+      );
+    }
+
     if (this.#peek().kind === 'not' && this.#peek(1).kind !== 'in') {
       const operator = this.#next();
       return { kind: 'not', operand: this.#parseNot(depth + 1), offset: operator.offset };
@@ -372,7 +391,12 @@ class Parser {
       };
     }
 
-    const negated = token.kind === 'not';
+    // Only the word form negates membership: the grammar spells it `["not"] "in"`, and
+    // `! in` would be a second spelling of one thing.
+    const negated = token.kind === 'not' && token.text === 'not';
+    if (token.kind === 'not' && !negated && this.#peek(1).kind === 'in') {
+      throw new ParseFailure('membership is negated with "not in", not with "! in"', token.offset);
+    }
     if (negated && this.#peek(1).kind !== 'in') {
       throw new ParseFailure('"not" here must be followed by "in"', token.offset);
     }

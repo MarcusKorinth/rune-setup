@@ -106,16 +106,54 @@ describe('syntax', () => {
     expect(syntaxError("'\\n'")).toMatch(/is not an escape/);
   });
 
-  it('refuses an expression longer than the documented cap', () => {
-    const long = `${'('.repeat(MAX_CONDITION_LENGTH)}true`;
+  it('measures the length cap in bytes, at the boundary', () => {
+    const padding = 'a'.repeat(MAX_CONDITION_LENGTH - 9);
 
-    expect(syntaxError(long)).toMatch(new RegExp(`at most ${MAX_CONDITION_LENGTH} characters`));
+    expect(parseCondition(`'x' == '${padding}'`).ok).toBe(true);
+    expect(syntaxError(`'x' == '${padding}a'`)).toBe(
+      `a condition may be at most ${MAX_CONDITION_LENGTH} bytes`,
+    );
+    // The same text in an alphabet that needs more than one byte per character reaches the
+    // cap sooner — 4 KiB is 4 KiB whatever is written.
+    expect(syntaxError(`'x' == '${'ü'.repeat(MAX_CONDITION_LENGTH / 2)}'`)).toMatch(/bytes/);
   });
 
-  it('refuses an expression nested deeper than the documented cap', () => {
-    const deep = `${'('.repeat(MAX_CONDITION_DEPTH + 2)}true${')'.repeat(MAX_CONDITION_DEPTH + 2)}`;
+  it('refuses nesting deeper than the documented cap, at the boundary', () => {
+    const nest = (depth: number): string => `${'('.repeat(depth)}true${')'.repeat(depth)}`;
 
-    expect(syntaxError(deep)).toMatch(/may not nest deeper/);
+    expect(parseCondition(nest(MAX_CONDITION_DEPTH)).ok).toBe(true);
+    expect(syntaxError(nest(MAX_CONDITION_DEPTH + 2))).toMatch(/may not nest deeper/);
+  });
+
+  it('caps a chain of negations too, so no production escapes the depth cap', () => {
+    // `!` is one character, so an unguarded chain fits inside the length cap and would hand
+    // a tree thousands of levels deep to the type checker.
+    expect(parseCondition(`${'!'.repeat(MAX_CONDITION_DEPTH)}true`).ok).toBe(true);
+    expect(syntaxError(`${'!'.repeat(MAX_CONDITION_DEPTH + 2)}true`)).toMatch(
+      /may not nest deeper/,
+    );
+    expect(syntaxError(`${'!'.repeat(2000)}true`)).toMatch(/may not nest deeper/);
+  });
+
+  it('negates membership with the word, not with the exclamation mark', () => {
+    expect(parseCondition("'git' not in ${tools}").ok).toBe(true);
+    expect(syntaxError("'git' ! in ${tools}")).toBe(
+      'membership is negated with "not in", not with "! in"',
+    );
+  });
+
+  it('does not mistake a member of Object.prototype for a keyword', () => {
+    // A plain object lookup would answer for these and tokenize them as language words.
+    for (const word of ['constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+      expect(syntaxError(word)).toBe(
+        `"${word}" is not a value — write a quoted string, or \${${word}} to mean the input`,
+      );
+    }
+  });
+
+  it('binds && tighter than ||, as the grammar reads', () => {
+    expect(ast('${a} && ${b} || ${c}')).toMatchObject({ kind: 'or', left: { kind: 'and' } });
+    expect(ast('${a} || ${b} && ${c}')).toMatchObject({ kind: 'or', right: { kind: 'and' } });
   });
 });
 
@@ -171,7 +209,16 @@ describe('typing', () => {
   });
 
   it('reports every problem, not only the first', () => {
-    expect(typeErrors('${environment} && ${tools}')).toHaveLength(2);
+    expect(typeErrors('${environment} && ${tools}')).toEqual([
+      "${environment} is a string, not a condition — compare it explicitly, for example ${environment} == 'production'",
+      "${tools} is a multiselect value, not a condition — test one of its entries, for example 'git' in ${tools}",
+    ]);
+  });
+
+  it('says the same about != as about ==', () => {
+    expect(typeErrors('${tools} != ${tools}')).toEqual([
+      'a multiselect value cannot be compared with != — test one of its entries with "in"',
+    ]);
   });
 
   it('passes an undeclared reference through as the resolver described it', () => {
@@ -210,6 +257,23 @@ describe('evaluation', () => {
     expect(evaluate("!${environment} == 'staging'", values)).toBe(true);
   });
 
+  it('stops as soon as the answer is known, so an operand it never needs is never read', () => {
+    const read: string[] = [];
+    const watch = (text: string): boolean =>
+      evaluateCondition(ast(text), (reference) => {
+        const name = reference.segments.join('.');
+        read.push(name);
+        return values[name as keyof typeof values];
+      });
+
+    expect(watch('${verbose} && ${installDatabase}')).toBe(false);
+    expect(read).toEqual(['verbose']);
+
+    read.length = 0;
+    expect(watch('${installDatabase} || ${verbose}')).toBe(true);
+    expect(read).toEqual(['installDatabase']);
+  });
+
   it('refuses to guess when a value is not the type the grammar expects', () => {
     expect(() => evaluateCondition(ast('${environment}'), () => 'production')).toThrow(
       ConditionError,
@@ -217,5 +281,10 @@ describe('evaluation', () => {
     expect(() => evaluateCondition(ast("'git' in ${environment}"), () => 'production')).toThrow(
       /multiselect value on its right/,
     );
+    // The operands of the logical operators are guarded too, not only the result.
+    expect(() => evaluateCondition(ast('${a} && ${b}'), () => 'not a boolean')).toThrow(
+      /operand did not evaluate to true or false/,
+    );
+    expect(() => evaluateCondition(ast('!${a}'), () => 'not a boolean')).toThrow(ConditionError);
   });
 });
