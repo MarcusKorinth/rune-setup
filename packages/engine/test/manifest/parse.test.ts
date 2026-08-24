@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ManifestError } from '../../src/errors.js';
 import { parseManifestText, SUPPORTED_SCHEMA_VERSIONS } from '../../src/manifest/index.js';
-import { isCommandSpec } from '../../src/manifest/v1/schema.js';
+import { isCommandSpec, optionLabel, optionValue } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
 const MINIMAL = [...HEAD, 'steps: []', ''].join('\n');
@@ -121,6 +121,23 @@ describe('parseManifestText', () => {
       'development',
       { value: 'production', label: 'Produktivumgebung' },
     ]);
+  });
+
+  it('reads the value and the label of an option the way every frontend must', () => {
+    expect(optionValue('development')).toBe('development');
+    expect(optionLabel('development')).toBe('development');
+    expect(optionValue({ value: 'production', label: 'Produktivumgebung' })).toBe('production');
+    expect(optionLabel({ value: 'production', label: 'Produktivumgebung' })).toBe(
+      'Produktivumgebung',
+    );
+  });
+
+  it('hands out a manifest that cannot be changed under another reader', () => {
+    const manifest = parse(MINIMAL);
+
+    expect(Object.isFrozen(manifest)).toBe(true);
+    expect(Object.isFrozen(manifest.product)).toBe(true);
+    expect(Object.isFrozen(manifest.steps)).toBe(true);
   });
 });
 

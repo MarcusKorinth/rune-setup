@@ -93,10 +93,16 @@ export class ManifestError extends RuneError {
 
   /** Builds one error from a batch of collected problems (validation never stops at the first). */
   static fromIssues(code: ManifestCode, issues: readonly RuneIssue[]): ManifestError {
-    if (issues.length === 0) {
+    const first = issues[0];
+    if (first === undefined) {
       throw new InternalError('ManifestError.fromIssues called without issues');
     }
-    return new ManifestError(code, formatIssues(issues), { issues });
+    // The first problem's position is the error's position, so a caller that only looks at
+    // `location` still points somewhere useful instead of nowhere.
+    return new ManifestError(code, formatIssues(issues), {
+      issues,
+      ...(first.location ? { location: first.location } : {}),
+    });
   }
 }
 

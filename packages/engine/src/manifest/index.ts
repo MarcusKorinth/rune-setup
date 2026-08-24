@@ -136,7 +136,21 @@ function parseV1(document: LoadedDocument, context: ParseContext): Manifest {
     throw ManifestError.fromIssues('RUNE-104', semantic);
   }
 
-  return result.data;
+  // The manifest is handed to the CLI and to the GUI shell's main process and read from
+  // there for the rest of the run; freezing it keeps "the manifest" one thing that cannot
+  // be changed under another reader's feet (docs/architecture.md §3).
+  return deepFreeze(result.data);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(entry);
+  }
+  return value;
 }
 
 function startOf(document: LoadedDocument): Location {
