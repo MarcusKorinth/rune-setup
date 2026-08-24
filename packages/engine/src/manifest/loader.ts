@@ -13,6 +13,7 @@ import { ManifestError, messageOf, type RuneIssue } from '../errors.js';
 import {
   formatLocation,
   SourceMapBuilder,
+  startOfFile,
   type Location,
   type PathSegment,
   type SourceMap,
@@ -73,11 +74,9 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
   try {
     value = document.toJS({ maxAliasCount: MAX_ALIAS_COUNT });
   } catch (cause) {
-    // Mostly the alias-expansion cap. Name the file like every other error here does.
-    throw new ManifestError('RUNE-101', `${file}: ${messageOf(cause)}`, {
-      cause,
-      location: { file, line: 1, column: 1 },
-    });
+    // Mostly the alias-expansion cap. The location names the file; the message must not name
+    // it a second time, or every renderer prints the document twice.
+    throw new ManifestError('RUNE-101', messageOf(cause), { cause, location: startOfFile(file) });
   }
 
   const builder = new SourceMapBuilder();

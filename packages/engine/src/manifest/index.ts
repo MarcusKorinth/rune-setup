@@ -68,11 +68,13 @@ function parseDocument(
 ): Manifest {
   const raw = document.value;
 
+  // These carry a location, and the location already names the document — a message that
+  // names it again makes every renderer print the file twice.
   if (raw === null || raw === undefined) {
-    throw new ManifestError('RUNE-103', `${file} is empty`, { location: startOf(document) });
+    throw new ManifestError('RUNE-103', 'the manifest is empty', { location: startOf(document) });
   }
   if (!isRecord(raw)) {
-    throw new ManifestError('RUNE-103', `${file} must contain a mapping at the top level`, {
+    throw new ManifestError('RUNE-103', 'the manifest must contain a mapping at the top level', {
       location: startOf(document),
     });
   }

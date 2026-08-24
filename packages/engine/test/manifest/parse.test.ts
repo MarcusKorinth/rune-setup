@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ManifestError } from '../../src/errors.js';
+import { formatIssues, type ManifestError } from '../../src/errors.js';
 import { parseManifestText, SUPPORTED_SCHEMA_VERSIONS } from '../../src/manifest/index.js';
 import { isCommandSpec, optionLabel, optionValue } from '../../src/manifest/v1/schema.js';
 
@@ -181,5 +181,18 @@ describe('schemaVersion dispatch', () => {
   it('rejects documents that are not a mapping', () => {
     expect(() => parse('- a\n- b\n')).toThrow(/must contain a mapping at the top level/);
     expect(() => parse('')).toThrow(/is empty/);
+  });
+
+  it('names the document once: in the position, not again in the sentence', () => {
+    let thrown: unknown;
+    try {
+      parse('');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(formatIssues((thrown as ManifestError).issues)).toBe(
+      'installer.yaml:1:1: the manifest is empty',
+    );
   });
 });

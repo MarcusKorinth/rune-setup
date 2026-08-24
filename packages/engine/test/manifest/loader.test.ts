@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { ManifestError } from '../../src/errors.js';
+import { formatIssues, ManifestError } from '../../src/errors.js';
 import { loadYamlFile, loadYamlText, MAX_DOCUMENT_BYTES } from '../../src/manifest/loader.js';
 
 function tempFile(name: string, contents: Buffer | string): string {
@@ -107,8 +107,13 @@ describe('loadYamlText', () => {
       thrown = error;
     }
 
-    expect((thrown as ManifestError).code).toBe('RUNE-101');
-    expect((thrown as ManifestError).message).toMatch(/f\.yaml: .*alias/i);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-101');
+    // Located, and the document named exactly once: the position already carries the file, so
+    // a message that names it again makes every renderer print the document twice.
+    const rendered = formatIssues(error.issues);
+    expect(rendered).toMatch(/^f\.yaml:1:1: .*alias/i);
+    expect(rendered.match(/f\.yaml/g)).toHaveLength(1);
   });
 
   it('rejects a __proto__ key instead of letting the entry disappear', () => {
