@@ -9,7 +9,7 @@ import { readFileSync, statSync } from 'node:fs';
 
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
 
-import { ManifestError, type RuneIssue } from '../errors.js';
+import { ManifestError, messageOf, type RuneIssue } from '../errors.js';
 import {
   formatLocation,
   SourceMapBuilder,
@@ -132,10 +132,6 @@ function decodeUtf8(bytes: Buffer, file: string): string {
   }
   // A byte-order mark is legal in UTF-8 but not part of the document.
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
-
-function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function positionOf(

@@ -13,8 +13,14 @@
 import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
-import type { RuneIssue } from '../../errors.js';
-import { formatPath, type Location, type PathSegment, type SourceMap } from '../source.js';
+import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
+import {
+  formatPath,
+  startOfFile,
+  type Location,
+  type PathSegment,
+  type SourceMap,
+} from '../source.js';
 import { isCommandSpec, optionValue, type InputSpec, type ManifestV1 } from './schema.js';
 
 export interface SemanticContext {
@@ -44,7 +50,9 @@ export function checkSemantics(manifest: ManifestV1, ctx: SemanticContext): Rune
   checkInputs(manifest, ctx, issues);
   checkSteps(manifest, ctx, issues);
   checkGuiAssets(manifest, ctx, issues);
-  return issues;
+  // The rules run in the order they are written; the author reads the document top to bottom,
+  // and the first problem's position is what the error as a whole points at.
+  return orderIssues(issues);
 }
 
 function checkInputs(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
@@ -137,7 +145,7 @@ function checkPattern(
     try {
       new RegExp(input.pattern, 'u');
     } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
+      const reason = messageOf(cause);
       issues.push(
         issue(
           `${formatPath(patternPath)} is not a valid regular expression: ${reason} — patterns use ECMAScript syntax (constructs from other engines such as (?P<name>…) or \\Z are not accepted)`,
@@ -241,5 +249,5 @@ function issue(message: string, path: readonly PathSegment[], ctx: SemanticConte
 }
 
 function locate(path: readonly PathSegment[], ctx: SemanticContext): Location {
-  return ctx.sourceMap.best(path) ?? { file: ctx.file, line: 1, column: 1 };
+  return ctx.sourceMap.best(path) ?? startOfFile(ctx.file);
 }

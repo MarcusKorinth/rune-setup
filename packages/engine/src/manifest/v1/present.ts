@@ -7,8 +7,14 @@
  * reserved for a later schema version say so instead of looking like a typo (invariant 12).
  */
 
-import type { RuneIssue } from '../../errors.js';
-import { formatPath, type Location, type PathSegment, type SourceMap } from '../source.js';
+import { orderIssues, type RuneIssue } from '../../errors.js';
+import {
+  formatPath,
+  startOfFile,
+  type Location,
+  type PathSegment,
+  type SourceMap,
+} from '../source.js';
 import { INPUT_ID, KNOWN_KEYS } from './schema.js';
 
 /**
@@ -108,7 +114,7 @@ export function presentIssues(issues: readonly IssueLike[], ctx: PresentContext)
   for (const issue of flatten(issues, ctx)) {
     presented.push(...present(issue, ctx));
   }
-  return dedupe(presented);
+  return orderIssues(presented);
 }
 
 /**
@@ -525,7 +531,7 @@ function normalizePath(path: readonly PropertyKey[]): PathSegment[] {
 }
 
 function locate(path: readonly PathSegment[], ctx: PresentContext): Location | undefined {
-  return ctx.sourceMap.best(path) ?? { file: ctx.file, line: 1, column: 1 };
+  return ctx.sourceMap.best(path) ?? startOfFile(ctx.file);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -547,29 +553,4 @@ export function valueAt(raw: unknown, path: readonly PathSegment[]): unknown {
     }
   }
   return current;
-}
-
-/** Keeps the first of identical problems and reports them in source order. */
-function dedupe(issues: readonly RuneIssue[]): RuneIssue[] {
-  const seen = new Set<string>();
-  const unique: RuneIssue[] = [];
-  for (const issue of issues) {
-    const id = `${issue.location?.line ?? 0}:${issue.location?.column ?? 0}:${issue.message}`;
-    if (!seen.has(id)) {
-      seen.add(id);
-      unique.push(issue);
-    }
-  }
-  return unique.sort(
-    (a, b) =>
-      (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
-      (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
-      // Code-unit order, not locale order: the golden files must read the same on every
-      // machine, whatever locale it runs in and whether its Node carries the full ICU data.
-      compareCodeUnits(a.message, b.message),
-  );
-}
-
-function compareCodeUnits(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }

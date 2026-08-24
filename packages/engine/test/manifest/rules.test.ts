@@ -330,6 +330,34 @@ describe('gui asset rules', () => {
     ).toThrow(/gui\.logo is empty/);
   });
 
+  it('reports semantic problems in source order, whatever order the rules run in', () => {
+    // Assets are checked last and inputs first, but the author reads the document top to
+    // bottom — and the first problem's position is what the error as a whole points at.
+    let thrown: unknown;
+    try {
+      parseManifestText(
+        [
+          ...HEAD,
+          'gui:',
+          '  logo: missing.png',
+          'inputs:',
+          '  home:',
+          '    type: text',
+          'steps: []',
+          '',
+        ].join('\n'),
+        'installer.yaml',
+        { checkAssetFiles: true, manifestDir: projectDir() },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    const error = thrown as ManifestError;
+    expect(error.issues.map((issue) => issue.location?.line)).toEqual([6, 8]);
+    expect(error.location).toMatchObject({ line: 6 });
+  });
+
   it('reports every declared asset that is missing, by name', () => {
     let thrown: unknown;
     try {

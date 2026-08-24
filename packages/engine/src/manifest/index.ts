@@ -12,7 +12,7 @@ import { z } from 'zod';
 
 import { ManifestError } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
-import type { Location } from './source.js';
+import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
 import { checkSemantics } from './v1/rules.js';
 import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
@@ -154,7 +154,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 function startOf(document: LoadedDocument): Location {
-  return { file: document.file, line: 1, column: 1 };
+  return startOfFile(document.file);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

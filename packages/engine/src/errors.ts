@@ -56,6 +56,43 @@ export function formatIssues(issues: readonly RuneIssue[]): string {
     .join('\n');
 }
 
+/**
+ * Puts a batch of problems into the order an author reads them — by position in the document,
+ * each distinct problem once. Every layer that collects problems orders them through here, so
+ * a shape batch and a semantics batch make the same promise instead of two different ones.
+ */
+export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
+  const seen = new Set<string>();
+  const unique: RuneIssue[] = [];
+  for (const issue of issues) {
+    const where = issue.location;
+    // The file belongs in the identity: once values files and locale overlays share this
+    // path, the same sentence about the same line of two documents is two problems.
+    const id = `${where?.file ?? ''}:${where?.line ?? 0}:${where?.column ?? 0}:${issue.message}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      unique.push(issue);
+    }
+  }
+  return unique.sort(
+    (a, b) =>
+      (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
+      (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
+      // Code-unit order, not locale order: the golden files must read the same on every
+      // machine, whatever locale it runs in and whether its Node carries the full ICU data.
+      compareCodeUnits(a.message, b.message),
+  );
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** The message of something that was thrown, whatever it was. */
+export function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 /** Base class of every error RUNE raises on purpose. */
 export class RuneError extends Error {
   readonly code: RuneCode;

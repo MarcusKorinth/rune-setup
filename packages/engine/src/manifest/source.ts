@@ -21,6 +21,14 @@ export function formatLocation(location: Location): string {
 }
 
 /**
+ * The top of a document: where a message points when nothing more precise is known. One
+ * definition, so "the start of this file" cannot mean two different positions in two modules.
+ */
+export function startOfFile(file: string): Location {
+  return { file, line: 1, column: 1 };
+}
+
+/**
  * Renders a document path for humans: `steps[2].run.windows.args`, `inputs.installDirectory`.
  * Keys that are not plain identifiers are quoted (`inputs["odd key"]`).
  */
