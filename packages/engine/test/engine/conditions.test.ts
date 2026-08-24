@@ -1,0 +1,221 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  evaluateCondition,
+  MAX_CONDITION_DEPTH,
+  MAX_CONDITION_LENGTH,
+  parseCondition,
+  typeCheckCondition,
+  type ConditionNode,
+  type ConditionValue,
+  type TypeResolver,
+} from '../../src/engine/conditions.js';
+import { ConditionError } from '../../src/errors.js';
+import type { ValueType } from '../../src/engine/context.js';
+
+/** The declared inputs a condition is checked against, by name. */
+const TYPES: Readonly<Record<string, ValueType>> = {
+  installDatabase: 'boolean',
+  verbose: 'boolean',
+  environment: 'string',
+  tools: 'stringList',
+};
+
+const resolver: TypeResolver = (reference) => {
+  const type = TYPES[reference.segments.join('.')];
+  return type === undefined
+    ? { ok: false, message: `${reference.text} is not declared` }
+    : { ok: true, type };
+};
+
+function ast(text: string): ConditionNode {
+  const parsed = parseCondition(text);
+  if (!parsed.ok) {
+    throw new Error(`expected ${JSON.stringify(text)} to parse: ${parsed.message}`);
+  }
+  return parsed.ast;
+}
+
+function syntaxError(text: string): string {
+  const parsed = parseCondition(text);
+  if (parsed.ok) {
+    throw new Error(`expected ${JSON.stringify(text)} to be rejected`);
+  }
+  return parsed.message;
+}
+
+function typeErrors(text: string): readonly string[] {
+  return typeCheckCondition(ast(text), resolver);
+}
+
+/** Evaluates against a fixed set of values. */
+function evaluate(text: string, values: Readonly<Record<string, ConditionValue>>): boolean {
+  return evaluateCondition(ast(text), (reference) => {
+    const value = values[reference.segments.join('.')];
+    if (value === undefined) {
+      throw new Error(`no value for ${reference.text}`);
+    }
+    return value;
+  });
+}
+
+describe('syntax', () => {
+  it.each([
+    '${installDatabase}',
+    'true',
+    '!${installDatabase}',
+    'not ${installDatabase}',
+    '${installDatabase} && ${verbose}',
+    '${installDatabase} and ${verbose}',
+    '${installDatabase} || ${verbose}',
+    '${installDatabase} or ${verbose}',
+    "${environment} == 'production'",
+    '${environment} != "staging"',
+    "'git' in ${tools}",
+    "'git' not in ${tools}",
+    '(${installDatabase} || ${verbose}) && ${environment} == "prod"',
+  ])('accepts %s', (text) => {
+    expect(parseCondition(text).ok).toBe(true);
+  });
+
+  it('rejects a bare word, which is neither a value nor a reference', () => {
+    expect(syntaxError('production')).toBe(
+      '"production" is not a value — write a quoted string, or ${production} to mean the input',
+    );
+  });
+
+  it('rejects what a condition cannot contain', () => {
+    expect(syntaxError('${a} +')).toMatch(/unexpected character "\+"/);
+    expect(syntaxError('${a} ==')).toMatch(/ends where a value was expected/);
+    expect(syntaxError('(${a}')).toMatch(/missing "\)"/);
+    expect(syntaxError('${a} ${b}')).toMatch(/unexpected "\$\{b\}"/);
+    expect(syntaxError('${a} not ${b}')).toBe('"not" here must be followed by "in"');
+    expect(syntaxError("'unclosed")).toBe('unterminated string');
+    expect(syntaxError('${unclosed')).toMatch(/unterminated \$\{/);
+  });
+
+  it('reports where the problem is, not only that there is one', () => {
+    const parsed = parseCondition('${a} && oops');
+    expect(parsed.ok).toBe(false);
+    expect(parsed.ok ? -1 : parsed.offset).toBe(8);
+  });
+
+  it('reads quoted strings with the two escapes it has', () => {
+    expect(evaluate("'a\\'b' == \"a'b\"", {})).toBe(true);
+    expect(evaluate('"back\\\\slash" == \'back\\\\slash\'', {})).toBe(true);
+    expect(syntaxError("'\\n'")).toMatch(/is not an escape/);
+  });
+
+  it('refuses an expression longer than the documented cap', () => {
+    const long = `${'('.repeat(MAX_CONDITION_LENGTH)}true`;
+
+    expect(syntaxError(long)).toMatch(new RegExp(`at most ${MAX_CONDITION_LENGTH} characters`));
+  });
+
+  it('refuses an expression nested deeper than the documented cap', () => {
+    const deep = `${'('.repeat(MAX_CONDITION_DEPTH + 2)}true${')'.repeat(MAX_CONDITION_DEPTH + 2)}`;
+
+    expect(syntaxError(deep)).toMatch(/may not nest deeper/);
+  });
+});
+
+describe('typing', () => {
+  it('accepts a declared boolean standing on its own', () => {
+    expect(typeErrors('${installDatabase}')).toEqual([]);
+  });
+
+  it('refuses anything else standing on its own, and says what to write instead', () => {
+    expect(typeErrors('${environment}')).toEqual([
+      "${environment} is a string, not a condition — compare it explicitly, for example ${environment} == 'production'",
+    ]);
+    expect(typeErrors('${tools}')).toEqual([
+      "${tools} is a multiselect value, not a condition — test one of its entries, for example 'git' in ${tools}",
+    ]);
+    expect(typeErrors('42')).toEqual(['42 is a number, not a condition']);
+  });
+
+  it('refuses a comparison between different types', () => {
+    expect(typeErrors("${installDatabase} == 'true'")).toEqual([
+      '${installDatabase} is a boolean and "true" is a string — only values of the same type can be compared',
+    ]);
+  });
+
+  it('accepts a comparison between the same types', () => {
+    expect(typeErrors("${environment} == 'production'")).toEqual([]);
+    expect(typeErrors('${installDatabase} != ${verbose}')).toEqual([]);
+  });
+
+  it('points a multiselect comparison at "in"', () => {
+    expect(typeErrors('${tools} == ${tools}')).toEqual([
+      'a multiselect value cannot be compared with == — test one of its entries with "in"',
+    ]);
+  });
+
+  it('checks both sides of "in"', () => {
+    expect(typeErrors("'git' in ${tools}")).toEqual([]);
+    expect(typeErrors("'git' in ${environment}")).toEqual([
+      '"in" tests membership in a multiselect value, but ${environment} is a string',
+    ]);
+    expect(typeErrors('${installDatabase} in ${tools}')).toEqual([
+      '"in" tests a string, but ${installDatabase} is a boolean',
+    ]);
+  });
+
+  it('requires boolean operands for the logical operators', () => {
+    expect(typeErrors('${environment} && ${installDatabase}')).toEqual([
+      "${environment} is a string, not a condition — compare it explicitly, for example ${environment} == 'production'",
+    ]);
+    expect(typeErrors('!${tools}')).toEqual([
+      "${tools} is a multiselect value, not a condition — test one of its entries, for example 'git' in ${tools}",
+    ]);
+  });
+
+  it('reports every problem, not only the first', () => {
+    expect(typeErrors('${environment} && ${tools}')).toHaveLength(2);
+  });
+
+  it('passes an undeclared reference through as the resolver described it', () => {
+    expect(typeErrors('${nope}')).toEqual(['${nope} is not declared']);
+  });
+});
+
+describe('evaluation', () => {
+  const values = {
+    installDatabase: true,
+    verbose: false,
+    environment: 'production',
+    tools: ['git', 'docker'],
+  } satisfies Record<string, ConditionValue>;
+
+  it.each([
+    ['${installDatabase}', true],
+    ['!${installDatabase}', false],
+    ['not ${verbose}', true],
+    ['${installDatabase} && ${verbose}', false],
+    ['${installDatabase} || ${verbose}', true],
+    ["${environment} == 'production'", true],
+    ["${environment} != 'production'", false],
+    ["'git' in ${tools}", true],
+    ["'podman' in ${tools}", false],
+    ["'podman' not in ${tools}", true],
+    ["(${verbose} || ${installDatabase}) && 'git' in ${tools}", true],
+    ['true', true],
+    ['false', false],
+  ])('evaluates %s to %s', (text, expected) => {
+    expect(evaluate(text, values)).toBe(expected);
+  });
+
+  it('applies "not" to the whole comparison, as the grammar reads', () => {
+    expect(evaluate("!${environment} == 'production'", values)).toBe(false);
+    expect(evaluate("!${environment} == 'staging'", values)).toBe(true);
+  });
+
+  it('refuses to guess when a value is not the type the grammar expects', () => {
+    expect(() => evaluateCondition(ast('${environment}'), () => 'production')).toThrow(
+      ConditionError,
+    );
+    expect(() => evaluateCondition(ast("'git' in ${environment}"), () => 'production')).toThrow(
+      /multiselect value on its right/,
+    );
+  });
+});
