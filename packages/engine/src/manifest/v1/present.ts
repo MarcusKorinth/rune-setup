@@ -8,6 +8,7 @@
  */
 
 import { orderIssues, type RuneIssue } from '../../errors.js';
+import { suggest } from '../../suggest.js';
 import {
   formatPath,
   startOfFile,
@@ -489,45 +490,6 @@ function knownKeys(
     default:
       return [];
   }
-}
-
-/** Closest known key within a small edit distance — the classic "did you mean …?" nudge. */
-function suggest(key: string, candidates: readonly string[]): string | undefined {
-  let best: string | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  const limit = key.length <= 4 ? 1 : 2;
-
-  for (const candidate of candidates) {
-    // Never suggest the key the author already wrote — it is a known key *somewhere else*,
-    // and "did you mean windows?" about `windows:` reads like a broken tool.
-    if (candidate.toLowerCase() === key.toLowerCase()) {
-      return undefined;
-    }
-    const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = candidate;
-    }
-  }
-
-  return bestDistance <= limit ? best : undefined;
-}
-
-function editDistance(a: string, b: string): number {
-  let previous = Array.from({ length: b.length + 1 }, (_unused, index) => index);
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i, ...Array.from<number>({ length: b.length }).fill(0)];
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      current[j] = Math.min(
-        (current[j - 1] ?? 0) + 1,
-        (previous[j] ?? 0) + 1,
-        (previous[j - 1] ?? 0) + cost,
-      );
-    }
-    previous = current;
-  }
-  return previous[b.length] ?? Math.max(a.length, b.length);
 }
 
 function normalizePath(path: readonly PropertyKey[]): PathSegment[] {
