@@ -10,7 +10,7 @@
  * with those modules (docs/roadmap.md, milestone 1).
  */
 
-import { statSync } from 'node:fs';
+import { statSync, type Stats } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
@@ -222,7 +222,22 @@ function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: Rune
     // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
     // files, and a path that happens to be a directory would otherwise pass validation and
     // fail only when the shell tries to load it.
-    const stats = statSync(absolute, { throwIfNoEntry: false });
+    let stats: Stats | undefined;
+    try {
+      stats = statSync(absolute, { throwIfNoEntry: false });
+    } catch (cause) {
+      // `throwIfNoEntry` covers a missing entry and nothing else: a path with a NUL byte, a
+      // component that is not a directory, a directory RUNE may not read all still throw. A
+      // path an author wrote is their problem to fix, never an internal error (exit 70).
+      issues.push(
+        issue(
+          `${formatPath(path)} points at "${value}", which cannot be read: ${messageOf(cause)}`,
+          path,
+          ctx,
+        ),
+      );
+      continue;
+    }
     if (stats === undefined) {
       issues.push(
         issue(

@@ -330,6 +330,24 @@ describe('gui asset rules', () => {
     ).toThrow(/gui\.logo is empty/);
   });
 
+  it('reports a path that cannot be read at all as a manifest error, never as an internal one', () => {
+    // `throwIfNoEntry` covers a missing entry and nothing else: a NUL byte makes the stat throw
+    // on every platform, and a path an author wrote must never come back as "a bug in RUNE".
+    let thrown: unknown;
+    try {
+      parseManifestText(manifest('  logo: "assets\\0logo.png"'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: projectDir(),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    expect((thrown as ManifestError).code).toBe('RUNE-104');
+    expect((thrown as ManifestError).message).toMatch(/gui\.logo points at .*cannot be read/);
+  });
+
   it('reports semantic problems in source order, whatever order the rules run in', () => {
     // Assets are checked last and inputs first, but the author reads the document top to
     // bottom — and the first problem's position is what the error as a whole points at.
