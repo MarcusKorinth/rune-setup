@@ -21,11 +21,15 @@ export type ProductField = (typeof PRODUCT_FIELDS)[number];
 export const ENVIRONMENT_NAMESPACE = 'env';
 export const PRODUCT_NAMESPACE = 'product';
 
-/** Namespaces v1 rejects on purpose, so a later version can define them (§13). */
-export const RESERVED_NAMESPACES: Readonly<Record<string, string>> = {
-  steps: 'step outputs',
-  rune: 'engine variables',
-};
+/**
+ * Namespaces v1 rejects on purpose, so a later version can define them (§13). A `Map` rather
+ * than an object literal: a plain object answers for every name on `Object.prototype`, so an
+ * input legitimately called `toString` would be rejected as a reserved namespace.
+ */
+export const RESERVED_NAMESPACES = new Map<string, string>([
+  ['steps', 'step outputs'],
+  ['rune', 'engine variables'],
+]);
 
 /**
  * Every name `${...}` already means something. An input may not take one as its id: the
@@ -35,7 +39,7 @@ export const BUILT_IN_NAMES: readonly string[] = [
   ...BUILT_IN_VARIABLES,
   PRODUCT_NAMESPACE,
   ENVIRONMENT_NAMESPACE,
-  ...Object.keys(RESERVED_NAMESPACES),
+  ...RESERVED_NAMESPACES.keys(),
 ];
 
 /** What a `${...}` reference points at, once it is known to point at something. */
@@ -63,7 +67,7 @@ export function resolveReference(
     return { ok: false, message: 'an empty reference points at nothing' };
   }
 
-  const reserved = RESERVED_NAMESPACES[head];
+  const reserved = RESERVED_NAMESPACES.get(head);
   if (reserved !== undefined) {
     return {
       ok: false,

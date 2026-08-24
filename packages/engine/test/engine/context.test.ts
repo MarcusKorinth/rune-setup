@@ -90,6 +90,30 @@ describe('resolving a reference', () => {
 });
 
 describe('the built-in name list', () => {
+  it('names exactly the product fields that exist', () => {
+    expect(PRODUCT_FIELDS).toEqual(['name', 'version']);
+    expect(BUILT_IN_VARIABLES).toEqual(['home', 'temp', 'platform', 'manifestDir']);
+  });
+
+  it('does not answer for a member of Object.prototype', () => {
+    // A plain object as the reserved-namespace table would report an input legitimately
+    // called `toString` as reserved, quoting a function body at the author.
+    for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      expect(resolveReference([name], [name])).toEqual({
+        ok: true,
+        reference: { kind: 'input', id: name },
+      });
+    }
+  });
+
+  it('suggests a name that differs only in case, which is the likeliest typo', () => {
+    expect(resolveReference(['installdirectory'], INPUTS)).toEqual({
+      ok: false,
+      message:
+        '${installdirectory} is neither a declared input nor a built-in variable — did you mean ${installDirectory}?',
+    });
+  });
+
   it('covers every namespace an input id must not shadow', () => {
     expect(BUILT_IN_NAMES).toEqual([
       'home',
