@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { ManifestError } from '../../src/errors.js';
@@ -35,10 +39,22 @@ describe('input rules', () => {
     ).toContainEqual(expect.stringContaining('input id "install dir" must match'));
   });
 
-  it('rejects ids that shadow a built-in variable', () => {
-    expect(messagesOf(['inputs:', '  home:', '    type: text', 'steps: []'])).toContainEqual(
-      'input id "home" collides with the built-in variable ${home}',
-    );
+  it.each(['home', 'temp', 'platform', 'manifestDir', 'product', 'env', 'rune', 'steps'])(
+    'rejects the id "%s", which shadows a built-in variable',
+    (name) => {
+      expect(messagesOf(['inputs:', `  ${name}:`, '    type: text', 'steps: []'])).toContainEqual(
+        `input id "${name}" collides with the built-in variable \${${name}}`,
+      );
+    },
+  );
+
+  it('accepts an id that merely resembles a built-in', () => {
+    expect(() =>
+      parseManifestText(
+        [...HEAD, 'inputs:', '  homeDirectory:', '    type: text', 'steps: []', ''].join('\n'),
+        'installer.yaml',
+      ),
+    ).not.toThrow();
   });
 
   it('rejects two inputs that would read the same environment variable', () => {
@@ -180,13 +196,16 @@ describe('input rules', () => {
       'inputs:',
       '  home:',
       '    type: text',
-      '  environment:',
-      '    type: select',
-      '    options: []',
+      '  port:',
+      '    type: text',
+      '    patternHint: digits only',
       'steps: []',
     ]);
 
-    expect(messages.length).toBeGreaterThanOrEqual(2);
+    expect(messages).toEqual([
+      'input id "home" collides with the built-in variable ${home}',
+      'inputs.port.patternHint has no effect without inputs.port.pattern',
+    ]);
   });
 });
 
@@ -236,25 +255,96 @@ describe('step rules', () => {
 });
 
 describe('gui asset rules', () => {
-  const lines = [...HEAD, 'gui:', '  logo: assets/missing.png', 'steps: []', ''].join('\n');
+  const manifest = (...gui: readonly string[]): string =>
+    [...HEAD, 'gui:', ...gui, 'steps: []', ''].join('\n');
+
+  /** A manifest directory holding `assets/logo.png`, so present and absent can be told apart. */
+  function projectDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-gui-'));
+    mkdirSync(join(dir, 'assets'));
+    writeFileSync(join(dir, 'assets', 'logo.png'), '');
+    return dir;
+  }
 
   it('checks asset paths only when the caller asks for it', () => {
-    expect(() => parseManifestText(lines, 'installer.yaml')).not.toThrow();
+    expect(() =>
+      parseManifestText(manifest('  logo: assets/missing.png'), 'installer.yaml'),
+    ).not.toThrow();
   });
 
-  it('reports assets that do not exist next to the manifest', () => {
+  it('accepts assets that exist relative to the manifest directory', () => {
+    expect(() =>
+      parseManifestText(manifest('  logo: assets/logo.png'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: projectDir(),
+      }),
+    ).not.toThrow();
+  });
+
+  it('resolves relative assets against the manifest, not the working directory', () => {
+    const dir = projectDir();
+    // The same relative path exists next to the manifest and not in the process directory.
+    expect(() =>
+      parseManifestText(manifest('  logo: assets/logo.png'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: dir,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      parseManifestText(manifest('  logo: assets/logo.png'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: join(dir, 'assets'),
+      }),
+    ).toThrow(/does not exist/);
+  });
+
+  it('accepts an absolute asset path', () => {
+    const dir = projectDir();
+    expect(() =>
+      parseManifestText(
+        manifest(`  banner: ${join(dir, 'assets', 'logo.png')}`),
+        'installer.yaml',
+        {
+          checkAssetFiles: true,
+          manifestDir: tmpdir(),
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a path that is a directory rather than a file', () => {
+    expect(() =>
+      parseManifestText(manifest('  logo: assets'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: projectDir(),
+      }),
+    ).toThrow(/gui\.logo points at "assets", which is not a file/);
+  });
+
+  it('rejects an empty asset path instead of silently accepting the directory', () => {
+    expect(() =>
+      parseManifestText(manifest('  logo: ""'), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: projectDir(),
+      }),
+    ).toThrow(/gui\.logo is empty/);
+  });
+
+  it('reports every declared asset that is missing, by name', () => {
     let thrown: unknown;
     try {
-      parseManifestText(lines, 'installer.yaml', {
-        checkAssetFiles: true,
-        manifestDir: process.cwd(),
-      });
+      parseManifestText(
+        manifest('  logo: assets/logo.png', '  banner: assets/missing.png', '  theme: theme.css'),
+        'installer.yaml',
+        { checkAssetFiles: true, manifestDir: projectDir() },
+      );
     } catch (error) {
       thrown = error;
     }
 
-    expect((thrown as ManifestError).issues[0]?.message).toContain(
-      'gui.logo points at "assets/missing.png", which does not exist',
-    );
+    expect((thrown as ManifestError).issues.map((issue) => issue.message)).toEqual([
+      'gui.banner points at "assets/missing.png", which does not exist (resolved against the manifest\'s directory)',
+      'gui.theme points at "theme.css", which does not exist (resolved against the manifest\'s directory)',
+    ]);
   });
 });

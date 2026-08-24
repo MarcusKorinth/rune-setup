@@ -10,7 +10,7 @@
  * with those modules (docs/roadmap.md, milestone 1).
  */
 
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 import type { RuneIssue } from '../../errors.js';
@@ -25,9 +25,6 @@ export interface SemanticContext {
   /** Whether `gui:` asset paths are checked on disk — `validate` and `run --gui` do (§4.2). */
   readonly checkAssetFiles: boolean;
 }
-
-const INPUT_ID = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const STEP_ID = /^[a-z][a-z0-9-]*$/;
 
 /** Names an input id may not take, because `${...}` already resolves them (§6.1). */
 const BUILT_IN_NAMES = [
@@ -55,16 +52,6 @@ function checkInputs(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIss
 
   for (const [id, input] of Object.entries(manifest.inputs)) {
     const path: PathSegment[] = ['inputs', id];
-
-    if (!INPUT_ID.test(id)) {
-      issues.push(
-        issue(
-          `input id "${id}" must match ${INPUT_ID.source} — it is used as \${${id}} in commands and conditions`,
-          path,
-          ctx,
-        ),
-      );
-    }
 
     if (BUILT_IN_NAMES.includes(id)) {
       issues.push(
@@ -104,12 +91,6 @@ function checkOptions(
 ): void {
   const optionsPath = [...path, 'options'];
   const values = input.options.map(optionValue);
-
-  if (values.length === 0) {
-    issues.push(issue(`${formatPath(optionsPath)} must not be empty`, optionsPath, ctx));
-    return;
-  }
-
   const seen = new Set<string>();
   values.forEach((value, index) => {
     if (seen.has(value)) {
@@ -184,13 +165,6 @@ function checkSteps(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssu
   manifest.steps.forEach((step, index) => {
     const path: PathSegment[] = ['steps', index];
     const idPath = [...path, 'id'];
-
-    if (!STEP_ID.test(step.id)) {
-      issues.push(
-        issue(`${formatPath(idPath)} "${step.id}" must match ${STEP_ID.source}`, idPath, ctx),
-      );
-    }
-
     const first = seen.get(step.id);
     if (first !== undefined) {
       issues.push(
@@ -230,14 +204,28 @@ function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: Rune
       continue;
     }
     const path: PathSegment[] = ['gui', key];
+
+    if (value.trim() === '') {
+      issues.push(issue(`${formatPath(path)} is empty`, path, ctx));
+      continue;
+    }
+
     const absolute = isAbsolute(value) ? value : resolve(ctx.manifestDir, value);
-    if (!existsSync(absolute)) {
+    // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
+    // files, and a path that happens to be a directory would otherwise pass validation and
+    // fail only when the shell tries to load it.
+    const stats = statSync(absolute, { throwIfNoEntry: false });
+    if (stats === undefined) {
       issues.push(
         issue(
           `${formatPath(path)} points at "${value}", which does not exist (resolved against the manifest's directory)`,
           path,
           ctx,
         ),
+      );
+    } else if (!stats.isFile()) {
+      issues.push(
+        issue(`${formatPath(path)} points at "${value}", which is not a file`, path, ctx),
       );
     }
   }

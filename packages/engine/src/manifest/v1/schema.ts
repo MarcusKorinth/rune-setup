@@ -21,6 +21,14 @@ export const INPUT_TYPES = [
 
 export type InputType = (typeof INPUT_TYPES)[number];
 
+/**
+ * Identifier shapes. They live in the schema rather than among the semantic rules so that
+ * the JSON Schema `rune schema` publishes is exactly as strict as validation — an editor
+ * must not accept what the engine rejects.
+ */
+export const INPUT_ID = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const STEP_ID = /^[a-z][a-z0-9-]*$/;
+
 /** An option of a `select`/`multiselect`: a bare value, or a value with a display label. */
 export const optionSpecSchema = z.union([
   z.string(),
@@ -71,14 +79,14 @@ export const booleanInputSchema = z.strictObject({
 export const selectInputSchema = z.strictObject({
   type: z.literal('select'),
   ...inputBase,
-  options: z.array(optionSpecSchema),
+  options: z.array(optionSpecSchema).min(1),
   default: z.string().optional(),
 });
 
 export const multiselectInputSchema = z.strictObject({
   type: z.literal('multiselect'),
   ...inputBase,
-  options: z.array(optionSpecSchema),
+  options: z.array(optionSpecSchema).min(1),
   default: z.array(z.string()).optional(),
 });
 
@@ -105,7 +113,7 @@ export const inputSpecSchema = z.discriminatedUnion('type', [
 ]);
 
 export const stepSchema = z.strictObject({
-  id: z.string(),
+  id: z.string().regex(STEP_ID),
   title: z.string().optional(),
   when: z.string().optional(),
   run: runSchema,
@@ -134,7 +142,7 @@ export const guiSchema = z.strictObject({
 export const manifestV1Schema = z.strictObject({
   schemaVersion: z.literal(1),
   product: productSchema,
-  inputs: z.record(z.string(), inputSpecSchema).default({}),
+  inputs: z.record(z.string().regex(INPUT_ID), inputSpecSchema).default({}),
   steps: z.array(stepSchema),
   execution: executionSchema.default({ failFast: true }),
   gui: guiSchema.optional(),
