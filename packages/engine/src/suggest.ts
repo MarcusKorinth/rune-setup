@@ -16,11 +16,18 @@ export function suggest(name: string, candidates: Iterable<string>): string | un
 
   for (const candidate of candidates) {
     // Never suggest the name the author already wrote — it is valid *somewhere else*, and
-    // "did you mean windows?" about `windows:` reads like a broken tool.
-    if (candidate.toLowerCase() === written) {
+    // "did you mean windows?" about `windows:` reads like a broken tool. Compared exactly:
+    // a name that differs only in case is a real mistake and deserves the hint.
+    if (candidate === name) {
       return undefined;
     }
-    const distance = editDistance(written, candidate.toLowerCase());
+    const lowered = candidate.toLowerCase();
+    // The difference in length is a lower bound on the edit distance, so a candidate this
+    // far off can never be close enough and never needs the matrix.
+    if (Math.abs(lowered.length - written.length) > limit) {
+      continue;
+    }
+    const distance = editDistance(written, lowered);
     if (distance < bestDistance) {
       bestDistance = distance;
       best = candidate;

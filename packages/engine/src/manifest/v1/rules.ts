@@ -28,6 +28,7 @@ import {
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
+  formatLocation,
   formatPath,
   startOfFile,
   type Location,
@@ -360,6 +361,11 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
 function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
   const inputIds = Object.keys(manifest.inputs);
 
+  // What is wrong with a reference depends only on what was written and whether inputs are in
+  // scope — never on the field it stands in. A manifest may repeat the same typo in thousands
+  // of arguments, and the search for a near miss is not cheap; it is paid once per name.
+  const explained = new Map<string, string | undefined>();
+
   for (const field of interpolatedFields(manifest)) {
     const scan = scanTemplate(field.text);
     if (!scan.ok) {
@@ -371,7 +377,11 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
       if (part.kind !== 'reference') {
         continue;
       }
-      const problem = referenceProblem(part.reference, inputIds, field.mayReferenceInputs);
+      const key = `${String(field.mayReferenceInputs)}:${part.reference.text}`;
+      if (!explained.has(key)) {
+        explained.set(key, referenceProblem(part.reference, inputIds, field.mayReferenceInputs));
+      }
+      const problem = explained.get(key);
       if (problem !== undefined) {
         issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
       }
@@ -472,19 +482,19 @@ export function environmentReferences(
   manifest: ManifestV1,
   ctx: Pick<SemanticContext, 'file' | 'sourceMap'>,
 ): readonly EnvironmentUse[] {
-  const uses = new Map<string, Location[]>();
+  const uses = new Map<string, Map<string, Location>>();
 
   const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
     const resolved = resolveReference(segments, Object.keys(manifest.inputs));
-    if (resolved.ok && resolved.reference.kind === 'environment') {
-      const at = ctx.sourceMap.best(path) ?? startOfFile(ctx.file);
-      const existing = uses.get(resolved.reference.name);
-      if (existing) {
-        existing.push(at);
-      } else {
-        uses.set(resolved.reference.name, [at]);
-      }
+    if (!resolved.ok || resolved.reference.kind !== 'environment') {
+      return;
     }
+    // Locations are per field, so two reads of the same variable in one argument are one
+    // place to look at, not two identical lines in the report.
+    const at = ctx.sourceMap.best(path) ?? startOfFile(ctx.file);
+    const places = uses.get(resolved.reference.name) ?? new Map<string, Location>();
+    places.set(formatLocation(at), at);
+    uses.set(resolved.reference.name, places);
   };
 
   for (const field of interpolatedFields(manifest)) {
@@ -508,7 +518,10 @@ export function environmentReferences(
   }
 
   return [...uses.entries()]
-    .map(([name, locations]) => ({ name, locations }))
+    .map(([name, places]) => ({
+      name,
+      locations: [...places.values()].sort((a, b) => a.line - b.line || a.column - b.column),
+    }))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
