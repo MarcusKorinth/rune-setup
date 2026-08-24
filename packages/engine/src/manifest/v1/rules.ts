@@ -145,7 +145,7 @@ function checkPattern(
 
   if (input.pattern !== undefined) {
     try {
-      new RegExp(input.pattern, 'u');
+      compileInputPattern(input.pattern);
     } catch (cause) {
       const reason = messageOf(cause);
       issues.push(
@@ -254,6 +254,19 @@ function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: Rune
       );
     }
   }
+}
+
+/**
+ * The flags every `pattern:` is compiled with — here, where a manifest is validated, and later
+ * wherever a supplied value is matched against it. One definition, because the flags decide
+ * which patterns exist at all (`[\w-.]` is a range error under `u` and legal without it), and a
+ * pattern accepted by `validate` but rejected at the prompt would break mode parity.
+ */
+export const INPUT_PATTERN_FLAGS = 'u';
+
+/** Compiles a `pattern:` the one way RUNE compiles it. Throws if it is not a valid one. */
+export function compileInputPattern(pattern: string): RegExp {
+  return new RegExp(pattern, INPUT_PATTERN_FLAGS);
 }
 
 /** The environment variable an input is settable through (docs/architecture.md §5, layer 3). */
