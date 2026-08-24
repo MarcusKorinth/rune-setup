@@ -25,5 +25,9 @@
   "scripts": {
     "build": "tsc -b",
     "prepack": "npm run build"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   }
 }
