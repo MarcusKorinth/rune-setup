@@ -174,6 +174,21 @@ export function optionLabel(option: OptionSpec): string {
 }
 
 /**
+ * The accepted keys per input type. `satisfies Record<InputType, …>` is the whole point: an
+ * eighth input type is a compile error here instead of a silent fallback to the `text` keys in
+ * `present.ts`, which would suggest the wrong keys for the new type.
+ */
+const INPUT_KEYS = {
+  text: Object.keys(textInputSchema.shape),
+  secret: Object.keys(secretInputSchema.shape),
+  boolean: Object.keys(booleanInputSchema.shape),
+  select: Object.keys(selectInputSchema.shape),
+  multiselect: Object.keys(multiselectInputSchema.shape),
+  file: Object.keys(fileInputSchema.shape),
+  directory: Object.keys(directoryInputSchema.shape),
+} as const satisfies Record<InputType, readonly string[]>;
+
+/**
  * The accepted keys of every mapping in the schema, derived from the schemas above so that
  * the "did you mean …?" suggestions in `present.ts` can never drift from what is accepted.
  */
@@ -186,13 +201,5 @@ export const KNOWN_KEYS = {
   command: Object.keys(commandSpecSchema.shape),
   platformRun: Object.keys(platformRunSchema.shape),
   option: ['value', 'label'],
-  input: {
-    text: Object.keys(textInputSchema.shape),
-    secret: Object.keys(secretInputSchema.shape),
-    boolean: Object.keys(booleanInputSchema.shape),
-    select: Object.keys(selectInputSchema.shape),
-    multiselect: Object.keys(multiselectInputSchema.shape),
-    file: Object.keys(fileInputSchema.shape),
-    directory: Object.keys(directoryInputSchema.shape),
-  },
+  input: INPUT_KEYS,
 } as const satisfies Record<string, readonly string[] | Record<string, readonly string[]>>;
