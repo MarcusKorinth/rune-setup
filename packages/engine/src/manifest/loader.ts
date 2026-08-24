@@ -7,7 +7,7 @@
 
 import { readFileSync, statSync } from 'node:fs';
 
-import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
+import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
 
 import { ManifestError, messageOf, type RuneIssue } from '../errors.js';
 import {
@@ -70,15 +70,9 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
     );
   }
 
-  let value: unknown;
-  try {
-    value = document.toJS({ maxAliasCount: MAX_ALIAS_COUNT });
-  } catch (cause) {
-    // Mostly the alias-expansion cap. The location names the file; the message must not name
-    // it a second time, or every renderer prints the document twice.
-    throw new ManifestError('RUNE-101', messageOf(cause), { cause, location: startOfFile(file) });
-  }
-
+  // The keys are checked before the document is converted: a key RUNE refuses must not be
+  // turned into data first — that is where the parser would stringify it, silently, and warn
+  // about it on a channel RUNE does not own.
   const builder = new SourceMapBuilder();
   const keyProblems: RuneIssue[] = [];
   const contents: unknown = document.contents;
@@ -88,6 +82,15 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
 
   if (keyProblems.length > 0) {
     throw ManifestError.fromIssues('RUNE-101', keyProblems);
+  }
+
+  let value: unknown;
+  try {
+    value = document.toJS({ maxAliasCount: MAX_ALIAS_COUNT });
+  } catch (cause) {
+    // Mostly the alias-expansion cap. The location names the file; the message must not name
+    // it a second time, or every renderer prints the document twice.
+    throw new ManifestError('RUNE-101', messageOf(cause), { cause, location: startOfFile(file) });
   }
 
   return { file, value, sourceMap: builder.build() };
@@ -146,9 +149,10 @@ function positionOf(
 }
 
 /**
- * Records the position of every mapping key, mapping value and sequence item, and reports
- * the two kinds of key that must never reach the data: duplicates (the second would silently
- * replace the first) and `__proto__` (which would set an object's prototype instead of
+ * Records the position of every mapping key, mapping value and sequence item, and reports the
+ * kinds of key that must never reach the data: duplicates (the second would silently replace
+ * the first), keys that are not plain non-empty scalars (which the parser folds together into
+ * one stringified entry) and `__proto__` (which would set an object's prototype instead of
  * becoming a property, so the entry would vanish). Nothing may disappear without a word.
  */
 function walk(
@@ -170,13 +174,35 @@ function walk(
 
     for (const pair of node.items) {
       const key: unknown = pair.key;
-      if (!isScalar(key) || key.value === null || key.value === undefined) {
+      const childKeyLocation = positionOf(
+        isNode(key) ? key.range?.[0] : undefined,
+        file,
+        lineCounter,
+      );
+
+      // Only a plain, non-empty scalar survives as itself. A collection key is stringified by
+      // the parser (`[ a, b ]`) and an empty or null key becomes the empty string, so two of
+      // either collapse into one entry — the silent disappearance the duplicate check below
+      // exists to prevent, and one this walk could not see.
+      if (!isScalar(key)) {
+        keyProblems.push({
+          code: 'RUNE-101',
+          message: 'a mapping key must be a plain scalar',
+          location: childKeyLocation,
+        });
+        continue;
+      }
+      if (key.value === null || key.value === undefined) {
+        keyProblems.push({
+          code: 'RUNE-101',
+          message: 'a mapping key must not be empty',
+          location: childKeyLocation,
+        });
         continue;
       }
 
       const name = String(key.value);
       const childPath = [...path, name];
-      const childKeyLocation = positionOf(key.range?.[0], file, lineCounter);
 
       if (name === '__proto__') {
         keyProblems.push({

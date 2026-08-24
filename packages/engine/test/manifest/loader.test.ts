@@ -116,6 +116,32 @@ describe('loadYamlText', () => {
     expect(rendered.match(/f\.yaml/g)).toHaveLength(1);
   });
 
+  it('rejects a key that is not a plain scalar, which the parser would stringify', () => {
+    // `? [a, b]` becomes the key "[ a, b ]", so two of them collapse into one entry — and the
+    // duplicate check, which compares scalar names, would never see either of them.
+    let thrown: unknown;
+    try {
+      loadYamlText('? [a, b]\n: 1\n', 'f.yaml');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-101');
+    expect(error.issues[0]?.message).toBe('a mapping key must be a plain scalar');
+    expect(error.issues[0]?.location).toMatchObject({ file: 'f.yaml', line: 1 });
+  });
+
+  it('rejects an empty key, of which two would silently become one', () => {
+    // An empty key and an explicit null both become the empty string, so the second used to
+    // replace the first without a word.
+    expect(() => loadYamlText('x:\n  : 1\n  ~: 2\n', 'f.yaml')).toThrow(
+      /a mapping key must not be empty/,
+    );
+    expect(() => loadYamlText('null: 1\n', 'f.yaml')).toThrow(/a mapping key must not be empty/);
+  });
+
   it('rejects a __proto__ key instead of letting the entry disappear', () => {
     let thrown: unknown;
     try {
