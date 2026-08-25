@@ -13,7 +13,8 @@ import {
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
-import type { InputError } from '../../src/errors.js';
+import type { InputValue } from '../../src/inputs/base.js';
+import { exitCodeFor, ResolutionError, type InputError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -213,9 +214,21 @@ describe('defaults are templates', () => {
       '    default: "${env.NOT_SET_ANYWHERE}/logs"',
     );
 
-    expect(problems(manifest)).toEqual([
+    let thrown: unknown;
+    try {
+      resolve(manifest);
+    } catch (error) {
+      thrown = error;
+    }
+
+    // A reference that resolves to nothing is a resolution error, not a value a user got
+    // wrong: exit 5, not exit 4 (docs/architecture.md §6.1, §10, invariant 9).
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    expect((thrown as ResolutionError).code).toBe('RUNE-301');
+    expect(exitCodeFor(thrown)).toBe(5);
+    expect((thrown as ResolutionError).message).toBe(
       'inputs.logs.default: the environment variable NOT_SET_ANYWHERE is not set',
-    ]);
+    );
   });
 
   it('leaves a select default alone: it is an option value, not a template', () => {
@@ -253,8 +266,16 @@ describe('conditional inputs', () => {
   it('gives a disabled input its empty value and asks nothing of it', () => {
     const resolution = resolve(manifest, { overrides: new Map([['installDatabase', 'false']]) });
 
-    expect(resolution.byId.get('databasePort')).toMatchObject({ enabled: false, value: '' });
+    expect(resolution.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      ignored: undefined,
+    });
     expect(resolution.missing).toEqual([]);
+    // The manifest default is not something anybody supplied for this run, so nothing was
+    // discarded and there is nothing to warn about (§5 restricts the warning to layers 2–5).
+    expect(resolution.warnings).toEqual([]);
   });
 
   it('ignores a value supplied for a disabled input, loudly and with its provenance', () => {
@@ -289,6 +310,39 @@ describe('conditional inputs', () => {
       ignored: undefined,
     });
     expect(resolution.warnings).toEqual([]);
+  });
+
+  it('lets a condition read a built-in and the environment, not only other inputs', () => {
+    const onPlatform = manifestOf(
+      'inputs:',
+      '  windowsOnly:',
+      '    type: text',
+      '    when: "${platform} == \'windows\'"',
+      '    required: false',
+      '  onCi:',
+      '    type: text',
+      '    when: "${env.CI} == \'true\'"',
+      '    required: false',
+    );
+
+    // The context of these tests reports linux, and CI is set in the environment they pass.
+    const resolution = resolve(onPlatform, {}, { CI: 'true' });
+
+    expect(resolution.byId.get('windowsOnly')?.enabled).toBe(false);
+    expect(resolution.byId.get('onCi')?.enabled).toBe(true);
+  });
+
+  it('names the condition that asked for an environment variable the machine lacks', () => {
+    const needsVariable = manifestOf(
+      'inputs:',
+      '  onCi:',
+      '    type: text',
+      '    when: "${env.NOT_SET_ANYWHERE} == \'true\'"',
+    );
+
+    expect(() => resolve(needsVariable)).toThrow(
+      'inputs.onCi.when: the environment variable NOT_SET_ANYWHERE is not set',
+    );
   });
 
   it('treats an unanswered controlling input as its empty value, so a field starts off', () => {
@@ -383,8 +437,103 @@ describe('keys that name no input', () => {
   });
 });
 
+describe('what counts as an answer', () => {
+  it('does not let an empty string satisfy a required input', () => {
+    // The shape of the CI mistake that matters: a variable that was never set expands to "".
+    const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+
+    expect(resolve(manifest, {}, { RUNE_INPUT_TOKEN: '' }).missing).toEqual(['token']);
+  });
+
+  it('does not let an empty selection satisfy a required multiselect', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git]',
+    );
+
+    expect(resolve(manifest, { overrides: new Map([['tools', '']]) }).missing).toEqual(['tools']);
+  });
+
+  it('lets false satisfy a required boolean, because false is an answer', () => {
+    const manifest = manifestOf('inputs:', '  verbose:', '    type: boolean');
+    const resolution = resolve(manifest, { overrides: new Map([['verbose', 'false']]) });
+
+    expect(resolution.missing).toEqual([]);
+    expect(resolution.byId.get('verbose')?.value).toBe(false);
+  });
+
+  it('leaves an optional input alone: empty is a fine answer when nothing is required', () => {
+    const manifest = manifestOf('inputs:', '  note:', '    type: text', '    required: false');
+
+    expect(resolve(manifest, { overrides: new Map([['note', '']]) }).missing).toEqual([]);
+  });
+});
+
+describe('a frontend that can ask again', () => {
+  const manifest = manifestOf('inputs:', '  port:', '    type: text', '    pattern: "[0-9]{2,5}"');
+
+  it('collects the problem instead of throwing, and treats the value as unanswered', () => {
+    const resolution = resolveInputs({
+      manifest,
+      context: contextFor(manifest),
+      environment: {},
+      overrides: new Map([['port', 'eighty']]),
+      invalidValues: 'collect',
+    });
+
+    expect(resolution.problems.map((problem) => problem.message)).toEqual([
+      'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
+    ]);
+    expect(resolution.byId.get('port')?.value).toBeUndefined();
+    expect(resolution.missing).toEqual(['port']);
+  });
+
+  it('throws by default, which is what a pipeline needs', () => {
+    expect(() => resolve(manifest, { overrides: new Map([['port', 'eighty']]) })).toThrow(
+      /does not match/,
+    );
+  });
+});
+
 describe('secrets', () => {
   const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+
+  it('takes a resolved value back as an answer, which is how a frontend re-resolves', () => {
+    const first = resolve(manifest, { overrides: new Map([['token', 'hunter2-and-more']]) });
+    const answer = first.byId.get('token')?.value;
+
+    const second = resolve(manifest, { answers: new Map([['token', answer as InputValue]]) });
+
+    expect(second.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect((second.byId.get('token')?.value as SecretString).reveal()).toBe('hunter2-and-more');
+    expect(second.missing).toEqual([]);
+  });
+
+  it('takes every other type back as an answer too', () => {
+    const typed = manifestOf(
+      'inputs:',
+      '  verbose:',
+      '    type: boolean',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+    );
+    const first = resolve(typed, {
+      overrides: new Map([
+        ['verbose', 'true'],
+        ['tools', 'git,docker'],
+      ]),
+    });
+
+    const second = resolve(typed, {
+      answers: new Map(first.inputs.map((state) => [state.id, state.value as InputValue])),
+    });
+
+    expect(second.byId.get('verbose')?.value).toBe(true);
+    expect(second.byId.get('tools')?.value).toEqual(['git', 'docker']);
+  });
 
   it('wraps the value and registers it for masking before anything can run', () => {
     const secrets = new SecretRegistry();
@@ -441,10 +590,20 @@ describe('values files', () => {
     );
   });
 
-  it('asks for a number to be written as text, so it means exactly what it says', () => {
-    expect(() => parseValuesFile(file('port: 5432\n'))).toThrow(
-      /port is the number 5432 — write it as a string \("5432"\)/,
+  it('asks for a number to be written in quotes, without repeating it', () => {
+    let thrown: unknown;
+    try {
+      parseValuesFile(file('port: 5432\n'));
+    } catch (error) {
+      thrown = error;
+    }
+
+    // This runs before anything knows which input the key belongs to, so it cannot know that
+    // the value it would be quoting is a secret — a numeric API key lands here (§10).
+    expect((thrown as InputError).message).toContain(
+      'port is a number — write it in quotes so it means exactly what it says',
     );
+    expect((thrown as InputError).message).not.toContain('5432');
   });
 
   it('refuses a key with no value at all', () => {

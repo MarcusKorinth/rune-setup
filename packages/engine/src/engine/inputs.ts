@@ -21,7 +21,7 @@ import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import type { SecretRegistry } from './secrets.js';
+import { SecretString, type SecretRegistry } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -68,15 +68,28 @@ export interface ResolveInputsOptions {
   readonly answers?: ReadonlyMap<string, InputValue>;
   /** Registers secrets for masking as they resolve — before any step can launch (§10). */
   readonly secrets?: SecretRegistry;
+  /**
+   * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
+   * runs and the process exits. A frontend that can ask again takes `collect`, which records
+   * the problem and treats the input as unanswered, so the CLI re-prompts and the GUI marks
+   * the field (§5).
+   */
+  readonly invalidValues?: 'throw' | 'collect';
 }
 
 export interface Resolution {
   readonly inputs: readonly InputState[];
   readonly byId: ReadonlyMap<string, InputState>;
-  /** Enabled, required inputs with no value yet — what a frontend must still ask for. */
+  /**
+   * Enabled required inputs still without an answer — what a frontend must ask for. A value
+   * that resolves to nothing counts as no answer: an environment variable that was never set
+   * expands to the empty string, and a required input must not be satisfied by that.
+   */
   readonly missing: readonly string[];
   /** Things a run should say out loud but not fail over (§5, §10). */
   readonly warnings: readonly string[];
+  /** Values the registry rejected, when the caller asked to collect rather than throw. */
+  readonly problems: readonly RuneIssue[];
 }
 
 /**
@@ -109,9 +122,14 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     const supplied = highestLayer(id, spec, options, environment);
 
     if (!enabled) {
-      if (supplied !== undefined) {
+      // A manifest default is not something anybody *supplied* for this run: it is what the
+      // author wrote for the case where the input is used at all. Only a value from layers
+      // 2–5 is worth a warning, and only that is recorded as discarded (§5, §10).
+      const discarded =
+        supplied !== undefined && supplied.source !== 'default' ? supplied : undefined;
+      if (discarded !== undefined) {
         warnings.push(
-          `${id} was set from ${SOURCE_NAMES[supplied.source]}, but its condition is false — the value is ignored`,
+          `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
         );
       }
       states.set(id, {
@@ -120,7 +138,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
         enabled: false,
         value: handler.empty(spec),
         source: undefined,
-        ignored: supplied?.source,
+        ignored: discarded?.source,
       });
       order.push(id);
       continue;
@@ -157,7 +175,9 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     }
 
     if (handler.secret && options.secrets !== undefined) {
-      const text = handler.render(coerced.value);
+      // The one place that unwraps a secret outside the runner: it has to know the text to
+      // be able to remove it from everything a run prints (§10).
+      const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
       if (text !== '' && !options.secrets.register(text)) {
         warnings.push(
           `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
@@ -176,19 +196,29 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     order.push(id);
   }
 
-  if (issues.length > 0) {
-    throw InputError.fromIssues('RUNE-202', issues);
+  if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
+    // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
+    // the values (§7).
+    const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
+    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
   }
 
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
   return {
     inputs,
     byId: states,
-    missing: inputs
-      .filter((state) => state.enabled && state.spec.required && state.value === undefined)
-      .map((state) => state.id),
+    missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
     warnings,
+    problems: issues,
   };
+}
+
+/** Whether an input is enabled, required, and has nothing that counts as an answer. */
+function stillNeeded(state: InputState): boolean {
+  if (!state.enabled || !state.spec.required) {
+    return false;
+  }
+  return state.value === undefined || inputTypes.get(state.spec.type).isAbsent(state.value);
 }
 
 /** A raw value and where it came from, before any type knows what to make of it. */
@@ -268,16 +298,10 @@ function coerce(
   let raw = supplied.raw;
 
   // A default is a template: it is rendered before it is read, and it may name only what is
-  // known before the other inputs are (§6.1).
+  // known before the other inputs are (§6.1). A reference that resolves to nothing is a
+  // resolution error and stays one — it is not a value a user got wrong (§7, invariant 9).
   if (supplied.source === 'default' && typeof raw === 'string' && isTemplated(spec)) {
-    try {
-      raw = renderDefault(raw, context);
-    } catch (error) {
-      if (error instanceof ResolutionError) {
-        return { ok: false, message: `inputs.${id}.default: ${error.message}` };
-      }
-      throw error;
-    }
+    raw = renderDefault(raw, id, context);
   }
 
   const result =
@@ -295,15 +319,23 @@ function isTemplated(spec: InputSpec): boolean {
   return spec.type === 'text' || spec.type === 'file' || spec.type === 'directory';
 }
 
-function renderDefault(text: string, context: RuntimeContext): string {
+function renderDefault(text: string, id: string, context: RuntimeContext): string {
+  const where = `inputs.${id}.default`;
   return renderTemplate(text, (reference) => {
     // No inputs are in scope: a default is rendered before the other inputs are known, which
     // `validate` already refused to let an author rely on.
     const resolved = resolveReference(reference.segments, []);
     if (!resolved.ok) {
-      throw new ResolutionError('RUNE-301', resolved.message);
+      throw new ResolutionError('RUNE-301', `${where}: ${resolved.message}`);
     }
-    return context.valueOf(resolved.reference);
+    try {
+      return context.valueOf(resolved.reference);
+    } catch (cause) {
+      if (cause instanceof ResolutionError) {
+        throw new ResolutionError('RUNE-301', `${where}: ${cause.message}`, { cause });
+      }
+      throw cause;
+    }
   });
 }
 
@@ -326,7 +358,18 @@ function isEnabled(
     throw new InternalError(`the condition of input "${id}" did not parse: ${parsed.message}`);
   }
 
-  return evaluateCondition(parsed.ast, (reference) => lookup(reference, earlier, states, context));
+  try {
+    return evaluateCondition(parsed.ast, (reference) =>
+      lookup(reference, earlier, states, context),
+    );
+  } catch (cause) {
+    // Without the attribution the message is "the environment variable CI is not set", with
+    // nothing to say which of a dozen conditions asked for it.
+    if (cause instanceof ResolutionError) {
+      throw new ResolutionError('RUNE-301', `inputs.${id}.when: ${cause.message}`, { cause });
+    }
+    throw cause;
+  }
 }
 
 function lookup(
@@ -425,7 +468,14 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   return { file: document.file, values, sourceMap: document.sourceMap };
 }
 
-/** What a values file may hold, before any input type has an opinion about it. */
+/**
+ * What a values file may hold, before any input type has an opinion about it.
+ *
+ * No message here repeats the value. This runs before anything knows which input a key
+ * belongs to, so it cannot know that the value it is about to quote is a secret — and a
+ * digits-only API key written without quotes is exactly the value that lands here (§10).
+ * The position in the message is enough to find it.
+ */
 function shapeProblem(value: unknown): string | undefined {
   if (typeof value === 'string' || typeof value === 'boolean') {
     return undefined;
@@ -435,8 +485,8 @@ function shapeProblem(value: unknown): string | undefined {
       ? undefined
       : 'is a list with an entry that is not a string';
   }
-  if (typeof value === 'number') {
-    return `is the number ${value} — write it as a string ("${value}") so it means exactly what it says`;
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return 'is a number — write it in quotes so it means exactly what it says';
   }
   if (value === null) {
     return 'has no value — remove the key, or give it one';
