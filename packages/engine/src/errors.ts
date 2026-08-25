@@ -130,16 +130,7 @@ export class ManifestError extends RuneError {
 
   /** Builds one error from a batch of collected problems (validation never stops at the first). */
   static fromIssues(code: ManifestCode, issues: readonly RuneIssue[]): ManifestError {
-    const first = issues[0];
-    if (first === undefined) {
-      throw new InternalError('ManifestError.fromIssues called without issues');
-    }
-    // The first problem's position is the error's position, so a caller that only looks at
-    // `location` still points somewhere useful instead of nowhere.
-    return new ManifestError(code, formatIssues(issues), {
-      issues,
-      ...(first.location ? { location: first.location } : {}),
-    });
+    return aggregate(issues, (message, options) => new ManifestError(code, message, options));
   }
 }
 
@@ -148,6 +139,29 @@ export class InputError extends RuneError {
   constructor(code: InputCode, message: string, options?: RuneErrorOptions) {
     super(code, message, options);
   }
+
+  /** One error for every problem a batch of values had; resolution collects, never stops. */
+  static fromIssues(code: InputCode, issues: readonly RuneIssue[]): InputError {
+    return aggregate(issues, (message, options) => new InputError(code, message, options));
+  }
+}
+
+/**
+ * Turns collected problems into one error. The first problem's position becomes the error's
+ * position, so a caller that reads only `location` still points somewhere useful.
+ */
+function aggregate<T extends RuneError>(
+  issues: readonly RuneIssue[],
+  make: (message: string, options: RuneErrorOptions) => T,
+): T {
+  const first = issues[0];
+  if (first === undefined) {
+    throw new InternalError('an error was built from an empty list of problems');
+  }
+  return make(formatIssues(issues), {
+    issues,
+    ...(first.location ? { location: first.location } : {}),
+  });
 }
 
 /** A `${...}` reference could not be resolved (exit 5). */

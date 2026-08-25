@@ -6,6 +6,9 @@
  * resolution and planning; a name that is not listed here resolves to nothing, anywhere.
  */
 
+import { homedir, tmpdir } from 'node:os';
+
+import { ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
@@ -166,4 +169,88 @@ function isBuiltInVariable(name: string): name is BuiltInVariable {
 
 function isProductField(name: string): name is ProductField {
   return (PRODUCT_FIELDS as readonly string[]).includes(name);
+}
+
+// ------------------------------------------------------------------- runtime values
+
+/** The platforms RUNE runs on. `macos` is reserved for a later schema version (§4.2). */
+export type Platform = 'windows' | 'linux';
+
+/** The platform this process is on. */
+export function hostPlatform(): Platform {
+  return process.platform === 'win32' ? 'windows' : 'linux';
+}
+
+export interface RuntimeContextOptions {
+  /** Absolute directory of the manifest — what every relative path is anchored to (§6.1). */
+  readonly manifestDir: string;
+  readonly product: { readonly name: string; readonly version: string };
+  /** Defaults to the host; `validate` and `--dry-run` may preview the other one. */
+  readonly platform?: Platform;
+  /** Defaults to this process's environment. */
+  readonly environment?: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * The values behind the names of §6.1.
+ *
+ * When a platform other than the host is previewed, the values this machine could answer for
+ * — a home directory, a temporary directory — are not the target's. RUNE renders a visible
+ * placeholder there instead of a plausible lie, and marks the plan as a preview (§6.1).
+ */
+export interface RuntimeContext {
+  readonly platform: Platform;
+  readonly manifestDir: string;
+  /** True when `platform` is not the host's, so host-dependent values are placeholders. */
+  readonly preview: boolean;
+  /** The text a reference contributes. Throws {@link ResolutionError} for an unset variable. */
+  valueOf(reference: Reference): string;
+}
+
+export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
+  const platform = options.platform ?? hostPlatform();
+  const preview = platform !== hostPlatform();
+  const environment = options.environment ?? process.env;
+
+  const hostDependent = (name: BuiltInVariable, value: () => string): string =>
+    preview ? `<${name}@${platform}>` : value();
+
+  return {
+    platform,
+    manifestDir: options.manifestDir,
+    preview,
+    valueOf(reference: Reference): string {
+      switch (reference.kind) {
+        case 'builtin':
+          switch (reference.name) {
+            case 'home':
+              return hostDependent('home', homedir);
+            case 'temp':
+              return hostDependent('temp', tmpdir);
+            case 'platform':
+              return platform;
+            case 'manifestDir':
+              return options.manifestDir;
+          }
+        // eslint-disable-next-line no-fallthrough -- every branch above returns
+        case 'product':
+          return options.product[reference.field];
+        case 'environment': {
+          const value = environment[reference.name];
+          if (value === undefined) {
+            throw new ResolutionError(
+              'RUNE-301',
+              `the environment variable ${reference.name} is not set`,
+            );
+          }
+          return value;
+        }
+        case 'input':
+          throw new ResolutionError(
+            'RUNE-301',
+            `\${${reference.id}} is an input; only the resolver knows its value`,
+          );
+      }
+    },
+  };
 }
