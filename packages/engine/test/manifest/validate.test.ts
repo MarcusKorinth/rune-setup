@@ -1,0 +1,123 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import { validateManifest } from '../../src/manifest/index.js';
+
+const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+
+function manifestFile(...lines: readonly string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-validate-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(path, [...HEAD, ...lines, ''].join('\n'));
+  return path;
+}
+
+describe('validateManifest', () => {
+  it('returns the manifest it accepted', () => {
+    const report = validateManifest(manifestFile('steps: []'));
+
+    expect(report.manifest.product.name).toBe('Example');
+    expect(report.environment).toEqual([]);
+  });
+
+  it('lists every environment variable the manifest reads, sorted, with its places', () => {
+    const report = validateManifest(
+      manifestFile(
+        'inputs:',
+        '  root:',
+        '    type: directory',
+        '    default: "${env.HOME}/app"',
+        'steps:',
+        '  - id: build',
+        '    run:',
+        '      command: "${env.JAVA_HOME}/bin/java"',
+        '      args: ["-Duser=${env.USER}"]',
+        '      env:',
+        '        PATH_COPY: "${env.PATH}"',
+        '  - id: again',
+        '    run:',
+        '      command: "${env.JAVA_HOME}/bin/java"',
+      ),
+    );
+
+    expect(report.environment.map((use) => use.name)).toEqual([
+      'HOME',
+      'JAVA_HOME',
+      'PATH',
+      'USER',
+    ]);
+    // A variable read twice is reported once, with both places.
+    const java = report.environment.find((use) => use.name === 'JAVA_HOME');
+    expect(java?.locations).toHaveLength(2);
+    expect(java?.locations[0]).toMatchObject({ line: 12, column: 7 });
+    expect(java?.locations[1]).toMatchObject({ line: 18, column: 7 });
+  });
+
+  it('sees the environment a condition reads, not only the commands', () => {
+    const report = validateManifest(
+      manifestFile(
+        'steps:',
+        '  - id: a',
+        '    when: "${env.CI} == \'true\'"',
+        '    run:',
+        '      command: x',
+      ),
+    );
+
+    expect(report.environment.map((use) => use.name)).toEqual(['CI']);
+  });
+
+  it('audits a manifest with many inputs and many references without a quadratic slowdown', () => {
+    const inputs = Array.from({ length: 400 }, (_unused, index) => [
+      `  input${index}:`,
+      '    type: text',
+      '    default: d',
+    ]).flat();
+    const args = Array.from(
+      { length: 5_000 },
+      (_unused, index) => `        - "\${env.VAR_${index % 5}}-\${input0}"`,
+    );
+    const file = manifestFile(
+      'inputs:',
+      ...inputs,
+      'steps:',
+      '  - id: build',
+      '    run:',
+      '      command: echo',
+      '      args:',
+      ...args,
+    );
+    const started = Date.now();
+
+    const report = validateManifest(file);
+
+    // Reading the declared ids once per reference instead of once per audit is what this
+    // shape costs: at 400 inputs it took ~100 ms of pure list building, and it grew with
+    // both the inputs and the references.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(report.environment.map((use) => use.name)).toEqual([
+      'VAR_0',
+      'VAR_1',
+      'VAR_2',
+      'VAR_3',
+      'VAR_4',
+    ]);
+  });
+
+  it('checks gui assets, which is the whole point of running validate', () => {
+    expect(() =>
+      validateManifest(manifestFile('gui:', '  logo: missing.png', 'steps: []')),
+    ).toThrow(/gui\.logo points at "missing\.png", which does not exist/);
+  });
+
+  it('lets the caller turn the asset check off', () => {
+    expect(() =>
+      validateManifest(manifestFile('gui:', '  logo: missing.png', 'steps: []'), {
+        checkAssetFiles: false,
+      }),
+    ).not.toThrow();
+  });
+});

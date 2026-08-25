@@ -14,7 +14,7 @@ import { ManifestError } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
-import { checkSemantics } from './v1/rules.js';
+import { checkSemantics, environmentReferences, type EnvironmentUse } from './v1/rules.js';
 import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 
 /** The validated manifest model. Today that is always the v1 model. */
@@ -53,6 +53,34 @@ export function parseManifestText(
   options: ParseManifestOptions = {},
 ): Manifest {
   return parseDocument(loadYamlText(text, file), file, options);
+}
+
+/** What `rune validate` reports: the manifest it accepted, and what that manifest reads. */
+export interface ValidationReport {
+  readonly manifest: Manifest;
+  /** Every environment variable the manifest reads, with the places that read it (§4.3). */
+  readonly environment: readonly EnvironmentUse[];
+}
+
+/**
+ * Stages 1 and 2 of the pipeline followed by the environment-variable audit (§7).
+ *
+ * `gui:` assets are checked on disk by default, because this is the command whose whole job
+ * is to tell an author whether the manifest is ready to ship.
+ */
+export function validateManifest(
+  file: string,
+  options: ParseManifestOptions = {},
+): ValidationReport {
+  const document = loadYamlFile(file);
+  const manifest = parseDocument(document, file, { checkAssetFiles: true, ...options });
+  return {
+    manifest,
+    environment: environmentReferences(manifest, {
+      file: document.file,
+      sourceMap: document.sourceMap,
+    }),
+  };
 }
 
 /** The JSON Schema of the current manifest version, for editor integration (`rune schema`). */

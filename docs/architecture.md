@@ -461,8 +461,9 @@ packages/
 │       ├── index.ts               # curated public API: Session, events, errors, value types, version,
 │       │                          #   manifestJsonSchema/resultJsonSchema, envReferences, writeResult
 │       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
+│       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
 │       ├── manifest/
-│       │   ├── index.ts           # parseManifest() facade, schemaVersion registry dispatch
+│       │   ├── index.ts           # parseManifest()/validateManifest() facade, schemaVersion registry dispatch
 │       │   ├── loader.ts          # `yaml` core schema, key checks, SourceMap build (also overlays/values)
 │       │   ├── source.ts          # Location(file,line,col), SourceMap(jsonPath -> Location)
 │       │   └── v1/
@@ -480,7 +481,7 @@ packages/
 │       │   └── resolve.ts         # locale selection (--locale > RUNE_LOCALE > system), fallback chain, Strings
 │       ├── engine/
 │       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
-│       │   ├── context.ts         # platform detection, built-in variable table, placeholders, run id
+│       │   ├── context.ts         # built-in variable table and reference resolution; later: platform detection, placeholders, run id
 │       │   ├── inputs.ts          # 5-layer merge, provenance, coercion via inputs/registry, input when:
 │       │   ├── interpolate.ts     # ${...} scanner/renderer; single-pass, no eval
 │       │   ├── conditions.ts      # when: lexer, parser, AST, typed evaluator (steps and inputs)

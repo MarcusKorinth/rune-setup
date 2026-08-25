@@ -5,16 +5,27 @@
  * every problem instead of stopping at the first, because an author fixing a manifest wants
  * the whole list, not one round-trip per mistake.
  *
- * Rules that depend on the interpolation and condition grammars — `${...}` reference
- * resolution, `when:` parsing and type checking, input-condition acyclicity — land together
- * with those modules (docs/roadmap.md, milestone 1).
+ * The checks that need the expression grammars — `${...}` references, `when:` parsing and
+ * typing, and the rule that an input condition may only look backwards — live here too, and
+ * report what a reader has to change rather than what a parser saw.
  */
 
 import { statSync, type Stats } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
+import {
+  childrenOf,
+  parseCondition,
+  typeCheckCondition,
+  type ConditionNode,
+  type ConditionReference,
+  type TypeResolver,
+} from '../../engine/conditions.js';
+import { BUILT_IN_NAMES, resolveReference, typeOfReference } from '../../engine/context.js';
+import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
+  formatLocation,
   formatPath,
   startOfFile,
   type Location,
@@ -32,23 +43,12 @@ export interface SemanticContext {
   readonly checkAssetFiles: boolean;
 }
 
-/** Names an input id may not take, because `${...}` already resolves them (§6.1). */
-const BUILT_IN_NAMES = [
-  'home',
-  'temp',
-  'platform',
-  'manifestDir',
-  'product',
-  'env',
-  'rune',
-  'steps',
-];
-
 /** Collects every semantic problem of a manifest that already passed the schema. */
 export function checkSemantics(manifest: ManifestV1, ctx: SemanticContext): RuneIssue[] {
   const issues: RuneIssue[] = [];
   checkInputs(manifest, ctx, issues);
   checkSteps(manifest, ctx, issues);
+  checkExpressions(manifest, ctx, issues);
   checkGuiAssets(manifest, ctx, issues);
   // The rules run in the order they are written; the author reads the document top to bottom,
   // and the first problem's position is what the error as a whole points at.
@@ -254,6 +254,264 @@ function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: Rune
       );
     }
   }
+}
+
+/**
+ * A field whose text is interpolated before it is used (docs/architecture.md §6.1). The
+ * exhaustive list lives here, in one place: adding a field to it is what makes `${...}` work
+ * there, and forgetting to add it is what leaves a `${...}` sitting in an argument verbatim.
+ */
+interface InterpolatedField {
+  readonly path: readonly PathSegment[];
+  readonly text: string;
+  /**
+   * Whether the field may name other inputs. An input `default` may not: it is rendered
+   * before the other inputs are known, so it sees built-ins and the environment only (§5).
+   */
+  readonly mayReferenceInputs: boolean;
+}
+
+function* interpolatedFields(manifest: ManifestV1): Generator<InterpolatedField> {
+  for (const [id, input] of Object.entries(manifest.inputs)) {
+    // Only the free-text defaults are templates; a select default is one of its option
+    // values, and a boolean default is a boolean.
+    if (
+      (input.type === 'text' || input.type === 'file' || input.type === 'directory') &&
+      input.default !== undefined
+    ) {
+      yield { path: ['inputs', id, 'default'], text: input.default, mayReferenceInputs: false };
+    }
+  }
+
+  for (const [index, step] of manifest.steps.entries()) {
+    const runPath: PathSegment[] = ['steps', index, 'run'];
+    const commands = isCommandSpec(step.run)
+      ? [{ path: runPath, command: step.run }]
+      : [
+          { path: [...runPath, 'windows'], command: step.run.windows },
+          { path: [...runPath, 'linux'], command: step.run.linux },
+        ];
+
+    for (const { path, command } of commands) {
+      if (command === undefined) {
+        continue;
+      }
+      yield { path: [...path, 'command'], text: command.command, mayReferenceInputs: true };
+      for (const [position, argument] of command.args.entries()) {
+        yield { path: [...path, 'args', position], text: argument, mayReferenceInputs: true };
+      }
+      if (command.cwd !== undefined) {
+        yield { path: [...path, 'cwd'], text: command.cwd, mayReferenceInputs: true };
+      }
+      for (const [name, value] of Object.entries(command.env)) {
+        yield { path: [...path, 'env', name], text: value, mayReferenceInputs: true };
+      }
+    }
+  }
+}
+
+/** Every `when:` in the manifest: the steps', and the inputs' with what each may look at. */
+interface ConditionField {
+  readonly path: readonly PathSegment[];
+  readonly text: string;
+  /** The inputs this condition may name; everything else declared is visible but forbidden. */
+  readonly visibleInputs: readonly string[];
+  /** The input this condition belongs to, so a reference back to it can say so. */
+  readonly owner: string | undefined;
+}
+
+function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
+  const ids = Object.keys(manifest.inputs);
+
+  for (const [index, id] of ids.entries()) {
+    const input = manifest.inputs[id];
+    if (input?.when !== undefined) {
+      // Declaration order is evaluation order, so an input condition sees exactly the inputs
+      // written above it — which is what makes a cycle unwritable (§6.2).
+      yield {
+        path: ['inputs', id, 'when'],
+        text: input.when,
+        visibleInputs: ids.slice(0, index),
+        owner: id,
+      };
+    }
+  }
+
+  for (const [index, step] of manifest.steps.entries()) {
+    if (step.when !== undefined) {
+      yield {
+        path: ['steps', index, 'when'],
+        text: step.when,
+        visibleInputs: ids,
+        owner: undefined,
+      };
+    }
+  }
+}
+
+function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
+  const inputIds = Object.keys(manifest.inputs);
+
+  // What is wrong with a reference depends only on what was written and whether inputs are in
+  // scope — never on the field it stands in. A manifest may repeat the same typo in thousands
+  // of arguments, and the search for a near miss is not cheap; it is paid once per name.
+  const explained = new Map<string, string | undefined>();
+
+  for (const field of interpolatedFields(manifest)) {
+    const scan = scanTemplate(field.text);
+    if (!scan.ok) {
+      issues.push(issue(`${formatPath(field.path)}: ${scan.message}`, field.path, ctx));
+      continue;
+    }
+
+    for (const part of scan.parts) {
+      if (part.kind !== 'reference') {
+        continue;
+      }
+      const key = `${String(field.mayReferenceInputs)}:${part.reference.text}`;
+      if (!explained.has(key)) {
+        explained.set(key, referenceProblem(part.reference, inputIds, field.mayReferenceInputs));
+      }
+      const problem = explained.get(key);
+      if (problem !== undefined) {
+        issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
+      }
+    }
+  }
+
+  for (const field of conditionFields(manifest)) {
+    const parsed = parseCondition(field.text);
+    if (!parsed.ok) {
+      issues.push(issue(`${formatPath(field.path)}: ${parsed.message}`, field.path, ctx));
+      continue;
+    }
+
+    const resolver = typeResolver(manifest, field.visibleInputs, field.owner);
+    for (const problem of typeCheckCondition(parsed.ast, resolver)) {
+      issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
+    }
+  }
+}
+
+/** Why a reference cannot stand where it stands, or nothing when it can. */
+function referenceProblem(
+  reference: TemplateReference,
+  inputIds: readonly string[],
+  mayReferenceInputs: boolean,
+): string | undefined {
+  const resolved = resolveReference(reference.segments, mayReferenceInputs ? inputIds : []);
+
+  if (!resolved.ok) {
+    // An input default that names an input gets the reason, not "no such variable": the name
+    // exists, it just is not available yet.
+    if (!mayReferenceInputs && inputIds.includes(reference.segments[0] ?? '')) {
+      return `${reference.text} cannot be used in a default — defaults are rendered before the other inputs are known, so they may only use built-in variables and \${env.*}`;
+    }
+    return resolved.message;
+  }
+
+  return undefined;
+}
+
+/**
+ * Types a condition's references. Everything an input condition may not see is reported as
+ * such rather than as an unknown name, because the fix differs: reorder, do not rename.
+ */
+function typeResolver(
+  manifest: ManifestV1,
+  visibleInputs: readonly string[],
+  owner: string | undefined,
+): TypeResolver {
+  const declared = Object.keys(manifest.inputs);
+
+  return (reference: ConditionReference) => {
+    const head = reference.segments[0] ?? '';
+    if (declared.includes(head) && !visibleInputs.includes(head)) {
+      return {
+        ok: false,
+        message:
+          head === owner
+            ? `${reference.text} is this input's own value — a condition cannot depend on the input it decides about`
+            : `${reference.text} is declared below this input — a condition may only use inputs written above it, so move "${head}" up`,
+      };
+    }
+
+    const resolved = resolveReference(reference.segments, visibleInputs);
+    if (!resolved.ok) {
+      return resolved;
+    }
+
+    const type = typeOfReference(resolved.reference, (id) => manifest.inputs[id]?.type);
+    return type === undefined
+      ? { ok: false, message: `${reference.text} has no type` }
+      : { ok: true, type };
+  };
+}
+
+/**
+ * Every environment variable the manifest reads, with the places that read it — the audit
+ * report `rune validate` ends with (§4.3). `${env.*}` references are static text, so the list
+ * is exact: a reviewer sees what a manifest consumes without grepping for it.
+ */
+export interface EnvironmentUse {
+  readonly name: string;
+  readonly locations: readonly Location[];
+}
+
+export function environmentReferences(
+  manifest: ManifestV1,
+  ctx: Pick<SemanticContext, 'file' | 'sourceMap'>,
+): readonly EnvironmentUse[] {
+  const uses = new Map<string, Map<string, Location>>();
+  // Read once, not once per reference. The declared ids do not change while the manifest is
+  // walked, and a manifest may repeat references in thousands of arguments — the same reason
+  // the reference explanations above are computed per name rather than per occurrence.
+  const inputIds = Object.keys(manifest.inputs);
+
+  const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
+    const resolved = resolveReference(segments, inputIds);
+    if (!resolved.ok || resolved.reference.kind !== 'environment') {
+      return;
+    }
+    // Locations are per field, so two reads of the same variable in one argument are one
+    // place to look at, not two identical lines in the report.
+    const at = ctx.sourceMap.best(path) ?? startOfFile(ctx.file);
+    const places = uses.get(resolved.reference.name) ?? new Map<string, Location>();
+    places.set(formatLocation(at), at);
+    uses.set(resolved.reference.name, places);
+  };
+
+  for (const field of interpolatedFields(manifest)) {
+    const scan = scanTemplate(field.text);
+    if (scan.ok) {
+      for (const part of scan.parts) {
+        if (part.kind === 'reference') {
+          record(part.reference.segments, field.path);
+        }
+      }
+    }
+  }
+
+  for (const field of conditionFields(manifest)) {
+    const parsed = parseCondition(field.text);
+    if (parsed.ok) {
+      for (const reference of referencesIn(parsed.ast)) {
+        record(reference.segments, field.path);
+      }
+    }
+  }
+
+  return [...uses.entries()]
+    .map(([name, places]) => ({
+      name,
+      locations: [...places.values()].sort((a, b) => a.line - b.line || a.column - b.column),
+    }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/** Every `${...}` in a parsed condition, in source order. The tree it walks is capped (§6.2). */
+function referencesIn(node: ConditionNode): readonly ConditionReference[] {
+  return node.kind === 'reference' ? [node.reference] : childrenOf(node).flatMap(referencesIn);
 }
 
 /**
