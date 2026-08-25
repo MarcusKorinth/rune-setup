@@ -318,5 +318,12 @@ describe('evaluation', () => {
       /operand did not evaluate to true or false/,
     );
     expect(() => evaluateCondition(ast('!${a}'), () => 'not a boolean')).toThrow(ConditionError);
+    // Including the left of "in", which used to be coerced: a number needle silently found
+    // itself in ['5'] instead of reporting that the value was never the type "in" tests.
+    expect(() =>
+      evaluateCondition(ast('${n} in ${tools}'), (reference) =>
+        reference.text === '${n}' ? 5 : ['5'],
+      ),
+    ).toThrow(/"in" tests a string/);
   });
 });

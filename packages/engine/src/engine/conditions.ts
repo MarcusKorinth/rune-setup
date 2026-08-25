@@ -695,12 +695,12 @@ function evaluate(
       return node.negated ? !equal : equal;
     }
     case 'membership': {
-      const needle = evaluate(node.needle, lookup);
+      const needle = asString(evaluate(node.needle, lookup));
       const haystack = evaluate(node.haystack, lookup);
       if (!Array.isArray(haystack)) {
         throw new ConditionError('RUNE-312', '"in" needs a multiselect value on its right');
       }
-      const found = (haystack as readonly string[]).includes(String(needle));
+      const found = (haystack as readonly string[]).includes(needle);
       return node.negated ? !found : found;
     }
   }
@@ -709,6 +709,13 @@ function evaluate(
 function asBoolean(value: ConditionValue): boolean {
   if (typeof value !== 'boolean') {
     throw new ConditionError('RUNE-312', 'a condition operand did not evaluate to true or false');
+  }
+  return value;
+}
+
+function asString(value: ConditionValue): string {
+  if (typeof value !== 'string') {
+    throw new ConditionError('RUNE-312', '"in" tests a string, and was given something else');
   }
   return value;
 }
