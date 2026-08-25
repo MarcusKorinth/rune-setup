@@ -8,15 +8,29 @@
 
 import { ResolutionError } from '../errors.js';
 
-/** A `${...}` occurrence: what it names, and where it stands in the template. */
+/** A `${...}` occurrence: what it names, and where it stands in the text that holds it. */
 export interface TemplateReference {
   /** The dotted path inside the braces: `${env.JAVA_HOME}` → `['env', 'JAVA_HOME']`. */
   readonly segments: readonly string[];
   /** The reference as written, for messages. */
   readonly text: string;
-  /** Offset of the `$` in the template. */
+  /** Offset of the `$` in the text. */
   readonly offset: number;
 }
+
+/** What {@link scanReference} found at an offset: a reference, or why there is none. */
+export type ReferenceScan =
+  | { readonly ok: true; readonly reference: TemplateReference; readonly next: number }
+  | {
+      readonly ok: false;
+      /**
+       * `unterminated` is the one failure a template can say more about: a template has an
+       * escape for a literal `${`, and a condition has none.
+       */
+      readonly reason: 'unterminated' | 'malformed';
+      readonly message: string;
+      readonly offset: number;
+    };
 
 export type TemplatePart =
   | { readonly kind: 'literal'; readonly text: string }
@@ -67,42 +81,68 @@ export function scanTemplate(text: string): TemplateScan {
       continue;
     }
 
-    const close = text.indexOf('}', index);
-    if (close === -1) {
+    const scan = scanReference(text, index);
+    if (!scan.ok) {
       return {
         ok: false,
+        // The escape belongs to templates, so only a template offers it.
         message:
-          'unterminated ${ — a reference needs a closing brace, and a literal $ followed by a brace is written $${',
-        offset: index,
-      };
-    }
-
-    const inside = text.slice(index + 2, close);
-    const written = text.slice(index, close + 1);
-    const segments = inside.split('.');
-
-    if (inside === '') {
-      return { ok: false, message: '${} names nothing', offset: index };
-    }
-    const invalid = segments.find((segment) => !NAME.test(segment));
-    if (invalid !== undefined) {
-      return {
-        ok: false,
-        message:
-          invalid === ''
-            ? `${written} has an empty segment`
-            : `${written} is not a name: "${invalid}" must match ${NAME.source.slice(1, -1)}`,
-        offset: index,
+          scan.reason === 'unterminated'
+            ? 'unterminated ${ — a reference needs a closing brace, and a literal $ followed by a brace is written $${'
+            : scan.message,
+        offset: scan.offset,
       };
     }
 
     flush();
-    parts.push({ kind: 'reference', reference: { segments, text: written, offset: index } });
-    index = close + 1;
+    parts.push({ kind: 'reference', reference: scan.reference });
+    index = scan.next;
   }
 
   flush();
   return { ok: true, parts };
+}
+
+/**
+ * Reads the `${...}` that starts at `start`, which must be a `${`.
+ *
+ * The single reader of the reference grammar of §6.1. A `when:` holds the same references a
+ * template does, so both scanners come here: one grammar, and one explanation of every way it
+ * can be written wrong — an author who mistypes `${a-b}` reads the same sentence whether it
+ * stood in an argument or in a condition.
+ */
+export function scanReference(text: string, start: number): ReferenceScan {
+  const close = text.indexOf('}', start);
+  if (close === -1) {
+    return {
+      ok: false,
+      reason: 'unterminated',
+      message: 'unterminated ${ — a reference needs a closing brace',
+      offset: start,
+    };
+  }
+
+  const written = text.slice(start, close + 1);
+  const inside = text.slice(start + 2, close);
+  if (inside === '') {
+    return { ok: false, reason: 'malformed', message: '${} names nothing', offset: start };
+  }
+
+  const segments = inside.split('.');
+  const invalid = segments.find((segment) => !NAME.test(segment));
+  if (invalid !== undefined) {
+    return {
+      ok: false,
+      reason: 'malformed',
+      message:
+        invalid === ''
+          ? `${written} has an empty segment`
+          : `${written} is not a name: "${invalid}" must match ${NAME.source.slice(1, -1)}`,
+      offset: start,
+    };
+  }
+
+  return { ok: true, reference: { segments, text: written, offset: start }, next: close + 1 };
 }
 
 /** Every reference in a template, in order. A malformed template has none. */

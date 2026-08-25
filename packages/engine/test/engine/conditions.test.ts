@@ -94,6 +94,14 @@ describe('syntax', () => {
     expect(syntaxError('${unclosed')).toMatch(/unterminated \$\{/);
   });
 
+  it('explains a malformed reference the way a template does, because it is one grammar', () => {
+    expect(syntaxError('${a-b}')).toBe(
+      '${a-b} is not a name: "a-b" must match [A-Za-z_][A-Za-z0-9_]*',
+    );
+    expect(syntaxError('${}')).toBe('${} names nothing');
+    expect(syntaxError('${env.}')).toBe('${env.} has an empty segment');
+  });
+
   it('reports where the problem is, not only that there is one', () => {
     const parsed = parseCondition('${a} && oops');
     expect(parsed.ok).toBe(false);

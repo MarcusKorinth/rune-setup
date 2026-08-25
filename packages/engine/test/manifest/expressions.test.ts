@@ -74,6 +74,27 @@ describe('references in interpolated fields', () => {
     ]);
   });
 
+  it('says the same about a malformed reference in a condition as in an argument', () => {
+    const inArgument = messagesOf([
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: echo',
+      '      args: ["${a-b}"]',
+    ]);
+    const inCondition = messagesOf([
+      'steps:',
+      '  - id: install',
+      '    when: "${a-b}"',
+      '    run:',
+      '      command: echo',
+    ]);
+
+    const explanation = '${a-b} is not a name: "a-b" must match [A-Za-z_][A-Za-z0-9_]*';
+    expect(inArgument).toEqual([`steps[0].run.args[0]: ${explanation}`]);
+    expect(inCondition).toEqual([`steps[0].when: ${explanation}`]);
+  });
+
   it('accepts an escaped ${ as the text it is', () => {
     accepts(['steps:', '  - id: a', '    run:', '      command: echo', '      args: ["$${home}"]']);
   });

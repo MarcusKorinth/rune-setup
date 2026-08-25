@@ -11,6 +11,7 @@
 
 import { ConditionError } from '../errors.js';
 import type { ValueType } from './context.js';
+import { scanReference, type TemplateReference } from './interpolate.js';
 
 /**
  * Guards against a pathological expression; a real condition is a line, not a page. Counted
@@ -21,12 +22,11 @@ export const MAX_CONDITION_LENGTH = 4096;
 /** Guards the recursive-descent parser against a deeply nested expression. */
 export const MAX_CONDITION_DEPTH = 32;
 
-/** A `${...}` inside a condition. */
-export interface ConditionReference {
-  readonly segments: readonly string[];
-  readonly text: string;
-  readonly offset: number;
-}
+/**
+ * A `${...}` inside a condition — the very same occurrence a template holds, because §6.1
+ * defines one reference grammar and `when:` uses it unchanged.
+ */
+export type ConditionReference = TemplateReference;
 
 export type ConditionNode =
   | {
@@ -96,8 +96,6 @@ interface Token {
   readonly value?: boolean | number | string;
   readonly segments?: readonly string[];
 }
-
-const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * The words the language has. A `Map` rather than an object literal: a plain object answers
@@ -180,19 +178,19 @@ function tokenize(text: string): { tokens: Token[] } | { failure: TokenizeFailur
     }
 
     if (text.startsWith('${', index)) {
-      const close = text.indexOf('}', index);
-      if (close === -1) {
-        return {
-          failure: { message: 'unterminated ${ — a reference needs a closing brace', offset },
-        };
+      // The reference grammar has one reader (§6.1): a `${a-b}` in a condition is the same
+      // mistake as a `${a-b}` in an argument, and reads the same way.
+      const scan = scanReference(text, index);
+      if (!scan.ok) {
+        return { failure: { message: scan.message, offset: scan.offset } };
       }
-      const written = text.slice(index, close + 1);
-      const segments = text.slice(index + 2, close).split('.');
-      if (segments.some((segment) => !NAME.test(segment))) {
-        return { failure: { message: `${written} is not a name`, offset } };
-      }
-      tokens.push({ kind: 'reference', text: written, offset, segments });
-      index = close + 1;
+      tokens.push({
+        kind: 'reference',
+        text: scan.reference.text,
+        offset,
+        segments: scan.reference.segments,
+      });
+      index = scan.next;
       continue;
     }
 
