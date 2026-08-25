@@ -143,6 +143,30 @@ describe('syntax', () => {
     expect(syntaxError(`${'!'.repeat(2000)}true`)).toMatch(/may not nest deeper/);
   });
 
+  it('caps a chain of operators, which deepens the tree without deepening the parser', () => {
+    // `&&` and `||` are parsed in a loop, so the parser never recurses over a chain of them
+    // — but the tree is left-leaning, one level per operator, and the checker and the
+    // evaluator do recurse. The cap is on what they walk.
+    const chain = (count: number): string =>
+      Array.from({ length: count + 1 }, () => 'true').join(' || ');
+
+    expect(parseCondition(chain(MAX_CONDITION_DEPTH)).ok).toBe(true);
+    expect(syntaxError(chain(MAX_CONDITION_DEPTH + 1))).toMatch(/may not nest deeper/);
+    // `&&` reads the same way; the two chains share one bound because they share one tree.
+    expect(syntaxError('1'.concat('&&1'.repeat(MAX_CONDITION_DEPTH + 1)))).toMatch(
+      /may not nest deeper/,
+    );
+  });
+
+  it('refuses the deepest chain the length cap allows instead of handing it on', () => {
+    // 1365 operators fit inside 4 KiB and used to parse, leaving typeCheckCondition() to
+    // recurse 1365 frames and overflow the stack with a RangeError no caller can locate.
+    const text = '1||'.repeat(1365) + '1';
+
+    expect(Buffer.byteLength(text, 'utf8')).toBe(MAX_CONDITION_LENGTH);
+    expect(syntaxError(text)).toMatch(/may not nest deeper/);
+  });
+
   it('negates membership with the word, not with the exclamation mark', () => {
     expect(parseCondition("'git' not in ${tools}").ok).toBe(true);
     expect(syntaxError("'git' ! in ${tools}")).toBe(

@@ -14,8 +14,10 @@ import { statSync, type Stats } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 import {
+  childrenOf,
   parseCondition,
   typeCheckCondition,
+  type ConditionNode,
   type ConditionReference,
   type TypeResolver,
 } from '../../engine/conditions.js';
@@ -503,25 +505,9 @@ export function environmentReferences(
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/** Every `${...}` in a parsed condition. */
-function referencesIn(
-  node: Parameters<typeof typeCheckCondition>[0],
-): readonly ConditionReference[] {
-  switch (node.kind) {
-    case 'reference':
-      return [node.reference];
-    case 'not':
-      return referencesIn(node.operand);
-    case 'and':
-    case 'or':
-      return [...referencesIn(node.left), ...referencesIn(node.right)];
-    case 'equality':
-      return [...referencesIn(node.left), ...referencesIn(node.right)];
-    case 'membership':
-      return [...referencesIn(node.needle), ...referencesIn(node.haystack)];
-    default:
-      return [];
-  }
+/** Every `${...}` in a parsed condition, in source order. The tree it walks is capped (§6.2). */
+function referencesIn(node: ConditionNode): readonly ConditionReference[] {
+  return node.kind === 'reference' ? [node.reference] : childrenOf(node).flatMap(referencesIn);
 }
 
 /**

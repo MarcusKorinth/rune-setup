@@ -19,7 +19,12 @@ import { scanReference, type TemplateReference } from './interpolate.js';
  */
 export const MAX_CONDITION_LENGTH = 4096;
 
-/** Guards the recursive-descent parser against a deeply nested expression. */
+/**
+ * How deep a condition may nest. The cap is on the *tree*, not on how often the parser calls
+ * itself: `&&` and `||` are parsed in a loop and still build one level per operator, so a
+ * chain of them costs the parser no recursion at all and would hand the checker and the
+ * evaluator — which do recurse — a tree thousands of levels deep.
+ */
 export const MAX_CONDITION_DEPTH = 32;
 
 /**
@@ -294,6 +299,17 @@ export function parseCondition(text: string): ParseResult {
   try {
     const ast = parser.parseExpression(0);
     parser.expectEnd();
+    // The productions cap the parser's own recursion, which is what keeps it from overflowing
+    // while it builds the tree. This caps the tree it built, which is what every later walk
+    // over it depends on. They are not the same bound — a left-associative chain deepens the
+    // tree without deepening the parser — and only this one is the promise the cap makes.
+    if (depthOf(ast) > MAX_CONDITION_DEPTH) {
+      return {
+        ok: false,
+        message: `a condition may not nest deeper than ${MAX_CONDITION_DEPTH} levels`,
+        offset: offsetOf(ast),
+      };
+    }
     return { ok: true, ast };
   } catch (error) {
     if (error instanceof ParseFailure) {
@@ -471,6 +487,49 @@ class Parser {
     }
     return token;
   }
+}
+
+// --------------------------------------------------------------------------------- tree
+
+/** The operands of a node, in source order. One place knows the shape of the tree. */
+export function childrenOf(node: ConditionNode): readonly ConditionNode[] {
+  switch (node.kind) {
+    case 'literal':
+    case 'reference':
+      return [];
+    case 'not':
+      return [node.operand];
+    case 'and':
+    case 'or':
+    case 'equality':
+      return [node.left, node.right];
+    case 'membership':
+      return [node.needle, node.haystack];
+  }
+}
+
+/** Where a node stands in the condition, for a message about it. */
+export function offsetOf(node: ConditionNode): number {
+  return node.kind === 'reference' ? node.reference.offset : node.offset;
+}
+
+/** How deep a tree is: a leaf is 0, and every operand below a node is one more level. */
+function depthOf(root: ConditionNode): number {
+  let deepest = 0;
+  // Iteratively, because a tree that may be too deep to walk is exactly what is being measured.
+  const pending: [ConditionNode, number][] = [[root, 0]];
+
+  for (let entry = pending.pop(); entry !== undefined; entry = pending.pop()) {
+    const [node, depth] = entry;
+    if (depth > deepest) {
+      deepest = depth;
+    }
+    for (const child of childrenOf(node)) {
+      pending.push([child, depth + 1]);
+    }
+  }
+
+  return deepest;
 }
 
 // -------------------------------------------------------------------------- type checker
