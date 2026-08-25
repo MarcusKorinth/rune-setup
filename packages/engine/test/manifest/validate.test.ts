@@ -70,6 +70,43 @@ describe('validateManifest', () => {
     expect(report.environment.map((use) => use.name)).toEqual(['CI']);
   });
 
+  it('audits a manifest with many inputs and many references without a quadratic slowdown', () => {
+    const inputs = Array.from({ length: 400 }, (_unused, index) => [
+      `  input${index}:`,
+      '    type: text',
+      '    default: d',
+    ]).flat();
+    const args = Array.from(
+      { length: 5_000 },
+      (_unused, index) => `        - "\${env.VAR_${index % 5}}-\${input0}"`,
+    );
+    const file = manifestFile(
+      'inputs:',
+      ...inputs,
+      'steps:',
+      '  - id: build',
+      '    run:',
+      '      command: echo',
+      '      args:',
+      ...args,
+    );
+    const started = Date.now();
+
+    const report = validateManifest(file);
+
+    // Reading the declared ids once per reference instead of once per audit is what this
+    // shape costs: at 400 inputs it took ~100 ms of pure list building, and it grew with
+    // both the inputs and the references.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(report.environment.map((use) => use.name)).toEqual([
+      'VAR_0',
+      'VAR_1',
+      'VAR_2',
+      'VAR_3',
+      'VAR_4',
+    ]);
+  });
+
   it('checks gui assets, which is the whole point of running validate', () => {
     expect(() =>
       validateManifest(manifestFile('gui:', '  logo: missing.png', 'steps: []')),

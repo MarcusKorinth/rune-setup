@@ -463,9 +463,13 @@ export function environmentReferences(
   ctx: Pick<SemanticContext, 'file' | 'sourceMap'>,
 ): readonly EnvironmentUse[] {
   const uses = new Map<string, Map<string, Location>>();
+  // Read once, not once per reference. The declared ids do not change while the manifest is
+  // walked, and a manifest may repeat references in thousands of arguments — the same reason
+  // the reference explanations above are computed per name rather than per occurrence.
+  const inputIds = Object.keys(manifest.inputs);
 
   const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
-    const resolved = resolveReference(segments, Object.keys(manifest.inputs));
+    const resolved = resolveReference(segments, inputIds);
     if (!resolved.ok || resolved.reference.kind !== 'environment') {
       return;
     }

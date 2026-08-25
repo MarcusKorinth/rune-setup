@@ -57,10 +57,14 @@ export type ReferenceResolution =
  * Resolves the dotted path of a `${...}` reference against the declared inputs and the
  * built-ins. The message of a failure is the whole error a reader gets, so it says what the
  * name would have to be instead of only that it is wrong.
+ *
+ * `inputIds` is a list rather than any iterable because this runs once per reference and a
+ * manifest may hold thousands: a caller that reads the ids once must not pay to copy them
+ * again here.
  */
 export function resolveReference(
   segments: readonly string[],
-  inputIds: Iterable<string>,
+  inputIds: readonly string[],
 ): ReferenceResolution {
   const [head, ...rest] = segments;
   if (head === undefined) {
@@ -110,8 +114,7 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'builtin', name: head } };
   }
 
-  const ids = [...inputIds];
-  if (ids.includes(head)) {
+  if (inputIds.includes(head)) {
     if (rest.length > 0) {
       return {
         ok: false,
@@ -121,7 +124,7 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'input', id: head } };
   }
 
-  const suggestion = suggest(head, [...ids, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  const suggestion = suggest(head, [...inputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
   return {
     ok: false,
     message: `\${${segments.join('.')}} is neither a declared input nor a built-in variable${
