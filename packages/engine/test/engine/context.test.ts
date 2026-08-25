@@ -6,6 +6,7 @@ import {
   PRODUCT_FIELDS,
   resolveReference,
   typeOfInput,
+  typeOfReference,
 } from '../../src/engine/context.js';
 import { INPUT_TYPES } from '../../src/manifest/v1/schema.js';
 
@@ -125,6 +126,21 @@ describe('the built-in name list', () => {
       'steps',
       'rune',
     ]);
+  });
+});
+
+describe('typing a resolved reference', () => {
+  it('types an input by its declaration and everything else as text', () => {
+    const declared = (id: string) => (id === 'tools' ? ('multiselect' as const) : undefined);
+
+    expect(typeOfReference({ kind: 'input', id: 'tools' }, declared)).toBe('stringList');
+    expect(typeOfReference({ kind: 'builtin', name: 'home' }, declared)).toBe('string');
+    expect(typeOfReference({ kind: 'product', field: 'name' }, declared)).toBe('string');
+    expect(typeOfReference({ kind: 'environment', name: 'PATH' }, declared)).toBe('string');
+  });
+
+  it('has no type for an input that is not declared', () => {
+    expect(typeOfReference({ kind: 'input', id: 'gone' }, () => undefined)).toBeUndefined();
   });
 });
 

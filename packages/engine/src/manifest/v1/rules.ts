@@ -19,12 +19,7 @@ import {
   type ConditionReference,
   type TypeResolver,
 } from '../../engine/conditions.js';
-import {
-  BUILT_IN_NAMES,
-  resolveReference,
-  typeOfInput,
-  type Reference,
-} from '../../engine/context.js';
+import { BUILT_IN_NAMES, resolveReference, typeOfReference } from '../../engine/context.js';
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
@@ -35,13 +30,7 @@ import {
   type PathSegment,
   type SourceMap,
 } from '../source.js';
-import {
-  isCommandSpec,
-  optionValue,
-  type InputSpec,
-  type InputType,
-  type ManifestV1,
-} from './schema.js';
+import { isCommandSpec, optionValue, type InputSpec, type ManifestV1 } from './schema.js';
 
 export interface SemanticContext {
   readonly file: string;
@@ -450,22 +439,11 @@ function typeResolver(
       return resolved;
     }
 
-    const type = typeOfResolved(resolved.reference, manifest);
+    const type = typeOfReference(resolved.reference, (id) => manifest.inputs[id]?.type);
     return type === undefined
       ? { ok: false, message: `${reference.text} has no type` }
       : { ok: true, type };
   };
-}
-
-function typeOfResolved(
-  reference: Reference,
-  manifest: ManifestV1,
-): ReturnType<typeof typeOfInput> | undefined {
-  if (reference.kind !== 'input') {
-    return 'string';
-  }
-  const declared: InputType | undefined = manifest.inputs[reference.id]?.type;
-  return declared === undefined ? undefined : typeOfInput(declared);
 }
 
 /**
