@@ -89,11 +89,23 @@ describe('secret', () => {
     expect(result.ok ? '' : result.message).toBe('the value is not text');
   });
 
-  it('renders and compares the value behind the wrapper', () => {
+  it('renders the mask, never the secret', () => {
     const value = new SecretString('hunter2');
 
-    expect(handler('secret').render(value)).toBe('hunter2');
-    expect(handler('secret').compare(value)).toBe('hunter2');
+    // A secret reaches a command as the wrapper itself and is unwrapped at spawn, inside the
+    // runner — so the rendering function has no business producing its text (invariant 6).
+    expect(handler('secret').render(value)).toBe('***');
+  });
+
+  it('compares the value behind the wrapper, because a condition only yields a boolean', () => {
+    expect(handler('secret').compare(new SecretString('hunter2'))).toBe('hunter2');
+  });
+
+  it('is an empty secret when nothing set it', () => {
+    const empty = handler('secret').empty(spec('secret'));
+
+    expect(empty).toBeInstanceOf(SecretString);
+    expect((empty as SecretString).reveal()).toBe('');
   });
 });
 
@@ -143,6 +155,10 @@ describe('select', () => {
       '"Production" is not one of the option values ("dev", "prod")',
     );
   });
+
+  it('is empty when nothing set it', () => {
+    expect(handler('select').empty(spec('select', options))).toBe('');
+  });
 });
 
 describe('multiselect', () => {
@@ -187,6 +203,62 @@ describe('multiselect', () => {
 
   it('is an empty list when nothing set it', () => {
     expect(handler('multiselect').empty(spec('multiselect', options))).toEqual([]);
+  });
+});
+
+describe('values written in their own type, as a values file may', () => {
+  it('takes text as text and refuses anything else, naming what was written', () => {
+    expect(handler('text').fromNative('plain', spec('text'))).toEqual({
+      ok: true,
+      value: 'plain',
+    });
+    expect(handler('text').fromNative(7, spec('text'))).toEqual({
+      ok: false,
+      message: '7 is not text',
+    });
+    expect(handler('text').fromNative(['a'], spec('text')).ok).toBe(false);
+  });
+
+  it('checks a native text value against the pattern too', () => {
+    expect(handler('text').fromNative('x', spec('text', { pattern: '[0-9]+' })).ok).toBe(false);
+  });
+
+  it('takes a select value as text and checks its membership', () => {
+    const options = { options: ['dev', 'prod'] };
+    expect(handler('select').fromNative('prod', spec('select', options)).ok).toBe(true);
+    expect(handler('select').fromNative(true, spec('select', options))).toEqual({
+      ok: false,
+      message: 'true is not text',
+    });
+    expect(handler('select').fromNative('staging', spec('select', options)).ok).toBe(false);
+  });
+
+  it.each(['file', 'directory'] as const)('takes a %s path as text and nothing else', (type) => {
+    expect(handler(type).fromNative('/opt/app', spec(type)).ok).toBe(true);
+    expect(handler(type).fromNative(42, spec(type))).toEqual({
+      ok: false,
+      message: '42 is not a path',
+    });
+  });
+});
+
+describe('what counts as no answer at all', () => {
+  it.each(['text', 'secret', 'select', 'file', 'directory'] as const)(
+    'treats an empty %s as no answer',
+    (type) => {
+      expect(handler(type).isAbsent(handler(type).empty(spec(type)))).toBe(true);
+      expect(handler(type).isAbsent('something')).toBe(false);
+    },
+  );
+
+  it('treats an empty selection as no answer', () => {
+    expect(handler('multiselect').isAbsent([])).toBe(true);
+    expect(handler('multiselect').isAbsent(['git'])).toBe(false);
+  });
+
+  it('never treats a boolean as absent, because false is an answer', () => {
+    expect(handler('boolean').isAbsent(false)).toBe(false);
+    expect(handler('boolean').isAbsent(true)).toBe(false);
   });
 });
 

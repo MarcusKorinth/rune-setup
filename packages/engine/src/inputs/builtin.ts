@@ -7,7 +7,7 @@
  * value is matched against its `pattern`.
  */
 
-import { SecretString } from '../engine/secrets.js';
+import { MASK, SecretString } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
 import { FALSE_WORDS, TRUE_WORDS, type Coercion, type InputTypeHandler } from './base.js';
@@ -68,6 +68,7 @@ const text: InputTypeHandler = {
   name: 'text',
   secret: false,
   empty: () => '',
+  isAbsent: (value) => value === '',
   fromString: (value, spec) => checkPattern(value, spec),
   fromNative: (value, spec) =>
     typeof value === 'string' ? checkPattern(value, spec) : fail(`${describe(value)} is not text`),
@@ -79,13 +80,24 @@ const secret: InputTypeHandler = {
   name: 'secret',
   secret: true,
   empty: () => new SecretString(''),
+  isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
   fromString: (value) => ok(new SecretString(value) as never),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
-  fromNative: (value) =>
-    typeof value === 'string'
+  // An already-wrapped secret passes through: a frontend hands back what resolution gave it
+  // when it re-resolves after another answer changed, and unwrapping it to check would be
+  // the one place a secret is turned back into a plain string for no reason.
+  fromNative: (value) => {
+    if (value instanceof SecretString) {
+      return ok(value as never);
+    }
+    return typeof value === 'string'
       ? ok(new SecretString(value) as never)
-      : fail('the value is not text'),
-  render: (value) => (value instanceof SecretString ? value.reveal() : String(value)),
+      : fail('the value is not text');
+  },
+  // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
+  // and the runner unwraps it at spawn — this is a rendering function, and rendering a
+  // secret into text is exactly what invariant 6 forbids everywhere but there.
+  render: () => MASK,
   compare: (value) => (value instanceof SecretString ? value.reveal() : String(value)),
 };
 
@@ -93,6 +105,9 @@ const boolean: InputTypeHandler = {
   name: 'boolean',
   secret: false,
   empty: () => false,
+  // `false` is an answer, not the absence of one: a checkbox left unticked on purpose must
+  // satisfy a required input.
+  isAbsent: () => false,
   fromString: (value) => {
     const written = value.trim().toLowerCase();
     if ((TRUE_WORDS as readonly string[]).includes(written)) {
@@ -113,6 +128,7 @@ const select: InputTypeHandler = {
   name: 'select',
   secret: false,
   empty: () => '',
+  isAbsent: (value) => value === '',
   fromString: (value, spec) =>
     optionValues(spec).includes(value)
       ? ok(value)
@@ -170,6 +186,7 @@ const multiselect: InputTypeHandler = {
   name: 'multiselect',
   secret: false,
   empty: () => [],
+  isAbsent: (value) => Array.isArray(value) && value.length === 0,
   fromString: multiselectFromString,
   fromNative: (value, spec) => {
     if (typeof value === 'string') {
@@ -193,6 +210,7 @@ function pathType(name: 'file' | 'directory'): InputTypeHandler {
     name,
     secret: false,
     empty: () => '',
+    isAbsent: (value) => value === '',
     fromString: (value) => ok(value),
     fromNative: (value) =>
       typeof value === 'string' ? ok(value) : fail(`${describe(value)} is not a path`),
