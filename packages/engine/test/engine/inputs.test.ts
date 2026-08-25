@@ -1,0 +1,474 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
+import {
+  parseValuesFile,
+  resolveInputs,
+  type Resolution,
+  type ResolveInputsOptions,
+  type ValuesDocument,
+} from '../../src/engine/inputs.js';
+import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
+import type { InputError } from '../../src/errors.js';
+import { parseManifestText } from '../../src/manifest/index.js';
+import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
+
+const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+
+function manifestOf(...lines: readonly string[]): ManifestV1 {
+  return parseManifestText([...HEAD, ...lines, 'steps: []', ''].join('\n'), 'installer.yaml');
+}
+
+function contextFor(
+  manifest: ManifestV1,
+  environment: Record<string, string> = {},
+): RuntimeContext {
+  return createRuntimeContext({
+    manifestDir: '/project',
+    product: manifest.product,
+    platform: 'linux',
+    environment,
+  });
+}
+
+function resolve(
+  manifest: ManifestV1,
+  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  environment: Record<string, string> = {},
+): Resolution {
+  return resolveInputs({
+    manifest,
+    context: contextFor(manifest, environment),
+    environment,
+    ...options,
+  });
+}
+
+/** The messages a resolution was rejected with. */
+function problems(
+  manifest: ManifestV1,
+  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  environment: Record<string, string> = {},
+): string[] {
+  try {
+    resolve(manifest, options, environment);
+  } catch (error) {
+    return (error as InputError).issues.map((issue) => issue.message);
+  }
+  throw new Error('expected the values to be rejected');
+}
+
+/** A values document without touching the disk. */
+function values(file: string, entries: Record<string, unknown>): ValuesDocument {
+  return {
+    file,
+    values: new Map(Object.entries(entries)),
+    sourceMap: { location: () => undefined, keyLocation: () => undefined, best: () => undefined },
+  } as unknown as ValuesDocument;
+}
+
+const SIMPLE = ['inputs:', '  target:', '    type: text'];
+
+describe('precedence', () => {
+  const manifest = manifestOf(
+    'inputs:',
+    '  target:',
+    '    type: text',
+    '    default: from-default',
+  );
+
+  it('takes the manifest default when nothing else says otherwise', () => {
+    expect(resolve(manifest).byId.get('target')).toMatchObject({
+      value: 'from-default',
+      source: 'default',
+    });
+  });
+
+  it('lets a values file override the default', () => {
+    expect(
+      resolve(manifest, { values: [values('v.yaml', { target: 'from-values' })] }).byId.get(
+        'target',
+      ),
+    ).toMatchObject({ value: 'from-values', source: 'values' });
+  });
+
+  it('lets a later values file override an earlier one', () => {
+    const resolution = resolve(manifest, {
+      values: [
+        values('base.yaml', { target: 'base' }),
+        values('overlay.yaml', { target: 'overlay' }),
+      ],
+    });
+
+    expect(resolution.byId.get('target')?.value).toBe('overlay');
+  });
+
+  it('lets the environment override a values file', () => {
+    const resolution = resolve(
+      manifest,
+      { values: [values('v.yaml', { target: 'from-values' })] },
+      { RUNE_INPUT_TARGET: 'from-environment' },
+    );
+
+    expect(resolution.byId.get('target')).toMatchObject({
+      value: 'from-environment',
+      source: 'environment',
+    });
+  });
+
+  it('lets --set override the environment, so a stray variable cannot defeat a flag', () => {
+    const resolution = resolve(
+      manifest,
+      { overrides: new Map([['target', 'from-set']]) },
+      { RUNE_INPUT_TARGET: 'from-environment' },
+    );
+
+    expect(resolution.byId.get('target')).toMatchObject({ value: 'from-set', source: 'set' });
+  });
+
+  it('lets an answer override everything, because it is the most specific of all', () => {
+    const resolution = resolve(
+      manifest,
+      {
+        overrides: new Map([['target', 'from-set']]),
+        answers: new Map([['target', 'from-answer']]),
+      },
+      { RUNE_INPUT_TARGET: 'from-environment' },
+    );
+
+    expect(resolution.byId.get('target')).toMatchObject({ value: 'from-answer', source: 'answer' });
+  });
+
+  it('reads the environment variable an input id maps to', () => {
+    const named = manifestOf('inputs:', '  install_dir:', '    type: directory');
+
+    expect(
+      resolve(named, {}, { RUNE_INPUT_INSTALL_DIR: '/opt/app' }).byId.get('install_dir')?.value,
+    ).toBe('/opt/app');
+  });
+});
+
+describe('what is still missing', () => {
+  it('lists a required input nobody answered', () => {
+    expect(resolve(manifestOf(...SIMPLE)).missing).toEqual(['target']);
+  });
+
+  it('gives an optional input its empty value instead of calling it missing', () => {
+    const manifest = manifestOf('inputs:', '  target:', '    type: text', '    required: false');
+    const resolution = resolve(manifest);
+
+    expect(resolution.missing).toEqual([]);
+    expect(resolution.byId.get('target')).toMatchObject({ value: '', source: undefined });
+  });
+
+  it('does not treat an answered input as missing', () => {
+    expect(resolve(manifestOf(...SIMPLE), { answers: new Map([['target', 'x']]) }).missing).toEqual(
+      [],
+    );
+  });
+});
+
+describe('defaults are templates', () => {
+  it('renders built-ins and the environment before the value is read', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  logs:',
+      '    type: directory',
+      '    default: "${manifestDir}/${env.USER}/logs"',
+    );
+
+    expect(resolve(manifest, {}, { USER: 'marcus' }).byId.get('logs')?.value).toBe(
+      '/project/marcus/logs',
+    );
+  });
+
+  it('renders a placeholder for a host value when another platform is previewed', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  logs:',
+      '    type: directory',
+      '    default: "${home}/logs"',
+    );
+    const preview = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: process.platform === 'win32' ? 'linux' : 'windows',
+      environment: {},
+    });
+
+    const resolution = resolveInputs({ manifest, context: preview, environment: {} });
+
+    expect(resolution.byId.get('logs')?.value).toMatch(/^<home@(linux|windows)>\/logs$/);
+  });
+
+  it('reports an environment variable a default needs and the machine does not have', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  logs:',
+      '    type: directory',
+      '    default: "${env.NOT_SET_ANYWHERE}/logs"',
+    );
+
+    expect(problems(manifest)).toEqual([
+      'inputs.logs.default: the environment variable NOT_SET_ANYWHERE is not set',
+    ]);
+  });
+
+  it('leaves a select default alone: it is an option value, not a template', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  environment:',
+      '    type: select',
+      '    options: [dev, prod]',
+      '    default: prod',
+    );
+
+    expect(resolve(manifest).byId.get('environment')?.value).toBe('prod');
+  });
+});
+
+describe('conditional inputs', () => {
+  const manifest = manifestOf(
+    'inputs:',
+    '  installDatabase:',
+    '    type: boolean',
+    '    default: true',
+    '  databasePort:',
+    '    type: text',
+    '    when: "${installDatabase}"',
+    '    default: "5432"',
+  );
+
+  it('resolves an input whose condition holds', () => {
+    expect(resolve(manifest).byId.get('databasePort')).toMatchObject({
+      enabled: true,
+      value: '5432',
+    });
+  });
+
+  it('gives a disabled input its empty value and asks nothing of it', () => {
+    const resolution = resolve(manifest, { overrides: new Map([['installDatabase', 'false']]) });
+
+    expect(resolution.byId.get('databasePort')).toMatchObject({ enabled: false, value: '' });
+    expect(resolution.missing).toEqual([]);
+  });
+
+  it('ignores a value supplied for a disabled input, loudly and with its provenance', () => {
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['installDatabase', 'false'],
+        ['databasePort', '9999'],
+      ]),
+    });
+
+    expect(resolution.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      ignored: 'set',
+    });
+    expect(resolution.warnings).toEqual([
+      'databasePort was set from --set, but its condition is false — the value is ignored',
+    ]);
+  });
+
+  it('honours the same value again once the condition turns true', () => {
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['installDatabase', 'true'],
+        ['databasePort', '9999'],
+      ]),
+    });
+
+    expect(resolution.byId.get('databasePort')).toMatchObject({
+      value: '9999',
+      ignored: undefined,
+    });
+    expect(resolution.warnings).toEqual([]);
+  });
+
+  it('treats an unanswered controlling input as its empty value, so a field starts off', () => {
+    const conditional = manifestOf(
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '  databasePort:',
+      '    type: text',
+      '    when: "${installDatabase}"',
+    );
+
+    // Nothing has answered the checkbox yet: the field it controls is off, and the run is
+    // not waiting for it either.
+    expect(resolve(conditional).byId.get('databasePort')?.enabled).toBe(false);
+    expect(resolve(conditional).missing).toEqual(['installDatabase']);
+  });
+});
+
+describe('values a type refuses', () => {
+  const manifest = manifestOf(
+    'inputs:',
+    '  port:',
+    '    type: text',
+    '    pattern: "[0-9]{2,5}"',
+    '  tools:',
+    '    type: multiselect',
+    '    options: [git, docker]',
+  );
+
+  it('names the input, where the value came from, and what is wrong with it', () => {
+    expect(
+      problems(manifest, {
+        overrides: new Map([
+          ['port', '8O80'],
+          ['tools', 'podman'],
+        ]),
+      }),
+    ).toEqual([
+      'port (from --set port=…): "8O80" does not match [0-9]{2,5}',
+      'tools (from --set tools=…): "podman" is not one of the option values ("git", "docker")',
+    ]);
+  });
+
+  it('names the environment variable it read', () => {
+    expect(problems(manifest, {}, { RUNE_INPUT_PORT: 'x' })[0]).toBe(
+      'port (from the environment variable RUNE_INPUT_PORT): "x" does not match [0-9]{2,5}',
+    );
+  });
+
+  it('names the values file it read', () => {
+    expect(problems(manifest, { values: [values('production.yaml', { port: 'x' })] })[0]).toBe(
+      'port (from production.yaml): "x" does not match [0-9]{2,5}',
+    );
+  });
+
+  it('collects every bad value instead of stopping at the first', () => {
+    expect(
+      problems(manifest, {
+        overrides: new Map([
+          ['port', 'a'],
+          ['tools', 'b'],
+        ]),
+      }),
+    ).toHaveLength(2);
+  });
+
+  it('never repeats a secret back, not even to reject it', () => {
+    const withSecret = manifestOf('inputs:', '  token:', '    type: secret');
+    const message = problems(withSecret, { values: [values('v.yaml', { token: 12345 })] })[0];
+
+    expect(message).toBe('token (from v.yaml): the value is not text');
+    expect(message).not.toContain('12345');
+  });
+});
+
+describe('keys that name no input', () => {
+  it('refuses a typo rather than letting it do nothing', () => {
+    expect(
+      problems(manifestOf('inputs:', '  installDirectory:', '    type: directory'), {
+        overrides: new Map([['installDirectroy', '/opt']]),
+      }),
+    ).toEqual([
+      '"installDirectroy" is not an input of this manifest — did you mean "installDirectory"? (set from --set)',
+    ]);
+  });
+
+  it('refuses one in a values file too, and names the file', () => {
+    expect(
+      problems(manifestOf(...SIMPLE), { values: [values('v.yaml', { nope: 'x' })] })[0],
+    ).toContain('(set from v.yaml)');
+  });
+});
+
+describe('secrets', () => {
+  const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+
+  it('wraps the value and registers it for masking before anything can run', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      overrides: new Map([['token', 'hunter2-and-more']]),
+      secrets,
+    });
+
+    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
+  });
+
+  it('warns about a secret too short to mask instead of failing or staying silent', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, { overrides: new Map([['token', 'ab']]), secrets });
+
+    expect(secrets.size).toBe(0);
+    expect(resolution.warnings[0]).toContain('too short to mask reliably');
+  });
+});
+
+describe('values files', () => {
+  function file(contents: string): string {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
+    const path = join(directory, 'values.yaml');
+    writeFileSync(path, contents);
+    return path;
+  }
+
+  it('reads a flat mapping of ids to values', () => {
+    const document = parseValuesFile(
+      file('target: /opt/app\nverbose: true\ntools:\n  - git\n  - docker\n'),
+    );
+
+    expect([...document.values.entries()]).toEqual([
+      ['target', '/opt/app'],
+      ['verbose', true],
+      ['tools', ['git', 'docker']],
+    ]);
+  });
+
+  it('reads an empty file as no values at all', () => {
+    expect(parseValuesFile(file('')).values.size).toBe(0);
+  });
+
+  it('refuses a document that is not a mapping', () => {
+    expect(() => parseValuesFile(file('- a\n- b\n'))).toThrow(/must contain a mapping/);
+  });
+
+  it('refuses a nested section, because a values file has no sections', () => {
+    expect(() => parseValuesFile(file('database:\n  port: "5432"\n'))).toThrow(
+      /database is a mapping; a values file is one flat mapping/,
+    );
+  });
+
+  it('asks for a number to be written as text, so it means exactly what it says', () => {
+    expect(() => parseValuesFile(file('port: 5432\n'))).toThrow(
+      /port is the number 5432 — write it as a string \("5432"\)/,
+    );
+  });
+
+  it('refuses a key with no value at all', () => {
+    expect(() => parseValuesFile(file('target:\n'))).toThrow(/target has no value/);
+  });
+
+  it('refuses a list with an entry that is not a string', () => {
+    expect(() => parseValuesFile(file('tools:\n  - git\n  - 7\n'))).toThrow(
+      /tools is a list with an entry that is not a string/,
+    );
+  });
+
+  it('locates each problem in the file it came from', () => {
+    let thrown: unknown;
+    try {
+      parseValuesFile(file('a: "ok"\nb:\n  nested: 1\n'), 'values.yaml');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as InputError).issues[0]?.location).toMatchObject({
+      file: 'values.yaml',
+      line: 2,
+      column: 1,
+    });
+  });
+});
