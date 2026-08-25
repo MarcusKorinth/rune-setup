@@ -625,13 +625,18 @@ function adviceFor(node: ConditionNode, type: ValueType): string {
   if (node.kind !== 'reference') {
     return '';
   }
-  if (type === 'string' || type === 'integer') {
-    return ` — compare it explicitly, for example ${node.reference.text} == 'production'`;
+  // Exhaustive on purpose: an example is only worth printing if the type checker would accept
+  // it, so a value type added later must bring its own or say it has none.
+  switch (type) {
+    case 'string':
+      return ` — compare it explicitly, for example ${node.reference.text} == 'production'`;
+    case 'integer':
+      return ` — compare it explicitly, for example ${node.reference.text} == 1`;
+    case 'stringList':
+      return ` — test one of its entries, for example 'git' in ${node.reference.text}`;
+    case 'boolean':
+      return '';
   }
-  if (type === 'stringList') {
-    return ` — test one of its entries, for example 'git' in ${node.reference.text}`;
-  }
-  return '';
 }
 
 function describe(node: ConditionNode): string {

@@ -204,6 +204,17 @@ describe('typing', () => {
     expect(typeErrors('42')).toEqual(['42 is a number, not a condition']);
   });
 
+  it('offers an example the type checker would accept, whatever the type is', () => {
+    // No input is typed integer in v1, so the advice for one is only reachable through a
+    // resolver — and it used to hand a numeric reference a quoted string to compare against,
+    // which is the comparison the very next rule rejects.
+    const asInteger: TypeResolver = () => ({ ok: true, type: 'integer' });
+
+    expect(typeCheckCondition(ast('${retryCount}'), asInteger)).toEqual([
+      '${retryCount} is a number, not a condition — compare it explicitly, for example ${retryCount} == 1',
+    ]);
+  });
+
   it('refuses a comparison between different types', () => {
     expect(typeErrors("${installDatabase} == 'true'")).toEqual([
       '${installDatabase} is a boolean and "true" is a string — only values of the same type can be compared',
