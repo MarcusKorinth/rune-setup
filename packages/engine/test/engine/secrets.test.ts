@@ -63,6 +63,24 @@ describe('SecretRegistry', () => {
     expect(registry.register('a'.repeat(MIN_MASKABLE_LENGTH))).toBe(true);
   });
 
+  it('refuses a value that is only whitespace, however long it is', () => {
+    const registry = new SecretRegistry();
+
+    // Masking four spaces would black out the indentation of every line a child prints.
+    expect(registry.register('    ')).toBe(false);
+    expect(registry.mask('    indented output')).toBe('    indented output');
+  });
+
+  it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
+    const registry = new SecretRegistry();
+    const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
+    registry.register(key);
+
+    // Output is read line by line, so the whole-key string would never match anything.
+    expect(registry.mask('writing MIIBpayloadLine to disk')).toBe(`writing ${MASK} to disk`);
+    expect(registry.mask(key)).toBe(MASK);
+  });
+
   it('counts a secret once, however often it is registered', () => {
     const registry = new SecretRegistry();
     registry.register('hunter2');

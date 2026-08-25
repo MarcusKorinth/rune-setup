@@ -71,12 +71,25 @@ export class SecretRegistry {
    * caller reports — silently not masking something would be the worse half of the choice.
    */
   register(value: string): boolean {
-    if (value.length < MIN_MASKABLE_LENGTH) {
-      return false;
+    // Every sink RUNE masks is line-oriented — a child's output is read line by line, and so
+    // is the log — so a secret spanning several lines would never match anything a sink sees.
+    // Each line is registered as well, which is what actually protects a key or certificate.
+    const parts = value.includes('\n') ? [value, ...value.split(/\r?\n/)] : [value];
+    let registered = false;
+
+    for (const part of parts) {
+      // Length alone is not enough: four spaces would pass, and masking them would black out
+      // the indentation of every line a child process prints.
+      if (part.trim().length >= MIN_MASKABLE_LENGTH) {
+        this.#values.add(part);
+        registered = true;
+      }
     }
-    this.#values.add(value);
-    this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
-    return true;
+
+    if (registered) {
+      this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
+    }
+    return registered;
   }
 
   get size(): number {
