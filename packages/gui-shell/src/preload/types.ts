@@ -19,6 +19,8 @@ export interface RuneBridge {
   cancel(): Promise<void>;
   getStrings(): Promise<Readonly<Record<string, string>>>;
   getThemeConfig(): Promise<BridgeTheme>;
+  /** The §10 warnings the Result page surfaces — same run, same warnings, every mode. */
+  warnings(): Promise<readonly string[]>;
   /** Signals that the result page is done and the shell may close with the run's code. */
   done(): Promise<void>;
   onEvent(listener: (event: BridgeEvent) => void): void;

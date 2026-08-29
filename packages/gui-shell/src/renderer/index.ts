@@ -33,7 +33,10 @@ type PageName = 'welcome' | 'inputs' | 'summary' | 'progress' | 'result';
 interface State {
   strings: Readonly<Record<string, string>>;
   inputs: readonly BridgeInput[];
+  /** Ids the engine still needs — the ONLY completeness authority the renderer trusts. */
+  pending: ReadonlySet<string>;
   invalid: Map<string, string>;
+  planFailed: boolean;
   pageIndex: number;
   inputPages: number;
   page: PageName;
@@ -45,7 +48,9 @@ interface State {
 const state: State = {
   strings: {},
   inputs: [],
+  pending: new Set(),
   invalid: new Map(),
+  planFailed: false,
   pageIndex: 0,
   inputPages: 0,
   page: 'welcome',
@@ -85,13 +90,16 @@ async function boot(): Promise<void> {
   }
 
   state.strings = await window.rune.getStrings();
-  state.inputs = await window.rune.allInputs();
+  await refreshInputs();
   state.inputPages = Math.ceil(state.inputs.length / INPUTS_PER_PAGE);
 
   const theme = await window.rune.getThemeConfig();
-  const root = document.documentElement;
   if (theme.accentColor !== undefined) {
-    root.style.setProperty('--rune-accent', theme.accentColor);
+    // A rule, not an inline style: the author stylesheet loads after it and stays the
+    // last word of the theming cascade (§9.4 layer 3).
+    const accent = document.createElement('style');
+    accent.textContent = `:root { --rune-accent: ${theme.accentColor}; }`;
+    document.head.append(accent);
   }
   if (theme.logo !== undefined) {
     el.logo.src = `file://${theme.logo}`;
@@ -196,7 +204,7 @@ function renderFooter(): void {
     el.next.disabled = false;
   } else if (state.page === 'summary') {
     el.next.textContent = text('rune.button.install');
-    el.next.disabled = false;
+    el.next.disabled = state.planFailed;
   } else if (state.page === 'progress') {
     el.next.textContent = text('rune.button.install');
     el.next.disabled = true;
@@ -210,19 +218,12 @@ function currentPageComplete(): boolean {
   if (state.page !== 'inputs') {
     return true;
   }
-  for (const input of pageInputs()) {
-    if (state.invalid.has(input.id)) {
-      return false;
-    }
-    if (input.enabled && input.spec.required !== false && isEmpty(input.value)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function isEmpty(value: BridgeInput['value']): boolean {
-  return value === null || value === '' || (Array.isArray(value) && value.length === 0);
+  // The engine's pendingInputs() is the one completeness signal: a secret's value crosses
+  // masked and an unanswered value crosses absent, so the projection cannot be read for
+  // presence (§9.2).
+  return pageInputs().every(
+    (input) => !state.invalid.has(input.id) && !state.pending.has(input.id),
+  );
 }
 
 function pageInputs(): readonly BridgeInput[] {
@@ -315,6 +316,16 @@ function checkbox(input: BridgeInput): HTMLElement {
 
 function selectBox(input: BridgeInput): HTMLElement {
   const select = document.createElement('select');
+  // Until the engine has a value, the display must not pretend one: a hidden placeholder
+  // keeps the first option from looking chosen while nothing is set.
+  if (state.pending.has(input.id)) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    placeholder.hidden = true;
+    select.append(placeholder);
+  }
   for (const option of input.spec.options ?? []) {
     const value = typeof option === 'string' ? option : option.value;
     const item = document.createElement('option');
@@ -365,8 +376,13 @@ async function submit(id: string, raw: unknown): Promise<void> {
     const hint = text(`inputs.${id}.patternHint`);
     state.invalid.set(id, hint !== '' ? hint : messageOf(error));
   }
-  state.inputs = await window.rune.allInputs();
+  await refreshInputs();
   render();
+}
+
+async function refreshInputs(): Promise<void> {
+  state.inputs = await window.rune.allInputs();
+  state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
 }
 
 function messageOf(error: unknown): string {
@@ -388,6 +404,8 @@ async function renderSummary(): Promise<void> {
     el.page.append(problem);
     return undefined;
   });
+  state.planFailed = plan === undefined;
+  renderFooter();
   if (plan === undefined) {
     return;
   }
@@ -472,6 +490,16 @@ function renderResult(): void {
       ? text('rune.result.nothingExecuted')
       : `${result.stepsSucceeded} / ${result.stepsTotal}`;
   el.page.append(badge, heading, sub);
+
+  // The §10 warnings: the same run never warns in one mode and stays silent in another.
+  void window.rune.warnings().then((warnings) => {
+    for (const warning of warnings) {
+      const line = document.createElement('p');
+      line.className = 'result-sub';
+      line.textContent = warning;
+      el.page.append(line);
+    }
+  });
 
   for (const step of result.steps) {
     if (step.state !== 'FAILED') {
