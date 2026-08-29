@@ -201,7 +201,7 @@ export interface RuntimeContextOptions {
   readonly product: { readonly name: string; readonly version: string };
   /** Defaults to the host; `validate` and `--dry-run` may preview the other one. */
   readonly platform?: Platform;
-  /** Defaults to this process's environment. */
+  /** Defaults to this process's environment; names always follow host-platform semantics. */
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -217,15 +217,16 @@ export interface RuntimeContext {
   readonly manifestDir: string;
   /** True when `platform` is not the host's, so host-dependent values are placeholders. */
   readonly preview: boolean;
-  /** Reads one string-valued own property using the platform's environment-name semantics. */
+  /** Reads one string-valued own property using the host platform's environment-name semantics. */
   environmentValue(name: string): string | undefined;
   /** The text a reference contributes. Throws {@link ResolutionError} for an unset variable. */
   valueOf(reference: Reference): string;
 }
 
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
-  const platform = options.platform ?? hostPlatform();
-  const preview = platform !== hostPlatform();
+  const host = hostPlatform();
+  const platform = options.platform ?? host;
+  const preview = platform !== host;
   const environment = options.environment ?? process.env;
 
   const hostDependent = (name: BuiltInVariable, value: () => string): string =>
@@ -233,7 +234,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
 
   const environmentValue = (name: string): string | undefined => {
     const key =
-      platform === 'windows'
+      host === 'windows'
         ? Object.getOwnPropertyNames(environment).find(
             (candidate) => candidate.toLowerCase() === name.toLowerCase(),
           )

@@ -6,6 +6,8 @@ import { createRuntimeContext, hostPlatform, platformForNode } from '../../src/e
 import { exitCodeFor, PlatformError, ResolutionError } from '../../src/errors.js';
 
 const product = { name: 'Example', version: '1.0.0' };
+const host = hostPlatform();
+const other = host === 'windows' ? 'linux' : 'windows';
 
 function contextFor(platform?: 'windows' | 'linux', environment: Record<string, string> = {}) {
   return createRuntimeContext({
@@ -78,17 +80,23 @@ describe('the values behind the built-in names', () => {
     );
   });
 
-  it('matches environment names case-insensitively for a Windows context', () => {
-    const windows = contextFor('windows', { Path: 'C:\\Tools' });
+  it.each([
+    ['the host platform', host],
+    ['a preview of the other platform', other],
+  ] as const)('uses host environment-name semantics for %s', (_description, platform) => {
+    const runtime = contextFor(platform, { Path: 'mixed', EXACT: 'exact' });
 
-    expect(windows.environmentValue('PATH')).toBe('C:\\Tools');
-    expect(windows.valueOf({ kind: 'environment', name: 'path' })).toBe('C:\\Tools');
-  });
-
-  it('matches environment names case-sensitively for a Linux context', () => {
-    const linux = contextFor('linux', { Path: '/tools' });
-
-    expect(linux.environmentValue('PATH')).toBeUndefined();
+    expect(runtime.environmentValue('EXACT')).toBe('exact');
+    expect(runtime.valueOf({ kind: 'environment', name: 'EXACT' })).toBe('exact');
+    expect(runtime.environmentValue('PATH')).toBe(host === 'windows' ? 'mixed' : undefined);
+    expect(runtime.environmentValue('path')).toBe(host === 'windows' ? 'mixed' : undefined);
+    if (host === 'windows') {
+      expect(runtime.valueOf({ kind: 'environment', name: 'PATH' })).toBe('mixed');
+    } else {
+      expect(() => runtime.valueOf({ kind: 'environment', name: 'PATH' })).toThrow(
+        'the environment variable PATH is not set',
+      );
+    }
   });
 
   it('refuses an environment variable the machine does not have', () => {
@@ -114,7 +122,6 @@ describe('the values behind the built-in names', () => {
 });
 
 describe('previewing the other platform', () => {
-  const other = hostPlatform() === 'windows' ? 'linux' : 'windows';
   const context = contextFor(other);
 
   it('knows it is a preview', () => {
