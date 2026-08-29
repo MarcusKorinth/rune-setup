@@ -1,6 +1,7 @@
 import { copyFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -12,8 +13,11 @@ import { SecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import {
+  forwardLines,
   isUnsupportedBatchExecutable,
+  MAX_OUTPUT_LINE_BYTES,
   mergeSpawnEnvironment,
+  OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
   SpawnRunner,
 } from '../../src/runners/spawnRunner.js';
 
@@ -198,6 +202,147 @@ describe('SpawnRunner', () => {
     expect(lines).toContain('stdout:one');
     expect(lines).toContain('stdout:two');
     expect(lines).toContain('stderr:oops');
+  });
+
+  it('delivers a logical line at exactly the UTF-8 payload limit unchanged', async () => {
+    const lines: string[] = [];
+
+    await run(nodeCommand(`process.stdout.write("a".repeat(${MAX_OUTPUT_LINE_BYTES}) + "\\n")`), {
+      onOutput: (_stream, line) => lines.push(line),
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(lines[0]!, 'utf8')).toBe(MAX_OUTPUT_LINE_BYTES);
+    expect(lines[0]).not.toBe(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+  });
+
+  it('preserves an exact-limit line when CRLF arrives in controlled stream chunks', async () => {
+    const lines: string[] = [];
+    const chunks = ['x'.repeat(MAX_OUTPUT_LINE_BYTES) + '\r', '\n'];
+    const stream = new Readable({
+      read() {
+        this.push(chunks.shift() ?? null);
+      },
+    });
+    const ended = new Promise<void>((resolve, reject) => {
+      stream.once('end', resolve);
+      stream.once('error', reject);
+    });
+
+    forwardLines(stream, (line) => lines.push(line));
+    await ended;
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('x'.repeat(MAX_OUTPUT_LINE_BYTES));
+    expect(Buffer.byteLength(lines[0]!, 'utf8')).toBe(MAX_OUTPUT_LINE_BYTES);
+    expect(lines[0]).not.toBe(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+  });
+
+  it('replaces a newline-free line over the limit once and emits nothing raw at EOF', async () => {
+    const lines: string[] = [];
+
+    await run(nodeCommand(`process.stdout.write("a".repeat(${MAX_OUTPUT_LINE_BYTES + 1}))`), {
+      onOutput: (_stream, line) => lines.push(line),
+    });
+
+    expect(lines).toEqual([OVERSIZED_OUTPUT_LINE_PLACEHOLDER]);
+  });
+
+  it('discards a multi-megabyte line through newline and recovers for the next line', async () => {
+    const lines: string[] = [];
+
+    await run(
+      nodeCommand(
+        'process.stdout.write("x".repeat(4 * 1024 * 1024));' +
+          'process.stdout.write("\\nafter\\n");',
+      ),
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toEqual([OVERSIZED_OUTPUT_LINE_PLACEHOLDER, 'after']);
+  });
+
+  it('emits one placeholder for each oversized line without duplicating at EOF', async () => {
+    const lines: string[] = [];
+    const oversizedBytes = MAX_OUTPUT_LINE_BYTES + 1;
+
+    await run(
+      nodeCommand(
+        `process.stdout.write("x".repeat(${oversizedBytes}) + "\\n" + ` +
+          `"y".repeat(${oversizedBytes}))`,
+      ),
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toEqual([OVERSIZED_OUTPUT_LINE_PLACEHOLDER, OVERSIZED_OUTPUT_LINE_PLACEHOLDER]);
+  });
+
+  it('resets after an oversized CRLF line and strips CRLF from the following line', async () => {
+    const lines: string[] = [];
+
+    await run(
+      nodeCommand(
+        `process.stdout.write("x".repeat(${MAX_OUTPUT_LINE_BYTES + 1}) + "\\r\\nnext\\r\\n")`,
+      ),
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toEqual([OVERSIZED_OUTPUT_LINE_PLACEHOLDER, 'next']);
+  });
+
+  it('preserves empty, CRLF, and unterminated bounded-line semantics', async () => {
+    const lines: string[] = [];
+
+    await run(nodeCommand('process.stdout.write("\\nalpha\\r\\nomega")'), {
+      onOutput: (_stream, line) => lines.push(line),
+    });
+
+    expect(lines).toEqual(['', 'alpha', 'omega']);
+  });
+
+  it('keeps stdout and stderr line-limit state independent', async () => {
+    const output: Array<{ stream: string; line: string }> = [];
+    const oversizedBytes = MAX_OUTPUT_LINE_BYTES + 1;
+
+    await run(
+      nodeCommand(
+        `process.stdout.write("x".repeat(${oversizedBytes}));` +
+          'process.stderr.write("stderr-ok\\n");' +
+          'process.stdout.write("\\nstdout-ok\\n");' +
+          `process.stderr.write("y".repeat(${oversizedBytes}));`,
+      ),
+      { onOutput: (stream, line) => output.push({ stream, line }) },
+    );
+
+    expect(output.filter(({ stream }) => stream === 'stdout').map(({ line }) => line)).toEqual([
+      OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+      'stdout-ok',
+    ]);
+    expect(output.filter(({ stream }) => stream === 'stderr').map(({ line }) => line)).toEqual([
+      'stderr-ok',
+      OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+    ]);
+  });
+
+  it('measures the limit in UTF-8 bytes rather than JavaScript code units', async () => {
+    const lines: string[] = [];
+    const threeByteCharacters = Math.floor(MAX_OUTPUT_LINE_BYTES / 3);
+    const remainingBytes = MAX_OUTPUT_LINE_BYTES % 3;
+    const exactExpression =
+      `"€".repeat(${threeByteCharacters}) + ` + `"a".repeat(${remainingBytes})`;
+
+    await run(
+      nodeCommand(
+        `const exact = ${exactExpression};` +
+          'process.stdout.write(exact + "\\n");' +
+          'process.stdout.write(exact + "a\\n");',
+      ),
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toHaveLength(2);
+    expect(Buffer.byteLength(lines[0]!, 'utf8')).toBe(MAX_OUTPUT_LINE_BYTES);
+    expect(lines[1]).toBe(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
   });
 
   it('passes the environment overlay and the reserved variables to the child', async () => {

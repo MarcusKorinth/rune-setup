@@ -12,7 +12,10 @@ export interface SpawnRequest {
   readonly command: ResolvedCommand;
   /** Reserved variables every child receives (§8). */
   readonly extraEnv: Readonly<Record<string, string>>;
-  /** Called once per line, in order, already split; the caller masks before rendering. */
+  /**
+   * Called once per complete bounded logical line or fixed value-free placeholder, in order;
+   * never with artificial raw fragments. The caller masks each callback before rendering.
+   */
   readonly onOutput: (stream: 'stdout' | 'stderr', line: string) => void;
   readonly cancel: CancelToken;
 }

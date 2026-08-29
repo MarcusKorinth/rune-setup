@@ -22,6 +22,12 @@ const PROCESS_POLL_MS = 25;
 /** Startup failures may contain argv, cwd, or environment values in Node's error text. */
 const FAILED_TO_START_MESSAGE = 'process could not be started';
 
+/** Maximum UTF-8 payload retained for one logical stdout/stderr line (§8). */
+export const MAX_OUTPUT_LINE_BYTES = 64 * 1024;
+
+/** Value-free replacement for a logical output line that exceeds the payload limit (§8). */
+export const OVERSIZED_OUTPUT_LINE_PLACEHOLDER = '[output line omitted: exceeds 64 KiB]';
+
 type TerminationCause = 'timedOut' | 'cancelled';
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
@@ -321,23 +327,101 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-/** Splits a stream into lines as it arrives; a last unterminated line is flushed at the end. */
-function forwardLines(stream: NodeJS.ReadableStream | null, onLine: (line: string) => void): void {
+/**
+ * Splits a stream into bounded logical lines without exposing artificial raw fragments.
+ * A final CR is held one byte beyond the payload limit until a following LF decides whether it
+ * belongs to CRLF framing; every other retained state stays at or below the documented limit.
+ *
+ * @internal Exported for deterministic stream-framing tests; not part of the package API.
+ */
+export function forwardLines(
+  stream: NodeJS.ReadableStream | null,
+  onLine: (line: string) => void,
+): void {
   if (stream === null) {
     return;
   }
-  let rest = '';
+
+  let parts: string[] = [];
+  let byteLength = 0;
+  let endsWithCarriageReturn = false;
+  let discarding = false;
+
+  const resetLine = (): void => {
+    parts = [];
+    byteLength = 0;
+    endsWithCarriageReturn = false;
+    discarding = false;
+  };
+
+  const omitLine = (): void => {
+    parts = [];
+    byteLength = 0;
+    endsWithCarriageReturn = false;
+    discarding = true;
+    onLine(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+  };
+
+  const append = (text: string, terminated: boolean): void => {
+    if (discarding || text === '') {
+      return;
+    }
+
+    const nextByteLength = byteLength + Buffer.byteLength(text, 'utf8');
+    const nextEndsWithCarriageReturn = text.endsWith('\r');
+    const payloadByteLength =
+      terminated && nextEndsWithCarriageReturn ? nextByteLength - 1 : nextByteLength;
+    const mayBecomeCrLf =
+      !terminated && nextByteLength === MAX_OUTPUT_LINE_BYTES + 1 && nextEndsWithCarriageReturn;
+
+    if (payloadByteLength > MAX_OUTPUT_LINE_BYTES && !mayBecomeCrLf) {
+      omitLine();
+      return;
+    }
+
+    parts.push(text);
+    byteLength = nextByteLength;
+    endsWithCarriageReturn = nextEndsWithCarriageReturn;
+  };
+
+  const finishLine = (text: string): void => {
+    if (discarding) {
+      resetLine();
+      return;
+    }
+
+    append(text, true);
+    if (discarding) {
+      resetLine();
+      return;
+    }
+
+    const line = parts.join('');
+    onLine(endsWithCarriageReturn ? line.slice(0, -1) : line);
+    resetLine();
+  };
+
   stream.setEncoding('utf8');
   stream.on('data', (chunk: string) => {
-    const lines = (rest + chunk).split('\n');
-    rest = lines.pop() ?? '';
-    for (const line of lines) {
-      onLine(line.endsWith('\r') ? line.slice(0, -1) : line);
+    let start = 0;
+    let newline = chunk.indexOf('\n');
+    while (newline !== -1) {
+      finishLine(chunk.slice(start, newline));
+      start = newline + 1;
+      newline = chunk.indexOf('\n', start);
     }
+    append(chunk.slice(start), false);
   });
   stream.on('end', () => {
-    if (rest !== '') {
-      onLine(rest);
+    if (discarding) {
+      return;
+    }
+    if (byteLength > MAX_OUTPUT_LINE_BYTES) {
+      omitLine();
+      return;
+    }
+    if (byteLength !== 0) {
+      onLine(parts.join(''));
     }
   });
 }

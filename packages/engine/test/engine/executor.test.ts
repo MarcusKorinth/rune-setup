@@ -12,6 +12,10 @@ import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
+import {
+  MAX_OUTPUT_LINE_BYTES,
+  OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+} from '../../src/runners/spawnRunner.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import { serializeResult } from '../../src/results/writer.js';
 
@@ -312,6 +316,73 @@ describe('a run that fails', () => {
 
     expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stdout', line: 'the token is ***' }]);
     expect(result.steps[1]).not.toHaveProperty('outputTail');
+  });
+
+  it('omits an oversized default-runner line before masking can split its secret', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-bounded-output-'));
+    const firstSecretHalf = 'recognizable-left-half-1234';
+    const secondSecretHalf = 'recognizable-right-half-5678';
+    const secret = firstSecretHalf + secondSecretHalf;
+    const childScript =
+      'const token = process.env.TOKEN ?? "";' +
+      `process.stdout.write("x".repeat(${MAX_OUTPUT_LINE_BYTES - firstSecretHalf.length}) + ` +
+      'token + "\\n");' +
+      'process.stdout.write("follow " + token + "\\n");' +
+      'process.exitCode = 9;';
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: bounded',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        '      args:',
+        '        - -e',
+        `        - ${JSON.stringify(childScript)}`,
+        '      env:',
+        '        TOKEN: "${token}"',
+        '',
+      ].join('\n'),
+      join(directory, 'installer.yaml'),
+    );
+    const context = createRuntimeContext({
+      manifestDir: directory,
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['token', secret]]),
+    });
+    const plan = buildPlan({ manifest, resolution, context });
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+    });
+
+    const outputEvents = events.filter((event) => event.kind === 'stepOutput');
+    expect(outputEvents.map((event) => event.line)).toEqual([
+      OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+      'follow ***',
+    ]);
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stdout', line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER },
+      { stream: 'stdout', line: 'follow ***' },
+    ]);
+
+    const serializedSinks = JSON.stringify({ events, result, tail: result.steps[0]?.outputTail });
+    expect(serializedSinks).not.toContain(secret);
+    expect(serializedSinks).not.toContain(firstSecretHalf);
+    expect(serializedSinks).not.toContain(secondSecretHalf);
   });
 
   it('honours successExitCodes instead of assuming zero', async () => {

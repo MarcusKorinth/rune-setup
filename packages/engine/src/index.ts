@@ -90,7 +90,11 @@ export type { EngineObserver, RunEvent } from './engine/events.js';
 export { isLegalTransition, isTerminal, STEP_STATES } from './engine/state.js';
 export type { StepState } from './engine/state.js';
 
-export { SpawnRunner } from './runners/spawnRunner.js';
+export {
+  MAX_OUTPUT_LINE_BYTES,
+  OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+  SpawnRunner,
+} from './runners/spawnRunner.js';
 export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 
 export { RESULT_SCHEMA_VERSION } from './results/model.js';
