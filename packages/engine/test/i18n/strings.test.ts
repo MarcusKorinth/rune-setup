@@ -76,4 +76,16 @@ describe('the resolved string table', () => {
     );
     expect(formatChrome('no placeholders')).toBe('no placeholders');
   });
+
+  it('fills placeholders only from own values', () => {
+    expect(formatChrome('{constructor} {toString}')).toBe('{constructor} {toString}');
+
+    const inherited = Object.create({ title: 'inherited' }) as Readonly<
+      Record<string, string | number>
+    >;
+    expect(formatChrome('{title}', inherited)).toBe('{title}');
+    expect(
+      formatChrome('{constructor} {toString}', { constructor: 'own', toString: 'value' }),
+    ).toBe('own value');
+  });
 });

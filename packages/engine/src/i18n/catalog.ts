@@ -40,6 +40,9 @@ export function formatChrome(
   values: Readonly<Record<string, string | number>> = {},
 ): string {
   return template.replace(/\{([A-Za-z]+)\}/g, (match, name: string) => {
+    if (!Object.hasOwn(values, name)) {
+      return match;
+    }
     const value = values[name];
     return value === undefined ? match : String(value);
   });
