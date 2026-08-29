@@ -8,9 +8,10 @@ This roadmap orders the work so that the non-interactive driver — the mode-par
 anchor — exists first, and every later frontend is verified against it.
 
 Milestones map to indicative product versions (SemVer, independent of the manifest
-`schemaVersion`, which stays `1` throughout): M0–M2 → **0.1.0**, M3 → **0.2.0**,
-M4 → **0.3.0**. **The MVP is Milestones 0–3 (product 0.2.0)**; Milestone 4 is a
-committed core milestone beyond the MVP.
+`schemaVersion`, which stays `1` throughout): M0–M3 → **0.1.0** — the complete
+application, graphical wizard included — and M4 → **0.2.0**. **The MVP is
+Milestones 0–3 (product 0.1.0)**; Milestone 4 is a committed core milestone beyond
+the MVP.
 
 ## Milestone 0 — repository bootstrap
 
@@ -25,7 +26,7 @@ committed core milestone beyond the MVP.
 - [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
   (no Electron in core jobs)
 
-## Milestone 1 — engine core and non-interactive execution (→ 0.1.0)
+## Milestone 1 — engine core and non-interactive execution (part of 0.1.0)
 
 The complete pipeline behind `rune validate`, `rune schema` and
 `rune run --non-interactive` — the `@rune/engine` library plus the `rune` CLI binary:
@@ -62,7 +63,7 @@ The complete pipeline behind `rune validate`, `rune schema` and
 Exit criterion: a CI pipeline can run a fixture manifest end to end on Windows and
 Linux with correct exit codes, result file and masked logs.
 
-## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0)
+## Milestone 2 — interactive CLI and frozen frontend contract (part of 0.1.0)
 
 - prompts for still-missing, enabled inputs (Node `readline`, muted-echo helper for
   secrets — no prompt library), re-prompt on validation/pattern error; option labels
@@ -81,7 +82,7 @@ Linux with correct exit codes, result file and masked logs.
   stream, in-process parity client) runs in core CI on Windows and Linux from here on —
   no Electron needed
 
-## Milestone 3 — GUI wizard: Electron shell (→ 0.2.0)
+## Milestone 3 — GUI wizard: Electron shell (completes 0.1.0)
 
 - Electron GUI shell (`packages/gui-shell/`, TypeScript + HTML/CSS): **main** hosts
   `@rune/engine` in-process (owns the `Session`, IPC handlers, window, exit code);
@@ -104,7 +105,7 @@ Linux with correct exit codes, result file and masked logs.
 - **mode-parity suite as release gate**: identical plans, event sequences and results
   across all three frontends (GUI leg = in-process parity client)
 
-## Milestone 4 — `rune package`: self-contained end-user artifact (→ 0.3.0, core roadmap, beyond MVP)
+## Milestone 4 — `rune package`: self-contained end-user artifact (→ 0.2.0, core roadmap, beyond MVP)
 
 - `rune package installer.yaml` produces a portable, per-user-runnable folder/archive
   (Windows: portable `.exe` + folder or zip; Linux: AppImage or tar.gz) via

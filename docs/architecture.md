@@ -38,7 +38,7 @@ RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framewo
 
 ### Versioning
 
-`schemaVersion` (manifest, currently `1`), `resultSchemaVersion` (result file), and the **product version** (SemVer, starting at 0.1.0) are independent. Roadmap milestones map to indicative product versions: M0+M1+M2 → 0.1.0 (engine library, `validate`/`schema`, non-interactive, interactive CLI, `Session` facade frozen as the frontend contract, i18n resolution), M3 → 0.2.0 (Electron GUI shell + theming), M4 → 0.3.0 (`rune package` self-contained end-user artifact). **The MVP is milestones 0–3 (product 0.2.0)** — the spec's success criteria include the graphical wizard; milestone 4 is a committed core milestone beyond the MVP. The manifest stays `schemaVersion: 1` throughout.
+`schemaVersion` (manifest, currently `1`), `resultSchemaVersion` (result file), and the **product version** (SemVer, starting at 0.1.0) are independent. Roadmap milestones map to indicative product versions: M0–M3 → 0.1.0 — the complete application: engine library, `validate`/`schema`, non-interactive, interactive CLI, the frozen `Session` facade, i18n resolution, and the Electron GUI shell with theming — and M4 → 0.2.0 (`rune package` self-contained end-user artifact). **The MVP is milestones 0–3 (product 0.1.0)** — the spec's success criteria include the graphical wizard; milestone 4 is a committed core milestone beyond the MVP. The manifest stays `schemaVersion: 1` throughout.
 
 ## 2) Core principles (short contracts)
 

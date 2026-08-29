@@ -11,10 +11,11 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is in its **bootstrap phase**: the architectural contract is complete — see
-[docs/architecture.md](docs/architecture.md) — and the monorepo scaffold exists; engine and
-CLI functionality begin with Milestone 1. [docs/roadmap.md](docs/roadmap.md) tracks the MVP
-scope and what comes after.
+RUNE is at **v0.1.0** — the complete MVP application: the engine library,
+`rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and the
+graphical wizard via `rune run --gui`), locale overlays, and the Electron GUI shell.
+[docs/architecture.md](docs/architecture.md) is the binding contract;
+[docs/roadmap.md](docs/roadmap.md) tracks what comes after (next: `rune package`).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end

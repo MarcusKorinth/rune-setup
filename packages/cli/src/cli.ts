@@ -24,7 +24,7 @@ import { validateCommand } from './validateCmd.js';
  * must not borrow the engine's number. Pinned to `packages/cli/package.json` by
  * `tests/package-versions.test.ts`.
  */
-export const RUNE_CLI_VERSION = '0.0.0';
+export const RUNE_CLI_VERSION = '0.1.0';
 
 export { ExitWithCode } from './io.js';
 export type { CliIo } from './io.js';
