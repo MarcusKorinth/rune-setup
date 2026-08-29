@@ -7,7 +7,7 @@
  * value is matched against its `pattern`.
  */
 
-import { MASK, SecretString } from '../engine/secrets.js';
+import { MASK, normalizeSecretString, SecretString } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
 import {
@@ -111,14 +111,14 @@ const secret: InputTypeHandler = {
   isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
   fromString: (value) => ok(new SecretString(value)),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
-  // An already-wrapped secret passes through: a frontend hands back what resolution gave it
-  // when it re-resolves after another answer changed, and unwrapping it to check would be
-  // the one place a secret is turned back into a plain string for no reason.
+  // A frontend may hand back a wrapper when it re-resolves. Copy its private base value into
+  // a fresh wrapper so registration and later resolution cannot observe changing overrides.
   fromNative: (value) => {
-    if (value instanceof SecretString) {
-      return ok(value);
+    if (typeof value === 'string') {
+      return ok(new SecretString(value));
     }
-    return typeof value === 'string' ? ok(new SecretString(value)) : fail('the value is not text');
+    const normalized = normalizeSecretString(value);
+    return normalized === undefined ? fail('the value is not text') : ok(normalized);
   },
   // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a

@@ -50,6 +50,29 @@ export class SecretString {
   }
 }
 
+// Capture the base implementation before a programmatic client can replace or shadow it.
+// Calling it directly performs the private-brand check without dispatching through the value.
+const BASE_SECRET_REVEAL = SecretString.prototype.reveal;
+const APPLY = Reflect.apply;
+
+/**
+ * Copies a genuine secret into a fresh base wrapper.
+ *
+ * `SecretString` is public and may be subclassed or modified by an in-process client. Reading
+ * through the cached base implementation makes the private field the authority, while the
+ * fresh wrapper prevents later calls from observing overrides or own properties on the input.
+ * A proxy, forged prototype, or non-string value stored through plain JavaScript is rejected.
+ */
+export function normalizeSecretString(value: unknown): SecretString | undefined {
+  let text: unknown;
+  try {
+    text = APPLY(BASE_SECRET_REVEAL, value, []);
+  } catch {
+    return undefined;
+  }
+  return typeof text === 'string' ? new SecretString(text) : undefined;
+}
+
 export function isSecretString(value: unknown): value is SecretString {
   return value instanceof SecretString;
 }

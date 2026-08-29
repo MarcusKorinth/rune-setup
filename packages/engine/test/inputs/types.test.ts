@@ -89,6 +89,61 @@ describe('secret', () => {
     expect(result.ok ? '' : result.message).toBe('the value is not text');
   });
 
+  it('copies a subclass private value without calling its changing reveal override', () => {
+    let revealCalls = 0;
+    class ChangingSecret extends SecretString {
+      override reveal(): string {
+        revealCalls += 1;
+        return revealCalls === 1 ? 'alpha-secret' : 'omega-secret';
+      }
+    }
+    const supplied = new ChangingSecret('stable-secret');
+    const result = handler('secret').fromNative(supplied, spec('secret'));
+    const normalized = result.ok ? result.value : undefined;
+
+    expect(normalized).toBeInstanceOf(SecretString);
+    expect(normalized).not.toBe(supplied);
+    expect(Object.getPrototypeOf(normalized)).toBe(SecretString.prototype);
+    expect((normalized as SecretString).reveal()).toBe('stable-secret');
+    expect(revealCalls).toBe(0);
+  });
+
+  it('copies the private value without reading shadowed reveal or length properties', () => {
+    const supplied = new SecretString('stable-secret');
+    let revealCalls = 0;
+    Object.defineProperty(supplied, 'reveal', {
+      value: () => {
+        revealCalls += 1;
+        return 'decoy-secret';
+      },
+    });
+    Object.defineProperty(supplied, 'length', {
+      get: () => {
+        throw new Error('must not read shadowed length');
+      },
+    });
+
+    const result = handler('secret').fromNative(supplied, spec('secret'));
+    const normalized = result.ok ? result.value : undefined;
+
+    expect((normalized as SecretString).reveal()).toBe('stable-secret');
+    expect(revealCalls).toBe(0);
+  });
+
+  it('rejects proxies, forged brands, and non-string private values without throwing', () => {
+    const proxied = new Proxy(new SecretString('proxy-secret'), {});
+    const forged = Object.create(SecretString.prototype) as SecretString;
+    const nonString = new SecretString(1234 as unknown as string);
+
+    for (const value of [proxied, forged, nonString]) {
+      expect(() => handler('secret').fromNative(value, spec('secret'))).not.toThrow();
+      expect(handler('secret').fromNative(value, spec('secret'))).toEqual({
+        ok: false,
+        message: 'the value is not text',
+      });
+    }
+  });
+
   it('renders the mask, never the secret', () => {
     const value = new SecretString('hunter2');
 

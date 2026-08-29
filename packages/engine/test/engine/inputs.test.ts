@@ -721,6 +721,31 @@ describe('secrets', () => {
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
 
+  it('registers exactly the stable value returned from an untrusted wrapper', () => {
+    let revealCalls = 0;
+    class ChangingSecret extends SecretString {
+      override reveal(): string {
+        revealCalls += 1;
+        return revealCalls === 1 ? 'alpha-secret' : 'omega-secret';
+      }
+    }
+    const supplied = new ChangingSecret('omega-secret');
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      answers: new Map([['token', supplied]]),
+      secrets,
+    });
+    const resolved = resolution.byId.get('token')?.value as SecretString;
+
+    expect(resolved).not.toBe(supplied);
+    expect(Object.getPrototypeOf(resolved)).toBe(SecretString.prototype);
+    expect(resolved.reveal()).toBe('omega-secret');
+    expect(revealCalls).toBe(0);
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('returned omega-secret')).toBe('returned ***');
+    expect(secrets.mask('decoy alpha-secret')).toBe('decoy alpha-secret');
+  });
+
   it('warns about a secret too short to mask instead of failing or staying silent', () => {
     const secrets = new SecretRegistry();
     const resolution = resolve(manifest, { overrides: new Map([['token', 'ab']]), secrets });
