@@ -29,6 +29,14 @@ function reveal(value: string | SecretString): string {
   return value instanceof SecretString ? value.reveal() : value;
 }
 
+/** Batch files need an explicit Windows command interpreter; the runner never adds one. */
+export function isUnsupportedBatchExecutable(
+  executable: string,
+  platform: NodeJS.Platform,
+): boolean {
+  return platform === 'win32' && /\.(?:bat|cmd)$/i.test(executable);
+}
+
 /** Merges spawn environment layers with the host platform's variable-name semantics. */
 export function mergeSpawnEnvironment(
   parentEnv: Readonly<Record<string, string | undefined>>,
@@ -61,7 +69,12 @@ export class SpawnRunner implements Runner {
       const { command } = request;
       let child: ReturnType<typeof spawn>;
       try {
-        const [executable, ...args] = command.argv;
+        const [executableValue, ...args] = command.argv;
+        const executable = reveal(executableValue ?? '');
+        if (isUnsupportedBatchExecutable(executable, process.platform)) {
+          resolve({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+          return;
+        }
         const commandEnv: Record<string, string> = {};
         for (const [name, value] of Object.entries(command.env)) {
           commandEnv[name] = reveal(value);
@@ -73,7 +86,7 @@ export class SpawnRunner implements Runner {
           process.platform,
         );
 
-        child = spawn(reveal(executable ?? ''), args.map(reveal), {
+        child = spawn(executable, args.map(reveal), {
           cwd: reveal(command.cwd),
           env,
           stdio: ['ignore', 'pipe', 'pipe'],

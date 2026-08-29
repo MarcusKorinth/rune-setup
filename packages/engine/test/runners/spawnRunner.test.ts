@@ -11,7 +11,11 @@ import { buildPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
 import { parseManifestText } from '../../src/manifest/index.js';
-import { mergeSpawnEnvironment, SpawnRunner } from '../../src/runners/spawnRunner.js';
+import {
+  isUnsupportedBatchExecutable,
+  mergeSpawnEnvironment,
+  SpawnRunner,
+} from '../../src/runners/spawnRunner.js';
 
 /** A real command on any platform: this very Node binary. */
 function nodeCommand(script: string, overrides: Partial<ResolvedCommand> = {}): ResolvedCommand {
@@ -98,6 +102,38 @@ function stopProcess(pid: number): void {
 }
 
 describe('SpawnRunner', () => {
+  it.each([
+    ['win32', 'setup.cmd', true],
+    ['win32', 'SETUP.CMD', true],
+    ['win32', 'setup.bat', true],
+    ['win32', 'setup.BaT', true],
+    ['win32', 'setup.cmd.exe', false],
+    ['win32', 'setup.batch', false],
+    ['linux', 'setup.cmd', false],
+    ['linux', 'setup.bat', false],
+  ] satisfies readonly (readonly [NodeJS.Platform, string, boolean])[])(
+    'classifies %s executable %s as unsupported: %s',
+    (platform, executable, expected) => {
+      expect(isUnsupportedBatchExecutable(executable, platform)).toBe(expected);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'refuses a secret-wrapped batch executable without exposing it',
+    async () => {
+      const secret = new SecretString('needle-secret.CmD');
+      const outcome = await run(nodeCommand('', { argv: [secret] }));
+      const serialized = JSON.stringify(outcome);
+
+      expect(outcome).toEqual({
+        kind: 'failedToStart',
+        message: 'process could not be started',
+      });
+      expect(serialized).not.toContain('needle-secret');
+      expect(serialized).not.toContain('.CmD');
+    },
+  );
+
   it('merges environment layers case-insensitively on Windows', () => {
     const environment = mergeSpawnEnvironment(
       {
