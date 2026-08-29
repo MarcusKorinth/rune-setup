@@ -82,12 +82,56 @@ describe('SecretRegistry', () => {
     expect(registry.mask('nothing to see')).toBe('nothing to see');
   });
 
-  it('masks the longest secret first, so a shorter one cannot split it', () => {
+  it.each([[['abcdX', 'Xefgh']], [['Xefgh', 'abcdX']]])(
+    'masks crossing overlaps in either registration order',
+    (secrets) => {
+      const registry = new SecretRegistry();
+      for (const secret of secrets) {
+        registry.register(secret);
+      }
+
+      expect(registry.mask('before abcdXefgh after')).toBe(`before ${MASK} after`);
+    },
+  );
+
+  it('masks crossing overlaps of different lengths as one range', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcde');
+    registry.register('defghijk');
+
+    expect(registry.mask('abcdefghijk')).toBe(MASK);
+  });
+
+  it('masks contained secrets as one range', () => {
     const registry = new SecretRegistry();
     registry.register('secret');
     registry.register('secret-and-more');
 
     expect(registry.mask('secret-and-more')).toBe(MASK);
+  });
+
+  it('merges self-overlapping occurrences', () => {
+    const registry = new SecretRegistry();
+    registry.register('aaaa');
+
+    expect(registry.mask('aaaaa')).toBe(MASK);
+  });
+
+  it('keeps adjacent independent occurrences as separate masks', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcd');
+    registry.register('efgh');
+
+    expect(registry.mask('abcdefgh')).toBe(`${MASK}${MASK}`);
+  });
+
+  it('masks dense overlaps with storage bounded by the input length', () => {
+    const registry = new SecretRegistry();
+    for (let length = MIN_MASKABLE_LENGTH; length < MIN_MASKABLE_LENGTH + 100; length += 1) {
+      registry.register('a'.repeat(length));
+    }
+
+    expect(registry.mask('a'.repeat(64 * 1024))).toBe(MASK);
   });
 
   it('refuses to register a value too short to mask safely, and says so', () => {

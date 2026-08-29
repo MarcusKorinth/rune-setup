@@ -129,9 +129,7 @@ export function isSecretString(value: unknown): value is SecretString {
  */
 export class SecretRegistry {
   readonly #values = new Set<string>();
-  /** Longest first: masking the longer secret first keeps a shorter one inside it from
-   * splitting the replacement into pieces that no longer match. */
-  #ordered: readonly string[] = [];
+  #patterns: readonly string[] = [];
 
   /**
    * Registers a secret. Returns false when the value is too short to mask safely, which the
@@ -154,7 +152,7 @@ export class SecretRegistry {
     }
 
     if (registered) {
-      this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
+      this.#patterns = [...this.#values];
     }
     return registered;
   }
@@ -165,10 +163,57 @@ export class SecretRegistry {
 
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
-    let out = text;
-    for (const secret of this.#ordered) {
-      out = out.split(secret).join(MASK);
+    // One slot per input position bounds temporary storage by the text length, even when
+    // many self-overlapping patterns all match at nearly every position.
+    const matchEnds = new Uint32Array(text.length);
+    let hasMatches = false;
+
+    // Match every pattern against the original text. Advancing one character at a time
+    // deliberately retains self-overlapping occurrences such as "aaaa" in "aaaaa".
+    for (const secret of this.#patterns) {
+      let start = text.indexOf(secret);
+      while (start !== -1) {
+        const end = start + secret.length;
+        if (end > (matchEnds[start] ?? 0)) {
+          matchEnds[start] = end;
+        }
+        hasMatches = true;
+        start = text.indexOf(secret, start + 1);
+      }
     }
-    return out;
+
+    if (!hasMatches) {
+      return text;
+    }
+
+    const parts: string[] = [];
+    let cursor = 0;
+    let rangeStart = -1;
+    let rangeEnd = 0;
+
+    for (let start = 0; start < matchEnds.length; start += 1) {
+      const end = matchEnds[start] ?? 0;
+      if (end === 0) {
+        continue;
+      }
+
+      if (rangeStart === -1) {
+        rangeStart = start;
+        rangeEnd = end;
+      } else if (start < rangeEnd) {
+        rangeEnd = Math.max(rangeEnd, end);
+      } else {
+        // Adjacent occurrences are intentionally separate masks.
+        parts.push(text.slice(cursor, rangeStart), MASK);
+        cursor = rangeEnd;
+        rangeStart = start;
+        rangeEnd = end;
+      }
+    }
+
+    parts.push(text.slice(cursor, rangeStart), MASK);
+    cursor = rangeEnd;
+    parts.push(text.slice(cursor));
+    return parts.join('');
   }
 }
