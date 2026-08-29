@@ -52,7 +52,7 @@ RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framewo
 
 ```
 installer.yaml ──▶ manifest/loader ──▶ manifest/v1 schema + rules ──▶ Manifest (frozen)
-locales/<lang>.yaml ──▶ i18n/loader ──▶ StringTable (locale chain resolved; engine-owned)
+locales/<lang>.yaml ──▶ i18n/locale ──▶ overlay ──▶ strings ──▶ StringTable (engine-owned)
                                                                         │
 --values / RUNE_INPUT_* / --set / answers ──▶ engine/inputs ──▶ ResolvedInputs (+provenance,
                                                                  input when: evaluated)
@@ -479,8 +479,9 @@ packages/
 │       │   └── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
 │       ├── i18n/
 │       │   ├── catalog.ts         # built-in English chrome strings (`rune.*` keys) — the key authority
-│       │   ├── loader.ts          # locales/<lang>.yaml discovery + overlay key validation
-│       │   └── resolve.ts         # locale selection (--locale > RUNE_LOCALE > system), fallback chain, Strings
+│       │   ├── locale.ts           # locale selection, normalization, and overlay discovery/matching
+│       │   ├── overlay.ts          # hardened YAML loading and localizable-key validation
+│       │   └── strings.ts          # per-key fallback resolution into the engine-owned StringTable
 │       ├── engine/
 │       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
 │       │   ├── context.ts         # built-in variable table and reference resolution; later: platform detection, placeholders, run id
