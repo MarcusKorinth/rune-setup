@@ -25,7 +25,10 @@ export const MAX_OUTPUT_LINE_BYTES = 64 * 1024;
 /** Value-free replacement for a logical output line that exceeds the payload limit (§8). */
 export const OVERSIZED_OUTPUT_LINE_PLACEHOLDER = '[output line omitted: exceeds 64 KiB]';
 
-type TerminationCause = 'timedOut' | 'cancelled';
+type TerminationCause =
+  | { readonly kind: 'timedOut' }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'streamFailed'; readonly stream: 'stdout' | 'stderr' };
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
 function reveal(value: string | SecretString): string {
@@ -152,7 +155,7 @@ export class SpawnRunner implements Runner {
         terminationTask = (async () => {
           await terminateTree(child);
           await childDonePromise;
-          settle({ kind: cause });
+          settle(cause);
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
         // absorb platform process errors and therefore cannot reject.
@@ -174,8 +177,16 @@ export class SpawnRunner implements Runner {
         );
       });
 
-      forwardLines(child.stdout, (line) => request.onOutput('stdout', line));
-      forwardLines(child.stderr, (line) => request.onOutput('stderr', line));
+      forwardLines(
+        child.stdout,
+        (line) => request.onOutput('stdout', line),
+        () => requestTermination({ kind: 'streamFailed', stream: 'stdout' }),
+      );
+      forwardLines(
+        child.stderr,
+        (line) => request.onOutput('stderr', line),
+        () => requestTermination({ kind: 'streamFailed', stream: 'stderr' }),
+      );
 
       child.once('close', (code) => {
         completeChild(code);
@@ -185,11 +196,14 @@ export class SpawnRunner implements Runner {
       });
 
       if (command.timeoutSeconds !== null) {
-        timeout = setTimeout(() => requestTermination('timedOut'), command.timeoutSeconds * 1000);
+        timeout = setTimeout(
+          () => requestTermination({ kind: 'timedOut' }),
+          command.timeoutSeconds * 1000,
+        );
         timeout.unref();
       }
 
-      unsubscribeCancel = request.cancel.onCancel(() => requestTermination('cancelled'));
+      unsubscribeCancel = request.cancel.onCancel(() => requestTermination({ kind: 'cancelled' }));
     });
   }
 }
@@ -357,6 +371,7 @@ function delay(milliseconds: number): Promise<void> {
 export function forwardLines(
   stream: NodeJS.ReadableStream | null,
   onLine: (line: string) => void,
+  onError: () => void,
 ): void {
   if (stream === null) {
     return;
@@ -366,6 +381,7 @@ export function forwardLines(
   let byteLength = 0;
   let endsWithCarriageReturn = false;
   let discarding = false;
+  let failed = false;
 
   const resetLine = (): void => {
     parts = [];
@@ -421,19 +437,34 @@ export function forwardLines(
     resetLine();
   };
 
+  // Keep one listener installed after the first error so a broken stream cannot emit a later
+  // unhandled `error`. The callback is deliberately value-free and runs at most once.
+  stream.on('error', () => {
+    if (failed) {
+      return;
+    }
+    failed = true;
+    onError();
+  });
   stream.setEncoding('utf8');
   stream.on('data', (chunk: string) => {
+    if (failed) {
+      return;
+    }
     let start = 0;
     let newline = chunk.indexOf('\n');
     while (newline !== -1) {
       finishLine(chunk.slice(start, newline));
+      if (failed) {
+        return;
+      }
       start = newline + 1;
       newline = chunk.indexOf('\n', start);
     }
     append(chunk.slice(start), false);
   });
   stream.on('end', () => {
-    if (discarding) {
+    if (failed || discarding) {
       return;
     }
     if (byteLength > MAX_OUTPUT_LINE_BYTES) {

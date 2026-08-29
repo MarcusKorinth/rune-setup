@@ -27,6 +27,7 @@ export type SpawnOutcome =
   | { readonly kind: 'exited'; readonly exitCode: number }
   | { readonly kind: 'timedOut' }
   | { readonly kind: 'cancelled' }
+  | { readonly kind: 'streamFailed'; readonly stream: 'stdout' | 'stderr' }
   /** The process could not be started; arbitrary platform error text never crosses this seam. */
   | { readonly kind: 'failedToStart'; readonly reason: StartFailureReason };
 

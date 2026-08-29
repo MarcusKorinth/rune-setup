@@ -185,6 +185,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       case 'cancelled':
         state = 'CANCELLED';
         break;
+      case 'streamFailed': {
+        state = 'FAILED';
+        diagnostic = `RUNE-401 step "${step.id}" ${outcome.stream} stream could not be read`;
+        break;
+      }
       case 'failedToStart': {
         state = 'FAILED';
         diagnostic = startFailureDiagnostic(step.id, outcome.reason);

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
@@ -229,13 +229,42 @@ describe('SpawnRunner', () => {
       stream.once('error', reject);
     });
 
-    forwardLines(stream, (line) => lines.push(line));
+    forwardLines(
+      stream,
+      (line) => lines.push(line),
+      () => undefined,
+    );
     await ended;
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toBe('x'.repeat(MAX_OUTPUT_LINE_BYTES));
     expect(Buffer.byteLength(lines[0]!, 'utf8')).toBe(MAX_OUTPUT_LINE_BYTES);
     expect(lines[0]).not.toBe(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+  });
+
+  it('contains a stream error once and ignores later data and end without exposing it', () => {
+    const lines: string[] = [];
+    let failures = 0;
+    const stream = new Readable({ read: () => undefined });
+
+    forwardLines(
+      stream,
+      (line) => lines.push(line),
+      () => {
+        failures += 1;
+      },
+    );
+
+    expect(stream.listenerCount('error')).toBe(1);
+    stream.emit('data', 'before\n');
+    expect(() => stream.emit('error', new Error('private stream failure'))).not.toThrow();
+    expect(() => stream.emit('error', new Error('second private failure'))).not.toThrow();
+    stream.emit('data', 'after\n');
+    stream.emit('end');
+
+    expect(failures).toBe(1);
+    expect(lines).toEqual(['before']);
+    expect(JSON.stringify({ lines, failures })).not.toContain('private stream failure');
   });
 
   it('replaces a newline-free line over the limit once and emits nothing raw at EOF', async () => {
@@ -550,6 +579,43 @@ describe('SpawnRunner', () => {
 
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
   }, 15000);
+
+  it('kills the child and settles after a stdout read failure', async () => {
+    const originalSetEncoding = Readable.prototype.setEncoding;
+    const encodedStreams = new Set<Readable>();
+    let pid: number | undefined;
+    const setEncoding = vi.spyOn(Readable.prototype, 'setEncoding').mockImplementation(function (
+      this: Readable,
+      encoding: BufferEncoding,
+    ) {
+      encodedStreams.add(this);
+      return originalSetEncoding.call(this, encoding);
+    });
+
+    try {
+      const pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
+        onOutput: (stream, line) => {
+          if (stream !== 'stdout' || pid !== undefined) {
+            return;
+          }
+          pid = Number(line);
+          encodedStreams.values().next().value?.emit('error', new Error('private stdout failure'));
+        },
+      });
+
+      await expect(withDeadline(pending, 15000)).resolves.toEqual({
+        kind: 'streamFailed',
+        stream: 'stdout',
+      });
+      expect(pid).toBeTypeOf('number');
+      expect(processIsAlive(pid!)).toBe(false);
+    } finally {
+      setEncoding.mockRestore();
+      if (pid !== undefined && processIsAlive(pid)) {
+        stopProcess(pid);
+      }
+    }
+  }, 20000);
 
   it('unsubscribes from cancellation after normal settlement', async () => {
     const cancel = new TrackedCancelToken();

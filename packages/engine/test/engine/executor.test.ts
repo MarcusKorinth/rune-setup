@@ -515,6 +515,61 @@ describe('a run that fails', () => {
     expect(line).not.toContain('command was not found');
   });
 
+  it.each(['stdout', 'stderr'] as const)(
+    'reports an exact value-free %s stream failure and preserves event order',
+    async (stream) => {
+      const { plan } = setup(['steps:', '  - id: unreadable', '    run:', '      command: a']);
+      const events: RunEvent[] = [];
+
+      const result = await executeRun({
+        plan,
+        observer: (event) => events.push(event),
+        runner: stubRunner(() => ({ kind: 'streamFailed', stream })),
+      });
+
+      expect(result).toMatchObject({ status: 'failed', stepsFailed: 1 });
+      expect(result.steps[0]?.outputTail).toEqual([
+        {
+          stream: 'stderr',
+          line: `RUNE-401 step "unreadable" ${stream} stream could not be read`,
+        },
+      ]);
+      expect(events.map((event) => event.kind)).toEqual([
+        'runStarted',
+        'stepStarted',
+        'stepOutput',
+        'stepFinished',
+        'runFinished',
+      ]);
+    },
+  );
+
+  it('masks step-id and diagnostic-fragment collisions in a stream failure', async () => {
+    const secret = 'private-stream-step\nstdout stream could not be read';
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: private-stream-step',
+        '    run:',
+        '      command: a',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner(() => ({ kind: 'streamFailed', stream: 'stdout' })),
+    });
+    const line = result.steps[0]?.outputTail?.[0]?.line;
+
+    expect(line).toBe('RUNE-401 step "***" ***');
+    expect(line).not.toContain('private-stream-step');
+    expect(line).not.toContain('stdout stream could not be read');
+  });
+
   it('contains a rejecting runner and completes the event bracket', async () => {
     const { plan } = setup(['steps:', '  - id: rejected', '    run:', '      command: a']);
     const events: RunEvent[] = [];
@@ -1079,6 +1134,10 @@ describe('cancellation and timeout', () => {
     {
       outcome: { kind: 'exited' as const, exitCode: 7 },
       expected: 'RUNE-401 step "outcome" exited with code 7; expected one of [0]',
+    },
+    {
+      outcome: { kind: 'streamFailed' as const, stream: 'stdout' as const },
+      expected: 'RUNE-401 step "outcome" stdout stream could not be read',
     },
   ])(
     'keeps the synthetic $outcome.kind line as the newest tail entry',
