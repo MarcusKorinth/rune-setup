@@ -39,6 +39,13 @@ describe('selectLocale', () => {
     expect(selectLocale({ environment: {}, systemLocale: 'en_US.UTF-8' })).toBe('en-US');
     expect(selectLocale({ environment: {} })).toBeUndefined();
   });
+
+  it('lets an explicit choice terminate the chain, even when it means the defaults', () => {
+    expect(selectLocale({ flag: 'C', environment: { RUNE_LOCALE: 'de' } })).toBeUndefined();
+    expect(
+      selectLocale({ environment: { RUNE_LOCALE: 'POSIX' }, systemLocale: 'de-DE' }),
+    ).toBeUndefined();
+  });
 });
 
 describe('overlay discovery and matching', () => {

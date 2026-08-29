@@ -38,19 +38,14 @@ export interface LocaleSelectionOptions {
 
 /** The display locale for a session, or `undefined` for the built-in defaults (§6.3). */
 export function selectLocale(options: LocaleSelectionOptions): string | undefined {
-  for (const candidate of [
-    options.flag,
-    options.environment['RUNE_LOCALE'],
-    options.systemLocale,
-  ]) {
+  for (const candidate of [options.flag, options.environment['RUNE_LOCALE']]) {
     if (candidate !== undefined && candidate !== '') {
-      const tag = normalizeLocaleTag(candidate);
-      if (tag !== undefined) {
-        return tag;
-      }
+      // An explicit choice terminates the chain: `--locale C` asks for the built-in
+      // defaults, never for whatever the next source would have said.
+      return normalizeLocaleTag(candidate);
     }
   }
-  return undefined;
+  return options.systemLocale === undefined ? undefined : normalizeLocaleTag(options.systemLocale);
 }
 
 export interface DiscoveredOverlay {
