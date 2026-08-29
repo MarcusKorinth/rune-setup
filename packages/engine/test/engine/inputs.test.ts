@@ -9,12 +9,12 @@ import { createRuntimeContext, type RuntimeContext } from '../../src/engine/cont
 import {
   parseValuesFile,
   resolveInputs,
+  type InputRejection,
   type Resolution,
   type ResolveInputsOptions,
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
-import type { InputRejection } from '../../src/index.js';
 import type { InputValue } from '../../src/inputs/base.js';
 import { exitCodeFor, InputError, ManifestError, ResolutionError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
