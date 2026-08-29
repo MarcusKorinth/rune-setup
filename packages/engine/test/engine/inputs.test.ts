@@ -783,8 +783,19 @@ describe('values files', () => {
     ]);
   });
 
-  it('reads an empty file as no values at all', () => {
-    expect(parseValuesFile(file('')).values.size).toBe(0);
+  it.each(['', ' \n\t\n', '# no values\n\n# here\n'])(
+    'reads a contentless document as no values at all',
+    (contents) => {
+      expect(parseValuesFile(file(contents)).values.size).toBe(0);
+    },
+  );
+
+  it.each(['null\n', '~\n'])('refuses an explicit top-level null value', (contents) => {
+    const error = loadError(contents);
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe('values.yaml must contain a mapping of input ids to values');
+    expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
   });
 
   it('classifies YAML syntax errors as invalid values input and keeps their location', () => {

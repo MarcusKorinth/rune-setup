@@ -456,13 +456,13 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   const issues: RuneIssue[] = [];
 
   const raw = document.value;
-  if (raw === null || raw === undefined) {
+  if (raw === undefined || (raw === null && document.sourceMap.best([]) === undefined)) {
     return { file: document.file, values, sourceMap: document.sourceMap };
   }
 
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new InputError('RUNE-202', `${file} must contain a mapping of input ids to values`, {
-      location: startOfFile(document.file),
+      location: document.sourceMap.best([]) ?? startOfFile(document.file),
     });
   }
 
