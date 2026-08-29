@@ -51,6 +51,7 @@ export const runResultSchema = z.strictObject({
     'internal_error',
   ]),
   exitCode: z.number().int(),
+  mode: z.enum(['gui', 'interactive', 'non-interactive']),
   dryRun: z.boolean(),
   crossPlatformPreview: z.boolean(),
   platform: z.string(),

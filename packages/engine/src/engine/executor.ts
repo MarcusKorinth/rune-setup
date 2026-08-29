@@ -24,6 +24,7 @@ import {
   RESULT_SCHEMA_VERSION,
   type ResultInput,
   type ResultStep,
+  type RunMode,
   type RunResult,
   type RunStatus,
 } from '../results/model.js';
@@ -39,6 +40,8 @@ export interface ExecuteOptions {
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
+  /** Recorded in the result (§10); the engine path is identical either way. */
+  readonly mode?: RunMode;
 }
 
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
@@ -185,6 +188,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     product: options.product,
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
+    mode: options.mode ?? 'non-interactive',
     dryRun: false,
     startedAt,
     finishedAt,
@@ -200,6 +204,7 @@ export function describePlan(options: {
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly secrets: SecretRegistry;
+  readonly mode?: RunMode;
 }): RunResult {
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
@@ -216,6 +221,7 @@ export function describePlan(options: {
     product: options.product,
     steps,
     status: 'planned',
+    mode: options.mode ?? 'non-interactive',
     dryRun: true,
     startedAt: now,
     finishedAt: now,
@@ -229,6 +235,7 @@ function assembleResult(input: {
   readonly product: { readonly name: string; readonly version: string };
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
+  readonly mode: RunMode;
   readonly dryRun: boolean;
   readonly startedAt: Date;
   readonly finishedAt: Date;
@@ -242,6 +249,7 @@ function assembleResult(input: {
     id: input.runId,
     status: input.status,
     exitCode: EXIT_CODE_BY_STATUS[input.status],
+    mode: input.mode,
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,

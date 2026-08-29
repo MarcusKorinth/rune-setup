@@ -17,7 +17,7 @@ import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
-import type { RunResult } from '../results/model.js';
+import type { RunMode, RunResult } from '../results/model.js';
 import { CancelToken } from './cancel.js';
 import {
   createRuntimeContext,
@@ -67,6 +67,8 @@ export interface SessionOptions {
   readonly environment?: Readonly<Record<string, string | undefined>> | undefined;
   /** What the operating system reports; defaults to `Intl`. Injected so hosts and tests own it. */
   readonly systemLocale?: string | undefined;
+  /** Which frontend drives this session — recorded in the result (§10). */
+  readonly mode?: RunMode | undefined;
   /** The runner steps spawn through; the default is the real one. The §13 seam and test seam. */
   readonly runner?: Runner | undefined;
 }
@@ -83,6 +85,7 @@ export class Session {
   readonly #answers = new Map<string, unknown>();
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
+  readonly #mode: RunMode;
   #resolution: Resolution;
   #cancel: CancelToken | undefined;
 
@@ -98,6 +101,7 @@ export class Session {
     resolution: Resolution;
     logFile: string | undefined;
     runner: Runner | undefined;
+    mode: RunMode;
   }) {
     this.manifest = fields.manifest;
     this.manifestPath = fields.manifestPath;
@@ -110,6 +114,7 @@ export class Session {
     this.#resolution = fields.resolution;
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
+    this.#mode = fields.mode;
   }
 
   /** Opens a session: load, validate, resolve layers 1–4 — stages 1–3 of the pipeline (§7). */
@@ -163,6 +168,7 @@ export class Session {
       }),
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
       runner: options.runner,
+      mode: options.mode ?? 'non-interactive',
     });
   }
 
@@ -243,6 +249,7 @@ export class Session {
       resolution: this.#resolution,
       product: this.manifest.product,
       secrets: this.#secrets,
+      mode: this.#mode,
     });
   }
 
@@ -264,6 +271,7 @@ export class Session {
         secrets: this.#secrets,
         observer: observers,
         cancel: token,
+        mode: this.#mode,
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),
       });
     } finally {
