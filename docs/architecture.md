@@ -281,7 +281,8 @@ RuneError
 │                        malformed JSON array), 203 unknown input
 ├── ResolutionError      RUNE-301 undefined variable, 302 interpolation syntax
 ├── ConditionError       RUNE-311 syntax, 312 type error
-├── ExecutionError       RUNE-401 step exit code, 402 timeout, 403 command not found,
+├── ExecutionError       RUNE-401 step exit code or unclassified execution failure,
+│                        402 timeout, 403 command not found,
 │                        404 invalid cwd, 405 shell-required refused
 ├── CancelledError       RUNE-601 user/system abort
 └── InternalError        RUNE-500 (always a RUNE bug; asks for an issue report)

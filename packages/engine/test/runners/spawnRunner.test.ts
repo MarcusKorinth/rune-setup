@@ -131,7 +131,7 @@ describe('SpawnRunner', () => {
 
       expect(outcome).toEqual({
         kind: 'failedToStart',
-        message: 'process could not be started',
+        reason: 'shellRequired',
       });
       expect(serialized).not.toContain('needle-secret');
       expect(serialized).not.toContain('.CmD');
@@ -461,7 +461,22 @@ describe('SpawnRunner', () => {
       nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere'] }),
     );
 
-    expect(outcome.kind).toBe('failedToStart');
+    expect(outcome).toEqual({ kind: 'failedToStart', reason: 'commandNotFound' });
+  });
+
+  it('settles an error/close startup race once and releases cancellation', async () => {
+    const cancel = new TrackedCancelToken();
+    const pending = run(nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere'] }), {
+      cancel,
+    });
+
+    await expect(withDeadline(pending, 5000)).resolves.toEqual({
+      kind: 'failedToStart',
+      reason: 'commandNotFound',
+    });
+    expect(cancel.activeListeners).toBe(0);
+    cancel.cancel();
+    expect(cancel.activeListeners).toBe(0);
   });
 
   it('reports a missing working directory as failed to start, not as a crash', async () => {
@@ -470,8 +485,20 @@ describe('SpawnRunner', () => {
 
     expect(outcome).toEqual({
       kind: 'failedToStart',
-      message: 'process could not be started',
+      reason: 'invalidCwd',
     });
+  });
+
+  it('gives an invalid cwd precedence when the command is also missing', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'rune-both-missing-'));
+    const outcome = await run(
+      nodeCommand('', {
+        argv: ['rune-definitely-not-installed-anywhere'],
+        cwd: join(parent, 'missing'),
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: 'failedToStart', reason: 'invalidCwd' });
   });
 
   it.each([
@@ -483,7 +510,7 @@ describe('SpawnRunner', () => {
   ])('reports an invalid NUL-containing %s without rejecting', async (_name, command) => {
     await expect(run(command)).resolves.toEqual({
       kind: 'failedToStart',
-      message: 'process could not be started',
+      reason: 'other',
     });
   });
 
@@ -494,11 +521,20 @@ describe('SpawnRunner', () => {
 
     expect(outcome).toEqual({
       kind: 'failedToStart',
-      message: 'process could not be started',
+      reason: 'other',
     });
     expect(serialized).not.toContain('needle-before');
     expect(serialized).not.toContain('needle-after');
     expect(serialized).not.toContain('\\u0000');
+  });
+
+  it('does not expose a secret missing command through its classified outcome', async () => {
+    const secret = createSecretString('rune-secret-command-not-installed');
+    const outcome = await run(nodeCommand('', { argv: [secret] }));
+    const serialized = JSON.stringify(outcome);
+
+    expect(outcome).toEqual({ kind: 'failedToStart', reason: 'commandNotFound' });
+    expect(serialized).not.toContain('rune-secret-command-not-installed');
   });
 
   it('kills a process that exceeds its timeout', async () => {

@@ -8,19 +8,16 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
-import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
+import type { Runner, SpawnOutcome, SpawnRequest, StartFailureReason } from './base.js';
 
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
 
 /** Polling keeps process-group termination awaitable without blocking the event loop. */
 const PROCESS_POLL_MS = 25;
-
-/** Startup failures may contain argv, cwd, or environment values in Node's error text. */
-const FAILED_TO_START_MESSAGE = 'process could not be started';
 
 /** Maximum UTF-8 payload retained for one logical stdout/stderr line (§8). */
 export const MAX_OUTPUT_LINE_BYTES = 64 * 1024;
@@ -74,11 +71,12 @@ export class SpawnRunner implements Runner {
     return new Promise((resolve) => {
       const { command } = request;
       let child: ReturnType<typeof spawn>;
+      let cwd: string;
       try {
         const [executableValue, ...args] = command.argv;
         const executable = reveal(executableValue ?? '');
         if (isUnsupportedBatchExecutable(executable, process.platform)) {
-          resolve({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+          resolve({ kind: 'failedToStart', reason: 'shellRequired' });
           return;
         }
         const commandEnv: Record<string, string> = {};
@@ -92,8 +90,9 @@ export class SpawnRunner implements Runner {
           process.platform,
         );
 
+        cwd = reveal(command.cwd);
         child = spawn(executable, args.map(reveal), {
-          cwd: reveal(command.cwd),
+          cwd,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: false,
@@ -101,11 +100,12 @@ export class SpawnRunner implements Runner {
           detached: process.platform !== 'win32',
         });
       } catch {
-        resolve({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+        resolve({ kind: 'failedToStart', reason: 'other' });
         return;
       }
 
       let settled = false;
+      let startupFailureClaimed = false;
       let terminationCause: TerminationCause | undefined;
       let terminationTask: Promise<void> | undefined;
       let timeout: NodeJS.Timeout | undefined;
@@ -144,7 +144,7 @@ export class SpawnRunner implements Runner {
       };
 
       const requestTermination = (cause: TerminationCause): void => {
-        if (settled || terminationCause !== undefined) {
+        if (settled || startupFailureClaimed || terminationCause !== undefined) {
           return;
         }
         terminationCause = cause;
@@ -159,11 +159,19 @@ export class SpawnRunner implements Runner {
         void terminationTask;
       };
 
-      child.once('error', () => {
+      child.once('error', (error) => {
         completeChild();
-        if (terminationCause === undefined) {
-          settle({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+        if (settled || startupFailureClaimed || terminationCause !== undefined) {
+          return;
         }
+        // Claim the startup failure synchronously. `stat()` is asynchronous, so close,
+        // cancellation, or timeout must not settle the run while classification is pending.
+        startupFailureClaimed = true;
+        clearRunTimeout();
+        unsubscribeCancel();
+        void classifyStartFailure(error, cwd).then((reason) =>
+          settle({ kind: 'failedToStart', reason }),
+        );
       });
 
       forwardLines(child.stdout, (line) => request.onOutput('stdout', line));
@@ -171,7 +179,7 @@ export class SpawnRunner implements Runner {
 
       child.once('close', (code) => {
         completeChild(code);
-        if (terminationCause === undefined) {
+        if (!startupFailureClaimed && terminationCause === undefined) {
           settle({ kind: 'exited', exitCode: closeCode ?? 1 });
         }
       });
@@ -183,6 +191,18 @@ export class SpawnRunner implements Runner {
 
       unsubscribeCancel = request.cancel.onCancel(() => requestTermination('cancelled'));
     });
+  }
+}
+
+/** ENOENT names both a missing executable and a bad cwd; inspect only the already-revealed cwd. */
+async function classifyStartFailure(error: Error, cwd: string): Promise<StartFailureReason> {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+    return 'other';
+  }
+  try {
+    return (await stat(cwd)).isDirectory() ? 'commandNotFound' : 'invalidCwd';
+  } catch {
+    return 'invalidCwd';
   }
 }
 

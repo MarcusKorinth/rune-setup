@@ -20,12 +20,15 @@ export interface SpawnRequest {
   readonly cancel: CancelToken;
 }
 
+/** Closed, value-free startup classification shared by every runner implementation. */
+export type StartFailureReason = 'commandNotFound' | 'invalidCwd' | 'shellRequired' | 'other';
+
 export type SpawnOutcome =
   | { readonly kind: 'exited'; readonly exitCode: number }
   | { readonly kind: 'timedOut' }
   | { readonly kind: 'cancelled' }
-  /** The process could not be started at all — a missing command, an invalid directory. */
-  | { readonly kind: 'failedToStart'; readonly message: string };
+  /** The process could not be started; arbitrary platform error text never crosses this seam. */
+  | { readonly kind: 'failedToStart'; readonly reason: StartFailureReason };
 
 export interface Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome>;

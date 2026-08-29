@@ -25,7 +25,7 @@ export type RuneCode =
   | 'RUNE-302' // interpolation syntax
   | 'RUNE-311' // condition syntax
   | 'RUNE-312' // condition type error
-  | 'RUNE-401' // step exit code
+  | 'RUNE-401' // step exit code or unclassified execution failure
   | 'RUNE-402' // step timeout
   | 'RUNE-403' // command not found
   | 'RUNE-404' // invalid working directory

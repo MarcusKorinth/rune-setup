@@ -23,7 +23,7 @@ import { isSecretString, MASK, type SecretMasker, type SecretString } from './se
 import { CancelToken } from './cancel.js';
 import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
-import type { Runner } from '../runners/base.js';
+import type { Runner, StartFailureReason } from '../runners/base.js';
 import {
   EXIT_CODE_BY_STATUS,
   RESULT_SCHEMA_VERSION,
@@ -36,9 +36,6 @@ import {
 
 /** How many lines of a failed step's output the result file keeps (§7). */
 export const OUTPUT_TAIL_LINES = 50;
-
-/** Runner failures must not surface exception text that can contain command values. */
-const RUNNER_FAILURE_MESSAGE = 'runner failed before reporting an outcome';
 
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
@@ -158,30 +155,31 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
           },
           () => {
             acceptingOutput = false;
-            return { kind: 'failedToStart', message: RUNNER_FAILURE_MESSAGE } as const;
+            return { kind: 'failedToStart', reason: 'other' } as const;
           },
         );
     } catch {
       acceptingOutput = false;
-      outcome = { kind: 'failedToStart', message: RUNNER_FAILURE_MESSAGE };
+      outcome = { kind: 'failedToStart', reason: 'other' };
     }
 
     const durationMs = Date.now() - stepStart;
     let state: StepState;
     let exitCode: number | null = null;
+    let diagnostic: string | undefined;
 
     switch (outcome.kind) {
-      case 'exited':
+      case 'exited': {
         exitCode = outcome.exitCode;
         state = step.command.successExitCodes.includes(outcome.exitCode) ? 'SUCCEEDED' : 'FAILED';
+        if (state === 'FAILED') {
+          diagnostic = `RUNE-401 step "${step.id}" exited with code ${outcome.exitCode}; expected one of [${step.command.successExitCodes.join(', ')}]`;
+        }
         break;
+      }
       case 'timedOut': {
         state = 'FAILED';
-        const line = secrets.mask(
-          `step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`,
-        );
-        emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
-        keepInTail('stderr', line);
+        diagnostic = `RUNE-402 step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
         break;
       }
       case 'cancelled':
@@ -189,11 +187,15 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         break;
       case 'failedToStart': {
         state = 'FAILED';
-        const line = secrets.mask(`step "${step.id}" could not be started: ${outcome.message}`);
-        emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
-        keepInTail('stderr', line);
+        diagnostic = startFailureDiagnostic(step.id, outcome.reason);
         break;
       }
+    }
+
+    if (diagnostic !== undefined) {
+      const line = secrets.mask(diagnostic);
+      keepInTail('stderr', line);
+      emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
     }
 
     if (state === 'FAILED') {
@@ -229,6 +231,19 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   emit({ kind: 'runFinished', result });
   return result;
+}
+
+function startFailureDiagnostic(stepId: string, reason: StartFailureReason): string {
+  switch (reason) {
+    case 'commandNotFound':
+      return `RUNE-403 step "${stepId}" command was not found`;
+    case 'invalidCwd':
+      return `RUNE-404 step "${stepId}" working directory is invalid`;
+    case 'shellRequired':
+      return `RUNE-405 step "${stepId}" requires an explicit command interpreter`;
+    case 'other':
+      return `RUNE-401 step "${stepId}" runner failed while starting the process`;
+  }
 }
 
 /** The result of a dry-run: the plan described, nothing executed (§10, status `planned`). */

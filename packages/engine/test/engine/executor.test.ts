@@ -140,7 +140,14 @@ describe('a run that succeeds', () => {
       }),
     });
 
-    expect(events.map((event) => Object.isFrozen(event))).toEqual([true, true, true, true, true]);
+    expect(events.map((event) => Object.isFrozen(event))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
     expect(events[0]?.kind === 'runStarted' && Object.isFrozen(events[0].plan)).toBe(true);
     const finishedEvent = events.at(-1);
     expect(finishedEvent?.kind === 'runFinished' && Object.isFrozen(finishedEvent.result)).toBe(
@@ -187,6 +194,7 @@ describe('a run that succeeds', () => {
     expect(events.map((event) => event.kind)).toEqual([
       'runStarted',
       'stepStarted',
+      'stepOutput',
       'stepOutput',
       'stepFinished',
       'runFinished',
@@ -259,7 +267,13 @@ describe('a run that succeeds', () => {
     expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
     expect(result.inputs[0]?.id).toBe('setting');
     expect(result.steps[0]).toMatchObject({ state: 'FAILED' });
-    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line: 'failure details' }]);
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'failure details' },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "failed" exited with code 1; expected one of [0]',
+      },
+    ]);
   });
 });
 
@@ -308,7 +322,13 @@ describe('a run that fails', () => {
       }),
     });
 
-    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stdout', line: 'the token is ***' }]);
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stdout', line: 'the token is ***' },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "first" exited with code 1; expected one of [0]',
+      },
+    ]);
     expect(result.steps[1]).not.toHaveProperty('outputTail');
   });
 
@@ -329,7 +349,13 @@ describe('a run that fails', () => {
       }),
     });
 
-    expect(result.steps[0]?.outputTail).toEqual(lines.slice(1));
+    expect(result.steps[0]?.outputTail).toEqual([
+      ...lines.slice(2),
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "noisy" exited with code 1; expected one of [0]',
+      },
+    ]);
     expect(result.steps[0]?.outputTail).toHaveLength(OUTPUT_TAIL_LINES);
   });
 
@@ -387,11 +413,16 @@ describe('a run that fails', () => {
     expect(outputEvents.map((event) => event.line)).toEqual([
       OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
       'follow ***',
+      'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
     ]);
     expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
     expect(result.steps[0]?.outputTail).toEqual([
       { stream: 'stdout', line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER },
       { stream: 'stdout', line: 'follow ***' },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
+      },
     ]);
 
     const serializedSinks = JSON.stringify({ events, result, tail: result.steps[0]?.outputTail });
@@ -417,16 +448,71 @@ describe('a run that fails', () => {
     expect(result.status).toBe('succeeded');
   });
 
-  it('treats a command that cannot start as a failed step, not a crash', async () => {
-    const { plan } = setup(TWO_STEPS);
+  it('reports an exact non-success exit diagnostic with the configured success codes', async () => {
+    const { plan } = setup([
+      'steps:',
+      '  - id: custom-codes',
+      '    run:',
+      '      command: a',
+      '      successExitCodes: [0, 2, 4]',
+    ]);
 
     const result = await executeRun({
       plan,
-      runner: stubRunner(() => ({ kind: 'failedToStart', message: 'spawn a ENOENT' })),
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 3 })),
+    });
+
+    expect(result.steps[0]?.outputTail).toEqual([
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "custom-codes" exited with code 3; expected one of [0, 2, 4]',
+      },
+    ]);
+  });
+
+  it.each([
+    ['commandNotFound', 'RUNE-403 step "classified" command was not found'],
+    ['invalidCwd', 'RUNE-404 step "classified" working directory is invalid'],
+    ['shellRequired', 'RUNE-405 step "classified" requires an explicit command interpreter'],
+    ['other', 'RUNE-401 step "classified" runner failed while starting the process'],
+  ] as const)('reports failedToStart reason %s with a stable diagnostic', async (reason, line) => {
+    const { plan } = setup(['steps:', '  - id: classified', '    run:', '      command: a']);
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner(() => ({ kind: 'failedToStart', reason })),
     });
 
     expect(result.status).toBe('failed');
-    expect(result.steps[0]?.outputTail?.[0]?.line).toContain('could not be started');
+    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line }]);
+  });
+
+  it('masks secret collisions only after constructing the complete diagnostic', async () => {
+    const secret = 'private-step\ncommand was not found';
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: private-step',
+        '    run:',
+        '      command: a',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner(() => ({ kind: 'failedToStart', reason: 'commandNotFound' })),
+    });
+    const line = result.steps[0]?.outputTail?.[0]?.line;
+
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'RUNE-403 step "***" ***' },
+    ]);
+    expect(line).not.toContain('private-step');
+    expect(line).not.toContain('command was not found');
   });
 
   it('contains a rejecting runner and completes the event bracket', async () => {
@@ -445,7 +531,7 @@ describe('a run that fails', () => {
     expect(result.steps[0]?.outputTail).toEqual([
       {
         stream: 'stderr',
-        line: 'step "rejected" could not be started: runner failed before reporting an outcome',
+        line: 'RUNE-401 step "rejected" runner failed while starting the process',
       },
     ]);
     expect(events.map((event) => event.kind)).toEqual([
@@ -489,7 +575,12 @@ describe('a run that fails', () => {
       'stepFinished',
       'runFinished',
     ]);
-    expect(result.steps[0]?.outputTail?.[0]?.line).toContain('process could not be started');
+    expect(result.steps[0]?.outputTail).toEqual([
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "invalid-argument" runner failed while starting the process',
+      },
+    ]);
     expect(serialized).not.toContain('needle-before');
     expect(serialized).not.toContain('needle-after');
     expect(serialized).not.toContain('\\u0000');
@@ -547,7 +638,7 @@ describe('a run that fails', () => {
     expect(result.steps[0]?.outputTail).toEqual([
       {
         stream: 'stderr',
-        line: 'step "late-output" could not be started: runner failed before reporting an outcome',
+        line: 'RUNE-401 step "late-output" runner failed while starting the process',
       },
     ]);
     expect(events.map((event) => event.kind)).toEqual([
@@ -973,17 +1064,21 @@ describe('cancellation and timeout', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(lines.at(-1)).toContain('exceeded its timeout of 1 seconds');
+    expect(lines.at(-1)).toBe('RUNE-402 step "slow" exceeded its timeout of 1 seconds');
   });
 
   it.each([
     {
       outcome: { kind: 'timedOut' as const },
-      expected: 'exceeded its timeout of 1 seconds',
+      expected: 'RUNE-402 step "outcome" exceeded its timeout of 1 seconds',
     },
     {
-      outcome: { kind: 'failedToStart' as const, message: 'spawn failed' },
-      expected: 'could not be started: spawn failed',
+      outcome: { kind: 'failedToStart' as const, reason: 'commandNotFound' as const },
+      expected: 'RUNE-403 step "outcome" command was not found',
+    },
+    {
+      outcome: { kind: 'exited' as const, exitCode: 7 },
+      expected: 'RUNE-401 step "outcome" exited with code 7; expected one of [0]',
     },
   ])(
     'keeps the synthetic $outcome.kind line as the newest tail entry',
@@ -1013,7 +1108,7 @@ describe('cancellation and timeout', () => {
           stream: 'stdout' as const,
           line: `normal-${index + 1}`,
         })),
-        { stream: 'stderr', line: expect.stringContaining(expected) },
+        { stream: 'stderr', line: expected },
       ]);
     },
   );
@@ -1199,7 +1294,13 @@ describe('skipped steps and the dry run', () => {
     expect(result.steps[0]).toMatchObject({
       title: `*** ${later}`,
       command: ['***', later],
-      outputTail: [{ stream: 'stderr', line: `*** ${later}` }],
+      outputTail: [
+        { stream: 'stderr', line: `*** ${later}` },
+        {
+          stream: 'stderr',
+          line: 'RUNE-401 step "use" exited with code 1; expected one of [0]',
+        },
+      ],
     });
   });
 
@@ -1499,7 +1600,13 @@ describe('the plan execution context', () => {
     });
 
     expect(result.inputs[0]).toMatchObject({ value: null, secret: true });
-    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line: 'leaked ***' }]);
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'leaked ***' },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "use" exited with code 1; expected one of [0]',
+      },
+    ]);
     expect(JSON.stringify(result)).not.toContain('bound-secret');
   });
 
@@ -1667,22 +1774,29 @@ describe('the result run block', () => {
       };
       expect(Object.hasOwn(serialized.steps[0]!, 'outputTail')).toBe(false);
     }
-    expect(failedWithoutOutput.steps[0]?.outputTail).toEqual([]);
+    const failureDiagnostic = {
+      stream: 'stderr' as const,
+      line: 'RUNE-401 step "first" exited with code 1; expected one of [0]',
+    };
+    expect(failedWithoutOutput.steps[0]?.outputTail).toEqual([failureDiagnostic]);
     expect(Object.hasOwn(failedWithoutOutput.steps[0]!, 'outputTail')).toBe(true);
     const serializedFailedWithoutOutput = JSON.parse(serializeResult(failedWithoutOutput)) as {
       steps: Array<Record<string, unknown>>;
     };
     expect(Object.hasOwn(serializedFailedWithoutOutput.steps[0]!, 'outputTail')).toBe(true);
-    expect(serializedFailedWithoutOutput.steps[0]).toMatchObject({ outputTail: [] });
+    expect(serializedFailedWithoutOutput.steps[0]).toMatchObject({
+      outputTail: [failureDiagnostic],
+    });
     expect(failedWithTail.steps[0]?.outputTail).toEqual([
       { stream: 'stderr', line: 'failure details' },
+      failureDiagnostic,
     ]);
     const serializedFailedWithTail = JSON.parse(serializeResult(failedWithTail)) as {
       steps: Array<Record<string, unknown>>;
     };
     expect(Object.hasOwn(serializedFailedWithTail.steps[0]!, 'outputTail')).toBe(true);
     expect(serializedFailedWithTail.steps[0]).toMatchObject({
-      outputTail: [{ stream: 'stderr', line: 'failure details' }],
+      outputTail: [{ stream: 'stderr', line: 'failure details' }, failureDiagnostic],
     });
   });
 });
