@@ -17,8 +17,17 @@ describe('SecretString', () => {
     expect(String(secret)).toBe(MASK);
     expect(`${String(secret)}`).toBe(MASK);
     expect([secret].join('')).toBe(MASK);
-    expect(JSON.stringify(secret)).toBe('null');
-    expect(JSON.stringify({ token: secret })).toBe('{"token":null}');
+    expect(JSON.stringify(secret)).toBe('"***"');
+    expect(JSON.stringify({ token: secret })).toBe('{"token":"***"}');
+    const structured = JSON.stringify({
+      command: ['deploy', secret],
+      env: { RUNE_TOKEN: secret },
+      nested: [{ token: secret }],
+    });
+    expect(structured).toBe(
+      '{"command":["deploy","***"],"env":{"RUNE_TOKEN":"***"},"nested":[{"token":"***"}]}',
+    );
+    expect(structured).not.toContain('hunter2');
     expect(inspect(secret)).toBe(MASK);
     expect(inspect({ token: secret })).toContain(MASK);
     expect(inspect({ token: secret })).not.toContain('hunter2');

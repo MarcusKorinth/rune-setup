@@ -227,7 +227,7 @@ describe('secret', () => {
     expect(value).toBeInstanceOf(SecretString);
     expect(String(value)).toBe('***');
     expect(`${String(value)}`).not.toContain('hunter2');
-    expect(JSON.stringify({ value })).toBe('{"value":null}');
+    expect(JSON.stringify({ value })).toBe('{"value":"***"}');
     expect((value as SecretString).reveal()).toBe('hunter2');
   });
 
