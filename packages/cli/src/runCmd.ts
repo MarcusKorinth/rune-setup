@@ -6,20 +6,17 @@
  * `--non-interactive` follows the same non-interactive path.
  */
 
-import { randomUUID } from 'node:crypto';
-
 import {
   CancelledError,
-  EXIT_CODE_BY_STATUS,
   exitCodeFor,
-  RUNE_VERSION,
+  failureResult,
   RuneError,
   Session,
   UsageError,
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { RunMode, RunResult, RunStatus } from '@rune/engine';
+import type { RunMode, RunResult } from '@rune/engine';
 
 import { parseOverrides, parsePlatform, type RunFlags } from './args.js';
 
@@ -49,6 +46,9 @@ export async function runCommand(
     if (flags.result === '-') {
       throw new UsageError('--gui has no stdout contract; use --result <path>');
     }
+    // Malformed --set is the same CLI misuse in every mode: exit 2 here, never a shell
+    // crash there.
+    parseOverrides(flags.set ?? []);
     await launchGui(manifestPath, flags, io, interaction);
     return;
   }
@@ -175,10 +175,7 @@ function cancelledWithPlan(session: Session | undefined, error: RuneError): RunR
   }
 }
 
-/**
- * The result file of a run that never happened (§10): the failing status with zero
- * counters — honest about the fact that the pipeline refused before any plan existed.
- */
+/** The §10 zero-counter shell, built by the engine's one function for both hosts. */
 function failureShell(options: {
   session: Session | undefined;
   code: number;
@@ -187,49 +184,16 @@ function failureShell(options: {
   mode: RunMode;
 }): RunResult {
   const { session, code, flags } = options;
-  const now = new Date().toISOString();
-  const host = process.platform === 'win32' ? 'windows' : 'linux';
-  const platform =
-    flags.platform === 'windows' || flags.platform === 'linux' ? flags.platform : host;
-  return {
-    resultSchemaVersion: 1,
-    id: randomUUID(),
-    status: statusForExit(code),
+  return failureResult({
     exitCode: code,
     mode: options.mode,
+    manifestPath: options.manifestPath,
     dryRun: flags.dryRun === true,
-    crossPlatformPreview: platform !== host,
-    platform,
+    platform: flags.platform,
     locale: session?.getStrings().locale ?? null,
-    startedAt: now,
-    finishedAt: now,
-    durationMs: 0,
-    runeVersion: RUNE_VERSION,
-    // A manifest that failed to parse has no product to report; empty identity says so.
     product:
       session === undefined
-        ? { name: '', version: '' }
+        ? undefined
         : { name: session.manifest.product.name, version: session.manifest.product.version },
-    manifestPath: options.manifestPath,
-    stepsTotal: 0,
-    stepsExecuted: 0,
-    stepsSucceeded: 0,
-    stepsFailed: 0,
-    stepsCancelled: 0,
-    stepsSkipped: 0,
-    stepsNotRun: 0,
-    nothingExecuted: true,
-    inputs: [],
-    steps: [],
-  };
-}
-
-/** The §10 table read backwards: every exit code implies exactly one status. */
-function statusForExit(code: number): RunStatus {
-  for (const [status, exit] of Object.entries(EXIT_CODE_BY_STATUS)) {
-    if (exit === code && status !== 'planned' && status !== 'succeeded') {
-      return status as RunStatus;
-    }
-  }
-  return 'internal_error';
+  });
 }

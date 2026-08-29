@@ -15,6 +15,7 @@ import {
   RuneError,
   Session,
   exitCodeFor,
+  failureResult,
   writeResult,
   type RunEvent,
   type RunResult,
@@ -50,9 +51,11 @@ async function main(): Promise<void> {
     session = await openSession(invocation);
   } catch (error) {
     // A manifest or input error before any window exists: named on stderr, exit code from
-    // the one table. The §10 failure-shell result file arrives with the --gui wiring.
+    // the one table, and the §10 zero-counter result file — both hosts write it.
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    app.exit(error instanceof RuneError ? exitCodeFor(error) : 70);
+    const code = error instanceof RuneError ? exitCodeFor(error) : 70;
+    deliverFailure(code, invocation);
+    app.exit(code);
     return;
   }
 
@@ -133,6 +136,7 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
         `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
       );
       fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+      deliverFailure(fatalCode, invocation);
       window.close();
     },
     onRendererDone: () => {
@@ -251,17 +255,32 @@ function deliver(result: RunResult, invocation: ShellInvocation): void {
   }
 }
 
+function deliverFailure(exitCode: number, invocation: ShellInvocation): void {
+  if (invocation.result === undefined) {
+    return;
+  }
+  writeResult(
+    failureResult({
+      exitCode,
+      mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
+      manifestPath: invocation.manifestPath,
+    }),
+    invocation.result,
+  );
+}
+
 function failWith(error: unknown, invocation: ShellInvocation, session: Session): number {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  // Only a cancellation has a truthful result to leave behind here; the failure shells
-  // for other owned outcomes arrive with the rune run --gui wiring.
+  const code = error instanceof RuneError ? exitCodeFor(error) : 70;
   if (error instanceof CancelledError) {
     const cancelled = tryDescribeCancelled(session);
     if (cancelled !== undefined) {
       deliver(cancelled, invocation);
+      return code;
     }
   }
-  return error instanceof RuneError ? exitCodeFor(error) : 70;
+  deliverFailure(code, invocation);
+  return code;
 }
 
 function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
