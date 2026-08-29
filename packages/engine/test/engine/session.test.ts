@@ -4,11 +4,12 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import { InputError, InternalError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
-import type { Runner } from '../../src/runners/base.js';
+import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
 
@@ -152,6 +153,48 @@ describe('planning and executing', () => {
     rmdirSync(logFile);
     await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('rejects overlapping executions and keeps cancellation bound to the active run', async () => {
+    const cancel = new CancelToken();
+    let runnerCalls = 0;
+    let runnerStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      runnerStarted = resolve;
+    });
+    const run = vi.fn(async (request: SpawnRequest): Promise<SpawnOutcome> => {
+      runnerCalls += 1;
+      if (runnerCalls > 1) {
+        return { kind: 'exited', exitCode: 0 };
+      }
+      expect(request.cancel).toBe(cancel);
+      runnerStarted();
+      return await new Promise<SpawnOutcome>((resolve) => {
+        request.cancel.onCancel(() => resolve({ kind: 'cancelled' }));
+      });
+    });
+    const session = await Session.open(fixture(BASE), {
+      environment: {},
+      runner: { run },
+    });
+
+    const active = session.execute(undefined, cancel);
+    await started;
+
+    const overlappingObserver = vi.fn();
+    await expect(session.execute(overlappingObserver)).rejects.toMatchObject({
+      code: 'RUNE-500',
+      name: InternalError.name,
+    });
+    expect(run).toHaveBeenCalledOnce();
+    expect(overlappingObserver).not.toHaveBeenCalled();
+
+    session.cancel();
+    expect(cancel.cancelled).toBe(true);
+    await expect(active).resolves.toMatchObject({ status: 'cancelled', stepsCancelled: 1 });
+
+    await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it('describes a dry run without executing', async () => {

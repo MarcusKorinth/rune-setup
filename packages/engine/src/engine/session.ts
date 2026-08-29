@@ -8,7 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { InputError, type RuneIssue } from '../errors.js';
+import { InputError, InternalError, type RuneIssue } from '../errors.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
@@ -71,6 +71,10 @@ export interface SessionOptions {
   readonly runner?: Runner | undefined;
 }
 
+interface ActiveExecution {
+  readonly cancel: CancelToken;
+}
+
 export class Session {
   readonly manifest: Manifest;
   readonly manifestPath: string;
@@ -84,7 +88,7 @@ export class Session {
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
   #resolution: Resolution;
-  #cancel: CancelToken | undefined;
+  #activeExecution: ActiveExecution | undefined;
 
   private constructor(fields: {
     manifest: Manifest;
@@ -248,9 +252,12 @@ export class Session {
 
   /** Stages 5 and 6: runs the plan; resolves with the result when the run is over. */
   async execute(observer?: EngineObserver, cancel?: CancelToken): Promise<RunResult> {
+    if (this.#activeExecution !== undefined) {
+      throw new InternalError('a session cannot have more than one active execution');
+    }
     const plan = this.plan();
-    const token = cancel ?? new CancelToken();
-    this.#cancel = token;
+    const activeExecution = { cancel: cancel ?? new CancelToken() };
+    this.#activeExecution = activeExecution;
     let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
     try {
       log = this.#logFile === undefined ? undefined : await createLogFileSink(this.#logFile);
@@ -264,21 +271,23 @@ export class Session {
         product: this.manifest.product,
         secrets: this.#secrets,
         observer: observers,
-        cancel: token,
+        cancel: activeExecution.cancel,
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),
       });
     } finally {
       try {
         await log?.close();
       } finally {
-        this.#cancel = undefined;
+        if (this.#activeExecution === activeExecution) {
+          this.#activeExecution = undefined;
+        }
       }
     }
   }
 
   /** Fires the CancelToken of the running {@link execute} — the one flow for all frontends. */
   cancel(): void {
-    this.#cancel?.cancel();
+    this.#activeExecution?.cancel.cancel();
   }
 
   /** The fully resolved string table for the session's locale (§6.3). */
