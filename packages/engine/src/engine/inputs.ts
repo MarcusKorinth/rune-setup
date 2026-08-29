@@ -21,7 +21,7 @@ import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretString, type SecretRegistry } from './secrets.js';
+import { SecretRegistry, SecretString } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -80,6 +80,8 @@ export interface ResolveInputsOptions {
 export interface Resolution {
   readonly inputs: readonly InputState[];
   readonly byId: ReadonlyMap<string, InputState>;
+  /** The registry every secret in this resolution was registered with. */
+  readonly secrets: SecretRegistry;
   /**
    * Enabled required inputs still without an answer — what a frontend must ask for. A value
    * that resolves to nothing counts as no answer: an environment variable that was never set
@@ -103,6 +105,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
   const environment = options.environment ?? process.env;
+  const secrets = options.secrets ?? new SecretRegistry();
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -174,11 +177,11 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       continue;
     }
 
-    if (handler.secret && options.secrets !== undefined) {
+    if (handler.secret) {
       // The one place that unwraps a secret outside the runner: it has to know the text to
       // be able to remove it from everything a run prints (§10).
       const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
-      if (text !== '' && !options.secrets.register(text)) {
+      if (text !== '' && !secrets.register(text)) {
         warnings.push(
           `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
         );
@@ -207,6 +210,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   return {
     inputs,
     byId: states,
+    secrets,
     missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
     warnings,
     problems: issues,

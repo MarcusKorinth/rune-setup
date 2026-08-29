@@ -16,8 +16,9 @@ import { inputTypes } from '../inputs/registry.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import type { Resolution } from './inputs.js';
+import type { InputState, Resolution, ValueSource } from './inputs.js';
 import { SecretString } from './secrets.js';
+import type { SecretRegistry } from './secrets.js';
 
 /**
  * A command ready to spawn. Any piece whose rendering touched a secret input stays wrapped
@@ -64,6 +65,34 @@ export interface PlanOptions {
   readonly context: RuntimeContext;
 }
 
+/** Result metadata bound to one concrete plan without becoming part of its public JSON. */
+export interface PlanInputSnapshot {
+  readonly id: string;
+  readonly value: string | boolean | readonly string[] | null;
+  readonly source: ValueSource | null;
+  readonly secret: boolean;
+  readonly enabled: boolean;
+  readonly ignored: ValueSource | undefined;
+}
+
+/** Execution-only context. Deliberately not re-exported from the package entry point. */
+export interface PlanExecutionContext {
+  readonly product: { readonly name: string; readonly version: string };
+  readonly inputs: readonly PlanInputSnapshot[];
+  readonly secrets: SecretRegistry;
+}
+
+const executionContexts = new WeakMap<ExecutionPlan, PlanExecutionContext>();
+
+/** Returns the context belonging to this exact plan instance, or fails closed. */
+export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
+  const executionContext = executionContexts.get(plan);
+  if (executionContext === undefined) {
+    throw new InternalError('the execution plan was not created by buildPlan');
+  }
+  return executionContext;
+}
+
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
 export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
@@ -99,13 +128,46 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     };
   });
 
-  return deepFreeze({
+  const plan = deepFreeze({
     manifestPath: options.manifestPath,
     platform: context.platform,
     preview: context.preview,
     failFast: manifest.execution.failFast,
     logFile: manifest.execution.logFile,
     steps,
+  });
+  executionContexts.set(plan, snapshotExecutionContext(manifest, resolution));
+  return plan;
+}
+
+function snapshotExecutionContext(
+  manifest: ManifestV1,
+  resolution: Resolution,
+): PlanExecutionContext {
+  const product = Object.freeze({
+    name: manifest.product.name,
+    version: manifest.product.version,
+  });
+  const inputs = Object.freeze(resolution.inputs.map(snapshotInput));
+  return Object.freeze({ product, inputs, secrets: resolution.secrets });
+}
+
+function snapshotInput(state: InputState): PlanInputSnapshot {
+  const secret = state.spec.type === 'secret' || state.value instanceof SecretString;
+  const value =
+    secret || state.value === undefined
+      ? null
+      : Array.isArray(state.value)
+        ? Object.freeze([...state.value])
+        : state.value;
+
+  return Object.freeze({
+    id: state.id,
+    value,
+    source: state.source ?? state.ignored ?? null,
+    secret,
+    enabled: state.enabled,
+    ignored: state.ignored,
   });
 }
 
@@ -239,7 +301,7 @@ function resolveCommand(
     cwd,
     env,
     timeoutSeconds: spec.timeoutSeconds,
-    successExitCodes: spec.successExitCodes,
+    successExitCodes: [...spec.successExitCodes],
   };
 }
 

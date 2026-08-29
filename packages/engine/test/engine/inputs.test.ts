@@ -543,8 +543,19 @@ describe('secrets', () => {
     });
 
     expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect(resolution.secrets).toBe(secrets);
     expect(secrets.size).toBe(1);
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
+  });
+
+  it('creates and owns a registry when the caller does not supply one', () => {
+    const resolution = resolve(manifest, {
+      overrides: new Map([['token', 'hunter2-and-more']]),
+    });
+
+    expect(resolution.secrets).toBeInstanceOf(SecretRegistry);
+    expect(resolution.secrets.size).toBe(1);
+    expect(resolution.secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
 
   it('warns about a secret too short to mask instead of failing or staying silent', () => {

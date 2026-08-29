@@ -3,12 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { describePlan, executeRun } from '../../src/engine/executor.js';
-import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
+import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import { parseManifestText } from '../../src/manifest/index.js';
+import type { CommandSpec, ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 
@@ -24,9 +25,7 @@ function setup(
   options: { overrides?: ReadonlyMap<string, string>; failFast?: boolean } = {},
 ): {
   plan: ExecutionPlan;
-  resolution: Resolution;
   secrets: SecretRegistry;
-  product: { name: string; version: string };
 } {
   const failFastLine = options.failFast === false ? ['execution:', '  failFast: false'] : [];
   const manifest = parseManifestText(
@@ -49,9 +48,7 @@ function setup(
   });
   return {
     plan: buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context }),
-    resolution,
     secrets,
-    product: manifest.product,
   };
 }
 
@@ -67,14 +64,11 @@ const TWO_STEPS = [
 
 describe('a run that succeeds', () => {
   it('walks every step, emits the event bracket, and counts what happened', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
     const events: RunEvent[] = [];
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         request.onOutput('stdout', `running ${request.command.argv[0]}`);
@@ -105,14 +99,11 @@ describe('a run that succeeds', () => {
   });
 
   it('hands every child the run and step ids', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
     const seen: string[] = [];
 
     await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner((request) => {
         seen.push(`${request.extraEnv['RUNE_STEP_ID']}`);
         expect(request.extraEnv['RUNE_RUN_ID']).toBeTruthy();
@@ -126,13 +117,10 @@ describe('a run that succeeds', () => {
 
 describe('a run that fails', () => {
   it('stops at the first failure under failFast and marks the rest NOT_RUN', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner((request) => {
         request.onOutput('stderr', 'boom');
         return { kind: 'exited', exitCode: 3 };
@@ -146,14 +134,11 @@ describe('a run that fails', () => {
   });
 
   it('keeps walking without failFast, and the run still ends failed', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS, { failFast: false });
+    const { plan } = setup(TWO_STEPS, { failFast: false });
     let call = 0;
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner(() => ({ kind: 'exited', exitCode: (call += 1) === 1 ? 9 : 0 })),
     });
 
@@ -161,7 +146,7 @@ describe('a run that fails', () => {
   });
 
   it('keeps the masked tail of a failed step, and only of a failed step', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS, {
+    const { plan, secrets } = setup(TWO_STEPS, {
       failFast: false,
     });
     secrets.register('super-secret');
@@ -169,9 +154,6 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner((request) => {
         request.onOutput('stdout', 'the token is super-secret');
         return { kind: 'exited', exitCode: (call += 1) === 1 ? 1 : 0 };
@@ -183,7 +165,7 @@ describe('a run that fails', () => {
   });
 
   it('honours successExitCodes instead of assuming zero', async () => {
-    const { plan, resolution, secrets, product } = setup([
+    const { plan } = setup([
       'steps:',
       '  - id: robocopy-style',
       '    run:',
@@ -193,9 +175,6 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
     });
 
@@ -203,13 +182,10 @@ describe('a run that fails', () => {
   });
 
   it('treats a command that cannot start as a failed step, not a crash', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner(() => ({ kind: 'failedToStart', message: 'spawn a ENOENT' })),
     });
 
@@ -220,14 +196,11 @@ describe('a run that fails', () => {
 
 describe('cancellation and timeout', () => {
   it('marks the interrupted step CANCELLED, the rest NOT_RUN, and the run cancelled', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
     const cancel = new CancelToken();
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       cancel,
       runner: stubRunner(() => {
         cancel.cancel();
@@ -240,7 +213,7 @@ describe('cancellation and timeout', () => {
   });
 
   it('treats a timeout as a step failure, with the timeout named in the output', async () => {
-    const { plan, resolution, secrets, product } = setup([
+    const { plan } = setup([
       'steps:',
       '  - id: slow',
       '    run:',
@@ -251,9 +224,6 @@ describe('cancellation and timeout', () => {
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       observer: (event) => {
         if (event.kind === 'stepOutput') {
           lines.push(event.line);
@@ -281,14 +251,11 @@ describe('skipped steps and the dry run', () => {
   ];
 
   it('emits one StepFinished for a skipped step and nothing else', async () => {
-    const { plan, resolution, secrets, product } = setup(CONDITIONAL);
+    const { plan } = setup(CONDITIONAL);
     const events: RunEvent[] = [];
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       observer: (event) => events.push(event),
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
     });
@@ -302,9 +269,9 @@ describe('skipped steps and the dry run', () => {
   });
 
   it('describes a plan without executing anything', () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
 
-    const result = describePlan({ plan, resolution, product, secrets });
+    const result = describePlan({ plan });
 
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
@@ -323,17 +290,14 @@ describe('skipped steps and the dry run', () => {
       platform: foreign,
       environment: {},
     });
-    const secrets = new SecretRegistry();
-    const resolution = resolveInputs({ manifest, context, environment: {}, secrets });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
     const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
 
-    await expect(
-      executeRun({ plan, resolution, product: manifest.product, secrets }),
-    ).rejects.toThrow(/preview plan/);
+    await expect(executeRun({ plan })).rejects.toThrow(/preview plan/);
   });
 
   it('masks a secret in the argv a result shows', async () => {
-    const { plan, resolution, secrets, product } = setup(
+    const { plan } = setup(
       [
         'inputs:',
         '  token:',
@@ -347,14 +311,14 @@ describe('skipped steps and the dry run', () => {
       { overrides: new Map([['token', 'super-secret-value']]) },
     );
 
-    const result = describePlan({ plan, resolution, product, secrets });
+    const result = describePlan({ plan });
 
     expect(result.steps[0]?.command).toEqual(['a', '--token', '***']);
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 
   it('never lets a secret reach an observer, not even inside RunStarted', async () => {
-    const { plan, resolution, secrets, product } = setup(
+    const { plan } = setup(
       [
         'inputs:',
         '  token:',
@@ -371,9 +335,6 @@ describe('skipped steps and the dry run', () => {
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       observer: (event) => events.push(event),
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
     });
@@ -383,16 +344,138 @@ describe('skipped steps and the dry run', () => {
   });
 });
 
+describe('the plan execution context', () => {
+  it('uses the product and input snapshots bound when the plan was built', async () => {
+    const manifest = structuredClone(
+      parseManifestText(
+        [
+          ...HEAD,
+          'inputs:',
+          '  tools:',
+          '    type: multiselect',
+          '    options: [git, docker]',
+          'steps:',
+          '  - id: use',
+          '    run:',
+          '      command: a',
+          '      successExitCodes: [0]',
+          '',
+        ].join('\n'),
+        'installer.yaml',
+      ),
+    ) as ManifestV1;
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['tools', 'git,docker']]),
+    });
+    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+
+    Object.assign(manifest.product, { name: 'Changed', version: '9.9.9' });
+    (resolution.inputs[0]?.value as string[]).push('changed');
+    Object.assign(resolution.inputs[0] as object, {
+      id: 'changed',
+      source: 'answer',
+      enabled: false,
+      ignored: 'set',
+    });
+    const command = manifest.steps[0]?.run as CommandSpec;
+    (command.successExitCodes as number[]).push(1);
+
+    const described = describePlan({ plan });
+    const executed = await executeRun({
+      plan,
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+    });
+
+    for (const result of [described, executed]) {
+      expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
+      expect(result.inputs[0]).toMatchObject({
+        id: 'tools',
+        value: ['git', 'docker'],
+        source: 'set',
+        enabled: true,
+        ignored: null,
+      });
+    }
+    expect(executed.status).toBe('failed');
+  });
+
+  it('uses the registry created by resolution to mask child and result output', async () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: a',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['token', 'bound-secret']]),
+    });
+    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', 'leaked bound-secret');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(result.inputs[0]).toMatchObject({ value: null, secret: true });
+    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line: 'leaked ***' }]);
+    expect(JSON.stringify(result)).not.toContain('bound-secret');
+  });
+
+  it('rejects copied or forged plan instances before running anything', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const copiedPlan = { ...plan } as ExecutionPlan;
+    let runs = 0;
+
+    expect(() => describePlan({ plan: copiedPlan })).toThrow(/not created by buildPlan/);
+    await expect(
+      executeRun({
+        plan: copiedPlan,
+        runner: stubRunner(() => {
+          runs += 1;
+          return { kind: 'exited', exitCode: 0 };
+        }),
+      }),
+    ).rejects.toThrow(/not created by buildPlan/);
+    expect(runs).toBe(0);
+  });
+});
+
 describe('the result run block', () => {
   it('records the run id every child saw', async () => {
-    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const { plan } = setup(TWO_STEPS);
     const seen: string[] = [];
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner((request) => {
         seen.push(`${request.extraEnv['RUNE_RUN_ID']}`);
         return { kind: 'exited', exitCode: 0 };
@@ -404,7 +487,7 @@ describe('the result run block', () => {
   });
 
   it('keeps the provenance of a value that was ignored for a disabled input', async () => {
-    const { plan, resolution, secrets, product } = setup(
+    const { plan } = setup(
       [
         'inputs:',
         '  installDatabase:',
@@ -423,9 +506,6 @@ describe('the result run block', () => {
 
     const result = await executeRun({
       plan,
-      resolution,
-      product,
-      secrets,
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
     });
 

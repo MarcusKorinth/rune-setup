@@ -10,8 +10,13 @@ import { randomUUID } from 'node:crypto';
 
 import { InternalError } from '../errors.js';
 import { RUNE_VERSION } from '../version.js';
-import type { InputState, Resolution } from './inputs.js';
-import type { ExecutionPlan, PlannedStep } from './plan.js';
+import {
+  executionContextFor,
+  type ExecutionPlan,
+  type PlanExecutionContext,
+  type PlanInputSnapshot,
+  type PlannedStep,
+} from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import type { SecretRegistry } from './secrets.js';
 import { MASK, SecretString } from './secrets.js';
@@ -33,9 +38,6 @@ export const OUTPUT_TAIL_LINES = 50;
 
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
-  readonly product: { readonly name: string; readonly version: string };
-  readonly secrets: SecretRegistry;
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
@@ -43,7 +45,9 @@ export interface ExecuteOptions {
 
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
 export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
-  const { plan, secrets } = options;
+  const { plan } = options;
+  const executionContext = executionContextFor(plan);
+  const { secrets } = executionContext;
   if (plan.preview) {
     throw new InternalError(
       'a cross-platform preview plan can only be described, never executed (§6.1)',
@@ -181,8 +185,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const result = assembleResult({
     runId,
     plan,
-    resolution: options.resolution,
-    product: options.product,
+    executionContext,
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
     dryRun: false,
@@ -195,25 +198,20 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 }
 
 /** The result of a dry-run: the plan described, nothing executed (§10, status `planned`). */
-export function describePlan(options: {
-  readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
-  readonly product: { readonly name: string; readonly version: string };
-  readonly secrets: SecretRegistry;
-}): RunResult {
+export function describePlan(options: { readonly plan: ExecutionPlan }): RunResult {
+  const executionContext = executionContextFor(options.plan);
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
     if (step.state === 'SKIPPED') {
       return finishedStep(step, 'SKIPPED', null, 0, null, null);
     }
-    return finishedStep(step, 'PENDING', null, 0, maskArgv(step, options.secrets), null);
+    return finishedStep(step, 'PENDING', null, 0, maskArgv(step, executionContext.secrets), null);
   });
 
   return assembleResult({
     runId: randomUUID(),
     plan: options.plan,
-    resolution: options.resolution,
-    product: options.product,
+    executionContext,
     steps,
     status: 'planned',
     dryRun: true,
@@ -225,8 +223,7 @@ export function describePlan(options: {
 function assembleResult(input: {
   readonly runId: string;
   readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
-  readonly product: { readonly name: string; readonly version: string };
+  readonly executionContext: PlanExecutionContext;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
   readonly dryRun: boolean;
@@ -249,7 +246,7 @@ function assembleResult(input: {
     finishedAt: input.finishedAt.toISOString(),
     durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
     runeVersion: RUNE_VERSION,
-    product: input.product,
+    product: input.executionContext.product,
     manifestPath: input.plan.manifestPath,
     stepsTotal: steps.length,
     stepsExecuted: executed,
@@ -259,22 +256,19 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.resolution.inputs.map(resultInput),
+    inputs: input.executionContext.inputs.map(resultInput),
     steps,
   };
 }
 
-function resultInput(state: InputState): ResultInput {
-  const handler = state.spec.type === 'secret';
-  const value = state.value;
-
+function resultInput(state: PlanInputSnapshot): ResultInput {
   return {
     id: state.id,
-    value: handler || value instanceof SecretString ? null : (value ?? null),
+    value: state.value,
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
-    source: state.source ?? state.ignored ?? null,
-    secret: handler,
+    source: state.source,
+    secret: state.secret,
     enabled: state.enabled,
     ignored: state.ignored === undefined ? null : 'input disabled',
   };
