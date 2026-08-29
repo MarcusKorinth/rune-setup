@@ -235,6 +235,8 @@ RUNE's own UI strings ("chrome": wizard buttons such as Next/Back/Cancel/Install
 
 **Fallback chain, per string:** requested locale overlay → the manifest's own text (for manifest strings) / the English built-in (for chrome strings). Fallback is per key, never per file: a partial overlay is valid and fills the gaps from the defaults.
 
+Summary action tokens are trimmed and case-normalized like interactive CLI input. Their effective overlay-or-default values must be non-empty, distinct, must not consist only of digits, and must not shadow the fixed alias of the opposite action (`proceedToken` must not be `cancel`; `cancelToken` must not be `proceed`); an invalid overlay is a located RUNE-104 error.
+
 **What the engine emits.** Localized titles are what appear in events (`StepStarted.title`), prompts, dry-run output, the GUI, and `result.json`; the result file additionally carries the never-localized input and step **ids**, so machine consumers never depend on a locale. `getStrings()` on the `Session` facade (§9.1) returns the fully resolved string table for the session's locale — the one table every frontend renders; there is no per-call locale, so no frontend can mix locales.
 
 ## 7) Execution model

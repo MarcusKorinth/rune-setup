@@ -6,6 +6,19 @@
  * English built-ins only; every other language comes from the manifest author's overlays.
  */
 
+export const SUMMARY_ACTIONS = Object.freeze({
+  proceed: Object.freeze({
+    alias: 'proceed',
+    tokenKey: 'rune.summary.proceedToken',
+    defaultToken: 'p',
+  }),
+  cancel: Object.freeze({
+    alias: 'cancel',
+    tokenKey: 'rune.summary.cancelToken',
+    defaultToken: 'c',
+  }),
+});
+
 export const CHROME_CATALOG: ReadonlyMap<string, string> = new Map([
   ['rune.button.next', 'Next'],
   ['rune.button.back', 'Back'],
@@ -24,10 +37,10 @@ export const CHROME_CATALOG: ReadonlyMap<string, string> = new Map([
   ['rune.prompt.proceed', 'Proceed with these values?'],
   ['rune.summary.heading', 'Review your configuration'],
   ['rune.summary.proceed', 'Proceed'],
-  ['rune.summary.proceedToken', 'p'],
+  [SUMMARY_ACTIONS.proceed.tokenKey, SUMMARY_ACTIONS.proceed.defaultToken],
   ['rune.summary.change', 'Change a value'],
   ['rune.summary.cancel', 'Cancel'],
-  ['rune.summary.cancelToken', 'c'],
+  [SUMMARY_ACTIONS.cancel.tokenKey, SUMMARY_ACTIONS.cancel.defaultToken],
   ['rune.summary.notSet', '(not set)'],
   ['rune.summary.invalidChoice', '"{choice}" is not {proceed}, {cancel}, or the number of a value'],
   ['rune.run.cancelling', 'cancelling - press Ctrl+C again to force quit'],
@@ -38,6 +51,11 @@ export const CHROME_CATALOG: ReadonlyMap<string, string> = new Map([
   ['rune.result.planned', 'Dry run: nothing was executed.'],
   ['rune.result.nothingExecuted', 'No step needed to run.'],
 ]);
+
+/** The one normalization used for configured summary tokens and entered choices. */
+export function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
+}
 
 /**
  * Fills `{name}` placeholders in a chrome string. Single pass over the template, and a

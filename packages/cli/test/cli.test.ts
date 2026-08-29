@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -70,9 +70,41 @@ describe('rune validate', () => {
     expect(await run(['validate', path], io)).toBe(3);
     expect(io.err.join('\n')).toContain('product');
   });
+
+  it('rejects an invalid summary token in every overlay', async () => {
+    const path = fixture(MANIFEST);
+    const overlayPath = join(path, '..', 'locales', 'de.yaml');
+    mkdirSync(join(path, '..', 'locales'));
+    writeFileSync(overlayPath, 'rune.summary.proceedToken: c\n', 'utf8');
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', 'fr'], io)).toBe(3);
+    expect(io.err.join('\n')).toContain(
+      `${overlayPath}:1:1: rune.summary.proceedToken must differ from rune.summary.cancelToken`,
+    );
+  });
 });
 
 describe('rune run', () => {
+  it('rejects invalid summary tokens in the selected overlay before execution', async () => {
+    const path = fixture(MANIFEST);
+    const overlayPath = join(path, '..', 'locales', 'de.yaml');
+    mkdirSync(join(path, '..', 'locales'));
+    writeFileSync(overlayPath, 'rune.summary.cancelToken: p\n', 'utf8');
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--non-interactive', '--locale', 'de', '--set', 'greeting=hello'],
+      io,
+    );
+
+    expect(code).toBe(3);
+    expect(io.err.join('\n')).toContain(
+      `${overlayPath}:1:1: rune.summary.cancelToken must differ from rune.summary.proceedToken`,
+    );
+    expect(io.err.join('\n')).not.toContain('Step 1');
+  });
+
   it('runs to success and honours --result -', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

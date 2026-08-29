@@ -7,7 +7,7 @@
 import { createInterface, type Interface } from 'node:readline';
 import { Writable } from 'node:stream';
 
-import { CancelledError, InputError } from '@rune/engine';
+import { CancelledError, InputError, normalizeSummaryChoice, SUMMARY_ACTIONS } from '@rune/engine';
 import type { InputState, Session, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
@@ -148,8 +148,8 @@ export async function summaryLoop(
       );
     });
 
-    const proceedToken = normalizeSummaryChoice(strings.chrome('rune.summary.proceedToken'));
-    const cancelToken = normalizeSummaryChoice(strings.chrome('rune.summary.cancelToken'));
+    const proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
+    const cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
     const choice = normalizeSummaryChoice(
       await prompter.ask(
         `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
@@ -158,10 +158,10 @@ export async function summaryLoop(
       ),
     );
 
-    if (choice === proceedToken || choice === 'proceed' || choice === '') {
+    if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias || choice === '') {
       return 'proceed';
     }
-    if (choice === cancelToken || choice === 'cancel') {
+    if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {
       return 'cancel';
     }
     const index = Number.parseInt(choice, 10);
@@ -179,10 +179,6 @@ export async function summaryLoop(
     await askUntilAccepted(session, chosen, strings, prompter);
     await promptForInputs(session, prompter);
   }
-}
-
-function normalizeSummaryChoice(choice: string): string {
-  return choice.trim().toLowerCase();
 }
 
 async function askUntilAccepted(

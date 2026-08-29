@@ -7,11 +7,11 @@
  * validation error, never a silent no-op.
  */
 
-import { ManifestError, type RuneIssue } from '../errors.js';
+import { ManifestError, orderIssues, type RuneIssue } from '../errors.js';
 import { loadYamlFile, loadYamlText } from '../manifest/loader.js';
 import { startOfFile, type SourceMap } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
-import { CHROME_CATALOG } from './catalog.js';
+import { CHROME_CATALOG, normalizeSummaryChoice, SUMMARY_ACTIONS } from './catalog.js';
 
 export interface LocaleOverlay {
   /** The tag the file serves, taken from its name (`locales/de.yaml` → `de`). */
@@ -71,10 +71,104 @@ function fromDocument(
     entries.set(key, text);
   }
 
+  issues.push(...summaryTokenIssues(entries, sourceMap, file));
+
   if (issues.length > 0) {
-    throw ManifestError.fromIssues('RUNE-104', issues);
+    throw ManifestError.fromIssues('RUNE-104', orderIssues(issues));
   }
   return { locale, file, entries };
+}
+
+function summaryTokenIssues(
+  entries: ReadonlyMap<string, string>,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue[] {
+  const proceed = {
+    ...SUMMARY_ACTIONS.proceed,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_ACTIONS.proceed.tokenKey) ?? SUMMARY_ACTIONS.proceed.defaultToken,
+    ),
+    oppositeAlias: SUMMARY_ACTIONS.cancel.alias,
+  };
+  const cancel = {
+    ...SUMMARY_ACTIONS.cancel,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_ACTIONS.cancel.tokenKey) ?? SUMMARY_ACTIONS.cancel.defaultToken,
+    ),
+    oppositeAlias: SUMMARY_ACTIONS.proceed.alias,
+  };
+  const issues: RuneIssue[] = [];
+  const proceedProblem = summaryTokenProblem(
+    proceed.tokenKey,
+    proceed.value,
+    proceed.oppositeAlias,
+  );
+  const cancelProblem = summaryTokenProblem(cancel.tokenKey, cancel.value, cancel.oppositeAlias);
+
+  for (const [token, message] of [
+    [proceed, proceedProblem],
+    [cancel, cancelProblem],
+  ] as const) {
+    if (entries.has(token.tokenKey) && message !== undefined) {
+      issues.push(summaryTokenIssue(token.tokenKey, message, sourceMap, file));
+    }
+  }
+
+  if (
+    proceedProblem === undefined &&
+    cancelProblem === undefined &&
+    proceed.value === cancel.value
+  ) {
+    // A partial overlay is compared with the safe English default. When both keys are
+    // overridden, the later key is what introduces the conflict.
+    const key =
+      [...entries.keys()].findLast(
+        (candidate) => candidate === proceed.tokenKey || candidate === cancel.tokenKey,
+      ) ?? proceed.tokenKey;
+    const other =
+      key === proceed.tokenKey ? SUMMARY_ACTIONS.cancel.tokenKey : SUMMARY_ACTIONS.proceed.tokenKey;
+    issues.push(
+      summaryTokenIssue(
+        key,
+        `${key} must differ from ${other} after trimming and case normalization`,
+        sourceMap,
+        file,
+      ),
+    );
+  }
+
+  return issues;
+}
+
+function summaryTokenProblem(
+  key: string,
+  token: string,
+  oppositeAlias: string,
+): string | undefined {
+  if (token.length === 0) {
+    return `${key} must not be empty or whitespace`;
+  }
+  if (/^[0-9]+$/u.test(token)) {
+    return `${key} must not be numeric because a number selects a value to change`;
+  }
+  if (token === oppositeAlias) {
+    return `${key} must not be "${oppositeAlias}" because it is the fixed alias for the ${oppositeAlias} action`;
+  }
+  return undefined;
+}
+
+function summaryTokenIssue(
+  key: string,
+  message: string,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue {
+  return {
+    code: 'RUNE-104',
+    message,
+    location: sourceMap.best([key]) ?? startOfFile(file),
+  };
 }
 
 function keyProblem(key: string): string {

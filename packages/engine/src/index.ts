@@ -101,7 +101,12 @@ export { resultJsonSchema } from './results/schema.js';
 export { createLogFileSink } from './logs/logFile.js';
 export type { LogFileSink } from './logs/logFile.js';
 
-export { CHROME_CATALOG, formatChrome } from './i18n/catalog.js';
+export {
+  CHROME_CATALOG,
+  formatChrome,
+  normalizeSummaryChoice,
+  SUMMARY_ACTIONS,
+} from './i18n/catalog.js';
 export {
   discoverOverlays,
   LOCALES_DIRECTORY,

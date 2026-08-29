@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { formatIssues, ManifestError } from '../../src/errors.js';
 import { loadOverlayText, localizableKeys } from '../../src/i18n/overlay.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 
@@ -47,6 +48,8 @@ describe('loading an overlay', () => {
         'steps.install.title: Installieren',
         'inputs.environment.options.production.label: Produktivumgebung',
         'rune.button.next: Weiter',
+        'rune.summary.proceedToken: weiter',
+        'rune.summary.cancelToken: abbrechen',
         '',
       ].join('\n'),
       'locales/de.yaml',
@@ -57,6 +60,92 @@ describe('loading an overlay', () => {
     expect(overlay.locale).toBe('de');
     expect(overlay.entries.get('steps.install.title')).toBe('Installieren');
     expect(overlay.entries.get('rune.button.next')).toBe('Weiter');
+  });
+
+  it('rejects equal effective summary tokens at the conflicting key', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: weiter',
+      'rune.summary.cancelToken: weiter',
+    ]);
+
+    expect(error.code).toBe('RUNE-104');
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:2:1: rune.summary.cancelToken must differ from ' +
+        'rune.summary.proceedToken after trimming and case normalization',
+    );
+  });
+
+  it('compares summary tokens after trimming and case normalization', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: " Weiter "',
+      'rune.summary.cancelToken: WEITER',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:2:1: rune.summary.cancelToken must differ from ' +
+        'rune.summary.proceedToken after trimming and case normalization',
+    );
+  });
+
+  it('rejects empty and whitespace-only summary tokens at their keys', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: ""',
+      'rune.summary.cancelToken: "   "',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must not be empty or whitespace\n' +
+        'locales/de.yaml:2:1: rune.summary.cancelToken must not be empty or whitespace',
+    );
+  });
+
+  it('rejects numeric summary tokens because numbers select values to change', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: "1"',
+      'rune.summary.cancelToken: "02"',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must not be numeric because a number ' +
+        'selects a value to change\n' +
+        'locales/de.yaml:2:1: rune.summary.cancelToken must not be numeric because a number ' +
+        'selects a value to change',
+    );
+  });
+
+  it('rejects tokens that shadow the fixed alias of the opposite action', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: " CANCEL "',
+      'rune.summary.cancelToken: Proceed',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must not be "cancel" because it is the ' +
+        'fixed alias for the cancel action\n' +
+        'locales/de.yaml:2:1: rune.summary.cancelToken must not be "proceed" because it is the ' +
+        'fixed alias for the proceed action',
+    );
+  });
+
+  it('compares a partial override with the effective English default', () => {
+    const error = overlayError(['rune.summary.proceedToken: c']);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must differ from ' +
+        'rune.summary.cancelToken after trimming and case normalization',
+    );
+  });
+
+  it('accepts the fixed alias for the same action', () => {
+    const overlay = loadOverlayText(
+      'rune.summary.proceedToken: proceed\nrune.summary.cancelToken: cancel\n',
+      'locales/de.yaml',
+      'de',
+      MANIFEST,
+    );
+
+    expect(overlay.entries.get('rune.summary.proceedToken')).toBe('proceed');
+    expect(overlay.entries.get('rune.summary.cancelToken')).toBe('cancel');
   });
 
   it('rejects a key that names nothing, loudly and with its location', () => {
@@ -79,3 +168,13 @@ describe('loading an overlay', () => {
     expect(overlay.entries.size).toBe(0);
   });
 });
+
+function overlayError(lines: readonly string[]): ManifestError {
+  try {
+    loadOverlayText([...lines, ''].join('\n'), 'locales/de.yaml', 'de', MANIFEST);
+  } catch (error) {
+    expect(error).toBeInstanceOf(ManifestError);
+    return error as ManifestError;
+  }
+  throw new Error('expected the overlay to be rejected');
+}
