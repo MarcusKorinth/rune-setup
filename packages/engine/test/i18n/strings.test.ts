@@ -56,9 +56,10 @@ describe('the resolved string table', () => {
       'de',
       MANIFEST,
     );
-    const strings = resolveStrings({ manifest: MANIFEST, overlay });
+    const strings = resolveStrings({ manifest: MANIFEST, locale: 'de-DE', overlay });
 
-    expect(strings.locale).toBe('de');
+    expect(strings.locale).toBe('de-DE');
+    expect(strings.overlayLocale).toBe('de');
     expect(strings.stepTitle('install')).toBe('Installieren');
     expect(strings.inputTitle('target')).toBe('Installationsverzeichnis');
     expect(strings.chrome('rune.button.next')).toBe('Weiter');

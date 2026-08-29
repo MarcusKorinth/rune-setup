@@ -12,8 +12,10 @@ import { CHROME_CATALOG, formatChrome } from './catalog.js';
 import type { LocaleOverlay } from './overlay.js';
 
 export interface StringTable {
-  /** The locale the table was resolved for; `undefined` means the built-in defaults. */
+  /** The session's selected locale — what the result file records; `undefined` means the built-in defaults (§6.3). */
   readonly locale: string | undefined;
+  /** The overlay file that served it — `de` may serve a selected `de-DE`. */
+  readonly overlayLocale: string | undefined;
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
   readonly entries: ReadonlyMap<string, string>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
@@ -29,6 +31,8 @@ export interface StringTable {
 
 export interface ResolveStringsOptions {
   readonly manifest: ManifestV1;
+  /** The selected locale tag; defaults to the overlay's own tag when only that is known. */
+  readonly locale?: string | undefined;
   /** The overlay serving the session's locale; none means defaults only. */
   readonly overlay?: LocaleOverlay | undefined;
 }
@@ -75,7 +79,8 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const get = (key: string): string | undefined => entries.get(key);
 
   return {
-    locale: overlay?.locale,
+    locale: options.locale ?? overlay?.locale,
+    overlayLocale: overlay?.locale,
     entries,
     chrome: (key, values) => formatChrome(get(key) ?? key, values),
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
