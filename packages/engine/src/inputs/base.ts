@@ -22,32 +22,32 @@ export interface InputTypeHandler {
   readonly secret: boolean;
 
   /** What an unset optional input, or a disabled one, is worth (§4.2, §5). */
-  empty(spec: InputSpec): InputValue;
+  readonly empty: (spec: InputSpec) => InputValue;
 
   /**
    * Whether a value counts as no answer at all, which is what makes a required input still
    * missing. A boolean is never absent — `false` is an answer — while an empty string and an
    * empty selection are exactly what an environment variable that was never set expands to.
    */
-  isAbsent(value: InputValue): boolean;
+  readonly isAbsent: (value: InputValue) => boolean;
 
   /** A value written as text: `--set`, `RUNE_INPUT_*`, or a string in a values file. */
-  fromString(text: string, spec: InputSpec): Coercion;
+  readonly fromString: (text: string, spec: InputSpec) => Coercion;
 
   /**
    * A value written in its own type in a values file — a YAML boolean, a YAML list. Anything
    * else is refused here rather than stringified, so a mistake stays visible (§5).
    */
-  fromNative(value: unknown, spec: InputSpec): Coercion;
+  readonly fromNative: (value: unknown, spec: InputSpec) => Coercion;
 
   /**
    * The text a value contributes to a command (§6.1): a boolean as `true`/`false`, a
    * multiselect comma-joined, everything else as itself.
    */
-  render(value: InputValue): string;
+  readonly render: (value: InputValue) => string;
 
   /** The value a condition compares (§6.2): the same value, with a secret unwrapped. */
-  compare(value: InputValue): boolean | string | readonly string[];
+  readonly compare: (value: InputValue) => boolean | string | readonly string[];
 }
 
 /** The accepted spellings of a boolean, as documented in §5. */

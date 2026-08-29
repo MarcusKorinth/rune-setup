@@ -22,10 +22,12 @@ export class InputTypeRegistry {
 
   /** Adds a handler. Registering a name twice is a bug, not a silent replacement. */
   register(handler: InputTypeHandler): void {
-    if (this.#handlers.has(handler.name)) {
-      throw new InternalError(`the input type "${handler.name}" is registered twice`);
+    const name = handler.name;
+    if (this.#handlers.has(name)) {
+      throw new InternalError(`the input type "${name}" is registered twice`);
     }
-    this.#handlers.set(handler.name, handler);
+    Object.freeze(handler);
+    this.#handlers.set(name, handler);
   }
 
   has(name: string): boolean {
