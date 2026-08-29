@@ -5,6 +5,7 @@
   "description": "RUNE GUI shell — Electron wizard; main process hosts the engine, renderer is a pure renderer",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/main/index.js",
   "engines": {
     "node": ">=22"
   },
@@ -13,5 +14,8 @@
   },
   "scripts": {
     "build": "tsc -b"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
   }
 }

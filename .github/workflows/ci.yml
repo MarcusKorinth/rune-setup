@@ -12,6 +12,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Core CI never sees Electron (docs/architecture.md paragraphs 9.4 and 14): the npm
+  # package installs, the ~100 MB binary download is skipped, and every suite that
+  # touches the bridge stubs the electron module.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
 jobs:
   core:
     name: core (${{ matrix.os }})
