@@ -665,6 +665,44 @@ describe('keys that name no input', () => {
     expect(error.code).toBe('RUNE-202');
     expect(error.issues.map((issue) => issue.code)).toEqual(['RUNE-203', 'RUNE-202']);
   });
+
+  it('orders values-file issues by source location instead of collection phase', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]{2,5}"',
+    );
+    const error = inputError(manifest, {
+      values: [valuesFromFile('port: eighty\nunknown: value\n')],
+    });
+
+    expect(error.issues).toMatchObject([
+      { code: 'RUNE-202', location: { file: 'v.yaml', line: 1, column: 1 } },
+      { code: 'RUNE-203', location: { file: 'v.yaml', line: 2, column: 1 } },
+    ]);
+    expect(error.location).toEqual({ file: 'v.yaml', line: 1, column: 1 });
+  });
+
+  it('keeps an unlocated override first while retaining a values-file location', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]{2,5}"',
+    );
+    const error = inputError(manifest, {
+      values: [valuesFromFile('port: eighty\n')],
+      overrides: new Map([['unknown', 'value']]),
+      invalidValues: 'collect',
+    });
+
+    expect(error.issues).toMatchObject([
+      { code: 'RUNE-203', location: undefined },
+      { code: 'RUNE-202', location: { file: 'v.yaml', line: 1, column: 1 } },
+    ]);
+    expect(error.location).toEqual({ file: 'v.yaml', line: 1, column: 1 });
+  });
 });
 
 describe('what counts as an answer', () => {

@@ -105,6 +105,46 @@ describe('RuneError', () => {
   });
 });
 
+describe('InputError batches', () => {
+  it('orders located issues before exposing their message and top-level location', () => {
+    const lineOne = {
+      code: 'RUNE-202' as const,
+      message: 'line one',
+      location: { file: 'values.yaml', line: 1, column: 1 },
+    };
+    const lineTwo = {
+      code: 'RUNE-202' as const,
+      message: 'line two',
+      location: { file: 'values.yaml', line: 2, column: 1 },
+    };
+
+    const error = InputError.fromIssues('RUNE-202', [lineTwo, lineOne]);
+
+    expect(error.issues).toEqual([lineOne, lineTwo]);
+    expect(error.message).toBe('values.yaml:1:1: line one\nvalues.yaml:2:1: line two');
+    expect(error.location).toEqual(lineOne.location);
+  });
+
+  it('uses the first located issue for the top-level location', () => {
+    const unlocated = {
+      code: 'RUNE-203' as const,
+      message: 'unknown override',
+      location: undefined,
+    };
+    const located = {
+      code: 'RUNE-202' as const,
+      message: 'invalid value',
+      location: { file: 'values.yaml', line: 1, column: 1 },
+    };
+
+    const error = InputError.fromIssues('RUNE-202', [located, unlocated]);
+
+    expect(error.issues).toEqual([unlocated, located]);
+    expect(error.message).toBe('unknown override\nvalues.yaml:1:1: invalid value');
+    expect(error.location).toEqual(located.location);
+  });
+});
+
 describe('formatIssues', () => {
   it('prefixes located issues and leaves the others alone', () => {
     expect(

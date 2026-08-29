@@ -150,13 +150,16 @@ export class InputError extends RuneError {
 
   /** One error for every problem a batch of values had; resolution collects, never stops. */
   static fromIssues(code: InputCode, issues: readonly RuneIssue[]): InputError {
-    return aggregate(issues, (message, options) => new InputError(code, message, options));
+    return aggregate(
+      orderIssues(issues),
+      (message, options) => new InputError(code, message, options),
+    );
   }
 }
 
 /**
- * Turns collected problems into one error. The first problem's position becomes the error's
- * position, so a caller that reads only `location` still points somewhere useful.
+ * Turns collected problems into one error. The first located problem's position becomes the
+ * error's position, so a caller that reads only `location` still points somewhere useful.
  */
 function aggregate<T extends RuneError>(
   issues: readonly RuneIssue[],
@@ -166,9 +169,10 @@ function aggregate<T extends RuneError>(
   if (first === undefined) {
     throw new InternalError('an error was built from an empty list of problems');
   }
+  const firstLocated = issues.find((issue) => issue.location !== undefined);
   return make(formatIssues(issues), {
     issues,
-    ...(first.location ? { location: first.location } : {}),
+    ...(firstLocated?.location ? { location: firstLocated.location } : {}),
   });
 }
 
