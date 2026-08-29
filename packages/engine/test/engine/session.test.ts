@@ -168,6 +168,28 @@ describe('strings and theme', () => {
   });
 });
 
+describe('static warnings', () => {
+  it('warns when a secret is interpolated into args, in every mode', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: use',
+      '    run:',
+      '      command: deploy',
+      '      args: ["--token", "${token}"]',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+
+    expect(session.warnings().join(' ')).toMatch(/secret input "token".*process listings/);
+  });
+});
+
 describe('platform previews', () => {
   it('describes a foreign platform but refuses to execute it', async () => {
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';

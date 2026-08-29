@@ -9,7 +9,7 @@
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { InputError, type RuneIssue } from '../errors.js';
-import { environmentName } from '../manifest/v1/rules.js';
+import { environmentName, secretArgsWarnings } from '../manifest/v1/rules.js';
 import { parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
 import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
@@ -86,6 +86,7 @@ export class Session {
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
   readonly #mode: RunMode;
+  readonly #staticWarnings: readonly string[];
   #resolution: Resolution;
   #cancel: CancelToken | undefined;
 
@@ -115,6 +116,7 @@ export class Session {
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
     this.#mode = fields.mode;
+    this.#staticWarnings = secretArgsWarnings(fields.manifest);
   }
 
   /** Opens a session: load, validate, resolve layers 1–4 — stages 1–3 of the pipeline (§7). */
@@ -183,9 +185,9 @@ export class Session {
     return this.#resolution.inputs;
   }
 
-  /** Warnings a frontend should say out loud but not fail over (§5, §10). */
+  /** Warnings a frontend should say out loud but not fail over (§4.3, §5, §10). */
   warnings(): readonly string[] {
-    return this.#resolution.warnings;
+    return [...this.#staticWarnings, ...this.#resolution.warnings];
   }
 
   /**

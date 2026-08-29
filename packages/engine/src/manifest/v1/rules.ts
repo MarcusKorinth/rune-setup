@@ -458,6 +458,43 @@ export interface EnvironmentUse {
   readonly locations: readonly Location[];
 }
 
+/**
+ * The §4.3 warning: a `secret` interpolated into `args` — argv is visible in OS process
+ * listings; `env:` is the recommended carrier. A warning, never an error: the author may
+ * have no choice with a foreign tool.
+ */
+export function secretArgsWarnings(manifest: ManifestV1): readonly string[] {
+  const inputIds = Object.keys(manifest.inputs);
+  const warnings: string[] = [];
+  for (const field of interpolatedFields(manifest)) {
+    if (field.path[0] !== 'steps' || field.path.at(-2) !== 'args') {
+      continue;
+    }
+    const scan = scanTemplate(field.text);
+    if (!scan.ok) {
+      continue;
+    }
+    for (const part of scan.parts) {
+      if (part.kind !== 'reference') {
+        continue;
+      }
+      const resolved = resolveReference(part.reference.segments, inputIds);
+      if (
+        resolved.ok &&
+        resolved.reference.kind === 'input' &&
+        manifest.inputs[resolved.reference.id]?.type === 'secret'
+      ) {
+        const step = manifest.steps[Number(field.path[1])];
+        warnings.push(
+          `step "${step?.id ?? '?'}" interpolates secret input "${resolved.reference.id}" ` +
+            `into args — argv is visible in OS process listings; env: is the recommended carrier`,
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
 export function environmentReferences(
   manifest: ManifestV1,
   ctx: Pick<SemanticContext, 'file' | 'sourceMap'>,

@@ -135,5 +135,5 @@ export type {
   Step,
 } from './manifest/v1/schema.js';
 
-export { environmentName } from './manifest/v1/rules.js';
+export { environmentName, secretArgsWarnings } from './manifest/v1/rules.js';
 export type { EnvironmentUse } from './manifest/v1/rules.js';

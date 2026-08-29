@@ -64,6 +64,26 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).toContain('locales: none');
   });
 
+  it('warns about a secret interpolated into args', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: use',
+      '    run:',
+      '      command: deploy',
+      '      args: ["${token}"]',
+    ]);
+    const io = capture();
+    expect(await run(['validate', path], io)).toBe(0);
+    expect(io.err.join(' ')).toContain('process listings');
+  });
+
   it('exits 3 for an invalid manifest', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const io = capture();

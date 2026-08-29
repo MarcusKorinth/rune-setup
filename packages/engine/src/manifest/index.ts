@@ -14,7 +14,12 @@ import { ManifestError } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
-import { checkSemantics, environmentReferences, type EnvironmentUse } from './v1/rules.js';
+import {
+  checkSemantics,
+  environmentReferences,
+  secretArgsWarnings,
+  type EnvironmentUse,
+} from './v1/rules.js';
 import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 
 /** The validated manifest model. Today that is always the v1 model. */
@@ -60,6 +65,8 @@ export interface ValidationReport {
   readonly manifest: Manifest;
   /** Every environment variable the manifest reads, with the places that read it (§4.3). */
   readonly environment: readonly EnvironmentUse[];
+  /** The §4.3 warnings — things an author should hear about but that fail nothing. */
+  readonly warnings: readonly string[];
 }
 
 /**
@@ -80,6 +87,7 @@ export function validateManifest(
       file: document.file,
       sourceMap: document.sourceMap,
     }),
+    warnings: secretArgsWarnings(manifest),
   };
 }
 

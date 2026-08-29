@@ -39,6 +39,10 @@ export async function validateCommand(
       : `locales: ${overlays.map((overlay) => overlay.locale).join(', ')}`,
   );
 
+  for (const warning of report.warnings) {
+    io.stderr(`warning: ${warning}`);
+  }
+
   if (report.environment.length === 0) {
     io.stdout('environment variables read: none');
     return;
