@@ -23,7 +23,7 @@ export class CancelToken {
     const listeners = [...this.#listeners];
     this.#listeners.clear();
     for (const listener of listeners) {
-      listener();
+      invokeListener(listener);
     }
   }
 
@@ -33,12 +33,21 @@ export class CancelToken {
    */
   onCancel(listener: () => void): () => void {
     if (this.#cancelled) {
-      listener();
+      invokeListener(listener);
       return () => undefined;
     }
     this.#listeners.add(listener);
     return () => {
       this.#listeners.delete(listener);
     };
+  }
+}
+
+/** Cancellation is best-effort: one cleanup failure must not block another. */
+function invokeListener(listener: () => void): void {
+  try {
+    listener();
+  } catch {
+    // Listener errors have no cancellation recovery path and must not escape this boundary.
   }
 }
