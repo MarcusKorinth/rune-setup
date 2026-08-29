@@ -74,7 +74,7 @@ export class SecretRegistry {
     // Every sink RUNE masks is line-oriented — a child's output is read line by line, and so
     // is the log — so a secret spanning several lines would never match anything a sink sees.
     // Each line is registered as well, which is what actually protects a key or certificate.
-    const lines = value.split(/\r?\n/);
+    const lines = value.split(/\r\n|\r|\n/);
     const parts = lines.length > 1 ? [value, ...lines] : lines;
     let registered = false;
 

@@ -137,6 +137,24 @@ describe('SecretRegistry', () => {
     expect(registry.mask('cd')).toBe('cd');
   });
 
+  it('masks bare-CR multiline secrets line by line', () => {
+    const registry = new SecretRegistry();
+    const secret = 'first-long\rsecond-long';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask('value: first-long')).toBe(`value: ${MASK}`);
+    expect(registry.mask('value: second-long')).toBe(`value: ${MASK}`);
+  });
+
+  it('reports bare-CR secrets as incomplete when a content line is too short', () => {
+    const registry = new SecretRegistry();
+    const secret = 'first-long\rabc';
+
+    expect(registry.register(secret)).toBe(false);
+    expect(registry.mask('value: first-long')).toBe(`value: ${MASK}`);
+    expect(registry.mask('value: abc')).toBe('value: abc');
+  });
+
   it('does not treat blank CRLF lines as unmaskable content', () => {
     const registry = new SecretRegistry();
     const secret = 'first-long\r\n   \r\nsecond-long';
