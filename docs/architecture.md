@@ -343,7 +343,7 @@ Events are frozen plain objects (`readonly` types, `Object.freeze`d). **Run even
 
 **Session event:** `InputStateChanged(inputId, enabled)` is produced by `setValue()` and **returned to the caller** — over the IPC bridge it is the resolved value of `rune.setValue`, and there is deliberately no separate push event (one delivery, nothing to double-apply) — whenever an input's `when:` flips because a controlling value changed. It belongs to the resolution phase, not to execution: it is never delivered through the run-event observer and does not count against the `RunStarted`/`RunFinished` bracket.
 
-**Observer delivery contract:** run events are delivered synchronously, in order, from the engine's event-loop turn (observer callbacks are plain synchronous functions; the engine never awaits them). Observers must return quickly and must not throw; an observer exception is caught, logged, and swallowed — a broken renderer can never corrupt a run. `RunStarted` is first and `RunFinished` is last, exactly once each; no event is delivered after the `execute()` promise settles. Observers can never influence execution.
+**Observer delivery contract:** run events are delivered synchronously, in order, from the engine's event-loop turn (observer callbacks are plain synchronous functions; the engine never awaits them). Observers must return quickly and must not throw; an observer exception is caught and swallowed — a broken renderer can never corrupt a run. `RunStarted` is first and `RunFinished` is last, exactly once each; no event is delivered after the `execute()` promise settles. Observers can never influence execution.
 
 ### 9.2 Electron IPC bridge (main ↔ renderer)
 
