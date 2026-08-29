@@ -12,12 +12,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Core CI never sees Electron (docs/architecture.md paragraphs 9.4 and 14): the npm
-  # package installs, the ~100 MB binary download is skipped, and every suite that
-  # touches the bridge stubs the electron module.
-  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-
 jobs:
   core:
     name: core (${{ matrix.os }})
@@ -33,7 +27,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      # Core CI deliberately skips lifecycle scripts so Electron's binary download
+      # never runs; tests that touch the bridge mock the electron module.
+      - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check

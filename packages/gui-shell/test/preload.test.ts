@@ -1,7 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const { electron, restoreElectronRequire } = vi.hoisted(() => {
+  const electron = {
+    contextBridge: { exposeInMainWorld: vi.fn() },
+    ipcRenderer: { invoke: vi.fn(), on: vi.fn() },
+  };
+  const moduleApi = process.getBuiltinModule('node:module') as unknown as {
+    _load: (request: string, parent: unknown, isMain: boolean) => unknown;
+  };
+  const originalLoad = moduleApi._load;
+  moduleApi._load = (request, parent, isMain) =>
+    request === 'electron' ? electron : originalLoad(request, parent, isMain);
+
+  return {
+    electron,
+    restoreElectronRequire: () => {
+      moduleApi._load = originalLoad;
+    },
+  };
+});
+
+vi.mock('electron', () => electron);
+
 // @ts-expect-error tsc addresses the compiled file as .cjs; vitest resolves the source
 import { buildBridge } from '../src/preload/index.cts';
+
+restoreElectronRequire();
 
 function fakeIpc(): {
   invoke: ReturnType<typeof vi.fn>;
