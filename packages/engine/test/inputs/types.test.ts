@@ -266,6 +266,80 @@ describe('values written in their own type, as a values file may', () => {
       message: '42 is not a path',
     });
   });
+
+  it.each(['text', 'boolean', 'select', 'multiselect', 'file', 'directory'] as const)(
+    'refuses unsupported native values for %s without throwing',
+    (type) => {
+      const cyclicObject: { self?: unknown } = {};
+      cyclicObject.self = cyclicObject;
+      const cyclicArray: unknown[] = [];
+      cyclicArray.push(cyclicArray);
+      let toJSONCalls = 0;
+      const withThrowingToJSON = {
+        toJSON(): never {
+          toJSONCalls += 1;
+          throw new Error('must not be called');
+        },
+      };
+      const values = [
+        1n,
+        Symbol('value'),
+        () => undefined,
+        cyclicObject,
+        cyclicArray,
+        withThrowingToJSON,
+      ];
+      const inputSpec = spec(
+        type,
+        type === 'select' || type === 'multiselect' ? { options: ['option'] } : undefined,
+      );
+
+      for (const value of values) {
+        const result = handler(type).fromNative(value, inputSpec);
+        expect(result.ok).toBe(false);
+      }
+      expect(toJSONCalls).toBe(0);
+    },
+  );
+
+  it('describes unsupported values deterministically', () => {
+    expect(handler('text').fromNative(1n, spec('text'))).toEqual({
+      ok: false,
+      message: 'bigint is not text',
+    });
+
+    const cyclicObject: { self?: unknown } = {};
+    cyclicObject.self = cyclicObject;
+    expect(handler('text').fromNative(cyclicObject, spec('text'))).toEqual({
+      ok: false,
+      message: 'object is not text',
+    });
+
+    const cyclicArray: unknown[] = [];
+    cyclicArray.push(cyclicArray);
+    expect(
+      handler('multiselect').fromNative(cyclicArray, spec('multiselect', { options: [] })),
+    ).toEqual({
+      ok: false,
+      message: 'array is not a list of option values',
+    });
+
+    expect(handler('text').fromNative(Symbol('value'), spec('text'))).toEqual({
+      ok: false,
+      message: 'symbol is not text',
+    });
+    expect(handler('text').fromNative(() => undefined, spec('text'))).toEqual({
+      ok: false,
+      message: 'function is not text',
+    });
+
+    const { proxy, revoke } = Proxy.revocable([], {});
+    revoke();
+    expect(handler('text').fromNative(proxy, spec('text'))).toEqual({
+      ok: false,
+      message: 'object is not text',
+    });
+  });
 });
 
 describe('what counts as no answer at all', () => {

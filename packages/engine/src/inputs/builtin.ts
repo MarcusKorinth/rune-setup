@@ -25,7 +25,29 @@ function fail(message: string): Coercion {
 
 /** Names a value that is not text, for a message that says what was written. */
 function describe(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
+  switch (typeof value) {
+    case 'string':
+    case 'number':
+    case 'boolean':
+      return JSON.stringify(value) ?? 'unknown';
+    case 'undefined':
+      return 'undefined';
+    case 'bigint':
+      return 'bigint';
+    case 'symbol':
+      return 'symbol';
+    case 'function':
+      return 'function';
+    case 'object':
+      if (value === null) {
+        return 'null';
+      }
+      try {
+        return Array.isArray(value) ? 'array' : 'object';
+      } catch {
+        return 'object';
+      }
+  }
 }
 
 function optionValues(spec: InputSpec): readonly string[] {
