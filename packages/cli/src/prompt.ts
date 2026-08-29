@@ -147,31 +147,41 @@ export async function summaryLoop(
       );
     });
 
-    const choice = (
+    const proceedToken = normalizeSummaryChoice(strings.chrome('rune.summary.proceedToken'));
+    const cancelToken = normalizeSummaryChoice(strings.chrome('rune.summary.cancelToken'));
+    const choice = normalizeSummaryChoice(
       await prompter.ask(
-        `${strings.chrome('rune.summary.proceed')} (p) / ` +
+        `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
           `${strings.chrome('rune.summary.change')} <n> / ` +
-          `${strings.chrome('rune.summary.cancel')} (c): `,
-      )
-    )
-      .trim()
-      .toLowerCase();
+          `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
+      ),
+    );
 
-    if (choice === 'p' || choice === 'proceed' || choice === '') {
+    if (choice === proceedToken || choice === 'proceed' || choice === '') {
       return 'proceed';
     }
-    if (choice === 'c' || choice === 'cancel') {
+    if (choice === cancelToken || choice === 'cancel') {
       return 'cancel';
     }
     const index = Number.parseInt(choice, 10);
     const chosen = editable[index - 1];
     if (Number.isNaN(index) || chosen === undefined) {
-      io.stderr(strings.chrome('rune.summary.invalidChoice', { choice }));
+      io.stderr(
+        strings.chrome('rune.summary.invalidChoice', {
+          choice,
+          proceed: proceedToken,
+          cancel: cancelToken,
+        }),
+      );
       continue;
     }
     await askUntilAccepted(session, chosen, strings, prompter);
     await promptForInputs(session, prompter);
   }
+}
+
+function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
 }
 
 async function askUntilAccepted(

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -156,6 +156,38 @@ describe('the interactive run', () => {
     expect(written.stepsNotRun).toBe(1);
     expect(written.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
     expect(written.inputs.map((input) => input.id)).toEqual(['greeting', 'token']);
+  });
+
+  it('uses locale-overridden summary tokens for prompts, validation, and actions', async () => {
+    const path = fixture(MANIFEST);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      [
+        'rune.summary.proceed: Weiter',
+        'rune.summary.proceedToken: weiter',
+        'rune.summary.cancel: Abbrechen',
+        'rune.summary.cancelToken: abbrechen',
+        `rune.summary.invalidChoice: '"{choice}" ist nicht {proceed}, {cancel} oder die Nummer eines Werts'`,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const proceedIo = capture();
+    const proceedInteraction = scripted(['hello', 'super-secret-value', 'invalid', ' WeItEr ']);
+    const proceedCode = await run(['run', path, '--locale', 'de'], proceedIo, proceedInteraction);
+
+    expect(proceedCode).toBe(0);
+    expect(proceedInteraction.transcript()).toContain('Weiter (weiter)');
+    expect(proceedIo.err.join('\n')).toContain('"invalid" ist nicht weiter, abbrechen');
+
+    const cancelIo = capture();
+    const cancelInteraction = scripted(['hello', 'super-secret-value', 'ABBRECHEN']);
+    const cancelCode = await run(['run', path, '--locale', 'de'], cancelIo, cancelInteraction);
+
+    expect(cancelCode).toBe(6);
   });
 
   it('degrades to non-interactive without a TTY and records that mode', async () => {
