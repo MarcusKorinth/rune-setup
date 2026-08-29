@@ -361,3 +361,35 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 });
+
+describe('the result run block', () => {
+  it('keeps the provenance of a value that was ignored for a disabled input', async () => {
+    const { plan, resolution, secrets, product } = setup(
+      [
+        'inputs:',
+        '  installDatabase:',
+        '    type: boolean',
+        '    default: false',
+        '  databasePort:',
+        '    type: text',
+        '    when: "${installDatabase}"',
+        'steps:',
+        '  - id: a',
+        '    run:',
+        '      command: a',
+      ],
+      { overrides: new Map([['databasePort', '9999']]) },
+    );
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+    });
+
+    const port = result.inputs.find((input) => input.id === 'databasePort');
+    expect(port).toMatchObject({ enabled: false, ignored: 'input disabled', source: 'set' });
+  });
+});
