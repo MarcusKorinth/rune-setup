@@ -263,13 +263,13 @@ function highestLayer(
   spec: InputSpec,
   options: ResolveInputsOptions,
 ): SuppliedValue | undefined {
-  const answer = options.answers?.get(id);
-  if (answer !== undefined) {
+  if (options.answers?.has(id)) {
+    const answer = options.answers.get(id);
     return { source: 'answer', raw: answer, location: undefined, origin: SOURCE_NAMES.answer };
   }
 
-  const override = options.overrides?.get(id);
-  if (override !== undefined) {
+  if (options.overrides?.has(id)) {
+    const override = options.overrides.get(id);
     return { source: 'set', raw: override, location: undefined, origin: `--set ${id}=…` };
   }
 

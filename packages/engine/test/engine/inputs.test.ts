@@ -181,6 +181,60 @@ describe('precedence', () => {
     expect(resolution.byId.get('target')).toMatchObject({ value: 'from-answer', source: 'answer' });
   });
 
+  it('validates a present undefined answer instead of falling back to lower layers', () => {
+    const error = inputError(manifest, {
+      answers: new Map([['target', undefined as unknown as InputValue]]),
+      overrides: new Map([['target', 'from-set']]),
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toMatchObject([
+      { message: 'target (from the answer): undefined is not text' },
+    ]);
+  });
+
+  it('retains a present undefined answer as a rejected value without resolving a lower secret', () => {
+    const secret = manifestOf('inputs:', '  token:', '    type: secret');
+    const secrets = new SecretRegistry();
+    const resolution = resolve(secret, {
+      answers: new Map([['token', undefined as unknown as InputValue]]),
+      overrides: new Map([['token', 'lower-secret']]),
+      invalidValues: 'collect',
+      secrets,
+    });
+
+    expect(resolution.byId.get('token')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: undefined, source: 'answer' },
+    });
+    expect(resolution.problems).toMatchObject([
+      { code: 'RUNE-202', message: 'token (from the answer): the value is not text' },
+    ]);
+    expect(secrets.size).toBe(0);
+  });
+
+  it('validates a present undefined override instead of falling back to lower layers', () => {
+    const resolution = resolve(
+      manifest,
+      {
+        overrides: new Map([['target', undefined as unknown as string]]),
+        values: [values('v.yaml', { target: 'from-values' })],
+        invalidValues: 'collect',
+      },
+      { RUNE_INPUT_TARGET: 'from-environment' },
+    );
+
+    expect(resolution.byId.get('target')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: undefined, source: 'set' },
+    });
+    expect(resolution.problems).toMatchObject([
+      { code: 'RUNE-202', message: 'target (from --set target=…): undefined is not text' },
+    ]);
+  });
+
   it('reads the environment variable an input id maps to', () => {
     const named = manifestOf('inputs:', '  install_dir:', '    type: directory');
 
