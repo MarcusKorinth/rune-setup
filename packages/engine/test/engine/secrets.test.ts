@@ -29,9 +29,39 @@ describe('SecretString', () => {
     expect(secret.length).toBe(7);
   });
 
-  it('is recognisable', () => {
+  it('recognises only wrappers with a usable private string brand', () => {
+    let methodCalls = 0;
+    class SecretSubclass extends SecretString {
+      override reveal(): string {
+        methodCalls += 1;
+        return 'decoy-secret';
+      }
+    }
+    const subclass = new SecretSubclass('subclass-secret');
+    const getterSubclass = new SecretSubclass('getter-subclass-secret');
+    let getterReads = 0;
+    Object.defineProperty(getterSubclass, 'reveal', {
+      get: () => {
+        getterReads += 1;
+        return () => 'getter-decoy-secret';
+      },
+    });
+    const forged = Object.create(SecretString.prototype) as SecretString;
+    const proxied = new Proxy(new SecretString('proxy-secret'), {});
+    const { proxy: revoked, revoke } = Proxy.revocable(new SecretString('revoked-secret'), {});
+    revoke();
+    const nonString = new SecretString(1234 as unknown as string);
+
     expect(isSecretString(secret)).toBe(true);
-    expect(isSecretString('hunter2')).toBe(false);
+    expect(isSecretString(subclass)).toBe(true);
+    expect(isSecretString(getterSubclass)).toBe(true);
+    expect(methodCalls).toBe(0);
+    expect(getterReads).toBe(0);
+
+    for (const value of ['hunter2', forged, proxied, revoked, nonString]) {
+      expect(() => isSecretString(value)).not.toThrow();
+      expect(isSecretString(value)).toBe(false);
+    }
   });
 });
 

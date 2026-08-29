@@ -55,6 +55,17 @@ export class SecretString {
 const BASE_SECRET_REVEAL = SecretString.prototype.reveal;
 const APPLY = Reflect.apply;
 
+/** Reads a genuine wrapper's private string without dynamic method dispatch. */
+function privateSecretValue(value: unknown): string | undefined {
+  let text: unknown;
+  try {
+    text = APPLY(BASE_SECRET_REVEAL, value, []);
+  } catch {
+    return undefined;
+  }
+  return typeof text === 'string' ? text : undefined;
+}
+
 /**
  * Copies a genuine secret into a fresh base wrapper.
  *
@@ -64,17 +75,12 @@ const APPLY = Reflect.apply;
  * A proxy, forged prototype, or non-string value stored through plain JavaScript is rejected.
  */
 export function normalizeSecretString(value: unknown): SecretString | undefined {
-  let text: unknown;
-  try {
-    text = APPLY(BASE_SECRET_REVEAL, value, []);
-  } catch {
-    return undefined;
-  }
-  return typeof text === 'string' ? new SecretString(text) : undefined;
+  const text = privateSecretValue(value);
+  return text === undefined ? undefined : new SecretString(text);
 }
 
 export function isSecretString(value: unknown): value is SecretString {
-  return value instanceof SecretString;
+  return privateSecretValue(value) !== undefined;
 }
 
 interface SecretMatchStream {
