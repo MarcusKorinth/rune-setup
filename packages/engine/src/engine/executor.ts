@@ -75,11 +75,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   let failed = false;
   let wasCancelled = false;
 
-  emit({ kind: 'runStarted', plan });
+  emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
 
   for (const [index, step] of plan.steps.entries()) {
     if (step.state === 'SKIPPED') {
-      steps.push(finishedStep(step, 'SKIPPED', null, 0, null, null));
+      steps.push(finishedStep(step, 'SKIPPED', null, 0, null, null, secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -101,7 +101,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       wasCancelled = true;
     }
     if (abortForFailure || abortForCancellation) {
-      steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), null));
+      steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), null, secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -117,7 +117,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       stepId: step.id,
       index,
       total: plan.steps.length,
-      title: step.title,
+      title: secrets.mask(step.title),
     });
 
     const tail: { stream: string; line: string }[] = [];
@@ -176,7 +176,9 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         break;
       case 'timedOut': {
         state = 'FAILED';
-        const line = `step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
+        const line = secrets.mask(
+          `step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`,
+        );
         emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
         keepInTail('stderr', line);
         break;
@@ -186,7 +188,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         break;
       case 'failedToStart': {
         state = 'FAILED';
-        const line = `step "${step.id}" could not be started: ${secrets.mask(outcome.message)}`;
+        const line = secrets.mask(`step "${step.id}" could not be started: ${outcome.message}`);
         emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
         keepInTail('stderr', line);
         break;
@@ -208,6 +210,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         durationMs,
         maskArgv(step, secrets),
         state === 'FAILED' ? tail : null,
+        secrets,
       ),
     );
     emit({
@@ -241,9 +244,17 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
     if (step.state === 'SKIPPED') {
-      return finishedStep(step, 'SKIPPED', null, 0, null, null);
+      return finishedStep(step, 'SKIPPED', null, 0, null, null, executionContext.secrets);
     }
-    return finishedStep(step, 'PENDING', null, 0, maskArgv(step, executionContext.secrets), null);
+    return finishedStep(
+      step,
+      'PENDING',
+      null,
+      0,
+      maskArgv(step, executionContext.secrets),
+      null,
+      executionContext.secrets,
+    );
   });
 
   return assembleResult({
@@ -294,15 +305,17 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.executionContext.inputs.map(resultInput),
+    inputs: input.executionContext.inputs.map((state) =>
+      resultInput(state, input.executionContext.secrets),
+    ),
     steps,
   });
 }
 
-function resultInput(state: PlanInputSnapshot): ResultInput {
+function resultInput(state: PlanInputSnapshot, secrets: SecretRegistry): ResultInput {
   return {
     id: state.id,
-    value: state.value,
+    value: maskInputValue(state.value, secrets),
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
     source: state.source,
@@ -319,24 +332,78 @@ function finishedStep(
   durationMs: number,
   command: readonly string[] | null,
   outputTail: readonly { stream: string; line: string }[] | null,
+  secrets: SecretRegistry,
 ): ResultStep {
   return {
     id: step.id,
-    title: step.title,
+    title: secrets.mask(step.title),
     state,
     exitCode,
     durationMs,
     command,
-    skipReason: step.state === 'SKIPPED' ? step.skipReason : null,
+    skipReason: step.state === 'SKIPPED' ? secrets.mask(step.skipReason) : null,
     outputTail,
   };
+}
+
+/** A clone-safe projection: observers never receive the opaque values used for spawning. */
+function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
+  return deepFreeze({
+    manifestPath: plan.manifestPath,
+    platform: plan.platform,
+    preview: plan.preview,
+    failFast: plan.failFast,
+    logFile: plan.logFile,
+    steps: plan.steps.map((step): PlannedStep => {
+      if (step.state === 'SKIPPED') {
+        return {
+          id: step.id,
+          title: secrets.mask(step.title),
+          state: step.state,
+          skipReason: secrets.mask(step.skipReason),
+        };
+      }
+      return {
+        id: step.id,
+        title: secrets.mask(step.title),
+        state: step.state,
+        command: {
+          argv: step.command.argv.map((entry) => maskCommandValue(entry, secrets)),
+          cwd: maskCommandValue(step.command.cwd, secrets),
+          env: Object.fromEntries(
+            Object.entries(step.command.env).map(([name, value]) => [
+              name,
+              maskCommandValue(value, secrets),
+            ]),
+          ),
+          timeoutSeconds: step.command.timeoutSeconds,
+          successExitCodes: [...step.command.successExitCodes],
+        },
+      };
+    }),
+  });
+}
+
+function maskInputValue(
+  value: PlanInputSnapshot['value'],
+  secrets: SecretRegistry,
+): ResultInput['value'] {
+  if (typeof value === 'string') {
+    return secrets.mask(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => secrets.mask(entry));
+  }
+  return value;
+}
+
+function maskCommandValue(value: string | SecretString, secrets: SecretRegistry): string {
+  return value instanceof SecretString ? MASK : secrets.mask(value);
 }
 
 function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[] | null {
   if (step.state !== 'PENDING') {
     return null;
   }
-  return step.command.argv.map((entry) =>
-    entry instanceof SecretString ? MASK : secrets.mask(entry),
-  );
+  return step.command.argv.map((entry) => maskCommandValue(entry, secrets));
 }

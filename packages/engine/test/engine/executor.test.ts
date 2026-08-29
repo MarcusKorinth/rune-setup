@@ -5,7 +5,7 @@ import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js'
 import { describePlan, executeRun } from '../../src/engine/executor.js';
 import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
-import { SecretRegistry } from '../../src/engine/secrets.js';
+import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -887,6 +887,119 @@ describe('skipped steps and the dry run', () => {
 
     expect(JSON.stringify(events)).not.toContain('super-secret-value');
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
+  });
+
+  it('projects an opaque plan into clone-safe masked event and result sinks', async () => {
+    const secret = 'sink-secret-value';
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  note:',
+        '    type: text',
+        `    default: "prefix ${secret} suffix"`,
+        '  selections:',
+        '    type: multiselect',
+        `    options: [${secret}, other]`,
+        `    default: [${secret}, other]`,
+        'steps:',
+        '  - id: skipped',
+        `    title: "Skip ${secret}"`,
+        `    when: "\${token} != '${secret}'"`,
+        '    run:',
+        '      command: never',
+        '  - id: use',
+        `    title: "Use ${secret}"`,
+        '    run:',
+        '      command: a',
+        `      args: ["\${token}", "prefix ${secret} suffix"]`,
+        `      cwd: "./${secret}"`,
+        '      env:',
+        `        PUBLIC_COPY: "prefix ${secret} suffix"`,
+        '        OPAQUE_SECRET: "${token}"',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+    const events: RunEvent[] = [];
+    let runnerSawSecret = false;
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        const value = request.command.argv[1];
+        expect(value).toBeInstanceOf(SecretString);
+        runnerSawSecret = value instanceof SecretString && value.reveal() === secret;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    const started = events.find((event) => event.kind === 'runStarted');
+    expect(started?.kind).toBe('runStarted');
+    if (started?.kind !== 'runStarted') {
+      throw new Error('runStarted event was not emitted');
+    }
+    const projection = started.plan;
+    const clonedProjection = structuredClone(projection);
+    const containsSecretString = (value: unknown): boolean => {
+      if (value instanceof SecretString) {
+        return true;
+      }
+      return (
+        typeof value === 'object' &&
+        value !== null &&
+        Object.values(value).some(containsSecretString)
+      );
+    };
+    const isDeeplyFrozen = (value: unknown): boolean =>
+      typeof value !== 'object' ||
+      value === null ||
+      (Object.isFrozen(value) && Object.values(value).every(isDeeplyFrozen));
+
+    expect(projection).not.toBe(plan);
+    expect(containsSecretString(projection)).toBe(false);
+    expect(isDeeplyFrozen(projection)).toBe(true);
+    expect(clonedProjection).toEqual(projection);
+    expect(() => describePlan({ plan: projection })).toThrow(/not created by buildPlan/);
+    expect(runnerSawSecret).toBe(true);
+
+    expect(projection.steps).toMatchObject([
+      {
+        id: 'skipped',
+        title: 'Skip ***',
+        skipReason: "condition false: ${token} != '***'",
+      },
+      {
+        id: 'use',
+        title: 'Use ***',
+        command: {
+          argv: ['a', '***', 'prefix *** suffix'],
+          env: { PUBLIC_COPY: 'prefix *** suffix', OPAQUE_SECRET: '***' },
+        },
+      },
+    ]);
+    expect(JSON.stringify(projection.steps[1])).not.toContain(secret);
+
+    const startedStep = events.find((event) => event.kind === 'stepStarted');
+    expect(startedStep).toMatchObject({ stepId: 'use', title: 'Use ***' });
+    expect(result.steps).toMatchObject([
+      {
+        id: 'skipped',
+        title: 'Skip ***',
+        skipReason: "condition false: ${token} != '***'",
+      },
+      { id: 'use', title: 'Use ***' },
+    ]);
+    expect(result.inputs.find((input) => input.id === 'note')?.value).toBe('prefix *** suffix');
+    expect(result.inputs.find((input) => input.id === 'selections')?.value).toEqual([
+      '***',
+      'other',
+    ]);
+    expect(result.inputs.find((input) => input.id === 'token')?.value).toBeNull();
+
+    const preview = describePlan({ plan });
+    expect(JSON.stringify({ events, result, preview })).not.toContain(secret);
   });
 });
 
