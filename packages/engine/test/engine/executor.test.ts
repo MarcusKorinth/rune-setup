@@ -562,6 +562,132 @@ describe('a run that fails', () => {
 });
 
 describe('cancellation and timeout', () => {
+  it('reports a pre-cancelled empty plan as cancelled', async () => {
+    const { plan } = setup(['steps: []']);
+    const cancel = new CancelToken();
+    const events: RunEvent[] = [];
+    let calls = 0;
+    cancel.cancel();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+    });
+    expect(events.map((event) => event.kind)).toEqual(['runStarted', 'runFinished']);
+  });
+
+  it('reports a pre-cancelled all-skipped plan as cancelled without running anything', async () => {
+    const { plan } = setup([
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: first',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: a',
+      '  - id: second',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: b',
+    ]);
+    const cancel = new CancelToken();
+    const events: RunEvent[] = [];
+    let calls = 0;
+    cancel.cancel();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsExecuted: 0,
+      stepsSkipped: 2,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['SKIPPED', 'SKIPPED']);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepFinished',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
+  it('captures cancellation from RunStarted for an all-skipped plan', async () => {
+    const { plan } = setup([
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: skipped',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: a',
+    ]);
+    const cancel = new CancelToken();
+    const events: RunEvent[] = [];
+    let calls = 0;
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        events.push(event);
+        if (event.kind === 'runStarted') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsExecuted: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+    });
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
   it('marks the interrupted step CANCELLED, the rest NOT_RUN, and the run cancelled', async () => {
     const { plan } = setup(TWO_STEPS);
     const cancel = new CancelToken();

@@ -76,6 +76,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   let wasCancelled = false;
 
   emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
+  wasCancelled = cancel.isCancelled;
 
   for (const [index, step] of plan.steps.entries()) {
     if (step.state === 'SKIPPED') {
