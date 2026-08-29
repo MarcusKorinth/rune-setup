@@ -293,7 +293,7 @@ RuneError
 
 ## 8) Runner layer
 
-Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner` interface (`spawn(ResolvedCommand): RunningProcess`). No per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv spawn, and interpreter-selection magic would reintroduce implicit command interpretation against the spec's own security rule.
+Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner` interface (`run(SpawnRequest): Promise<SpawnOutcome>`). No per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv spawn, and interpreter-selection magic would reintroduce implicit command interpretation against the spec's own security rule.
 
 Process contract:
 
