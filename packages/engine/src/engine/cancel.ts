@@ -8,7 +8,7 @@
 
 export class CancelToken {
   #cancelled = false;
-  readonly #listeners: Array<() => void> = [];
+  readonly #listeners = new Set<() => void>();
 
   get cancelled(): boolean {
     return this.#cancelled;
@@ -20,17 +20,25 @@ export class CancelToken {
       return;
     }
     this.#cancelled = true;
-    for (const listener of this.#listeners.splice(0)) {
+    const listeners = [...this.#listeners];
+    this.#listeners.clear();
+    for (const listener of listeners) {
       listener();
     }
   }
 
-  /** Runs `listener` on cancellation — immediately, when it already happened. */
-  onCancel(listener: () => void): void {
+  /**
+   * Runs `listener` on cancellation — immediately, when it already happened — and returns an
+   * idempotent disposer for callers whose lifetime is shorter than the token's.
+   */
+  onCancel(listener: () => void): () => void {
     if (this.#cancelled) {
       listener();
-      return;
+      return () => undefined;
     }
-    this.#listeners.push(listener);
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
   }
 }

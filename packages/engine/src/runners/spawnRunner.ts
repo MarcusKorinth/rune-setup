@@ -7,7 +7,8 @@
  * fails.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { readdir, readFile } from 'node:fs/promises';
 
 import { SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
@@ -15,8 +16,13 @@ import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
 
+/** Polling keeps process-group termination awaitable without blocking the event loop. */
+const PROCESS_POLL_MS = 25;
+
 /** Startup failures may contain argv, cwd, or environment values in Node's error text. */
 const FAILED_TO_START_MESSAGE = 'process could not be started';
+
+type TerminationCause = 'timedOut' | 'cancelled';
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
 function reveal(value: string | SecretString): string {
@@ -49,82 +55,225 @@ export class SpawnRunner implements Runner {
       }
 
       let settled = false;
-      let timedOut = false;
-      let cancelled = false;
-      let timer: NodeJS.Timeout | undefined;
+      let terminationCause: TerminationCause | undefined;
+      let terminationTask: Promise<void> | undefined;
+      let timeout: NodeJS.Timeout | undefined;
+      let unsubscribeCancel = (): void => undefined;
+      let childDone = false;
+      let closeCode: number | null = null;
+      let resolveChildDone = (): void => undefined;
+      const childDonePromise = new Promise<void>((resolveDone) => {
+        resolveChildDone = resolveDone;
+      });
+
+      const completeChild = (code: number | null = null): void => {
+        if (childDone) {
+          return;
+        }
+        childDone = true;
+        closeCode = code;
+        resolveChildDone();
+      };
+
+      const clearRunTimeout = (): void => {
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+      };
 
       const settle = (outcome: SpawnOutcome): void => {
         if (settled) {
           return;
         }
         settled = true;
-        if (timer !== undefined) {
-          clearTimeout(timer);
-        }
+        clearRunTimeout();
+        unsubscribeCancel();
         resolve(outcome);
       };
 
-      const killTree = (): void => {
-        if (child.pid === undefined) {
+      const requestTermination = (cause: TerminationCause): void => {
+        if (settled || terminationCause !== undefined) {
           return;
         }
-        if (process.platform === 'win32') {
-          // Node has no Job Objects; taskkill's tree kill is the standard (§7).
-          spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-            stdio: 'ignore',
-            shell: false,
-          });
-          return;
-        }
-        try {
-          process.kill(-child.pid, 'SIGTERM');
-        } catch {
-          // The group is already gone; nothing left to stop.
-          return;
-        }
-        const escalate = setTimeout(() => {
-          try {
-            process.kill(-(child.pid as number), 'SIGKILL');
-          } catch {
-            // Terminated within the grace period.
-          }
-        }, KILL_GRACE_MS);
-        escalate.unref();
+        terminationCause = cause;
+        clearRunTimeout();
+        terminationTask = (async () => {
+          await terminateTree(child);
+          await childDonePromise;
+          settle({ kind: cause });
+        })();
+        // The task is stored to make the single in-flight termination explicit. Its helpers
+        // absorb platform process errors and therefore cannot reject.
+        void terminationTask;
       };
 
-      child.on('error', () => {
-        settle({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+      child.once('error', () => {
+        completeChild();
+        if (terminationCause === undefined) {
+          settle({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+        }
       });
 
       forwardLines(child.stdout, (line) => request.onOutput('stdout', line));
       forwardLines(child.stderr, (line) => request.onOutput('stderr', line));
 
+      child.once('close', (code) => {
+        completeChild(code);
+        if (terminationCause === undefined) {
+          settle({ kind: 'exited', exitCode: closeCode ?? 1 });
+        }
+      });
+
       if (command.timeoutSeconds !== null) {
-        timer = setTimeout(() => {
-          timedOut = true;
-          killTree();
-        }, command.timeoutSeconds * 1000);
-        timer.unref();
+        timeout = setTimeout(() => requestTermination('timedOut'), command.timeoutSeconds * 1000);
+        timeout.unref();
       }
 
-      request.cancel.onCancel(() => {
-        if (!settled) {
-          cancelled = true;
-          killTree();
-        }
-      });
-
-      child.on('close', (code) => {
-        if (cancelled) {
-          settle({ kind: 'cancelled' });
-        } else if (timedOut) {
-          settle({ kind: 'timedOut' });
-        } else {
-          settle({ kind: 'exited', exitCode: code ?? 1 });
-        }
-      });
+      unsubscribeCancel = request.cancel.onCancel(() => requestTermination('cancelled'));
     });
   }
+}
+
+/** Terminates the platform process tree and resolves only after the kill operation is complete. */
+async function terminateTree(child: ChildProcess): Promise<void> {
+  const { pid } = child;
+  if (pid === undefined) {
+    return;
+  }
+  if (process.platform === 'win32') {
+    const killedTree = await runTaskkill(pid);
+    if (!killedTree) {
+      killDirectChild(child);
+    }
+    return;
+  }
+  await terminateProcessGroup(pid);
+}
+
+/** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
+function runTaskkill(pid: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let taskkill: ChildProcess;
+    try {
+      taskkill = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        shell: false,
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
+
+    let completed = false;
+    const complete = (succeeded: boolean): void => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      resolve(succeeded);
+    };
+    taskkill.once('error', () => complete(false));
+    taskkill.once('close', (code) => complete(code === 0));
+  });
+}
+
+/** Best-effort fallback when Windows cannot start or complete taskkill. */
+function killDirectChild(child: ChildProcess): void {
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // The child is already gone.
+  }
+}
+
+/** SIGTERM the group, give it the documented grace period, then confirm SIGKILL completion. */
+async function terminateProcessGroup(pid: number): Promise<void> {
+  if (!signalProcessGroup(pid, 'SIGTERM')) {
+    return;
+  }
+  if (await waitForProcessGroupExit(pid, KILL_GRACE_MS)) {
+    return;
+  }
+  signalProcessGroup(pid, 'SIGKILL');
+  // There is no later settlement until the firm signal has actually removed the group. This
+  // prevents a surviving grandchild and eliminates a delayed signal against a reused PGID.
+  await waitForProcessGroupExit(pid);
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    // The group is already gone (or could not be signalled); no delayed signal is retained.
+    return false;
+  }
+}
+
+async function waitForProcessGroupExit(pid: number, timeoutMs?: number): Promise<boolean> {
+  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  while (await processGroupHasLiveMembers(pid)) {
+    let waitMs = PROCESS_POLL_MS;
+    if (deadline !== undefined) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return false;
+      }
+      waitMs = Math.min(PROCESS_POLL_MS, remaining);
+    }
+    await delay(waitMs);
+  }
+  return true;
+}
+
+async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+  if (process.platform !== 'linux') {
+    return true;
+  }
+
+  // A minimal container without an init process can retain killed orphan descendants as
+  // zombies indefinitely. They cannot execute and must not keep a timed-out run open forever.
+  // Linux /proc lets us distinguish those from live members of the process group.
+  try {
+    const entries = await readdir('/proc', { withFileTypes: true });
+    const states = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+        .map(async (entry) => {
+          try {
+            return await readFile(`/proc/${entry.name}/stat`, 'utf8');
+          } catch {
+            return undefined;
+          }
+        }),
+    );
+    return states.some((stat) => stat !== undefined && isLiveGroupMember(stat, pid));
+  } catch {
+    // A restricted /proc mount cannot provide stronger confirmation; remain conservative.
+    return true;
+  }
+}
+
+function isLiveGroupMember(stat: string, processGroupId: number): boolean {
+  const commandEnd = stat.lastIndexOf(')');
+  if (commandEnd === -1) {
+    return false;
+  }
+  // Fields after `(comm)` start with state, parent PID and process-group ID.
+  const fields = stat.slice(commandEnd + 2).split(' ');
+  const state = fields[0];
+  const group = Number(fields[2]);
+  return group === processGroupId && state !== 'Z' && state !== 'X' && state !== 'x';
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 /** Splits a stream into lines as it arrives; a last unterminated line is flushed at the end. */

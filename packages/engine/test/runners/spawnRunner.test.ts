@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,66 @@ function run(
     cancel: options.cancel ?? new CancelToken(),
     onOutput: options.onOutput ?? (() => undefined),
   });
+}
+
+class TrackedCancelToken extends CancelToken {
+  activeListeners = 0;
+
+  override onCancel(listener: () => void): () => void {
+    this.activeListeners += 1;
+    const unsubscribe = super.onCancel(listener);
+    let disposed = false;
+    return () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      this.activeListeners -= 1;
+      unsubscribe();
+    };
+  }
+}
+
+function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('test operation timed out')), milliseconds);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  if (process.platform !== 'linux') {
+    return true;
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    return commandEnd !== -1 && stat.slice(commandEnd + 2, commandEnd + 3) !== 'Z';
+  } catch {
+    return false;
+  }
+}
+
+function stopProcess(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // The integration-test process has already gone.
+  }
 }
 
 describe('SpawnRunner', () => {
@@ -240,4 +300,188 @@ describe('SpawnRunner', () => {
 
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
   }, 15000);
+
+  it('unsubscribes from cancellation after normal settlement', async () => {
+    const cancel = new TrackedCancelToken();
+
+    await expect(run(nodeCommand('process.exit(0)'), { cancel })).resolves.toEqual({
+      kind: 'exited',
+      exitCode: 0,
+    });
+
+    expect(cancel.activeListeners).toBe(0);
+    cancel.cancel();
+    expect(cancel.activeListeners).toBe(0);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps the first timeout cause while cancellation arrives during graceful termination',
+    async () => {
+      const cancel = new CancelToken();
+      const signals: string[] = [];
+      const pending = run(
+        nodeCommand(
+          [
+            'let signals = 0;',
+            'process.on("SIGTERM", () => {',
+            '  console.log(`term:${++signals}`);',
+            '  setTimeout(() => process.exit(0), 300);',
+            '});',
+            'setInterval(() => {}, 1000);',
+          ].join('\n'),
+          { timeoutSeconds: 0.05 },
+        ),
+        { cancel, onOutput: (_stream, line) => signals.push(line) },
+      );
+      const cancelTimer = setTimeout(() => cancel.cancel(), 100);
+
+      try {
+        await expect(pending).resolves.toEqual({ kind: 'timedOut' });
+        expect(signals.filter((line) => line.startsWith('term:'))).toEqual(['term:1']);
+      } finally {
+        clearTimeout(cancelTimer);
+        cancel.cancel();
+      }
+    },
+    15000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps the first cancellation cause while timeout arrives during graceful termination',
+    async () => {
+      const cancel = new CancelToken();
+      const signals: string[] = [];
+      const pending = run(
+        nodeCommand(
+          [
+            'let signals = 0;',
+            'process.on("SIGTERM", () => {',
+            '  console.log(`term:${++signals}`);',
+            '  setTimeout(() => process.exit(0), 300);',
+            '});',
+            'setInterval(() => {}, 1000);',
+          ].join('\n'),
+          { timeoutSeconds: 0.1 },
+        ),
+        { cancel, onOutput: (_stream, line) => signals.push(line) },
+      );
+      const cancelTimer = setTimeout(() => cancel.cancel(), 50);
+
+      try {
+        await expect(pending).resolves.toEqual({ kind: 'cancelled' });
+        expect(signals.filter((line) => line.startsWith('term:'))).toEqual(['term:1']);
+      } finally {
+        clearTimeout(cancelTimer);
+        cancel.cancel();
+      }
+    },
+    15000,
+  );
+
+  it('does not resolve termination until a real child process tree is gone', async () => {
+    const cancel = new CancelToken();
+    const directory = mkdtempSync(join(tmpdir(), 'rune-process-tree-'));
+    const readyPath = join(directory, 'grandchild-ready');
+    const grandchildScript = [
+      'process.on("SIGTERM", () => {});',
+      `require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");`,
+      'setInterval(() => {}, 1000);',
+    ].join('\n');
+    const parentScript = [
+      'const { spawn } = require("node:child_process");',
+      `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "ignore" });`,
+      `const readyPath = ${JSON.stringify(readyPath)};`,
+      'const ready = setInterval(() => {',
+      '  if (require("node:fs").existsSync(readyPath)) {',
+      '    clearInterval(ready);',
+      '    console.log(`${process.pid}:${grandchild.pid}`);',
+      '  }',
+      '}, 10);',
+      'process.on("SIGTERM", () => process.exit(0));',
+      'setInterval(() => {}, 1000);',
+    ].join('\n');
+    let parentPid: number | undefined;
+    let grandchildPid: number | undefined;
+    let resolveProcessIds = (_ids: readonly [number, number]): void => undefined;
+    const processIds = new Promise<readonly [number, number]>((resolveIds) => {
+      resolveProcessIds = resolveIds;
+    });
+    const pending = run(nodeCommand(parentScript), {
+      cancel,
+      onOutput: (_stream, line) => {
+        const match = /^(\d+):(\d+)$/.exec(line);
+        if (match?.[1] !== undefined && match[2] !== undefined) {
+          resolveProcessIds([Number(match[1]), Number(match[2])]);
+        }
+      },
+    });
+
+    try {
+      [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
+      expect(processIsAlive(parentPid)).toBe(true);
+      expect(processIsAlive(grandchildPid)).toBe(true);
+
+      cancel.cancel();
+
+      await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'cancelled' });
+      expect(processIsAlive(parentPid)).toBe(false);
+      expect(processIsAlive(grandchildPid)).toBe(false);
+    } finally {
+      cancel.cancel();
+      if (parentPid !== undefined) {
+        stopProcess(parentPid);
+      }
+      if (grandchildPid !== undefined) {
+        stopProcess(grandchildPid);
+      }
+    }
+  }, 25000);
+
+  it.runIf(process.platform === 'win32')(
+    'falls back safely when taskkill cannot be started',
+    async () => {
+      const previousPath = process.env.PATH;
+      const cancel = new CancelToken();
+      try {
+        process.env.PATH = '';
+        const pending = run(nodeCommand('setInterval(() => {}, 1000)'), { cancel });
+        setTimeout(() => cancel.cancel(), 100);
+
+        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+      } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+        cancel.cancel();
+      }
+    },
+    10000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'falls back safely when taskkill exits unsuccessfully',
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'rune-fake-taskkill-'));
+      copyFileSync(process.execPath, join(directory, 'taskkill.exe'));
+      const previousPath = process.env.PATH;
+      const cancel = new CancelToken();
+      try {
+        process.env.PATH = directory;
+        const pending = run(nodeCommand('setInterval(() => {}, 1000)'), { cancel });
+        setTimeout(() => cancel.cancel(), 100);
+
+        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+      } finally {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+        cancel.cancel();
+      }
+    },
+    10000,
+  );
 });
