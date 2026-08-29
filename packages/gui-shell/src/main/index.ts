@@ -81,13 +81,14 @@ async function main(): Promise<void> {
   app.exit(await windowedRun(session, invocation));
 }
 
-async function openSession(invocation: ShellInvocation): Promise<Session> {
+export async function openSession(invocation: ShellInvocation): Promise<Session> {
   return Session.open(invocation.manifestPath, {
     values: invocation.values,
     overrides: invocation.overrides,
     locale: invocation.locale,
     logFile: invocation.logFile,
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
+    checkAssetFiles: !invocation.nonInteractive,
   });
 }
 

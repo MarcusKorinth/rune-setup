@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn() },
 }));
 
-import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
+import { BRIDGE_CHANNELS, EVENT_CHANNEL, openSession, registerBridge } from '../src/main/index.js';
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
@@ -45,6 +45,39 @@ function fixture(): string {
   return path;
 }
 
+function missingGuiAssetFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-gui-assets-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'gui:',
+      '  logo: assets/missing.png',
+      'inputs: {}',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
+function shellInvocation(manifestPath: string, nonInteractive: boolean) {
+  return {
+    manifestPath,
+    values: [],
+    overrides: {},
+    locale: undefined,
+    result: undefined,
+    logFile: undefined,
+    nonInteractive,
+  };
+}
+
 async function bridgeOver(session: Session): Promise<{
   channels: string[];
   call: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -71,6 +104,15 @@ async function bridgeOver(session: Session): Promise<{
 }
 
 describe('the IPC bridge', () => {
+  it('checks GUI assets for windowed sessions but ignores them headlessly', async () => {
+    const manifestPath = missingGuiAssetFixture();
+
+    await expect(openSession(shellInvocation(manifestPath, false))).rejects.toThrow(
+      /gui\.logo.*does not exist/,
+    );
+    await expect(openSession(shellInvocation(manifestPath, true))).resolves.toBeInstanceOf(Session);
+  });
+
   it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {
     // Required input left unanswered: execute() throws at plan time.
     const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
