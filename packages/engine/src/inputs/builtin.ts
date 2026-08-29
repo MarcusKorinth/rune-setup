@@ -174,7 +174,7 @@ function membership(entries: readonly string[], spec: InputSpec): Coercion {
   const known = optionValues(spec);
   const unknown = entries.filter((entry) => !known.includes(entry));
   if (unknown.length === 0) {
-    return ok(entries);
+    return ok(Object.freeze([...entries]));
   }
   const named = unknown.map((entry) => `"${entry}"`).join(', ');
   return fail(
@@ -185,7 +185,7 @@ function membership(entries: readonly string[], spec: InputSpec): Coercion {
 const multiselect: InputTypeHandler = {
   name: 'multiselect',
   secret: false,
-  empty: () => [],
+  empty: () => Object.freeze([]),
   isAbsent: (value) => Array.isArray(value) && value.length === 0,
   fromString: multiselectFromString,
   fromNative: (value, spec) => {

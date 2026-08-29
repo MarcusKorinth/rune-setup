@@ -189,12 +189,38 @@ describe('multiselect', () => {
     );
   });
 
-  it('takes a YAML list of strings', () => {
-    const result = handler('multiselect').fromNative(['git'], spec('multiselect', options));
-    expect(result.ok && result.value).toEqual(['git']);
+  it('takes a YAML list of strings as an immutable snapshot', () => {
+    const written = ['git'];
+    const result = handler('multiselect').fromNative(written, spec('multiselect', options));
+    const selection = result.ok ? (result.value as readonly string[]) : [];
+
+    expect(selection).toEqual(['git']);
+    expect(selection).not.toBe(written);
+
+    written.push('podman');
+    expect(selection).toEqual(['git']);
+    expect(Object.isFrozen(selection)).toBe(true);
+    expect(() => (selection as string[]).push('docker')).toThrow(TypeError);
+    expect(selection).toEqual(['git']);
+
     expect(handler('multiselect').fromNative(['git', 7], spec('multiselect', options)).ok).toBe(
       false,
     );
+  });
+
+  it('also freezes selections parsed from text and the type-provided empty value', () => {
+    const parsed = handler('multiselect').fromString('git,docker', spec('multiselect', options));
+    const selection = parsed.ok ? parsed.value : undefined;
+    const parsedEmpty = handler('multiselect').fromString('', spec('multiselect', options));
+    const emptySelection = parsedEmpty.ok ? parsedEmpty.value : undefined;
+    const empty = handler('multiselect').empty(spec('multiselect', options));
+
+    expect(selection).toEqual(['git', 'docker']);
+    expect(Object.isFrozen(selection)).toBe(true);
+    expect(emptySelection).toEqual([]);
+    expect(Object.isFrozen(emptySelection)).toBe(true);
+    expect(empty).toEqual([]);
+    expect(Object.isFrozen(empty)).toBe(true);
   });
 
   it('renders comma-joined, the way it is written', () => {

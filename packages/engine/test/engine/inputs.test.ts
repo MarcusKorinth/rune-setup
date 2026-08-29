@@ -174,6 +174,25 @@ describe('precedence', () => {
   });
 });
 
+describe('resolved multiselect values', () => {
+  it('cannot be changed through the layer-5 array after resolution', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+    );
+    const answer = ['git'];
+    const resolution = resolve(manifest, { answers: new Map([['tools', answer]]) });
+    const resolved = resolution.byId.get('tools')?.value;
+
+    answer.push('podman');
+
+    expect(resolved).toEqual(['git']);
+    expect(Object.isFrozen(resolved)).toBe(true);
+  });
+});
+
 describe('what is still missing', () => {
   it('lists a required input nobody answered', () => {
     expect(resolve(manifestOf(...SIMPLE)).missing).toEqual(['target']);
