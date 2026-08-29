@@ -10,7 +10,7 @@ export class CancelToken {
   #cancelled = false;
   readonly #listeners = new Set<() => void>();
 
-  get cancelled(): boolean {
+  get isCancelled(): boolean {
     return this.#cancelled;
   }
 

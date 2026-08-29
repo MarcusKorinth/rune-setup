@@ -97,7 +97,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     // also carries a runner-reported cancellation forward when a custom runner does not
     // own the supplied token.
     const abortForFailure = failed && plan.executionOptions.failFast;
-    const abortForCancellation = !abortForFailure && (wasCancelled || cancel.cancelled);
+    const abortForCancellation = !abortForFailure && (wasCancelled || cancel.isCancelled);
     if (abortForCancellation) {
       wasCancelled = true;
     }

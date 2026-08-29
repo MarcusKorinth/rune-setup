@@ -670,7 +670,7 @@ describe('cancellation and timeout', () => {
       },
       runner: stubRunner((request) => {
         calls += 1;
-        expect(request.cancel.cancelled).toBe(true);
+        expect(request.cancel.isCancelled).toBe(true);
         return { kind: 'cancelled' };
       }),
     });
@@ -735,7 +735,7 @@ describe('cancellation and timeout', () => {
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
     });
 
-    expect(cancel.cancelled).toBe(true);
+    expect(cancel.isCancelled).toBe(true);
     expect(result).toMatchObject({
       status: 'succeeded',
       exitCode: 0,
@@ -760,7 +760,7 @@ describe('cancellation and timeout', () => {
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
     });
 
-    expect(cancel.cancelled).toBe(true);
+    expect(cancel.isCancelled).toBe(true);
     expect(result).toMatchObject({
       status: 'failed',
       exitCode: 1,

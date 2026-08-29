@@ -33,7 +33,9 @@ describe('CancelToken', () => {
   it('runs an already-cancelled subscription immediately and returns a no-op disposer', () => {
     const token = new CancelToken();
     const listener = vi.fn();
+    expect(token.isCancelled).toBe(false);
     token.cancel();
+    expect(token.isCancelled).toBe(true);
 
     const unsubscribe = token.onCancel(listener);
     unsubscribe();
