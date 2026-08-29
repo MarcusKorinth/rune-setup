@@ -64,8 +64,8 @@ export interface ResolveInputsOptions {
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
   readonly answers?: ReadonlyMap<string, InputValue>;
-  /** Registers secrets for masking as they resolve — before any step can launch (§10). */
-  readonly secrets?: SecretRegistry;
+  /** Required registry for masking every secret as it resolves, before any step can launch (§10). */
+  readonly secrets: SecretRegistry;
   /**
    * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
    * runs and the process exits. A frontend that can ask again takes `collect`, which records
@@ -171,7 +171,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       continue;
     }
 
-    if (handler.secret && options.secrets !== undefined) {
+    if (handler.secret) {
       // The one place that unwraps a secret outside the runner: it has to know the text to
       // be able to remove it from everything a run prints (§10).
       const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';

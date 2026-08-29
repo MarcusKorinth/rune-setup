@@ -41,10 +41,12 @@ function resolve(
   options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
   environment: Record<string, string> = {},
 ): Resolution {
+  const { secrets = new SecretRegistry(), ...rest } = options;
   return resolveInputs({
     manifest,
     context: contextFor(manifest, environment),
-    ...options,
+    ...rest,
+    secrets,
   });
 }
 
@@ -266,7 +268,11 @@ describe('defaults are templates', () => {
       environment: {},
     });
 
-    const resolution = resolveInputs({ manifest, context: preview });
+    const resolution = resolveInputs({
+      manifest,
+      context: preview,
+      secrets: new SecretRegistry(),
+    });
 
     expect(resolution.byId.get('logs')?.value).toMatch(/^<home@(linux|windows)>\/logs$/);
   });
@@ -605,6 +611,7 @@ describe('a frontend that can ask again', () => {
     const resolution = resolveInputs({
       manifest,
       context: contextFor(manifest),
+      secrets: new SecretRegistry(),
       overrides: new Map([['port', 'eighty']]),
       invalidValues: 'collect',
     });
