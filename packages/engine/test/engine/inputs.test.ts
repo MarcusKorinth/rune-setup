@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -771,6 +772,26 @@ describe('values files', () => {
     throw new Error('expected the values file to be rejected');
   }
 
+  function publicErrorSurfaces(error: Error): readonly string[] {
+    const surfaces: string[] = [];
+    const seen = new Set<Error>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+      seen.add(current);
+      surfaces.push(
+        current.message,
+        String(current),
+        JSON.stringify(current) ?? '',
+        inspect(current),
+      );
+      if (current instanceof InputError) {
+        surfaces.push(...current.issues.map((issue) => issue.message));
+      }
+      current = current.cause;
+    }
+    return surfaces;
+  }
+
   it('reads a flat mapping of ids to values', () => {
     const document = parseValuesFile(
       file('target: /opt/app\nverbose: true\ntools:\n  - git\n  - docker\n'),
@@ -822,31 +843,53 @@ describe('values files', () => {
     ]);
   });
 
-  it('classifies unknown YAML tags as invalid values input', () => {
-    const error = loadError('target: !unknown value\n');
+  it('redacts unknown YAML tag names from every public error surface', () => {
+    const sentinel = 'F015_UNKNOWN_TAG_SECRET';
+    const error = loadError(`target: !${sentinel} value\n`);
 
     expect(error.code).toBe('RUNE-202');
-    expect(error.issues).toMatchObject([
+    expect(error.message).toBe('values.yaml:1:9: YAML tags are not allowed in values files');
+    expect(error.issues).toEqual([
       {
         code: 'RUNE-202',
-        message: expect.stringMatching(/[Uu]nresolved tag/),
-        location: { file: 'values.yaml', line: 1 },
+        message: 'YAML tags are not allowed in values files',
+        location: { file: 'values.yaml', line: 1, column: 9 },
       },
     ]);
+    expect(error.cause).toBeUndefined();
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
   });
 
-  it('keeps the loader cause chain when the file is not valid UTF-8', () => {
+  it('redacts unresolved YAML alias names from every public error surface', () => {
+    const sentinel = 'F015_UNRESOLVED_ALIAS_SECRET';
+    const error = loadError(`target: *${sentinel}\n`);
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe(
+      'values.yaml:1:1: YAML alias refers to an anchor that has not been defined yet',
+    );
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: 'YAML alias refers to an anchor that has not been defined yet',
+        location: { file: 'values.yaml', line: 1, column: 1 },
+      },
+    ]);
+    expect(error.cause).toBeUndefined();
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+  });
+
+  it('keeps the UTF-8 category and location without exposing the loader cause', () => {
     const error = loadError(Buffer.from([0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x3a, 0xff, 0x0a]));
 
     expect(error.code).toBe('RUNE-202');
     expect(exitCodeFor(error)).toBe(4);
     expect(error.message).toContain('not valid UTF-8');
     expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
-    expect(error.cause).toBeInstanceOf(ManifestError);
-    expect((error.cause as ManifestError).cause).toBeDefined();
+    expect(error.cause).toBeUndefined();
   });
 
-  it('keeps the loader cause chain when the values file cannot be read', () => {
+  it('keeps the unreadable-file category and location without exposing the loader cause', () => {
     const missing = join(mkdtempSync(join(tmpdir(), 'rune-values-')), 'missing.yaml');
     let thrown: unknown;
     try {
@@ -861,8 +904,7 @@ describe('values files', () => {
     expect(exitCodeFor(error)).toBe(4);
     expect(error.message).toContain('cannot be read');
     expect(error.location).toEqual({ file: 'missing.yaml', line: 1, column: 1 });
-    expect(error.cause).toBeInstanceOf(ManifestError);
-    expect((error.cause as ManifestError).cause).toBeDefined();
+    expect(error.cause).toBeUndefined();
   });
 
   it('refuses a document that is not a mapping', () => {

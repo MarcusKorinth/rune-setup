@@ -11,6 +11,7 @@
  */
 
 import {
+  formatIssues,
   InputError,
   InternalError,
   ManifestError,
@@ -485,11 +486,57 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
 
 /** Values files are runtime input, even though they share the manifest YAML loader. */
 function valuesFileLoadError(error: ManifestError, file: string): InputError {
-  return new InputError('RUNE-202', error.message, {
-    issues: error.issues.map((issue) => ({ ...issue, code: 'RUNE-202' })),
+  const issues = error.issues.map((issue) => ({
+    code: 'RUNE-202' as const,
+    message: valuesFileLoaderMessage(issue.message, file),
+    location: issue.location,
+  }));
+  return new InputError('RUNE-202', formatIssues(issues), {
+    issues,
     location: error.location ?? startOfFile(file),
-    cause: error,
   });
+}
+
+/**
+ * Removes document content from YAML loader diagnostics before they cross the values-file
+ * boundary. At this point no input type is known, so a tag or alias name may itself be a
+ * secret value. File-system categories and key-only structural errors are safe and useful;
+ * parser diagnostics are reduced to stable categories instead of quoting their tokens.
+ */
+function valuesFileLoaderMessage(message: string, file: string): string {
+  if (message === `${file} is not a file`) {
+    return message;
+  }
+  if (message.startsWith(`${file} is larger than the `) && message.endsWith(' MiB limit')) {
+    return message;
+  }
+  if (message === `${file} is not valid UTF-8`) {
+    return message;
+  }
+  if (message.startsWith(`${file} cannot be read:`)) {
+    return `${file} cannot be read`;
+  }
+  if (
+    message.startsWith('duplicate key "') ||
+    message === 'a mapping key must be a plain scalar' ||
+    message === 'a mapping key must not be empty' ||
+    message === '__proto__ is not allowed as a key'
+  ) {
+    return message;
+  }
+  if (/\btag(?:s)?\b/iu.test(message)) {
+    return 'YAML tags are not allowed in values files';
+  }
+  if (message.startsWith('Unresolved alias')) {
+    return 'YAML alias refers to an anchor that has not been defined yet';
+  }
+  if (message === 'Excessive alias count indicates a resource exhaustion attack') {
+    return 'YAML alias expansion exceeds the safety limit';
+  }
+  if (/\b(?:alias(?:es)?|anchor(?:s)?)\b/iu.test(message)) {
+    return 'invalid YAML alias or anchor syntax';
+  }
+  return 'invalid YAML syntax';
 }
 
 /**
