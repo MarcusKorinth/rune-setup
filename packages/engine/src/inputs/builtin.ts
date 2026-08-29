@@ -10,13 +10,19 @@
 import { MASK, SecretString } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
-import { FALSE_WORDS, TRUE_WORDS, type Coercion, type InputTypeHandler } from './base.js';
+import {
+  FALSE_WORDS,
+  TRUE_WORDS,
+  type Coercion,
+  type InputTypeHandler,
+  type InputValue,
+} from './base.js';
 
 /** The cap on a value that is matched against a pattern (§4.2). */
 export const MAX_PATTERN_INPUT_BYTES = 4096;
 
-function ok(value: Parameters<typeof String>[0] | boolean | readonly string[]): Coercion {
-  return { ok: true, value: value as never };
+function ok(value: InputValue): Coercion {
+  return { ok: true, value };
 }
 
 function fail(message: string): Coercion {
@@ -103,18 +109,16 @@ const secret: InputTypeHandler = {
   secret: true,
   empty: () => new SecretString(''),
   isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
-  fromString: (value) => ok(new SecretString(value) as never),
+  fromString: (value) => ok(new SecretString(value)),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
   // An already-wrapped secret passes through: a frontend hands back what resolution gave it
   // when it re-resolves after another answer changed, and unwrapping it to check would be
   // the one place a secret is turned back into a plain string for no reason.
   fromNative: (value) => {
     if (value instanceof SecretString) {
-      return ok(value as never);
+      return ok(value);
     }
-    return typeof value === 'string'
-      ? ok(new SecretString(value) as never)
-      : fail('the value is not text');
+    return typeof value === 'string' ? ok(new SecretString(value)) : fail('the value is not text');
   },
   // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a
