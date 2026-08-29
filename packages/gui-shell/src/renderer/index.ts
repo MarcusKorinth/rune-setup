@@ -419,8 +419,7 @@ async function renderSummary(): Promise<void> {
     row.append(title);
     const detail = document.createElement('div');
     detail.className = 'command';
-    detail.textContent =
-      step.state === 'SKIPPED' ? (step.skipReason ?? '') : (step.command ?? []).join(' ');
+    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.command.argv.join(' ');
     row.append(detail);
     el.page.append(row);
   }

@@ -11,7 +11,14 @@
 
 import type * as ElectronModule from 'electron';
 
-import type { BridgeEvent, BridgeInput, BridgeResult, BridgeTheme, RuneBridge } from './types.js';
+import type {
+  BridgeEvent,
+  BridgeInput,
+  BridgePlan,
+  BridgeResult,
+  BridgeTheme,
+  RuneBridge,
+} from './types.js';
 
 export type { RuneBridge } from './types.js';
 
@@ -42,7 +49,7 @@ export function buildBridge(ipc: BridgeIpc): RuneBridge {
       ipc.invoke('rune:setValue', id, raw) as Promise<
         readonly { inputId: string; enabled: boolean }[]
       >,
-    plan: () => ipc.invoke('rune:plan') as Promise<BridgeResult>,
+    plan: () => ipc.invoke('rune:plan') as Promise<BridgePlan>,
     execute: () => ipc.invoke('rune:execute') as Promise<BridgeResult>,
     cancel: () => ipc.invoke('rune:cancel') as Promise<void>,
     getStrings: () => ipc.invoke('rune:getStrings') as Promise<Readonly<Record<string, string>>>,

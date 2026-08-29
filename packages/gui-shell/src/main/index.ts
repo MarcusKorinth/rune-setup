@@ -21,7 +21,7 @@ import {
 } from '@rune/engine';
 
 import { parseShellArgv, type ShellInvocation } from './argv.js';
-import { project } from './serialize.js';
+import { project, projectPlan } from './serialize.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -217,7 +217,7 @@ export function registerBridge(
   register('rune:pendingInputs', () => project(session.pendingInputs(), mask));
   register('rune:allInputs', () => project(session.allInputs(), mask));
   register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw), mask));
-  register('rune:plan', () => project(session.describe(), mask));
+  register('rune:plan', () => projectPlan(session.plan(), mask));
   register('rune:getStrings', () => project(Object.fromEntries(session.getStrings().entries)));
   register('rune:getThemeConfig', () => project(session.getThemeConfig()));
   register('rune:warnings', () => project(session.warnings(), mask));

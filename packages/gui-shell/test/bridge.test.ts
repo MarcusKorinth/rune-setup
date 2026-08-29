@@ -36,8 +36,16 @@ function fixture(): string {
       'steps:',
       '  - id: use',
       '    run:',
-      '      command: deploy',
-      '      args: ["--token", "${token}"]',
+      '      command: "${token}"',
+      '      args: ["--token", "${token}", "super-secret-value"]',
+      '      cwd: "${token}"',
+      '      env:',
+      '        TOKEN: "${token}"',
+      '        LITERAL: super-secret-value',
+      '  - id: skipped',
+      '    when: "${installDatabase}"',
+      '    run:',
+      '      command: echo',
       '',
     ].join('\n'),
     'utf8',
@@ -94,12 +102,14 @@ describe('the IPC bridge', () => {
     expect(bridge.channels.sort()).toEqual([...BRIDGE_CHANNELS].sort());
   });
 
-  it('never lets a secret cross towards the renderer', async () => {
+  it('projects Session.plan exactly once as plain masked plan data', async () => {
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
+    const planSpy = vi.spyOn(session, 'plan');
+    const describeSpy = vi.spyOn(session, 'describe');
     const bridge = await bridgeOver(session);
 
     const inputs = (await bridge.call('rune:allInputs')) as readonly {
@@ -108,11 +118,57 @@ describe('the IPC bridge', () => {
     }[];
     expect(inputs.find((input) => input.id === 'token')?.value).toBeNull();
 
-    await bridge.call('rune:setValue', 'installDatabase', true);
-    await bridge.call('rune:setValue', 'databasePort', '5432');
-    const plan = await bridge.call('rune:plan');
+    const plan = (await bridge.call('rune:plan')) as Record<string, unknown> & {
+      steps: readonly Record<string, unknown>[];
+    };
+
+    expect(planSpy).toHaveBeenCalledTimes(1);
+    expect(describeSpy).not.toHaveBeenCalled();
+    expect(plan).toMatchObject({
+      manifestPath: session.manifestPath,
+      preview: false,
+      failFast: true,
+      steps: [
+        {
+          id: 'use',
+          title: 'use',
+          state: 'PENDING',
+          command: {
+            argv: ['***', '--token', '***', '***'],
+            cwd: '***',
+            env: { TOKEN: '***', LITERAL: '***' },
+            timeoutSeconds: null,
+            successExitCodes: [0],
+          },
+        },
+        {
+          id: 'skipped',
+          title: 'skipped',
+          state: 'SKIPPED',
+          skipReason: 'condition false: ${installDatabase}',
+        },
+      ],
+    });
+    for (const resultOnlyField of [
+      'status',
+      'exitCode',
+      'nothingExecuted',
+      'stepsTotal',
+      'stepsSucceeded',
+      'stepsFailed',
+      'stepsSkipped',
+      'product',
+    ]) {
+      expect(plan).not.toHaveProperty(resultOnlyField);
+    }
+    expect(plan.steps[0]).not.toHaveProperty('exitCode');
+    expect(plan.steps[0]).not.toHaveProperty('durationMs');
+    expect(plan.steps[0]).not.toHaveProperty('outputTail');
+    expect(plan.steps[1]).not.toHaveProperty('command');
+    expect(JSON.parse(JSON.stringify(plan))).toEqual(plan);
     expect(JSON.stringify(plan)).not.toContain('super-secret-value');
     expect(JSON.stringify(inputs)).not.toContain('super-secret-value');
+    expect(JSON.stringify(plan)).toContain('***');
   });
 
   it('returns the InputStateChanged list as the resolved value of setValue', async () => {

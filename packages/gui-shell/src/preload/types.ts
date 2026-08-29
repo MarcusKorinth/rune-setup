@@ -14,7 +14,7 @@ export interface RuneBridge {
   pendingInputs(): Promise<readonly BridgeInput[]>;
   allInputs(): Promise<readonly BridgeInput[]>;
   setValue(id: string, raw: unknown): Promise<readonly { inputId: string; enabled: boolean }[]>;
-  plan(): Promise<BridgeResult>;
+  plan(): Promise<BridgePlan>;
   execute(): Promise<BridgeResult>;
   cancel(): Promise<void>;
   getStrings(): Promise<Readonly<Record<string, string>>>;
@@ -40,6 +40,40 @@ export interface BridgeInput {
   readonly enabled: boolean;
   readonly value: string | boolean | readonly string[] | null;
   readonly source: string | null;
+}
+
+/** JSON-safe projection of the frozen ExecutionPlan returned by Session.plan(). */
+export interface BridgePlan {
+  readonly manifestPath: string;
+  readonly locale?: string;
+  readonly platform: 'windows' | 'linux';
+  readonly preview: boolean;
+  readonly failFast: boolean;
+  readonly logFile?: string;
+  readonly steps: readonly BridgePlannedStep[];
+}
+
+export type BridgePlannedStep =
+  | {
+      readonly id: string;
+      readonly title: string;
+      readonly state: 'PENDING';
+      readonly command: BridgePlannedCommand;
+    }
+  | {
+      readonly id: string;
+      readonly title: string;
+      readonly state: 'SKIPPED';
+      readonly skipReason: string;
+    };
+
+export interface BridgePlannedCommand {
+  /** Secret-wrapped entries are projected as the literal mask `***`. */
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly timeoutSeconds: number | null;
+  readonly successExitCodes: readonly number[];
 }
 
 export interface BridgeStep {
