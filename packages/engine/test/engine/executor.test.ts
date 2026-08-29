@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
@@ -8,8 +12,8 @@ import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
-import { parseManifestText } from '../../src/manifest/index.js';
-import type { CommandSpec, ManifestV1 } from '../../src/manifest/v1/schema.js';
+import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
+import { serializeResult } from '../../src/results/writer.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 
@@ -47,7 +51,7 @@ function setup(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context }),
+    plan: buildPlan({ manifest, resolution, context }),
     secrets,
   };
 }
@@ -151,6 +155,7 @@ describe('a run that succeeds', () => {
     expect(input).toBeDefined();
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.manifest)).toBe(true);
     expect(Object.isFrozen(result.inputs)).toBe(true);
     expect(Object.isFrozen(input)).toBe(true);
     expect(Object.isFrozen(result.steps)).toBe(true);
@@ -817,6 +822,7 @@ describe('skipped steps and the dry run', () => {
 
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.manifest)).toBe(true);
     expect(Object.isFrozen(result.inputs)).toBe(true);
     expect(Object.isFrozen(result.inputs[0])).toBe(true);
     expect(Object.isFrozen(result.steps)).toBe(true);
@@ -837,7 +843,7 @@ describe('skipped steps and the dry run', () => {
       environment: {},
     });
     const resolution = resolveInputs({ manifest, context, environment: {} });
-    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+    const plan = buildPlan({ manifest, resolution, context });
 
     await expect(executeRun({ plan })).rejects.toThrow(/preview plan/);
   });
@@ -861,6 +867,39 @@ describe('skipped steps and the dry run', () => {
 
     expect(result.steps[0]?.command).toEqual(['a', '--token', '***']);
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
+  });
+
+  it('serializes the manifest identity bound before the source file changes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-identity-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    writeFileSync(manifestPath, [...HEAD, 'steps: []', ''].join('\n'));
+    const manifest = parseManifest(manifestPath);
+    const context = createRuntimeContext({
+      manifestDir: directory,
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const plan = buildPlan({ manifest, resolution, context });
+
+    writeFileSync(manifestPath, 'changed bytes');
+
+    const described = describePlan({ plan });
+    const executed = await executeRun({ plan });
+    const expectedManifest = {
+      path: manifestPath,
+      sha256: 'a743ebaa08d1272d09f6052fb0327eeb5bf69d75138922d5261e765166bcf8ff',
+      schemaVersion: 1,
+    };
+
+    for (const result of [described, executed]) {
+      expect(result.manifest).toEqual(expectedManifest);
+      expect(result).not.toHaveProperty('manifestPath');
+      expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
+      expect(serializeResult(result)).toContain('"manifest": {');
+      expect(serializeResult(result)).not.toContain('"manifestPath"');
+    }
   });
 
   it('never lets a secret reach an observer, not even inside RunStarted', async () => {
@@ -958,6 +997,8 @@ describe('skipped steps and the dry run', () => {
       (Object.isFrozen(value) && Object.values(value).every(isDeeplyFrozen));
 
     expect(projection).not.toBe(plan);
+    expect(projection.manifestPath).toBe(plan.manifestPath);
+    expect(projection.manifestSha256).toBe(plan.manifestSha256);
     expect(containsSecretString(projection)).toBe(false);
     expect(isDeeplyFrozen(projection)).toBe(true);
     expect(clonedProjection).toEqual(projection);
@@ -1005,24 +1046,22 @@ describe('skipped steps and the dry run', () => {
 
 describe('the plan execution context', () => {
   it('uses the product and input snapshots bound when the plan was built', async () => {
-    const manifest = structuredClone(
-      parseManifestText(
-        [
-          ...HEAD,
-          'inputs:',
-          '  tools:',
-          '    type: multiselect',
-          '    options: [git, docker]',
-          'steps:',
-          '  - id: use',
-          '    run:',
-          '      command: a',
-          '      successExitCodes: [0]',
-          '',
-        ].join('\n'),
-        'installer.yaml',
-      ),
-    ) as ManifestV1;
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  tools:',
+        '    type: multiselect',
+        '    options: [git, docker]',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: a',
+        '      successExitCodes: [0]',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
     const context = createRuntimeContext({
       manifestDir: '/project',
       product: manifest.product,
@@ -1035,9 +1074,8 @@ describe('the plan execution context', () => {
       environment: {},
       overrides: new Map([['tools', 'git,docker']]),
     });
-    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+    const plan = buildPlan({ manifest, resolution, context });
 
-    Object.assign(manifest.product, { name: 'Changed', version: '9.9.9' });
     (resolution.inputs[0]?.value as string[]).push('changed');
     Object.assign(resolution.inputs[0] as object, {
       id: 'changed',
@@ -1045,9 +1083,6 @@ describe('the plan execution context', () => {
       enabled: false,
       ignored: 'set',
     });
-    const command = manifest.steps[0]?.run as CommandSpec;
-    (command.successExitCodes as number[]).push(1);
-
     const described = describePlan({ plan });
     const executed = await executeRun({
       plan,
@@ -1094,7 +1129,7 @@ describe('the plan execution context', () => {
       environment: {},
       overrides: new Map([['token', 'bound-secret']]),
     });
-    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+    const plan = buildPlan({ manifest, resolution, context });
 
     const result = await executeRun({
       plan,

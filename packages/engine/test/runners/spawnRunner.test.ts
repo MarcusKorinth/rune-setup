@@ -285,7 +285,6 @@ describe('SpawnRunner', () => {
       });
       const plan = buildPlan({
         manifest,
-        manifestPath: join(directory, 'installer.yaml'),
         resolution,
         context,
       });

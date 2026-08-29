@@ -10,7 +10,7 @@ import { dirname, resolve } from 'node:path';
 
 import { z } from 'zod';
 
-import { ManifestError } from '../errors.js';
+import { InternalError, ManifestError } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
@@ -19,6 +19,24 @@ import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 
 /** The validated manifest model. Today that is always the v1 model. */
 export type Manifest = ManifestV1;
+
+/** Identity bound to the exact validated manifest instance that came from these bytes. */
+export interface ManifestDescriptor {
+  readonly path: string;
+  readonly sha256: string;
+  readonly schemaVersion: number;
+}
+
+const manifestDescriptors = new WeakMap<Manifest, ManifestDescriptor>();
+
+/** Internal fail-closed lookup: structural manifest copies have no source identity. */
+export function manifestDescriptorFor(manifest: Manifest): ManifestDescriptor {
+  const descriptor = manifestDescriptors.get(manifest);
+  if (descriptor === undefined) {
+    throw new InternalError('the manifest was not created by parseManifest or parseManifestText');
+  }
+  return descriptor;
+}
 
 export interface ParseManifestOptions {
   /** Check that `gui:` asset paths exist — `validate` and `run --gui` do, other modes do not. */
@@ -108,10 +126,19 @@ function parseDocument(
   }
 
   const parser = selectParser(raw['schemaVersion'], document);
-  return parser(document, {
+  const manifest = parser(document, {
     manifestDir: options.manifestDir ?? dirname(resolve(file)),
     checkAssetFiles: options.checkAssetFiles ?? false,
   });
+  manifestDescriptors.set(
+    manifest,
+    Object.freeze({
+      path: document.file,
+      sha256: document.sha256,
+      schemaVersion: manifest.schemaVersion,
+    }),
+  );
+  return manifest;
 }
 
 function selectParser(version: unknown, document: LoadedDocument): VersionParser {

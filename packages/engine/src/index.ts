@@ -87,7 +87,13 @@ export { SpawnRunner } from './runners/spawnRunner.js';
 export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 
 export { RESULT_SCHEMA_VERSION } from './results/model.js';
-export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/model.js';
+export type {
+  ResultInput,
+  ResultManifest,
+  ResultStep,
+  RunResult,
+  RunStatus,
+} from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';

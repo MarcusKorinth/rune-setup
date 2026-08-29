@@ -434,7 +434,9 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 Contents:
 
 - **run block** — `id`, `status`, `exitCode`, `mode` (`gui` / `interactive` / `non-interactive`), `dryRun`, `crossPlatformPreview` (true iff `--platform` named a foreign platform, §6.1), `platform`, `locale`, timestamps, `durationMs`, `runeVersion`, and the counters `stepsTotal`, `stepsExecuted`, `stepsSucceeded`, `stepsFailed`, `stepsCancelled`, `stepsSkipped`, `stepsNotRun`, `nothingExecuted` (§7; `stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun`, `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled`)
-- `product`, `manifest` (path, sha256, schemaVersion)
+- `product`, which may be `null` only before manifest validation has succeeded; `manifest`
+  (`path`, always present; `sha256`, `null` only when no source bytes could be read;
+  `schemaVersion`, `null` when no integer version could be read)
 - **per input** — `{id, value, source, secret, enabled, ignored?}`: secret values always `null`; `enabled: false` for disabled inputs, whose `value` is the type's empty value; `ignored: "input disabled"` present only when a value was supplied for a disabled input, with `source` naming the layer that supplied it (provenance makes precedence — and what was discarded — auditable after the fact)
 - **per step** — `{id, title, state, exitCode, durationMs, command, skipReason, outputTail?}`: `title` localized, `id` never; command arrays passed through the masker; `outputTail` present **only** for `FAILED` steps — a list of the last 50 `{stream, line}` entries, already masked (§7)
 

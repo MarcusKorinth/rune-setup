@@ -17,7 +17,12 @@ function planFor(
     overrides?: ReadonlyMap<string, string>;
     environment?: Record<string, string>;
   } = {},
-): { plan: ExecutionPlan; manifest: ManifestV1; resolution: Resolution } {
+): {
+  plan: ExecutionPlan;
+  manifest: ManifestV1;
+  resolution: Resolution;
+  context: ReturnType<typeof createRuntimeContext>;
+} {
   const manifest = parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml');
   const context = createRuntimeContext({
     manifestDir: '/project',
@@ -32,9 +37,10 @@ function planFor(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context }),
+    plan: buildPlan({ manifest, resolution, context }),
     manifest,
     resolution,
+    context,
   };
 }
 
@@ -352,13 +358,39 @@ describe('the plan itself', () => {
     });
 
     expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.steps)).toBe(true);
     expect(Object.isFrozen(plan.steps[0])).toBe(true);
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && Object.isFrozen(step.command)).toBe(true);
+    expect(step?.state === 'PENDING' && Object.isFrozen(step.command.argv)).toBe(true);
     expect(plan).toMatchObject({
       manifestPath: 'installer.yaml',
+      manifestSha256: '35c8f84df4785677ec842f1adcead819c45a313b74121e196522375db90d6697',
       platform: hostPlatform(),
       preview: false,
       failFast: true,
     });
+  });
+
+  it('uses the path bound during parsing even when a caller supplies a foreign property', () => {
+    const { manifest, resolution, context } = planFor(['steps: []']);
+    const options = {
+      manifest,
+      resolution,
+      context,
+      manifestPath: 'foreign.yaml',
+    };
+
+    expect(buildPlan(options).manifestPath).toBe('installer.yaml');
+  });
+
+  it('rejects a structurally equal manifest that is not the parsed instance', () => {
+    const { manifest, resolution, context } = planFor(['steps: []']);
+    const copy = structuredClone(manifest);
+
+    expect(() => buildPlan({ manifest: copy, resolution, context })).toThrow(
+      /manifest was not created by parseManifest/,
+    );
   });
 });
 
@@ -368,7 +400,7 @@ function planningError(
   context: ReturnType<typeof createRuntimeContext>,
 ): InputError {
   try {
-    buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+    buildPlan({ manifest, resolution, context });
   } catch (error) {
     if (error instanceof InputError) {
       return error;

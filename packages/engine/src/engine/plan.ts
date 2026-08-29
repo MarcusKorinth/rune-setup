@@ -15,6 +15,11 @@ import {
   ResolutionError,
   type RuneIssue,
 } from '../errors.js';
+import {
+  manifestDescriptorFor,
+  type Manifest,
+  type ManifestDescriptor,
+} from '../manifest/index.js';
 import { MASK } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
@@ -57,6 +62,7 @@ export type PlannedStep =
 
 export interface ExecutionPlan {
   readonly manifestPath: string;
+  readonly manifestSha256: string;
   readonly platform: RuntimeContext['platform'];
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
@@ -66,8 +72,7 @@ export interface ExecutionPlan {
 }
 
 export interface PlanOptions {
-  readonly manifest: ManifestV1;
-  readonly manifestPath: string;
+  readonly manifest: Manifest;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
 }
@@ -85,6 +90,7 @@ export interface PlanInputSnapshot {
 /** Execution-only context. Deliberately not re-exported from the package entry point. */
 export interface PlanExecutionContext {
   readonly product: { readonly name: string; readonly version: string };
+  readonly manifest: ManifestDescriptor;
   readonly inputs: readonly PlanInputSnapshot[];
   readonly secrets: SecretRegistry;
 }
@@ -103,6 +109,7 @@ export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
 export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
+  const manifestDescriptor = manifestDescriptorFor(manifest);
   rejectIncompleteResolution(resolution);
 
   const steps = manifest.steps.map((step): PlannedStep => {
@@ -136,19 +143,21 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   });
 
   const plan = deepFreeze({
-    manifestPath: options.manifestPath,
+    manifestPath: manifestDescriptor.path,
+    manifestSha256: manifestDescriptor.sha256,
     platform: context.platform,
     preview: context.preview,
     failFast: manifest.execution.failFast,
     logFile: manifest.execution.logFile,
     steps,
   });
-  executionContexts.set(plan, snapshotExecutionContext(manifest, resolution));
+  executionContexts.set(plan, snapshotExecutionContext(manifest, manifestDescriptor, resolution));
   return plan;
 }
 
 function snapshotExecutionContext(
   manifest: ManifestV1,
+  manifestDescriptor: ManifestDescriptor,
   resolution: Resolution,
 ): PlanExecutionContext {
   const product = Object.freeze({
@@ -156,7 +165,12 @@ function snapshotExecutionContext(
     version: manifest.product.version,
   });
   const inputs = Object.freeze(resolution.inputs.map(snapshotInput));
-  return Object.freeze({ product, inputs, secrets: resolution.secrets });
+  return Object.freeze({
+    product,
+    manifest: manifestDescriptor,
+    inputs,
+    secrets: resolution.secrets,
+  });
 }
 
 function snapshotInput(state: InputState): PlanInputSnapshot {

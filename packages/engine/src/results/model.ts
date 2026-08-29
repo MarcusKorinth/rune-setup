@@ -60,6 +60,12 @@ export interface ResultStep {
   readonly outputTail: readonly { readonly stream: string; readonly line: string }[] | null;
 }
 
+export interface ResultManifest {
+  readonly path: string;
+  readonly sha256: string | null;
+  readonly schemaVersion: number | null;
+}
+
 export interface RunResult {
   readonly resultSchemaVersion: typeof RESULT_SCHEMA_VERSION;
   /** One UUID per run — the same value every child saw as RUNE_RUN_ID (§8, §10). */
@@ -73,8 +79,8 @@ export interface RunResult {
   readonly finishedAt: string;
   readonly durationMs: number;
   readonly runeVersion: string;
-  readonly product: { readonly name: string; readonly version: string };
-  readonly manifestPath: string;
+  readonly product: { readonly name: string; readonly version: string } | null;
+  readonly manifest: ResultManifest;
   readonly stepsTotal: number;
   readonly stepsExecuted: number;
   readonly stepsSucceeded: number;

@@ -296,7 +296,7 @@ function assembleResult(input: {
     durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
     runeVersion: RUNE_VERSION,
     product: input.executionContext.product,
-    manifestPath: input.plan.manifestPath,
+    manifest: input.executionContext.manifest,
     stepsTotal: steps.length,
     stepsExecuted: executed,
     stepsSucceeded: count('SUCCEEDED'),
@@ -350,6 +350,7 @@ function finishedStep(
 function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
   return deepFreeze({
     manifestPath: plan.manifestPath,
+    manifestSha256: plan.manifestSha256,
     platform: plan.platform,
     preview: plan.preview,
     failFast: plan.failFast,
