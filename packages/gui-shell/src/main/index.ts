@@ -21,7 +21,12 @@ import {
   type RunResult,
 } from '@rune/engine';
 
-import { parseShellArgv, type ShellInvocation } from './argv.js';
+import {
+  isShellVersionProbe,
+  parseShellArgv,
+  shellVersionProbeOutput,
+  type ShellInvocation,
+} from './argv.js';
 import { project } from './serialize.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
@@ -42,7 +47,15 @@ export const BRIDGE_CHANNELS = [
 export const EVENT_CHANNEL = 'rune:event';
 
 async function main(): Promise<void> {
-  const invocation = parseShellArgv(process.argv.slice(app.isPackaged ? 1 : 2));
+  const argv = process.argv.slice(app.isPackaged ? 1 : 2);
+  if (isShellVersionProbe(argv)) {
+    await new Promise<void>((resolve) =>
+      process.stdout.write(shellVersionProbeOutput(), () => resolve()),
+    );
+    app.exit(0);
+    return;
+  }
+  const invocation = parseShellArgv(argv);
 
   await app.whenReady();
 

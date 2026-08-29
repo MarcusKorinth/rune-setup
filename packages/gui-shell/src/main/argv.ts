@@ -4,6 +4,19 @@
  * supplies a manifest path or any layer value.
  */
 
+import { RUNE_VERSION } from '@rune/engine';
+
+export const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
+
+/** The probe is intentionally produced from the engine actually bundled with this shell. */
+export function shellVersionProbeOutput(): string {
+  return JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }) + '\n';
+}
+
+export function isShellVersionProbe(argv: readonly string[]): boolean {
+  return argv.length === 1 && argv[0] === SHELL_VERSION_PROBE_FLAG;
+}
+
 export interface ShellInvocation {
   readonly manifestPath: string;
   readonly values: readonly string[];

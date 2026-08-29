@@ -32,6 +32,8 @@ const RELEASES = 'https://github.com/MarcusKorinth/rune-setup/releases/download'
 
 const SHELL_BINARY = process.platform === 'win32' ? 'rune-gui-shell.exe' : 'rune-gui-shell';
 
+const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
+
 /** The §10 table: only these codes are forwarded; anything else is an internal error. */
 const FORWARDABLE = new Set([0, 1, 2, 3, 4, 5, 6, 70]);
 
@@ -47,6 +49,15 @@ export function shellCacheDir(engineVersion: string = RUNE_VERSION): string {
 type ShellLocation =
   | { readonly kind: 'binary'; readonly path: string }
   | { readonly kind: 'dev'; readonly dir: string };
+
+function shellCommand(
+  location: ShellLocation,
+  argv: readonly string[],
+): readonly [command: string, args: readonly string[]] {
+  return location.kind === 'binary'
+    ? [location.path, argv]
+    : [devElectron(location.dir), [location.dir, ...argv]];
+}
 
 /**
  * Where the shell lives: the RUNE_GUI_SHELL override (a packaged binary, or a shell
@@ -156,6 +167,8 @@ export async function launchGui(
     );
   }
 
+  await verifyShellVersion(location);
+
   const argv: string[] = [manifestPath];
   for (const pair of flags.set ?? []) {
     argv.push('--set', pair);
@@ -173,10 +186,7 @@ export async function launchGui(
     argv.push('--log-file', flags.logFile);
   }
 
-  const [command, args] =
-    location.kind === 'binary'
-      ? [location.path, argv]
-      : [devElectron(location.dir), [location.dir, ...argv]];
+  const [command, args] = shellCommand(location, argv);
 
   const child = spawn(command, args, {
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -220,6 +230,51 @@ export async function launchGui(
     !outcome.failed && outcome.code !== null && FORWARDABLE.has(outcome.code) ? outcome.code : 70;
   if (exit !== 0) {
     throw new ExitWithCode(exit);
+  }
+}
+
+async function verifyShellVersion(location: ShellLocation): Promise<void> {
+  const [command, args] = shellCommand(location, [SHELL_VERSION_PROBE_FLAG]);
+  const child = spawn(command, args, {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    shell: false,
+  });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    if (stdout.length <= 4096) {
+      stdout += chunk;
+    }
+  });
+
+  const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
+    child.on('error', () => resolve({ code: null, failed: true }));
+    child.on('close', (code) => resolve({ code, failed: false }));
+  });
+  const reinstall = 'run: rune gui install';
+  if (outcome.failed || outcome.code !== 0 || stdout.length > 4096) {
+    throw new UsageError(`the GUI shell version could not be verified — ${reinstall}`);
+  }
+
+  let probe: unknown;
+  try {
+    probe = JSON.parse(stdout);
+  } catch {
+    throw new UsageError(`the GUI shell does not support the version probe — ${reinstall}`);
+  }
+  if (
+    typeof probe !== 'object' ||
+    probe === null ||
+    (probe as { protocolVersion?: unknown }).protocolVersion !== 1 ||
+    typeof (probe as { runeVersion?: unknown }).runeVersion !== 'string'
+  ) {
+    throw new UsageError(`the GUI shell returned a malformed version probe — ${reinstall}`);
+  }
+  const shellVersion = (probe as { runeVersion: string }).runeVersion;
+  if (shellVersion !== RUNE_VERSION) {
+    throw new UsageError(
+      `the GUI shell engine version ${shellVersion} does not match ${RUNE_VERSION} — ${reinstall}`,
+    );
   }
 }
 
