@@ -363,6 +363,25 @@ describe('skipped steps and the dry run', () => {
 });
 
 describe('the result run block', () => {
+  it('records the run id every child saw', async () => {
+    const { plan, resolution, secrets, product } = setup(TWO_STEPS);
+    const seen: string[] = [];
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      runner: stubRunner((request) => {
+        seen.push(`${request.extraEnv['RUNE_RUN_ID']}`);
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(result.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(seen).toEqual([result.id, result.id]);
+  });
+
   it('keeps the provenance of a value that was ignored for a disabled input', async () => {
     const { plan, resolution, secrets, product } = setup(
       [

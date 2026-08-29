@@ -10,7 +10,32 @@ import type { StepState } from '../engine/state.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 
-export type RunStatus = 'succeeded' | 'planned' | 'failed' | 'cancelled';
+/**
+ * Every status the result file can carry (§10). The executor produces the first four; the
+ * error statuses are written by the session for failures around execution, so the schema
+ * is complete from version 1 on.
+ */
+export type RunStatus =
+  | 'succeeded'
+  | 'planned'
+  | 'failed'
+  | 'cancelled'
+  | 'config_error'
+  | 'input_error'
+  | 'resolution_error'
+  | 'internal_error';
+
+/** The status ↔ exit-code table of §10; values agree with `exitCodeFor` in errors.ts. */
+export const EXIT_CODE_BY_STATUS: Readonly<Record<RunStatus, number>> = {
+  succeeded: 0,
+  planned: 0,
+  failed: 1,
+  config_error: 3,
+  input_error: 4,
+  resolution_error: 5,
+  cancelled: 6,
+  internal_error: 70,
+};
 
 export interface ResultInput {
   readonly id: string;
@@ -37,6 +62,8 @@ export interface ResultStep {
 
 export interface RunResult {
   readonly resultSchemaVersion: typeof RESULT_SCHEMA_VERSION;
+  /** One UUID per run — the same value every child saw as RUNE_RUN_ID (§8, §10). */
+  readonly id: string;
   readonly status: RunStatus;
   readonly exitCode: number;
   readonly dryRun: boolean;

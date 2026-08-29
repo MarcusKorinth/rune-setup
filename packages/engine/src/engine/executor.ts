@@ -19,6 +19,7 @@ import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
 import type { Runner } from '../runners/base.js';
 import {
+  EXIT_CODE_BY_STATUS,
   RESULT_SCHEMA_VERSION,
   type ResultInput,
   type ResultStep,
@@ -169,6 +170,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const finishedAt = new Date();
   const result = assembleResult({
+    runId,
     plan,
     resolution: options.resolution,
     product: options.product,
@@ -199,6 +201,7 @@ export function describePlan(options: {
   });
 
   return assembleResult({
+    runId: randomUUID(),
     plan: options.plan,
     resolution: options.resolution,
     product: options.product,
@@ -210,14 +213,8 @@ export function describePlan(options: {
   });
 }
 
-const STATUS_EXIT_CODES: Readonly<Record<RunStatus, number>> = {
-  succeeded: 0,
-  planned: 0,
-  failed: 1,
-  cancelled: 6,
-};
-
 function assembleResult(input: {
+  readonly runId: string;
   readonly plan: ExecutionPlan;
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
@@ -233,8 +230,9 @@ function assembleResult(input: {
 
   return {
     resultSchemaVersion: RESULT_SCHEMA_VERSION,
+    id: input.runId,
     status: input.status,
-    exitCode: STATUS_EXIT_CODES[input.status],
+    exitCode: EXIT_CODE_BY_STATUS[input.status],
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
