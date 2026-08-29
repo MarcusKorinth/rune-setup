@@ -205,7 +205,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
       if (text !== '' && !options.secrets.register(text)) {
         warnings.push(
-          `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
+          `${id} cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace`,
         );
       }
     }

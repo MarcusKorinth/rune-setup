@@ -1052,12 +1052,14 @@ describe('secrets', () => {
     expect(secrets.mask('decoy alpha-secret')).toBe('decoy alpha-secret');
   });
 
-  it('warns about a secret too short to mask instead of failing or staying silent', () => {
+  it('warns when a secret is too short to mask reliably', () => {
     const secrets = new SecretRegistry();
     const resolution = resolve(manifest, { overrides: new Map([['token', 'ab']]), secrets });
 
     expect(secrets.size).toBe(0);
-    expect(resolution.warnings[0]).toContain('too short to mask reliably');
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
   });
 
   it('warns when a multiline secret contains a content line too short to mask', () => {
@@ -1069,7 +1071,19 @@ describe('secrets', () => {
 
     expect(secrets.mask('long-secret')).toBe('***');
     expect(secrets.mask('abc')).toBe('abc');
-    expect(resolution.warnings[0]).toContain('too short to mask reliably');
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+  });
+
+  it('warns when a secret has only whitespace', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, { overrides: new Map([['token', '   ']]), secrets });
+
+    expect(secrets.size).toBe(0);
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
   });
 
   it('does not warn about blank lines in an otherwise maskable CRLF secret', () => {
