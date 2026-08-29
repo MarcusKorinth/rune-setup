@@ -190,7 +190,7 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
     }
     entries = parsed as string[];
   } else {
-    entries = value === '' ? [] : value.split(',').map((entry) => entry.trim());
+    entries = value.split(',').map((entry) => entry.trim());
   }
 
   return membership(entries, spec);

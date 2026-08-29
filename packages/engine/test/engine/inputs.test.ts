@@ -231,6 +231,29 @@ describe('resolved multiselect values', () => {
     expect(Object.isFrozen(resolved)).toBe(true);
   });
 
+  it('checks an explicit empty string from --set against options', () => {
+    expect(problems(manifest, { overrides: new Map([['tools', '']]) })).toEqual([
+      'tools (from --set tools=…): "" is not one of the option values ("git", "docker")',
+    ]);
+
+    const withEmptyOption = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: ["", git]',
+    );
+    expect(
+      resolve(withEmptyOption, { overrides: new Map([['tools', '']]) }).byId.get('tools')?.value,
+    ).toEqual(['']);
+  });
+
+  it('allows an empty native selection from a values file', () => {
+    expect(
+      resolve(manifest, { values: [values('values.yaml', { tools: [] })] }).byId.get('tools')
+        ?.value,
+    ).toEqual([]);
+  });
+
   it('classifies a proxied programmatic values entry as RUNE-202', () => {
     const proxied = new Proxy(['git'], {
       getOwnPropertyDescriptor: () => {
@@ -713,7 +736,7 @@ describe('what counts as an answer', () => {
     expect(resolve(manifest, {}, { RUNE_INPUT_TOKEN: '' }).missing).toEqual(['token']);
   });
 
-  it('does not let an empty selection satisfy a required multiselect', () => {
+  it('does not let an empty native selection satisfy a required multiselect', () => {
     const manifest = manifestOf(
       'inputs:',
       '  tools:',
@@ -721,7 +744,7 @@ describe('what counts as an answer', () => {
       '    options: [git]',
     );
 
-    expect(resolve(manifest, { overrides: new Map([['tools', '']]) }).missing).toEqual(['tools']);
+    expect(resolve(manifest, { answers: new Map([['tools', []]]) }).missing).toEqual(['tools']);
   });
 
   it('lets false satisfy a required boolean, because false is an answer', () => {

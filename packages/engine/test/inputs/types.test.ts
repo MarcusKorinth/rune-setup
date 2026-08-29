@@ -278,8 +278,11 @@ describe('multiselect', () => {
     expect(from('multiselect', 'git, docker', options)).toEqual(['git', 'docker']);
   });
 
-  it('is empty for an empty string, not a list holding one empty entry', () => {
-    expect(from('multiselect', '', options)).toEqual([]);
+  it('checks an explicit empty string against options', () => {
+    expect(from('multiselect', '', options)).toBe(
+      '"" is not one of the option values ("git", "docker", "Visual Studio, 2022")',
+    );
+    expect(from('multiselect', '', { options: ['', 'git'] })).toEqual(['']);
   });
 
   it('reads a JSON array, which is how a value containing a comma is written', () => {
@@ -398,14 +401,18 @@ describe('multiselect', () => {
   it('also freezes selections parsed from text and the type-provided empty value', () => {
     const parsed = handler('multiselect').fromString('git,docker', spec('multiselect', options));
     const selection = parsed.ok ? parsed.value : undefined;
-    const parsedEmpty = handler('multiselect').fromString('', spec('multiselect', options));
+    const parsedEmpty = handler('multiselect').fromString('[]', spec('multiselect', options));
     const emptySelection = parsedEmpty.ok ? parsedEmpty.value : undefined;
+    const nativeEmpty = handler('multiselect').fromNative([], spec('multiselect', options));
+    const nativeEmptySelection = nativeEmpty.ok ? nativeEmpty.value : undefined;
     const empty = handler('multiselect').empty(spec('multiselect', options));
 
     expect(selection).toEqual(['git', 'docker']);
     expect(Object.isFrozen(selection)).toBe(true);
     expect(emptySelection).toEqual([]);
     expect(Object.isFrozen(emptySelection)).toBe(true);
+    expect(nativeEmptySelection).toEqual([]);
+    expect(Object.isFrozen(nativeEmptySelection)).toBe(true);
     expect(empty).toEqual([]);
     expect(Object.isFrozen(empty)).toBe(true);
   });
