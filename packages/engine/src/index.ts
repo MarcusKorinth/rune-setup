@@ -72,31 +72,19 @@ export type { SecretString } from './engine/secrets.js';
 export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
 export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
 
-export { buildPlan, PLAN_SCHEMA_VERSION } from './engine/plan.js';
+export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {
   ExecutionPlan,
   PlannedStep,
   PlanExecutionOptions,
   PlanInput,
-  PlanOptions,
   ResolvedCommand,
 } from './engine/plan.js';
-
-export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
-export type { ExecuteOptions } from './engine/executor.js';
 
 export { CancelToken } from './engine/cancel.js';
 export type { EngineObserver, RunEvent } from './engine/events.js';
 
-export { isLegalTransition, isTerminal, STEP_STATES } from './engine/state.js';
 export type { StepState } from './engine/state.js';
-
-export {
-  MAX_OUTPUT_LINE_BYTES,
-  OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
-  SpawnRunner,
-} from './runners/spawnRunner.js';
-export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 
 export { RESULT_SCHEMA_VERSION } from './results/model.js';
 export type {
