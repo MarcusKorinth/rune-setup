@@ -6,7 +6,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,33 +63,38 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     process.platform === 'win32' ? `rune-gui-shell-windows.zip` : `rune-gui-shell-linux.tar.gz`;
   const url = `${RELEASES}/v${RUNE_VERSION}/${archiveName}`;
   const target = shellCacheDir();
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-shell-'));
+  const archive = join(temporaryDirectory, archiveName);
 
-  io.stderr(`fetching ${url}`);
-  const response = await fetch(url);
-  if (!response.ok || response.body === null) {
-    io.stderr(
-      `no shell release for engine ${RUNE_VERSION} (${response.status} ${response.statusText})`,
-    );
-    throw new ExitWithCode(1);
-  }
-  const archive = join(tmpdir(), `rune-shell-${process.pid}-${archiveName}`);
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
+  try {
+    io.stderr(`fetching ${url}`);
+    const response = await fetch(url);
+    if (!response.ok || response.body === null) {
+      io.stderr(
+        `no shell release for engine ${RUNE_VERSION} (${response.status} ${response.statusText})`,
+      );
+      throw new ExitWithCode(1);
+    }
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
 
-  mkdirSync(target, { recursive: true });
-  // bsdtar ships with Windows 10+ and handles both formats; argv only, never a shell (§12).
-  const code = await new Promise<number>((resolve) => {
-    const child = spawn('tar', ['-xf', archive, '-C', target], {
-      stdio: ['ignore', 'ignore', 'inherit'],
-      shell: false,
+    mkdirSync(target, { recursive: true });
+    // bsdtar ships with Windows 10+ and handles both formats; argv only, never a shell (§12).
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn('tar', ['-xf', archive, '-C', target], {
+        stdio: ['ignore', 'ignore', 'inherit'],
+        shell: false,
+      });
+      child.on('error', () => resolve(70));
+      child.on('close', (exit) => resolve(exit ?? 70));
     });
-    child.on('error', () => resolve(70));
-    child.on('close', (exit) => resolve(exit ?? 70));
-  });
-  if (code !== 0) {
-    io.stderr(`unpacking ${archive} failed (tar exit ${code})`);
-    throw new ExitWithCode(1);
+    if (code !== 0) {
+      io.stderr(`unpacking ${archive} failed (tar exit ${code})`);
+      throw new ExitWithCode(1);
+    }
+    io.stderr(`GUI shell ${RUNE_VERSION} installed to ${target}`);
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
-  io.stderr(`GUI shell ${RUNE_VERSION} installed to ${target}`);
 }
 
 /** `rune run --gui`: launch the shell with the invocation, forward its exit code (§9.4). */
