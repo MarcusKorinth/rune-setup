@@ -65,7 +65,22 @@ describe('the resolved string table', () => {
     expect(strings.chrome('rune.button.next')).toBe('Weiter');
     expect(strings.chrome('rune.button.back')).toBe('Back');
     expect(strings.stepTitle('cleanup')).toBe('cleanup');
-    expect(strings.entries.get('steps.install.title')).toBe('Installieren');
+    expect(strings.entries['steps.install.title']).toBe('Installieren');
+  });
+
+  it('keeps the table and its entry snapshot immutable at runtime', () => {
+    const strings = resolveStrings({ manifest: MANIFEST });
+
+    expect(Object.isFrozen(strings)).toBe(true);
+    expect(Object.isFrozen(strings.entries)).toBe(true);
+    expect(() => {
+      (strings.entries as Record<string, string>)['steps.install.title'] = 'Changed';
+    }).toThrow(TypeError);
+    expect(() => {
+      (strings as { locale: string | undefined }).locale = 'fr';
+    }).toThrow(TypeError);
+    expect(strings.stepTitle('install')).toBe('Install');
+    expect(strings.entries['steps.install.title']).toBe('Install');
   });
 
   it('fills chrome placeholders without re-scanning the substituted text', () => {

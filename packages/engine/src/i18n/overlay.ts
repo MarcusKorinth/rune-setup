@@ -17,7 +17,7 @@ export interface LocaleOverlay {
   /** The tag the file serves, taken from its name (`locales/de.yaml` → `de`). */
   readonly locale: string;
   readonly file: string;
-  readonly entries: ReadonlyMap<string, string>;
+  readonly entries: Readonly<Record<string, string>>;
 }
 
 /** Reads and validates one overlay file against the manifest it accompanies. */
@@ -42,7 +42,7 @@ function fromDocument(
 ): LocaleOverlay {
   const { file, value, sourceMap } = document;
   if (value === null || value === undefined) {
-    return { locale, file, entries: new Map() };
+    return Object.freeze({ locale, file, entries: Object.freeze({}) });
   }
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new ManifestError('RUNE-104', 'a locale overlay must be a mapping of key to text', {
@@ -56,7 +56,7 @@ function fromDocument(
 
   for (const [key, text] of Object.entries(value)) {
     const location = sourceMap.best([key]) ?? startOfFile(file);
-    if (!known.has(key) && !CHROME_CATALOG.has(key)) {
+    if (!known.has(key) && !Object.hasOwn(CHROME_CATALOG, key)) {
       issues.push({
         code: 'RUNE-104',
         message: keyProblem(key),
@@ -74,7 +74,11 @@ function fromDocument(
   if (issues.length > 0) {
     throw ManifestError.fromIssues('RUNE-104', issues);
   }
-  return { locale, file, entries };
+  return Object.freeze({
+    locale,
+    file,
+    entries: Object.freeze(Object.fromEntries(entries)),
+  });
 }
 
 function keyProblem(key: string): string {

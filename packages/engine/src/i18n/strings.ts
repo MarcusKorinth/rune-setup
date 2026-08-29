@@ -17,7 +17,7 @@ export interface StringTable {
   /** The overlay file that served it — `de` may serve a selected `de-DE`. */
   readonly overlayLocale: string | undefined;
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
-  readonly entries: ReadonlyMap<string, string>;
+  readonly entries: Readonly<Record<string, string>>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
   chrome(key: string, values?: Readonly<Record<string, string | number>>): string;
   inputTitle(id: string): string;
@@ -44,7 +44,7 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
 
   // Layer 1: the defaults — the manifest's own text, ids where nothing was written, and
   // the English chrome built-ins.
-  for (const [key, text] of CHROME_CATALOG) {
+  for (const [key, text] of Object.entries(CHROME_CATALOG)) {
     entries.set(key, text);
   }
   if (manifest.product.description !== undefined) {
@@ -72,16 +72,18 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
   }
 
   // Layer 2: the overlay, key by key — a partial overlay fills its gaps from layer 1.
-  for (const [key, text] of overlay?.entries ?? []) {
+  for (const [key, text] of Object.entries(overlay?.entries ?? {})) {
     entries.set(key, text);
   }
 
-  const get = (key: string): string | undefined => entries.get(key);
+  const snapshot: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(entries));
+  const get = (key: string): string | undefined =>
+    Object.hasOwn(snapshot, key) ? snapshot[key] : undefined;
 
-  return {
+  const table: StringTable = {
     locale: options.locale ?? overlay?.locale,
     overlayLocale: overlay?.locale,
-    entries,
+    entries: snapshot,
     chrome: (key, values) => formatChrome(get(key) ?? key, values),
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
     inputDescription: (id) => get(`inputs.${id}.description`),
@@ -91,4 +93,5 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     productDescription: () => get('product.description'),
     windowTitle: () => get('gui.windowTitle'),
   };
+  return Object.freeze(table);
 }
