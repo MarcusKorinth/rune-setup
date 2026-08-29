@@ -70,10 +70,25 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
       cause,
     });
   }
-  return names
+  const overlays = names
     .filter((name) => /\.ya?ml$/i.test(name))
     .sort()
     .map((name) => ({ locale: name.replace(/\.ya?ml$/i, ''), path: join(directory, name) }));
+
+  const claims = new Map<string, DiscoveredOverlay>();
+  for (const overlay of overlays) {
+    const claim = overlay.locale.toLowerCase();
+    const first = claims.get(claim);
+    if (first !== undefined) {
+      throw new ManifestError(
+        'RUNE-104',
+        `locale overlay files "${first.path}" and "${overlay.path}" both claim locale "${claim}" (locale file names are matched case-insensitively)`,
+      );
+    }
+    claims.set(claim, overlay);
+  }
+
+  return overlays;
 }
 
 /**

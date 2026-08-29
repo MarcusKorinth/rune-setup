@@ -67,6 +67,30 @@ describe('overlay discovery and matching', () => {
     expect(discoverOverlays(mkdtempSync(join(tmpdir(), 'rune-i18n-')))).toEqual([]);
   });
 
+  it('rejects multiple files that claim the same locale', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    const yamlPath = join(localesPath, 'de.yaml');
+    const ymlPath = join(localesPath, 'de.yml');
+    mkdirSync(localesPath);
+    writeFileSync(yamlPath, 'rune.button.next: Weiter\n');
+    writeFileSync(ymlPath, 'rune.button.next: Vorwaerts\n');
+
+    let thrown: unknown;
+    try {
+      discoverOverlays(dir);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-104');
+    expect(error.message).toContain(yamlPath);
+    expect(error.message).toContain(ymlPath);
+    expect(error.message).toContain('locale "de"');
+  });
+
   it('fails loudly when locales is not a directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
     const localesPath = join(dir, 'locales');
