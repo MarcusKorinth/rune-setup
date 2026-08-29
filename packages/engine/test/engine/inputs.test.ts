@@ -554,6 +554,28 @@ describe('secrets', () => {
     expect(secrets.size).toBe(0);
     expect(resolution.warnings[0]).toContain('too short to mask reliably');
   });
+
+  it('warns when a multiline secret contains a content line too short to mask', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      overrides: new Map([['token', 'long-secret\nabc']]),
+      secrets,
+    });
+
+    expect(secrets.mask('long-secret')).toBe('***');
+    expect(secrets.mask('abc')).toBe('abc');
+    expect(resolution.warnings[0]).toContain('too short to mask reliably');
+  });
+
+  it('does not warn about blank lines in an otherwise maskable CRLF secret', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      overrides: new Map([['token', 'first-long\r\n   \r\nsecond-long']]),
+      secrets,
+    });
+
+    expect(resolution.warnings).toEqual([]);
+  });
 });
 
 describe('values files', () => {

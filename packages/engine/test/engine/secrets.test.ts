@@ -74,11 +74,40 @@ describe('SecretRegistry', () => {
   it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
     const registry = new SecretRegistry();
     const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
-    registry.register(key);
+    expect(registry.register(key)).toBe(true);
 
     // Output is read line by line, so the whole-key string would never match anything.
     expect(registry.mask('writing MIIBpayloadLine to disk')).toBe(`writing ${MASK} to disk`);
     expect(registry.mask(key)).toBe(MASK);
+  });
+
+  it('reports a multiline secret as incomplete when any content line is too short', () => {
+    const registry = new SecretRegistry();
+    const secret = 'long-secret\nabc';
+
+    expect(registry.register(secret)).toBe(false);
+    expect(registry.mask('value: long-secret')).toBe(`value: ${MASK}`);
+    expect(registry.mask('value: abc')).toBe('value: abc');
+    expect(registry.mask(secret)).toBe(MASK);
+  });
+
+  it('reports incomplete lines even when only the combined value is maskable', () => {
+    const registry = new SecretRegistry();
+    const secret = 'ab\ncd';
+
+    expect(registry.register(secret)).toBe(false);
+    expect(registry.mask(secret)).toBe(MASK);
+    expect(registry.mask('ab')).toBe('ab');
+    expect(registry.mask('cd')).toBe('cd');
+  });
+
+  it('does not treat blank CRLF lines as unmaskable content', () => {
+    const registry = new SecretRegistry();
+    const secret = 'first-long\r\n   \r\nsecond-long';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask('first-long')).toBe(MASK);
+    expect(registry.mask('second-long')).toBe(MASK);
   });
 
   it('counts a secret once, however often it is registered', () => {

@@ -67,14 +67,16 @@ export class SecretRegistry {
   #ordered: readonly string[] = [];
 
   /**
-   * Registers a secret. Returns false when the value is too short to mask safely, which the
-   * caller reports — silently not masking something would be the worse half of the choice.
+   * Registers every maskable part of a secret. Returns false when any content line is too
+   * short to mask safely, which the caller reports — silently not masking something would
+   * be the worse half of the choice.
    */
   register(value: string): boolean {
     // Every sink RUNE masks is line-oriented — a child's output is read line by line, and so
     // is the log — so a secret spanning several lines would never match anything a sink sees.
     // Each line is registered as well, which is what actually protects a key or certificate.
-    const parts = value.includes('\n') ? [value, ...value.split(/\r?\n/)] : [value];
+    const lines = value.split(/\r?\n/);
+    const parts = lines.length > 1 ? [value, ...lines] : lines;
     let registered = false;
 
     for (const part of parts) {
@@ -89,7 +91,12 @@ export class SecretRegistry {
     if (registered) {
       this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
     }
-    return registered;
+
+    const contentLines = lines.filter((line) => line.trim() !== '');
+    return (
+      contentLines.length > 0 &&
+      contentLines.every((line) => line.trim().length >= MIN_MASKABLE_LENGTH)
+    );
   }
 
   get size(): number {
