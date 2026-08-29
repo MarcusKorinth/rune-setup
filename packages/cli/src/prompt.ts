@@ -91,6 +91,7 @@ export class Prompter {
         input: this.#interaction.input,
         output: this.#output,
         terminal: this.#interaction.isTTY,
+        historySize: 0,
       });
       // Ctrl+C during a prompt, and a script that ran out of answers, both mean: stop.
       this.#rl.on('SIGINT', () => {

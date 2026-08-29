@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { run } from '../src/cli.js';
 import type { CliIo } from '../src/io.js';
-import type { Interaction } from '../src/prompt.js';
+import { Prompter, type Interaction } from '../src/prompt.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -73,6 +73,21 @@ const MANIFEST = [
 ];
 
 describe('the interactive run', () => {
+  it('does not restore a secret answer through history navigation', async () => {
+    const secret = 'history-sensitive-marker';
+    const interaction = scripted([secret, '\u001B[A']);
+    const prompter = new Prompter(interaction);
+
+    try {
+      expect(await prompter.ask('Secret: ', true)).toBe(secret);
+      expect(await prompter.ask('Public: ')).toBe('');
+    } finally {
+      prompter.close();
+    }
+
+    expect(interaction.transcript()).not.toContain(secret);
+  });
+
   it('prompts for pending inputs, shows the summary, and runs on proceed', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
