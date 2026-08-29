@@ -2,17 +2,18 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
 import {
   parseValuesFile,
   resolveInputs,
+  resolveInputsWithRegistry,
   type Resolution,
   type ResolveInputsOptions,
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
-import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
+import { isSecretString, secretEquals, SecretRegistry } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
 import { exitCodeFor, InternalError, ResolutionError, type InputError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -384,19 +385,12 @@ describe('conditional inputs', () => {
       '    when: "${token} in ${environments}"',
       '    required: false',
     );
-    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
+    const resolution = resolve(conditional, {
+      overrides: new Map([['token', 'production']]),
+    });
 
-    try {
-      const resolution = resolve(conditional, {
-        overrides: new Map([['token', 'production']]),
-      });
-
-      expect(resolution.byId.get('equal')?.enabled).toBe(true);
-      expect(resolution.byId.get('member')?.enabled).toBe(true);
-      expect(reveal).not.toHaveBeenCalled();
-    } finally {
-      reveal.mockRestore();
-    }
+    expect(resolution.byId.get('equal')?.enabled).toBe(true);
+    expect(resolution.byId.get('member')?.enabled).toBe(true);
   });
 
   it('names the condition that asked for an environment variable the machine lacks', () => {
@@ -573,8 +567,9 @@ describe('secrets', () => {
 
     const second = resolve(manifest, { answers: new Map([['token', answer as InputValue]]) });
 
-    expect(second.byId.get('token')?.value).toBeInstanceOf(SecretString);
-    expect((second.byId.get('token')?.value as SecretString).reveal()).toBe('hunter2-and-more');
+    const value = second.byId.get('token')?.value;
+    expect(isSecretString(value)).toBe(true);
+    expect(isSecretString(value) && secretEquals(value, 'hunter2-and-more')).toBe(true);
     expect(second.missing).toEqual([]);
   });
 
@@ -604,30 +599,42 @@ describe('secrets', () => {
 
   it('wraps the value and registers it for masking before anything can run', () => {
     const secrets = new SecretRegistry();
-    const resolution = resolve(manifest, {
-      overrides: new Map([['token', 'hunter2-and-more']]),
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context: contextFor(manifest),
+        environment: {},
+        overrides: new Map([['token', 'hunter2-and-more']]),
+      },
       secrets,
-    });
+    );
 
-    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
-    expect(resolution.secrets).toBe(secrets);
+    expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
+    expect(resolution).not.toHaveProperty('secrets');
     expect(secrets.size).toBe(1);
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
 
-  it('creates and owns a registry when the caller does not supply one', () => {
+  it('keeps the registry owned by the public resolver out of its result', () => {
     const resolution = resolve(manifest, {
       overrides: new Map([['token', 'hunter2-and-more']]),
     });
 
-    expect(resolution.secrets).toBeInstanceOf(SecretRegistry);
-    expect(resolution.secrets.size).toBe(1);
-    expect(resolution.secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
+    expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
+    expect(resolution).not.toHaveProperty('secrets');
   });
 
   it('warns about a secret too short to mask instead of failing or staying silent', () => {
     const secrets = new SecretRegistry();
-    const resolution = resolve(manifest, { overrides: new Map([['token', 'ab']]), secrets });
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context: contextFor(manifest),
+        environment: {},
+        overrides: new Map([['token', 'ab']]),
+      },
+      secrets,
+    );
 
     expect(secrets.size).toBe(0);
     expect(resolution.warnings[0]).toContain('too short to mask reliably');

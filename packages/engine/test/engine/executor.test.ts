@@ -9,7 +9,7 @@ import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js'
 import { describePlan, executeRun, OUTPUT_TAIL_LINES } from '../../src/engine/executor.js';
 import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
-import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
+import { isSecretString } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
@@ -31,10 +31,7 @@ function stubRunner(
 function setup(
   lines: readonly string[],
   options: { overrides?: ReadonlyMap<string, string>; failFast?: boolean } = {},
-): {
-  plan: ExecutionPlan;
-  secrets: SecretRegistry;
-} {
+): { plan: ExecutionPlan } {
   const failFastLine = options.failFast === false ? ['execution:', '  failFast: false'] : [];
   const manifest = parseManifestText(
     [...HEAD, ...failFastLine, ...lines, ''].join('\n'),
@@ -46,17 +43,14 @@ function setup(
     platform: hostPlatform(),
     environment: {},
   });
-  const secrets = new SecretRegistry();
   const resolution = resolveInputs({
     manifest,
     context,
     environment: {},
-    secrets,
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
     plan: buildPlan({ manifest, resolution, context }),
-    secrets,
   };
 }
 
@@ -300,10 +294,10 @@ describe('a run that fails', () => {
   });
 
   it('keeps the masked tail of a failed step, and only of a failed step', async () => {
-    const { plan, secrets } = setup(TWO_STEPS, {
+    const { plan } = setup(['inputs:', '  token:', '    type: secret', ...TWO_STEPS], {
       failFast: false,
+      overrides: new Map([['token', 'super-secret']]),
     });
-    secrets.register('super-secret');
     let call = 0;
 
     const result = await executeRun({
@@ -1102,8 +1096,8 @@ describe('skipped steps and the dry run', () => {
       observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         const value = request.command.argv[1];
-        expect(value).toBeInstanceOf(SecretString);
-        runnerSawSecret = value instanceof SecretString && value.reveal() === secret;
+        expect(isSecretString(value)).toBe(true);
+        runnerSawSecret = isSecretString(value);
         return { kind: 'exited', exitCode: 0 };
       }),
     });
@@ -1116,7 +1110,7 @@ describe('skipped steps and the dry run', () => {
     const projection = started.plan;
     const clonedProjection = structuredClone(projection);
     const containsSecretString = (value: unknown): boolean => {
-      if (value instanceof SecretString) {
+      if (isSecretString(value)) {
         return true;
       }
       return (

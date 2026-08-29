@@ -20,7 +20,14 @@ import {
   type Manifest,
   type ManifestDescriptor,
 } from '../manifest/index.js';
-import { MASK } from './secrets.js';
+import {
+  composeSecretString,
+  isSecretString,
+  MASK,
+  resolveSecretPathFrom,
+  secretMatches,
+  type SecretString,
+} from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
@@ -34,7 +41,6 @@ import {
   type ResolutionSnapshot,
   type ValueSource,
 } from './inputs.js';
-import { SecretString } from './secrets.js';
 import type { SecretRegistry } from './secrets.js';
 import { deepFreeze } from './freeze.js';
 
@@ -206,10 +212,10 @@ function snapshotInput(state: InputState): PlanInput {
   if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value after resolution was accepted`);
   }
-  if (state.spec.type === 'secret' && !(state.value instanceof SecretString)) {
+  if (state.spec.type === 'secret' && !isSecretString(state.value)) {
     throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
   }
-  const secret = state.spec.type === 'secret' || state.value instanceof SecretString;
+  const secret = state.spec.type === 'secret' || isSecretString(state.value);
   const value = Array.isArray(state.value) ? [...state.value] : state.value;
 
   return {
@@ -318,7 +324,7 @@ function resolveCommand(
       }
       const handler = inputTypes.get(state.spec.type);
       const value = state.value ?? handler.empty(state.spec);
-      if (value instanceof SecretString) {
+      if (isSecretString(value)) {
         return value;
       }
       return handler.render(value);
@@ -327,22 +333,19 @@ function resolveCommand(
     const parts = scan.parts.map((part) =>
       part.kind === 'literal' ? part.text : resolve(part.reference),
     );
-    return parts.some((part) => part instanceof SecretString)
-      ? SecretString.compose(parts)
-      : parts.join('');
+    return parts.some(isSecretString) ? composeSecretString(parts) : parts.join('');
   };
 
   const manifestDir = context.manifestDir;
   const command = anchorCommandValue(render(spec.command), manifestDir);
-  const commandShown = command instanceof SecretString ? MASK : command;
+  const commandShown = isSecretString(command) ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
   // it before anything executes (§8): a batch file needs a shell, and RUNE never provides
   // one implicitly.
-  const isBatchFile =
-    command instanceof SecretString
-      ? command.matches(/\.(bat|cmd)$/i)
-      : /\.(bat|cmd)$/i.test(command);
+  const isBatchFile = isSecretString(command)
+    ? secretMatches(command, /\.(bat|cmd)$/i)
+    : /\.(bat|cmd)$/i.test(command);
   if (context.platform === 'windows' && isBatchFile) {
     throw new ExecutionError(
       'RUNE-405',
@@ -371,15 +374,15 @@ function anchorCommandValue(
   value: string | SecretString,
   manifestDir: string,
 ): string | SecretString {
-  if (value instanceof SecretString) {
-    return value.matches(/[\\/]/) ? value.resolvePathFrom(manifestDir) : value;
+  if (isSecretString(value)) {
+    return secretMatches(value, /[\\/]/) ? resolveSecretPathFrom(value, manifestDir) : value;
   }
   return anchorCommand(value, manifestDir);
 }
 
 function anchorPathValue(value: string | SecretString, manifestDir: string): string | SecretString {
-  return value instanceof SecretString
-    ? value.resolvePathFrom(manifestDir)
+  return isSecretString(value)
+    ? resolveSecretPathFrom(value, manifestDir)
     : anchorPath(value, manifestDir);
 }
 

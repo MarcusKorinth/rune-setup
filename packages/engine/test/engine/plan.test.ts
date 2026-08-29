@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, PLAN_SCHEMA_VERSION, type ExecutionPlan } from '../../src/engine/plan.js';
-import { SecretString } from '../../src/engine/secrets.js';
+import { isSecretString } from '../../src/engine/secrets.js';
 import { InputError, InternalError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
@@ -324,34 +324,28 @@ describe('the Windows honesty rule', () => {
   });
 
   it('refuses an opaque batch command without revealing it in planning or the error', () => {
-    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
     let message = '';
 
     try {
-      try {
-        planFor(
-          [
-            'inputs:',
-            '  command:',
-            '    type: secret',
-            'steps:',
-            '  - id: legacy',
-            '    run:',
-            '      command: "${command}"',
-          ],
-          { platform: 'windows', overrides: new Map([['command', 'private-setup.cmd']]) },
-        );
-      } catch (error) {
-        message = error instanceof Error ? error.message : String(error);
-      }
-
-      expect(message).toContain('needs a shell');
-      expect(message).toContain('***');
-      expect(message).not.toContain('private-setup.cmd');
-      expect(reveal).not.toHaveBeenCalled();
-    } finally {
-      reveal.mockRestore();
+      planFor(
+        [
+          'inputs:',
+          '  command:',
+          '    type: secret',
+          'steps:',
+          '  - id: legacy',
+          '    run:',
+          '      command: "${command}"',
+        ],
+        { platform: 'windows', overrides: new Map([['command', 'private-setup.cmd']]) },
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
     }
+
+    expect(message).toContain('needs a shell');
+    expect(message).toContain('***');
+    expect(message).not.toContain('private-setup.cmd');
   });
 });
 
@@ -377,12 +371,27 @@ describe('secrets in the plan', () => {
     if (step?.state !== 'PENDING') {
       throw new Error('expected a pending step');
     }
-    expect(plan.resolvedInputs[0]?.value).toBeInstanceOf(SecretString);
-    expect(step.command.argv[1]).toBeInstanceOf(SecretString);
-    expect(step.command.env['API_TOKEN']).toBeInstanceOf(SecretString);
+    expect(isSecretString(plan.resolvedInputs[0]?.value)).toBe(true);
+    expect(isSecretString(step.command.argv[1])).toBe(true);
+    expect(isSecretString(step.command.env['API_TOKEN'])).toBe(true);
     expect(JSON.stringify(plan)).not.toContain('super-secret-value');
     expect(JSON.parse(JSON.stringify(plan)).resolvedInputs[0].value).toBe('***');
     expect(String(step.command.argv[1])).toBe('***');
+
+    for (const value of [
+      plan.resolvedInputs[0]?.value,
+      step.command.argv[1],
+      step.command.env['API_TOKEN'],
+    ]) {
+      expect(value).not.toHaveProperty('reveal');
+      expect(value).not.toHaveProperty('matches');
+      expect(value).not.toHaveProperty('equals');
+      expect(value).not.toHaveProperty('isIncludedIn');
+      expect(value).not.toHaveProperty('registerForMasking');
+      expect(value).not.toHaveProperty('resolvePathFrom');
+      expect(value).not.toHaveProperty('compose');
+      expect(value).not.toHaveProperty('length');
+    }
   });
 
   it('freezes a resolved secret state before planning without exposing its value', () => {
@@ -406,7 +415,7 @@ describe('secrets in the plan', () => {
 
     const plan = buildPlan({ manifest, resolution, context });
     expect(JSON.stringify(plan)).not.toContain(plaintext);
-    expect(plan.resolvedInputs[0]?.value).toBeInstanceOf(SecretString);
+    expect(isSecretString(plan.resolvedInputs[0]?.value)).toBe(true);
   });
 });
 

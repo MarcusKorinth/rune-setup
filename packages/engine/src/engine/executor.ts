@@ -19,8 +19,7 @@ import {
 } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import { deepFreeze } from './freeze.js';
-import type { SecretRegistry } from './secrets.js';
-import { MASK, SecretString } from './secrets.js';
+import { isSecretString, MASK, type SecretRegistry, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
@@ -309,7 +308,7 @@ function resultInput(state: PlanInput, secrets: SecretRegistry): ResultInput {
   const value = state.value;
   const result = {
     id: state.id,
-    value: state.secret || value instanceof SecretString ? null : maskInputValue(value, secrets),
+    value: state.secret || isSecretString(value) ? null : maskInputValue(value, secrets),
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
     source: state.source ?? state.ignored ?? null,
@@ -404,7 +403,7 @@ function maskInputValue(
 }
 
 function maskPlanInputValue(input: PlanInput, secrets: SecretRegistry): PlanInput['value'] {
-  if (input.secret || input.value instanceof SecretString) {
+  if (input.secret || isSecretString(input.value)) {
     return MASK;
   }
   if (typeof input.value === 'string') {
@@ -417,7 +416,7 @@ function maskPlanInputValue(input: PlanInput, secrets: SecretRegistry): PlanInpu
 }
 
 function maskCommandValue(value: string | SecretString, secrets: SecretRegistry): string {
-  return value instanceof SecretString ? MASK : secrets.mask(value);
+  return isSecretString(value) ? MASK : secrets.mask(value);
 }
 
 function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[] | null {

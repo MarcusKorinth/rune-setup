@@ -21,7 +21,13 @@ import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, runtimeContextFor, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretRegistry, SecretString } from './secrets.js';
+import {
+  isSecretString,
+  registerSecretForMasking,
+  SecretRegistry,
+  secretLength,
+  type SecretString,
+} from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -66,8 +72,6 @@ export interface ResolveInputsOptions {
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
   readonly answers?: ReadonlyMap<string, InputValue>;
-  /** Registers secrets for masking as they resolve — before any step can launch (§10). */
-  readonly secrets?: SecretRegistry;
   /**
    * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
    * runs and the process exits. A frontend that can ask again takes `collect`, which records
@@ -80,8 +84,6 @@ export interface ResolveInputsOptions {
 export interface Resolution {
   readonly inputs: readonly InputState[];
   readonly byId: ReadonlyMap<string, InputState>;
-  /** The registry every secret in this resolution was registered with. */
-  readonly secrets: SecretRegistry;
   /**
    * Enabled required inputs still without an answer — what a frontend must ask for. A value
    * that resolves to nothing counts as no answer: an environment variable that was never set
@@ -125,11 +127,18 @@ export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapsho
  * they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
+  return resolveInputsWithRegistry(options, new SecretRegistry());
+}
+
+/** Internal resolver seam for a session that retains masking across re-resolution. */
+export function resolveInputsWithRegistry(
+  options: ResolveInputsOptions,
+  secrets: SecretRegistry,
+): Resolution {
   const { manifest, context } = options;
   runtimeContextFor(context);
   const ids = Object.keys(manifest.inputs);
   const environment = options.environment ?? process.env;
-  const secrets = options.secrets ?? new SecretRegistry();
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -204,8 +213,12 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     if (handler.secret) {
       // Registration resolves the opaque value only inside the secret/registry boundary; the
       // resolver never receives the text it is arranging to mask (§10, invariant 6).
-      const value = coerced.value instanceof SecretString ? coerced.value : undefined;
-      if (value !== undefined && value.length > 0 && !value.registerForMasking(secrets)) {
+      const value = isSecretString(coerced.value) ? coerced.value : undefined;
+      if (
+        value !== undefined &&
+        secretLength(value) > 0 &&
+        !registerSecretForMasking(value, secrets)
+      ) {
         warnings.push(
           `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
         );
@@ -247,7 +260,6 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const resolution: Resolution = Object.freeze({
     inputs,
     byId: publicById,
-    secrets,
     missing,
     warnings: frozenWarnings,
     problems: frozenProblems,

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { SecretString } from '../../src/engine/secrets.js';
+import {
+  createSecretString,
+  isSecretString,
+  secretEquals,
+  secretLength,
+} from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
 import { MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
 import type { InputTypeHandler } from '../../src/inputs/base.js';
@@ -75,11 +80,11 @@ describe('secret', () => {
     const result = handler('secret').fromString('hunter2', spec('secret'));
     const value = result.ok ? result.value : undefined;
 
-    expect(value).toBeInstanceOf(SecretString);
+    expect(isSecretString(value)).toBe(true);
     expect(String(value)).toBe('***');
     expect(`${String(value)}`).not.toContain('hunter2');
     expect(JSON.stringify({ value })).toBe('{"value":"***"}');
-    expect((value as SecretString).reveal()).toBe('hunter2');
+    expect(isSecretString(value) && secretEquals(value, 'hunter2')).toBe(true);
   });
 
   it('never echoes the value it refuses', () => {
@@ -90,7 +95,7 @@ describe('secret', () => {
   });
 
   it('renders the mask, never the secret', () => {
-    const value = new SecretString('hunter2');
+    const value = createSecretString('hunter2');
 
     // A secret reaches a command as the wrapper itself and is unwrapped at spawn, inside the
     // runner — so the rendering function has no business producing its text (invariant 6).
@@ -98,7 +103,7 @@ describe('secret', () => {
   });
 
   it('keeps the comparison value opaque for the condition evaluator', () => {
-    const value = new SecretString('hunter2');
+    const value = createSecretString('hunter2');
 
     expect(handler('secret').compare(value)).toBe(value);
   });
@@ -106,8 +111,8 @@ describe('secret', () => {
   it('is an empty secret when nothing set it', () => {
     const empty = handler('secret').empty(spec('secret'));
 
-    expect(empty).toBeInstanceOf(SecretString);
-    expect((empty as SecretString).reveal()).toBe('');
+    expect(isSecretString(empty)).toBe(true);
+    expect(isSecretString(empty) && secretLength(empty)).toBe(0);
   });
 });
 

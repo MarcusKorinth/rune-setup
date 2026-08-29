@@ -10,7 +10,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 
-import { SecretString } from '../engine/secrets.js';
+import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
 
 /** How long a process gets between the polite signal and the firm one (§7). */
@@ -32,7 +32,7 @@ type TerminationCause = 'timedOut' | 'cancelled';
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
 function reveal(value: string | SecretString): string {
-  return value instanceof SecretString ? value.reveal() : value;
+  return isSecretString(value) ? revealSecretString(value) : value;
 }
 
 /** Batch files need an explicit Windows command interpreter; the runner never adds one. */

@@ -10,7 +10,7 @@
  */
 
 import { ConditionError } from '../errors.js';
-import { SecretString } from './secrets.js';
+import { isSecretString, secretEquals, secretIsIncludedIn, type SecretString } from './secrets.js';
 import type { ValueType } from './context.js';
 import { scanReference, type TemplateReference } from './interpolate.js';
 
@@ -707,8 +707,9 @@ function evaluate(
         throw new ConditionError('RUNE-312', '"in" needs a multiselect value on its right');
       }
       const values = haystack as readonly string[];
-      const found =
-        needle instanceof SecretString ? needle.isIncludedIn(values) : values.includes(needle);
+      const found = isSecretString(needle)
+        ? secretIsIncludedIn(needle, values)
+        : values.includes(needle);
       return node.negated ? !found : found;
     }
   }
@@ -722,17 +723,17 @@ function asBoolean(value: ConditionValue): boolean {
 }
 
 function valuesEqual(left: ConditionValue, right: ConditionValue): boolean {
-  if (left instanceof SecretString) {
-    return left.equals(right);
+  if (isSecretString(left)) {
+    return secretEquals(left, right);
   }
-  if (right instanceof SecretString) {
-    return right.equals(left);
+  if (isSecretString(right)) {
+    return secretEquals(right, left);
   }
   return left === right;
 }
 
 function asString(value: ConditionValue): string | SecretString {
-  if (typeof value !== 'string' && !(value instanceof SecretString)) {
+  if (typeof value !== 'string' && !isSecretString(value)) {
     throw new ConditionError('RUNE-312', '"in" tests a string, and was given something else');
   }
   return value;

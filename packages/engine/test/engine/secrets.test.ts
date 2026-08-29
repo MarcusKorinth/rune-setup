@@ -4,15 +4,21 @@ import { resolve as resolvePath } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  composeSecretString,
+  createSecretString,
   isSecretString,
   MASK,
   MIN_MASKABLE_LENGTH,
+  registerSecretForMasking,
+  resolveSecretPathFrom,
+  secretEquals,
+  secretLength,
+  secretMatches,
   SecretRegistry,
-  SecretString,
 } from '../../src/engine/secrets.js';
 
 describe('SecretString', () => {
-  const secret = new SecretString('hunter2');
+  const secret = createSecretString('hunter2');
 
   it('shows the mask through every path that stringifies a value', () => {
     expect(String(secret)).toBe(MASK);
@@ -25,25 +31,39 @@ describe('SecretString', () => {
     expect(inspect({ token: secret })).not.toContain('hunter2');
   });
 
-  it('gives up its value only when asked outright', () => {
-    expect(secret.reveal()).toBe('hunter2');
-    expect(secret.length).toBe(7);
+  it('exposes no plaintext or oracle operations on the value itself', () => {
+    const surface = new Set([
+      ...Object.getOwnPropertyNames(secret),
+      ...Object.getOwnPropertyNames(Object.getPrototypeOf(secret) as object),
+    ]);
+
+    expect(surface).not.toContain('reveal');
+    expect(surface).not.toContain('matches');
+    expect(surface).not.toContain('equals');
+    expect(surface).not.toContain('isIncludedIn');
+    expect(surface).not.toContain('registerForMasking');
+    expect(surface).not.toContain('resolvePathFrom');
+    expect(surface).not.toContain('compose');
+    expect(surface).not.toContain('length');
   });
 
-  it('keeps composed and transformed values opaque until reveal', () => {
-    const composed = SecretString.compose([
-      'prefix-',
-      secret,
-      '-${env.SHOULD_NOT_BE_RESCANNED}',
-    ]).resolvePathFrom('/project');
+  it('keeps package-internal composed and transformed values opaque', () => {
+    const composed = resolveSecretPathFrom(
+      composeSecretString(['prefix-', secret, '-${env.SHOULD_NOT_BE_RESCANNED}']),
+      '/project',
+    );
 
     expect(String(composed)).toBe(MASK);
     expect(JSON.stringify(composed)).toBe(`"${MASK}"`);
     expect(inspect(composed)).toBe(MASK);
-    expect(composed.matches(/SHOULD_NOT_BE_RESCANNED}$/)).toBe(true);
-    expect(composed.reveal()).toBe(
-      resolvePath('/project', 'prefix-hunter2-${env.SHOULD_NOT_BE_RESCANNED}'),
-    );
+    expect(secretMatches(composed, /SHOULD_NOT_BE_RESCANNED}$/)).toBe(true);
+    expect(
+      secretEquals(
+        composed,
+        resolvePath('/project', 'prefix-hunter2-${env.SHOULD_NOT_BE_RESCANNED}'),
+      ),
+    ).toBe(true);
+    expect(secretLength(secret)).toBe(7);
   });
 
   it('is recognisable', () => {
@@ -91,7 +111,7 @@ describe('SecretRegistry', () => {
   it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
     const registry = new SecretRegistry();
     const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
-    new SecretString(key).registerForMasking(registry);
+    registerSecretForMasking(createSecretString(key), registry);
 
     // Output is read line by line, so the whole-key string would never match anything.
     expect(registry.mask('writing MIIBpayloadLine to disk')).toBe(`writing ${MASK} to disk`);

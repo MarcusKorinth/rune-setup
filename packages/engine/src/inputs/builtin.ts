@@ -7,7 +7,7 @@
  * value is matched against its `pattern`.
  */
 
-import { MASK, SecretString } from '../engine/secrets.js';
+import { createSecretString, isSecretString, MASK, secretLength } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
 import { FALSE_WORDS, TRUE_WORDS, type Coercion, type InputTypeHandler } from './base.js';
@@ -79,26 +79,26 @@ const text: InputTypeHandler = {
 const secret: InputTypeHandler = {
   name: 'secret',
   secret: true,
-  empty: () => new SecretString(''),
-  isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
-  fromString: (value) => ok(new SecretString(value) as never),
+  empty: () => createSecretString(''),
+  isAbsent: (value) => (isSecretString(value) ? secretLength(value) === 0 : value === ''),
+  fromString: (value) => ok(createSecretString(value) as never),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
   // An already-wrapped secret passes through: a frontend hands back what resolution gave it
   // when it re-resolves after another answer changed, and unwrapping it to check would be
   // the one place a secret is turned back into a plain string for no reason.
   fromNative: (value) => {
-    if (value instanceof SecretString) {
+    if (isSecretString(value)) {
       return ok(value as never);
     }
     return typeof value === 'string'
-      ? ok(new SecretString(value) as never)
+      ? ok(createSecretString(value) as never)
       : fail('the value is not text');
   },
   // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a
   // secret into text is exactly what invariant 6 forbids everywhere but there.
   render: () => MASK,
-  compare: (value) => (value instanceof SecretString ? value : new SecretString(String(value))),
+  compare: (value) => (isSecretString(value) ? value : createSecretString(String(value))),
 };
 
 const boolean: InputTypeHandler = {

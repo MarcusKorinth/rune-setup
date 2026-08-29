@@ -19,74 +19,19 @@ export const MASK = '***';
 export const MIN_MASKABLE_LENGTH = 4;
 
 /**
- * A string that does not show itself. `toString`, template interpolation, `JSON.stringify`
- * and `util.inspect` all render the mask, so a secret cannot reach a log through an ordinary
- * mistake — only through `reveal()`, which is easy to find and to review.
+ * A string that does not show itself. The public shape exposes only safe stringification;
+ * every operation over the hidden text is a narrowly named package-internal helper.
  */
-export class SecretString {
-  #resolve: () => string;
+const SECRET_STRING = Symbol('SecretString');
 
-  constructor(value: string) {
-    this.#resolve = () => value;
-  }
+export interface SecretString {
+  readonly [SECRET_STRING]: true;
+  toString(): string;
+  toJSON(): string;
+}
 
-  /**
-   * Joins public text and opaque secret pieces without exposing the resulting text. The
-   * pieces are snapshotted now and resolved only if the runner eventually reveals the value.
-   */
-  static compose(parts: readonly (string | SecretString)[]): SecretString {
-    const snapshot = Object.freeze([...parts]);
-    return SecretString.#lazy(() =>
-      snapshot.map((part) => (part instanceof SecretString ? part.#resolve() : part)).join(''),
-    );
-  }
-
-  /** Lazily anchors a path while keeping both relative and absolute values opaque. */
-  resolvePathFrom(basePath: string): SecretString {
-    const baseSnapshot = basePath;
-    return SecretString.#lazy(() => {
-      const value = this.#resolve();
-      return isAbsolute(value) ? value : resolvePath(baseSnapshot, value);
-    });
-  }
-
-  /** Tests an opaque value without returning its text to the caller. */
-  matches(pattern: RegExp): boolean {
-    return new RegExp(pattern.source, pattern.flags).test(this.#resolve());
-  }
-
-  /** Compares an opaque condition value without returning either secret as text. */
-  equals(other: unknown): boolean {
-    if (other instanceof SecretString) {
-      return this.#resolve() === other.#resolve();
-    }
-    return typeof other === 'string' && this.#resolve() === other;
-  }
-
-  /** Tests membership when an opaque value is the left operand of `in`. */
-  isIncludedIn(values: readonly string[]): boolean {
-    return values.includes(this.#resolve());
-  }
-
-  /** Registers the secret for sink masking without handing its text back to resolution. */
-  registerForMasking(registry: SecretRegistry): boolean {
-    return registry.register(this.#resolve());
-  }
-
-  static #lazy(resolve: () => string): SecretString {
-    const secret = new SecretString('');
-    secret.#resolve = resolve;
-    return secret;
-  }
-
-  /** The secret itself. Called at spawn, inside the runner, and nowhere else. */
-  reveal(): string {
-    return this.#resolve();
-  }
-
-  get length(): number {
-    return this.#resolve().length;
-  }
+class OpaqueSecretString implements SecretString {
+  readonly [SECRET_STRING] = true;
 
   toString(): string {
     return MASK;
@@ -101,8 +46,79 @@ export class SecretString {
   }
 }
 
+const secretResolvers = new WeakMap<SecretString, () => string>();
+
+function secretFromResolver(resolve: () => string): SecretString {
+  const secret = Object.freeze(new OpaqueSecretString());
+  secretResolvers.set(secret, resolve);
+  return secret;
+}
+
+function resolveSecret(secret: SecretString): string {
+  const resolve = secretResolvers.get(secret);
+  if (resolve === undefined) {
+    throw new TypeError('the value is not an engine secret');
+  }
+  return resolve();
+}
+
+/** Creates an opaque secret at the resolution boundary. Not part of the package API. */
+export function createSecretString(value: string): SecretString {
+  return secretFromResolver(() => value);
+}
+
+/** Joins public and opaque pieces without exposing the result. */
+export function composeSecretString(parts: readonly (string | SecretString)[]): SecretString {
+  const snapshot = Object.freeze([...parts]);
+  return secretFromResolver(() =>
+    snapshot.map((part) => (isSecretString(part) ? resolveSecret(part) : part)).join(''),
+  );
+}
+
+/** Lazily anchors a path while keeping the value opaque. */
+export function resolveSecretPathFrom(secret: SecretString, basePath: string): SecretString {
+  const baseSnapshot = basePath;
+  return secretFromResolver(() => {
+    const value = resolveSecret(secret);
+    return isAbsolute(value) ? value : resolvePath(baseSnapshot, value);
+  });
+}
+
+/** Tests an opaque value without returning its text. */
+export function secretMatches(secret: SecretString, pattern: RegExp): boolean {
+  return new RegExp(pattern.source, pattern.flags).test(resolveSecret(secret));
+}
+
+/** Compares an opaque condition value without returning either secret as text. */
+export function secretEquals(secret: SecretString, other: unknown): boolean {
+  if (isSecretString(other)) {
+    return resolveSecret(secret) === resolveSecret(other);
+  }
+  return typeof other === 'string' && resolveSecret(secret) === other;
+}
+
+/** Tests membership when an opaque value is the left operand of `in`. */
+export function secretIsIncludedIn(secret: SecretString, values: readonly string[]): boolean {
+  return values.includes(resolveSecret(secret));
+}
+
+/** Returns only the length needed by required-input validation. */
+export function secretLength(secret: SecretString): number {
+  return resolveSecret(secret).length;
+}
+
+/** Registers a secret without handing its text back to resolution. */
+export function registerSecretForMasking(secret: SecretString, registry: SecretRegistry): boolean {
+  return registry.register(resolveSecret(secret));
+}
+
+/** Plaintext capability used only by the spawn runner at the child-process boundary. */
+export function revealSecretString(secret: SecretString): string {
+  return resolveSecret(secret);
+}
+
 export function isSecretString(value: unknown): value is SecretString {
-  return value instanceof SecretString;
+  return typeof value === 'object' && value !== null && secretResolvers.has(value as SecretString);
 }
 
 /**

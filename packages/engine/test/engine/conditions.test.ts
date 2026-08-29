@@ -12,7 +12,7 @@ import {
 } from '../../src/engine/conditions.js';
 import { ConditionError } from '../../src/errors.js';
 import type { ValueType } from '../../src/engine/context.js';
-import { SecretString } from '../../src/engine/secrets.js';
+import { createSecretString } from '../../src/engine/secrets.js';
 
 /** The declared inputs a condition is checked against, by name. */
 const TYPES: Readonly<Record<string, ValueType>> = {
@@ -298,7 +298,7 @@ describe('evaluation', () => {
 
   it('compares and finds secret strings without turning them into plain values', () => {
     const secretValues = {
-      environment: new SecretString('production'),
+      environment: createSecretString('production'),
       tools: ['production', 'staging'],
     } satisfies Record<string, ConditionValue>;
 
@@ -309,14 +309,14 @@ describe('evaluation', () => {
     expect(evaluate('${environment} not in ${tools}', secretValues)).toBe(false);
     expect(
       evaluate('${left} == ${right}', {
-        left: new SecretString('same'),
-        right: new SecretString('same'),
+        left: createSecretString('same'),
+        right: createSecretString('same'),
       }),
     ).toBe(true);
     expect(
       evaluate('${left} == ${right}', {
-        left: new SecretString('same'),
-        right: new SecretString('different'),
+        left: createSecretString('same'),
+        right: createSecretString('different'),
       }),
     ).toBe(false);
   });

@@ -66,7 +66,8 @@ export type {
   ValueSource,
 } from './engine/inputs.js';
 
-export { isSecretString, MASK, SecretRegistry, SecretString } from './engine/secrets.js';
+export { isSecretString, MASK } from './engine/secrets.js';
+export type { SecretString } from './engine/secrets.js';
 
 export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
 export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';

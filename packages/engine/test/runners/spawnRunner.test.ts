@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan } from '../../src/engine/plan.js';
-import { SecretString } from '../../src/engine/secrets.js';
+import { createSecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import {
@@ -125,7 +125,7 @@ describe('SpawnRunner', () => {
   it.runIf(process.platform === 'win32')(
     'refuses a secret-wrapped batch executable without exposing it',
     async () => {
-      const secret = new SecretString('needle-secret.CmD');
+      const secret = createSecretString('needle-secret.CmD');
       const outcome = await run(nodeCommand('', { argv: [secret] }));
       const serialized = JSON.stringify(outcome);
 
@@ -368,9 +368,9 @@ describe('SpawnRunner', () => {
           process.execPath,
           '-e',
           'console.log(process.argv[1], process.env.TOKEN)',
-          new SecretString('wrapped-arg'),
+          createSecretString('wrapped-arg'),
         ],
-        env: { TOKEN: new SecretString('wrapped-env') },
+        env: { TOKEN: createSecretString('wrapped-env') },
       },
       { onOutput: (_stream, line) => lines.push(line) },
     );
@@ -415,43 +415,34 @@ describe('SpawnRunner', () => {
       platform: hostPlatform(),
       environment: {},
     });
-    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([
+        ['runtime', process.execPath],
+        ['work', '.'],
+        ['token', 'opaque-${env.SHOULD_NOT_BE_RESCANNED}'],
+      ]),
+    });
+    const plan = buildPlan({
+      manifest,
+      resolution,
+      context,
+    });
 
-    try {
-      const resolution = resolveInputs({
-        manifest,
-        context,
-        environment: {},
-        overrides: new Map([
-          ['runtime', process.execPath],
-          ['work', '.'],
-          ['token', 'opaque-${env.SHOULD_NOT_BE_RESCANNED}'],
-        ]),
-      });
-      const plan = buildPlan({
-        manifest,
-        resolution,
-        context,
-      });
-      expect(reveal).not.toHaveBeenCalled();
-
-      const step = plan.steps[0];
-      if (step?.state !== 'PENDING') {
-        throw new Error('expected a pending step');
-      }
-      const lines: string[] = [];
-      await expect(
-        run(step.command, { onOutput: (_stream, line) => lines.push(line) }),
-      ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
-
-      expect(reveal).toHaveBeenCalled();
-      expect(lines.join('\n')).toContain(directory);
-      expect(lines.join('\n')).toContain(
-        'arg-opaque-${env.SHOULD_NOT_BE_RESCANNED} env-opaque-${env.SHOULD_NOT_BE_RESCANNED}',
-      );
-    } finally {
-      reveal.mockRestore();
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
     }
+    const lines: string[] = [];
+    await expect(
+      run(step.command, { onOutput: (_stream, line) => lines.push(line) }),
+    ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+
+    expect(lines).toContain(
+      `${directory} arg-opaque-\${env.SHOULD_NOT_BE_RESCANNED} env-opaque-\${env.SHOULD_NOT_BE_RESCANNED}`,
+    );
   });
 
   it('runs in the working directory the plan chose', async () => {
@@ -497,7 +488,7 @@ describe('SpawnRunner', () => {
   });
 
   it('does not include a secret-wrapped invalid value in a startup failure', async () => {
-    const secret = new SecretString('needle-before\0needle-after');
+    const secret = createSecretString('needle-before\0needle-after');
     const outcome = await run(nodeCommand('', { argv: [process.execPath, secret] }));
     const serialized = JSON.stringify(outcome);
 
