@@ -74,6 +74,9 @@ export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
 export { buildPlan } from './engine/plan.js';
 export type { ExecutionPlan, PlannedStep, PlanOptions, ResolvedCommand } from './engine/plan.js';
 
+export { Session } from './engine/session.js';
+export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/session.js';
+
 export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
 export type { ExecuteOptions } from './engine/executor.js';
 
@@ -89,6 +92,9 @@ export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 export { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION } from './results/model.js';
 export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';
+export { resultJsonSchema } from './results/schema.js';
+export { createLogFileSink } from './logs/logFile.js';
+export type { LogFileSink } from './logs/logFile.js';
 
 export { CHROME_CATALOG, formatChrome } from './i18n/catalog.js';
 export {
