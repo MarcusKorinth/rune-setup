@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { describePlan, executeRun } from '../../src/engine/executor.js';
+import { describePlan, executeRun, OUTPUT_TAIL_LINES } from '../../src/engine/executor.js';
 import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
@@ -316,6 +316,27 @@ describe('a run that fails', () => {
 
     expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stdout', line: 'the token is ***' }]);
     expect(result.steps[1]).not.toHaveProperty('outputTail');
+  });
+
+  it('keeps exactly the newest output tail lines in combined stream order', async () => {
+    const { plan } = setup(['steps:', '  - id: noisy', '    run:', '      command: a']);
+    const lines = Array.from({ length: OUTPUT_TAIL_LINES + 1 }, (_, index) => ({
+      stream: index % 2 === 0 ? ('stdout' as const) : ('stderr' as const),
+      line: `line-${index}`,
+    }));
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner((request) => {
+        for (const { stream, line } of lines) {
+          request.onOutput(stream, line);
+        }
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(result.steps[0]?.outputTail).toEqual(lines.slice(1));
+    expect(result.steps[0]?.outputTail).toHaveLength(OUTPUT_TAIL_LINES);
   });
 
   it('omits an oversized default-runner line before masking can split its secret', async () => {
@@ -834,6 +855,48 @@ describe('cancellation and timeout', () => {
     expect(result.status).toBe('failed');
     expect(lines.at(-1)).toContain('exceeded its timeout of 1 seconds');
   });
+
+  it.each([
+    {
+      outcome: { kind: 'timedOut' as const },
+      expected: 'exceeded its timeout of 1 seconds',
+    },
+    {
+      outcome: { kind: 'failedToStart' as const, message: 'spawn failed' },
+      expected: 'could not be started: spawn failed',
+    },
+  ])(
+    'keeps the synthetic $outcome.kind line as the newest tail entry',
+    async ({ outcome, expected }) => {
+      const { plan } = setup([
+        'steps:',
+        '  - id: outcome',
+        '    run:',
+        '      command: a',
+        '      timeoutSeconds: 1',
+      ]);
+
+      const result = await executeRun({
+        plan,
+        runner: stubRunner((request) => {
+          for (let index = 0; index < OUTPUT_TAIL_LINES; index += 1) {
+            request.onOutput('stdout', `normal-${index}`);
+          }
+          return outcome;
+        }),
+      });
+
+      const tail = result.steps[0]?.outputTail;
+      expect(tail).toHaveLength(OUTPUT_TAIL_LINES);
+      expect(tail?.map(({ stream, line }) => ({ stream, line }))).toEqual([
+        ...Array.from({ length: OUTPUT_TAIL_LINES - 1 }, (_, index) => ({
+          stream: 'stdout' as const,
+          line: `normal-${index + 1}`,
+        })),
+        { stream: 'stderr', line: expect.stringContaining(expected) },
+      ]);
+    },
+  );
 });
 
 describe('skipped steps and the dry run', () => {
