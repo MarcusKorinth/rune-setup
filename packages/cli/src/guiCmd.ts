@@ -128,7 +128,14 @@ export async function launchGui(
       ? [location.path, argv]
       : [devElectron(location.dir), [location.dir, ...argv]];
 
-  const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'inherit'], shell: false });
+  const child = spawn(command, args, {
+    stdio: ['ignore', 'ignore', 'inherit'],
+    shell: false,
+    // Its own process group on POSIX: a terminal Ctrl+C must reach only the CLI, which
+    // forwards a deliberate SIGTERM — a raw SIGINT would kill the shell past its cancel
+    // path (§9.4). Same reason the engine's runner detaches its children.
+    detached: process.platform !== 'win32',
+  });
 
   // The first Ctrl+C forwards a cancel request to the shell (§9.4); a second force-exits
   // the CLI while the shell finishes its own cancel.
