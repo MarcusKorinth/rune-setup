@@ -5,11 +5,7 @@
  * and the GUI shell's main process import the engine only through it.
  */
 
-/**
- * Version of the engine package. Pinned to `packages/engine/package.json` by
- * `tests/package-versions.test.ts`, so a release bump cannot land here half-done.
- */
-export const RUNE_VERSION = '0.0.0';
+export { RUNE_VERSION } from './version.js';
 
 export {
   CancelledError,
@@ -74,6 +70,25 @@ export { isSecretString, MASK, SecretRegistry, SecretString } from './engine/sec
 
 export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
 export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
+
+export { buildPlan } from './engine/plan.js';
+export type { ExecutionPlan, PlannedStep, PlanOptions, ResolvedCommand } from './engine/plan.js';
+
+export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
+export type { ExecuteOptions } from './engine/executor.js';
+
+export { CancelToken } from './engine/cancel.js';
+export type { EngineObserver, RunEvent } from './engine/events.js';
+
+export { isLegalTransition, isTerminal, STEP_STATES } from './engine/state.js';
+export type { StepState } from './engine/state.js';
+
+export { SpawnRunner } from './runners/spawnRunner.js';
+export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
+
+export { RESULT_SCHEMA_VERSION } from './results/model.js';
+export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/model.js';
+export { serializeResult, writeResult } from './results/writer.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 
