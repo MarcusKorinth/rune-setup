@@ -178,10 +178,10 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     }
 
     if (handler.secret) {
-      // The one place that unwraps a secret outside the runner: it has to know the text to
-      // be able to remove it from everything a run prints (§10).
-      const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
-      if (text !== '' && !secrets.register(text)) {
+      // Registration resolves the opaque value only inside the secret/registry boundary; the
+      // resolver never receives the text it is arranging to mask (§10, invariant 6).
+      const value = coerced.value instanceof SecretString ? coerced.value : undefined;
+      if (value !== undefined && value.length > 0 && !value.registerForMasking(secrets)) {
         warnings.push(
           `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
         );
@@ -381,7 +381,7 @@ function lookup(
   visible: readonly string[],
   states: ReadonlyMap<string, InputState>,
   context: RuntimeContext,
-): boolean | string | readonly string[] {
+): boolean | string | readonly string[] | SecretString {
   const resolved = resolveReference(reference.segments, visible);
   if (!resolved.ok) {
     throw new InternalError(`the condition names ${reference.text}: ${resolved.message}`);

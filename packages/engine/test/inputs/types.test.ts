@@ -97,8 +97,10 @@ describe('secret', () => {
     expect(handler('secret').render(value)).toBe('***');
   });
 
-  it('compares the value behind the wrapper, because a condition only yields a boolean', () => {
-    expect(handler('secret').compare(new SecretString('hunter2'))).toBe('hunter2');
+  it('keeps the comparison value opaque for the condition evaluator', () => {
+    const value = new SecretString('hunter2');
+
+    expect(handler('secret').compare(value)).toBe(value);
   });
 
   it('is an empty secret when nothing set it', () => {

@@ -2,11 +2,15 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
+import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
+import { resolveInputs } from '../../src/engine/inputs.js';
+import { buildPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
+import { parseManifestText } from '../../src/manifest/index.js';
 import { SpawnRunner } from '../../src/runners/spawnRunner.js';
 
 /** A real command on any platform: this very Node binary. */
@@ -88,6 +92,83 @@ describe('SpawnRunner', () => {
     );
 
     expect(lines).toContain('wrapped-arg wrapped-env');
+  });
+
+  it('reveals a composed plan only at spawn and preserves anchored bytes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-secret-plan-'));
+    const manifest = parseManifestText(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  runtime:',
+        '    type: secret',
+        '  work:',
+        '    type: secret',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: opaque',
+        '    when: "${token} == \'opaque-${env.SHOULD_NOT_BE_RESCANNED}\'"',
+        '    run:',
+        '      command: "${runtime}"',
+        '      args:',
+        '        - -e',
+        '        - "console.log(process.cwd(), process.argv[1], process.env.TOKEN)"',
+        '        - "arg-${token}"',
+        '      cwd: "${work}"',
+        '      env:',
+        '        TOKEN: "env-${token}"',
+        '',
+      ].join('\n'),
+      join(directory, 'installer.yaml'),
+    );
+    const context = createRuntimeContext({
+      manifestDir: directory,
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
+
+    try {
+      const resolution = resolveInputs({
+        manifest,
+        context,
+        environment: {},
+        overrides: new Map([
+          ['runtime', process.execPath],
+          ['work', '.'],
+          ['token', 'opaque-${env.SHOULD_NOT_BE_RESCANNED}'],
+        ]),
+      });
+      const plan = buildPlan({
+        manifest,
+        manifestPath: join(directory, 'installer.yaml'),
+        resolution,
+        context,
+      });
+      expect(reveal).not.toHaveBeenCalled();
+
+      const step = plan.steps[0];
+      if (step?.state !== 'PENDING') {
+        throw new Error('expected a pending step');
+      }
+      const lines: string[] = [];
+      await expect(
+        run(step.command, { onOutput: (_stream, line) => lines.push(line) }),
+      ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+
+      expect(reveal).toHaveBeenCalled();
+      expect(lines.join('\n')).toContain(directory);
+      expect(lines.join('\n')).toContain(
+        'arg-opaque-${env.SHOULD_NOT_BE_RESCANNED} env-opaque-${env.SHOULD_NOT_BE_RESCANNED}',
+      );
+    } finally {
+      reveal.mockRestore();
+    }
   });
 
   it('runs in the working directory the plan chose', async () => {

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
 import {
@@ -330,6 +330,39 @@ describe('conditional inputs', () => {
 
     expect(resolution.byId.get('windowsOnly')?.enabled).toBe(false);
     expect(resolution.byId.get('onCi')?.enabled).toBe(true);
+  });
+
+  it('evaluates equality and membership against an opaque secret', () => {
+    const conditional = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  environments:',
+      '    type: multiselect',
+      '    options: [production, staging]',
+      '    default: [production]',
+      '  equal:',
+      '    type: text',
+      '    when: "${token} == \'production\'"',
+      '    required: false',
+      '  member:',
+      '    type: text',
+      '    when: "${token} in ${environments}"',
+      '    required: false',
+    );
+    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
+
+    try {
+      const resolution = resolve(conditional, {
+        overrides: new Map([['token', 'production']]),
+      });
+
+      expect(resolution.byId.get('equal')?.enabled).toBe(true);
+      expect(resolution.byId.get('member')?.enabled).toBe(true);
+      expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      reveal.mockRestore();
+    }
   });
 
   it('names the condition that asked for an environment variable the machine lacks', () => {

@@ -46,8 +46,8 @@ export interface InputTypeHandler {
    */
   render(value: InputValue): string;
 
-  /** The value a condition compares (§6.2): the same value, with a secret unwrapped. */
-  compare(value: InputValue): boolean | string | readonly string[];
+  /** The value a condition compares (§6.2); a secret remains opaque. */
+  compare(value: InputValue): boolean | string | readonly string[] | SecretString;
 }
 
 /** The accepted spellings of a boolean, as documented in §5. */

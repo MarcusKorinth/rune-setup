@@ -7,6 +7,8 @@
  * registry catches what the wrapper cannot: a script that echoes the password it was given.
  */
 
+import { isAbsolute, resolve as resolvePath } from 'node:path';
+
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
 
@@ -22,19 +24,68 @@ export const MIN_MASKABLE_LENGTH = 4;
  * mistake — only through `reveal()`, which is easy to find and to review.
  */
 export class SecretString {
-  readonly #value: string;
+  #resolve: () => string;
 
   constructor(value: string) {
-    this.#value = value;
+    this.#resolve = () => value;
+  }
+
+  /**
+   * Joins public text and opaque secret pieces without exposing the resulting text. The
+   * pieces are snapshotted now and resolved only if the runner eventually reveals the value.
+   */
+  static compose(parts: readonly (string | SecretString)[]): SecretString {
+    const snapshot = Object.freeze([...parts]);
+    return SecretString.#lazy(() =>
+      snapshot.map((part) => (part instanceof SecretString ? part.#resolve() : part)).join(''),
+    );
+  }
+
+  /** Lazily anchors a path while keeping both relative and absolute values opaque. */
+  resolvePathFrom(basePath: string): SecretString {
+    const baseSnapshot = basePath;
+    return SecretString.#lazy(() => {
+      const value = this.#resolve();
+      return isAbsolute(value) ? value : resolvePath(baseSnapshot, value);
+    });
+  }
+
+  /** Tests an opaque value without returning its text to the caller. */
+  matches(pattern: RegExp): boolean {
+    return new RegExp(pattern.source, pattern.flags).test(this.#resolve());
+  }
+
+  /** Compares an opaque condition value without returning either secret as text. */
+  equals(other: unknown): boolean {
+    if (other instanceof SecretString) {
+      return this.#resolve() === other.#resolve();
+    }
+    return typeof other === 'string' && this.#resolve() === other;
+  }
+
+  /** Tests membership when an opaque value is the left operand of `in`. */
+  isIncludedIn(values: readonly string[]): boolean {
+    return values.includes(this.#resolve());
+  }
+
+  /** Registers the secret for sink masking without handing its text back to resolution. */
+  registerForMasking(registry: SecretRegistry): boolean {
+    return registry.register(this.#resolve());
+  }
+
+  static #lazy(resolve: () => string): SecretString {
+    const secret = new SecretString('');
+    secret.#resolve = resolve;
+    return secret;
   }
 
   /** The secret itself. Called at spawn, inside the runner, and nowhere else. */
   reveal(): string {
-    return this.#value;
+    return this.#resolve();
   }
 
   get length(): number {
-    return this.#value.length;
+    return this.#resolve().length;
   }
 
   toString(): string {

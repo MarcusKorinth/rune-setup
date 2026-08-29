@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
@@ -282,6 +282,37 @@ describe('the Windows honesty rule', () => {
 
   it('does not mind the same file name on linux', () => {
     expect(planFor(lines, { platform: 'linux' }).plan.steps[0]?.state).toBe('PENDING');
+  });
+
+  it('refuses an opaque batch command without revealing it in planning or the error', () => {
+    const reveal = vi.spyOn(SecretString.prototype, 'reveal');
+    let message = '';
+
+    try {
+      try {
+        planFor(
+          [
+            'inputs:',
+            '  command:',
+            '    type: secret',
+            'steps:',
+            '  - id: legacy',
+            '    run:',
+            '      command: "${command}"',
+          ],
+          { platform: 'windows', overrides: new Map([['command', 'private-setup.cmd']]) },
+        );
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toContain('needs a shell');
+      expect(message).toContain('***');
+      expect(message).not.toContain('private-setup.cmd');
+      expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      reveal.mockRestore();
+    }
   });
 });
 

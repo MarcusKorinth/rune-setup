@@ -10,6 +10,7 @@
  */
 
 import { ConditionError } from '../errors.js';
+import { SecretString } from './secrets.js';
 import type { ValueType } from './context.js';
 import { scanReference, type TemplateReference } from './interpolate.js';
 
@@ -75,7 +76,7 @@ export type TypeResolver = (
   | { readonly ok: false; readonly message: string };
 
 /** A value a condition can be evaluated against. */
-export type ConditionValue = boolean | number | string | readonly string[];
+export type ConditionValue = boolean | number | string | readonly string[] | SecretString;
 
 // ---------------------------------------------------------------------------- tokenizer
 
@@ -696,7 +697,7 @@ function evaluate(
     case 'or':
       return asBoolean(evaluate(node.left, lookup)) || asBoolean(evaluate(node.right, lookup));
     case 'equality': {
-      const equal = evaluate(node.left, lookup) === evaluate(node.right, lookup);
+      const equal = valuesEqual(evaluate(node.left, lookup), evaluate(node.right, lookup));
       return node.negated ? !equal : equal;
     }
     case 'membership': {
@@ -705,7 +706,9 @@ function evaluate(
       if (!Array.isArray(haystack)) {
         throw new ConditionError('RUNE-312', '"in" needs a multiselect value on its right');
       }
-      const found = (haystack as readonly string[]).includes(needle);
+      const values = haystack as readonly string[];
+      const found =
+        needle instanceof SecretString ? needle.isIncludedIn(values) : values.includes(needle);
       return node.negated ? !found : found;
     }
   }
@@ -718,8 +721,18 @@ function asBoolean(value: ConditionValue): boolean {
   return value;
 }
 
-function asString(value: ConditionValue): string {
-  if (typeof value !== 'string') {
+function valuesEqual(left: ConditionValue, right: ConditionValue): boolean {
+  if (left instanceof SecretString) {
+    return left.equals(right);
+  }
+  if (right instanceof SecretString) {
+    return right.equals(left);
+  }
+  return left === right;
+}
+
+function asString(value: ConditionValue): string | SecretString {
+  if (typeof value !== 'string' && !(value instanceof SecretString)) {
     throw new ConditionError('RUNE-312', '"in" tests a string, and was given something else');
   }
   return value;

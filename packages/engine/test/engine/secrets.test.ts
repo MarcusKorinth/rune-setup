@@ -1,4 +1,5 @@
 import { inspect } from 'node:util';
+import { resolve as resolvePath } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -27,6 +28,22 @@ describe('SecretString', () => {
   it('gives up its value only when asked outright', () => {
     expect(secret.reveal()).toBe('hunter2');
     expect(secret.length).toBe(7);
+  });
+
+  it('keeps composed and transformed values opaque until reveal', () => {
+    const composed = SecretString.compose([
+      'prefix-',
+      secret,
+      '-${env.SHOULD_NOT_BE_RESCANNED}',
+    ]).resolvePathFrom('/project');
+
+    expect(String(composed)).toBe(MASK);
+    expect(JSON.stringify(composed)).toBe(`"${MASK}"`);
+    expect(inspect(composed)).toBe(MASK);
+    expect(composed.matches(/SHOULD_NOT_BE_RESCANNED}$/)).toBe(true);
+    expect(composed.reveal()).toBe(
+      resolvePath('/project', 'prefix-hunter2-${env.SHOULD_NOT_BE_RESCANNED}'),
+    );
   });
 
   it('is recognisable', () => {
@@ -74,7 +91,7 @@ describe('SecretRegistry', () => {
   it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
     const registry = new SecretRegistry();
     const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
-    registry.register(key);
+    new SecretString(key).registerForMasking(registry);
 
     // Output is read line by line, so the whole-key string would never match anything.
     expect(registry.mask('writing MIIBpayloadLine to disk')).toBe(`writing ${MASK} to disk`);

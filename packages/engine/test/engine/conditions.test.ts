@@ -12,6 +12,7 @@ import {
 } from '../../src/engine/conditions.js';
 import { ConditionError } from '../../src/errors.js';
 import type { ValueType } from '../../src/engine/context.js';
+import { SecretString } from '../../src/engine/secrets.js';
 
 /** The declared inputs a condition is checked against, by name. */
 const TYPES: Readonly<Record<string, ValueType>> = {
@@ -293,6 +294,31 @@ describe('evaluation', () => {
     ['false', false],
   ])('evaluates %s to %s', (text, expected) => {
     expect(evaluate(text, values)).toBe(expected);
+  });
+
+  it('compares and finds secret strings without turning them into plain values', () => {
+    const secretValues = {
+      environment: new SecretString('production'),
+      tools: ['production', 'staging'],
+    } satisfies Record<string, ConditionValue>;
+
+    expect(evaluate("${environment} == 'production'", secretValues)).toBe(true);
+    expect(evaluate("${environment} != 'production'", secretValues)).toBe(false);
+    expect(evaluate("${environment} == 'staging'", secretValues)).toBe(false);
+    expect(evaluate('${environment} in ${tools}', secretValues)).toBe(true);
+    expect(evaluate('${environment} not in ${tools}', secretValues)).toBe(false);
+    expect(
+      evaluate('${left} == ${right}', {
+        left: new SecretString('same'),
+        right: new SecretString('same'),
+      }),
+    ).toBe(true);
+    expect(
+      evaluate('${left} == ${right}', {
+        left: new SecretString('same'),
+        right: new SecretString('different'),
+      }),
+    ).toBe(false);
   });
 
   it('applies "not" to the whole comparison, as the grammar reads', () => {

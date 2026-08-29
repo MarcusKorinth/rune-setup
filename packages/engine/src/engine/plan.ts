@@ -8,14 +8,20 @@
 
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { ExecutionError, InputError, InternalError, type RuneIssue } from '../errors.js';
+import {
+  ExecutionError,
+  InputError,
+  InternalError,
+  ResolutionError,
+  type RuneIssue,
+} from '../errors.js';
 import { MASK } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
-import { renderTemplate } from './interpolate.js';
+import { scanTemplate, type TemplateReference } from './interpolate.js';
 import type { InputState, Resolution, ValueSource } from './inputs.js';
 import { SecretString } from './secrets.js';
 import type { SecretRegistry } from './secrets.js';
@@ -222,7 +228,7 @@ function lookup(
   reference: ConditionReference,
   resolution: Resolution,
   context: RuntimeContext,
-): boolean | string | readonly string[] {
+): boolean | string | readonly string[] | SecretString {
   const resolved = resolveReference(reference.segments, [...resolution.byId.keys()]);
   if (!resolved.ok) {
     throw new InternalError(`the condition names ${reference.text}: ${resolved.message}`);
@@ -244,10 +250,15 @@ function resolveCommand(
   resolution: Resolution,
   context: RuntimeContext,
 ): ResolvedCommand {
+  const inputIds = [...resolution.byId.keys()];
   const render = (template: string): string | SecretString => {
-    let touchedSecret = false;
-    const text = renderTemplate(template, (reference) => {
-      const resolved = resolveReference(reference.segments, [...resolution.byId.keys()]);
+    const scan = scanTemplate(template);
+    if (!scan.ok) {
+      throw new ResolutionError('RUNE-302', scan.message);
+    }
+
+    const resolve = (reference: TemplateReference): string | SecretString => {
+      const resolved = resolveReference(reference.segments, inputIds);
       if (!resolved.ok) {
         throw new InternalError(
           `${reference.text} was not caught by validation: ${resolved.message}`,
@@ -263,23 +274,31 @@ function resolveCommand(
       const handler = inputTypes.get(state.spec.type);
       const value = state.value ?? handler.empty(state.spec);
       if (value instanceof SecretString) {
-        touchedSecret = true;
-        return value.reveal();
+        return value;
       }
       return handler.render(value);
-    });
-    // Anything a secret flowed into stays wrapped: the plan itself never holds a secret in
-    // the clear, and only the runner unwraps it, at spawn (§8).
-    return touchedSecret ? new SecretString(text) : text;
+    };
+
+    const parts = scan.parts.map((part) =>
+      part.kind === 'literal' ? part.text : resolve(part.reference),
+    );
+    return parts.some((part) => part instanceof SecretString)
+      ? SecretString.compose(parts)
+      : parts.join('');
   };
 
-  const command = rewrap(render(spec.command), (text) => anchorCommand(text, context));
+  const manifestDir = context.manifestDir;
+  const command = anchorCommandValue(render(spec.command), manifestDir);
   const commandShown = command instanceof SecretString ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
   // it before anything executes (§8): a batch file needs a shell, and RUNE never provides
   // one implicitly.
-  if (context.platform === 'windows' && /\.(bat|cmd)$/i.test(textOf(command))) {
+  const isBatchFile =
+    command instanceof SecretString
+      ? command.matches(/\.(bat|cmd)$/i)
+      : /\.(bat|cmd)$/i.test(command);
+  if (context.platform === 'windows' && isBatchFile) {
     throw new ExecutionError(
       'RUNE-405',
       `step "${stepId}" runs "${commandShown}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${commandShown}", ...]`,
@@ -287,9 +306,7 @@ function resolveCommand(
   }
 
   const cwd =
-    spec.cwd === undefined
-      ? context.manifestDir
-      : rewrap(render(spec.cwd), (text) => anchorPath(text, context));
+    spec.cwd === undefined ? context.manifestDir : anchorPathValue(render(spec.cwd), manifestDir);
 
   const env: Record<string, string | SecretString> = {};
   for (const [name, value] of Object.entries(spec.env)) {
@@ -305,35 +322,33 @@ function resolveCommand(
   };
 }
 
-/**
- * Applies a plan-time text transformation (anchoring, the batch-file test) to a rendering.
- * A secret-wrapped rendering is open only for the duration of the call and wrapped again
- * before anything stores it — the plan never carries the clear text.
- */
-function rewrap(
+function anchorCommandValue(
   value: string | SecretString,
-  transform: (text: string) => string,
+  manifestDir: string,
 ): string | SecretString {
-  return value instanceof SecretString
-    ? new SecretString(transform(value.reveal()))
-    : transform(value);
+  if (value instanceof SecretString) {
+    return value.matches(/[\\/]/) ? value.resolvePathFrom(manifestDir) : value;
+  }
+  return anchorCommand(value, manifestDir);
 }
 
-function textOf(value: string | SecretString): string {
-  return value instanceof SecretString ? value.reveal() : value;
+function anchorPathValue(value: string | SecretString, manifestDir: string): string | SecretString {
+  return value instanceof SecretString
+    ? value.resolvePathFrom(manifestDir)
+    : anchorPath(value, manifestDir);
 }
 
 /**
  * A command that is written as a path resolves against the manifest's directory, never the
  * caller's cwd (invariant 13); a bare name is left for the PATH lookup at spawn.
  */
-function anchorCommand(command: string, context: RuntimeContext): string {
+function anchorCommand(command: string, manifestDir: string): string {
   const looksLikePath = command.includes('/') || command.includes('\\');
-  return looksLikePath ? anchorPath(command, context) : command;
+  return looksLikePath ? anchorPath(command, manifestDir) : command;
 }
 
-function anchorPath(path: string, context: RuntimeContext): string {
-  return isAbsolute(path) ? path : resolvePath(context.manifestDir, path);
+function anchorPath(path: string, manifestDir: string): string {
+  return isAbsolute(path) ? path : resolvePath(manifestDir, path);
 }
 
 function deepFreeze<T>(value: T): T {
