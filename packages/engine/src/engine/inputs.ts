@@ -18,6 +18,7 @@ import {
   InternalError,
   ManifestError,
   ResolutionError,
+  RuneError,
   type RuneIssue,
 } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
@@ -120,9 +121,23 @@ export interface Resolution {
  * to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
+  const stagedSecrets = new SecretRegistry();
+  try {
+    return resolveInputsStaged(options, stagedSecrets);
+  } catch (cause) {
+    if (cause instanceof RuneError) {
+      throw redactRuneError(cause, options.secrets.combinedWith(stagedSecrets));
+    }
+    throw cause;
+  }
+}
+
+function resolveInputsStaged(
+  options: ResolveInputsOptions,
+  stagedSecrets: SecretRegistry,
+): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
-  const stagedSecrets = new SecretRegistry();
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -233,16 +248,96 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
   }
 
+  const redactor = options.secrets.combinedWith(stagedSecrets);
+  const redactedIssues = issues.map((issue) => redactIssue(issue, redactor));
+  const issueReplacements = new Map(issues.map((issue, index) => [issue, redactedIssues[index]!]));
+  for (const [id, state] of states) {
+    if (state.rejection === undefined) {
+      continue;
+    }
+    const issue = issueReplacements.get(state.rejection.issue);
+    if (issue === undefined) {
+      throw new InternalError(`the rejection of input "${id}" has no collected issue`);
+    }
+    states.set(id, {
+      ...state,
+      rejection: {
+        ...state.rejection,
+        candidate: redactCandidate(state.rejection.candidate, redactor),
+        issue,
+      },
+    });
+  }
+
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
   const resolution = {
     inputs,
     byId: states,
     missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-    warnings,
-    problems: issues,
+    warnings: warnings.map((warning) => redactor.mask(warning)),
+    problems: redactedIssues,
   };
   options.secrets.replaceWith(stagedSecrets);
   return resolution;
+}
+
+/** Redacts the frontend-readable parts of a collected rejected value. */
+function redactCandidate(
+  candidate: InputRejection['candidate'],
+  secrets: SecretRegistry,
+): InputRejection['candidate'] {
+  if (typeof candidate === 'string') {
+    return secrets.mask(candidate);
+  }
+  if (Array.isArray(candidate)) {
+    return Object.freeze(candidate.map((entry) => secrets.mask(entry)));
+  }
+  return candidate;
+}
+
+function redactIssue(issue: RuneIssue, secrets: SecretRegistry): RuneIssue {
+  return {
+    ...issue,
+    message: secrets.mask(issue.message),
+  };
+}
+
+/**
+ * Sanitizes a deliberate resolver error without changing its class, code, location, cause
+ * chain, or exit-code identity. Errors are newly created during this resolution attempt, so
+ * editing their reporting fields cannot mutate caller-owned state.
+ */
+function redactRuneError(error: RuneError, secrets: SecretRegistry): RuneError {
+  redactError(error, secrets, new Set());
+  return error;
+}
+
+function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): void {
+  if (seen.has(error)) {
+    return;
+  }
+  seen.add(error);
+
+  error.message = secrets.mask(error.message);
+  if (error.stack !== undefined) {
+    error.stack = secrets.mask(error.stack);
+  }
+
+  if (error instanceof RuneError) {
+    Object.defineProperty(error, 'issues', {
+      ...Object.getOwnPropertyDescriptor(error, 'issues'),
+      value: error.issues.map((issue) => redactIssue(issue, secrets)),
+    });
+  }
+
+  if (error.cause instanceof Error) {
+    redactError(error.cause, secrets, seen);
+  } else if (typeof error.cause === 'string') {
+    Object.defineProperty(error, 'cause', {
+      ...Object.getOwnPropertyDescriptor(error, 'cause'),
+      value: secrets.mask(error.cause),
+    });
+  }
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */

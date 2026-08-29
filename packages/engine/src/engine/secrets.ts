@@ -124,6 +124,19 @@ export class SecretRegistry {
     return this.#values.size;
   }
 
+  /** Returns an independent registry containing the secrets known by both registries. */
+  combinedWith(source: SecretRegistry): SecretRegistry {
+    const combined = new SecretRegistry();
+    for (const value of this.#values) {
+      combined.#values.add(value);
+    }
+    for (const value of source.#values) {
+      combined.#values.add(value);
+    }
+    combined.#orderedDirty = combined.#values.size > 0;
+    return combined;
+  }
+
   /** Replaces this registry with the completed secret set of one successful resolution. */
   replaceWith(source: SecretRegistry): void {
     const values = new Set(source.#values);

@@ -1057,6 +1057,27 @@ describe('collected rejected values', () => {
 describe('secrets', () => {
   const manifest = manifestOf('inputs:', '  token:', '    type: secret');
 
+  function publicErrorSurfaces(error: Error): readonly string[] {
+    const surfaces: string[] = [];
+    const seen = new Set<Error>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+      seen.add(current);
+      surfaces.push(
+        current.message,
+        current.stack ?? '',
+        String(current),
+        JSON.stringify(current) ?? '',
+        inspect(current),
+      );
+      if (current instanceof InputError || current instanceof ResolutionError) {
+        surfaces.push(...current.issues.map((issue) => issue.message));
+      }
+      current = current.cause;
+    }
+    return surfaces;
+  }
+
   function existingRegistry(): SecretRegistry {
     const secrets = new SecretRegistry();
     secrets.register('existing-secret');
@@ -1154,6 +1175,92 @@ describe('secrets', () => {
     expectExistingRegistryUnchanged(secrets);
   });
 
+  it('redacts active and staged secrets from an aggregate input error', () => {
+    const before = 'F030-BEFORE-SECRET';
+    const after = 'F030-AFTER-SECRET';
+    const existing = 'F030-EXISTING-SECRET';
+    const withInvalidMiddleInput = manifestOf(
+      'inputs:',
+      '  before:',
+      '    type: secret',
+      '  invalid:',
+      '    type: text',
+      '    pattern: "x+"',
+      '  after:',
+      '    type: secret',
+    );
+    const secrets = new SecretRegistry();
+    secrets.register(existing);
+    const error = inputError(withInvalidMiddleInput, {
+      overrides: new Map([
+        ['before', before],
+        ['invalid', `${existing}/${before}/${after}`],
+        ['after', after],
+      ]),
+      secrets,
+    });
+
+    expect(error).toBeInstanceOf(InputError);
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.message).toContain('"***/***/***" does not match x+');
+    for (const sentinel of [existing, before, after]) {
+      expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask(existing)).toBe('***');
+    expect(secrets.mask(before)).toBe(before);
+    expect(secrets.mask(after)).toBe(after);
+  });
+
+  it('redacts collected problems, issue aliases and candidate snapshots', () => {
+    const before = 'F030-COLLECT-BEFORE';
+    const after = 'F030-COLLECT-AFTER';
+    const existing = 'F030-COLLECT-EXISTING';
+    const withRejectedValues = manifestOf(
+      'inputs:',
+      '  before:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git]',
+      '  after:',
+      '    type: secret',
+    );
+    const secrets = new SecretRegistry();
+    secrets.register(existing);
+    const resolution = resolve(withRejectedValues, {
+      overrides: new Map([
+        ['before', before],
+        ['note', `${existing}/${before}/${after}`],
+        ['after', after],
+      ]),
+      answers: new Map([['tools', [existing, before, after]]]),
+      invalidValues: 'collect',
+      secrets,
+    });
+    const note = rejectionFor(resolution, 'note');
+    const tools = rejectionFor(resolution, 'tools');
+
+    expect(resolution.problems).toHaveLength(2);
+    expect(note.candidate).toBe('***/***/***');
+    expect(note.issue).toBe(resolution.problems[0]);
+    expect(tools.candidate).toEqual(['***', '***', '***']);
+    expect(Object.isFrozen(tools.candidate)).toBe(true);
+    expect(tools.issue).toBe(resolution.problems[1]);
+    for (const sentinel of [existing, before, after]) {
+      expect(inspect(resolution)).not.toContain(sentinel);
+      expect(JSON.stringify(resolution)).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(2);
+    expect(secrets.mask(existing)).toBe(existing);
+    expect(secrets.mask(before)).toBe('***');
+    expect(secrets.mask(after)).toBe('***');
+  });
+
   it('leaves a prefilled registry unchanged when a later default cannot resolve', () => {
     const withUnresolvedLaterDefault = manifestOf(
       'inputs:',
@@ -1171,6 +1278,36 @@ describe('secrets', () => {
         secrets,
       }),
     ).toThrow(ResolutionError);
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('redacts a staged secret from a later resolution error and its cause', () => {
+    const sentinel = 'R4_SECRET_ENV';
+    const withUnresolvedLaterDefault = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  directory:',
+      '    type: directory',
+      `    default: "\${env.${sentinel}}/app"`,
+    );
+    const secrets = existingRegistry();
+    let thrown: unknown;
+    try {
+      resolve(withUnresolvedLaterDefault, {
+        overrides: new Map([['token', sentinel]]),
+        secrets,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    const error = thrown as ResolutionError;
+    expect(error.code).toBe('RUNE-301');
+    expect(exitCodeFor(error)).toBe(5);
+    expect(error.cause).toBeInstanceOf(ResolutionError);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
     expectExistingRegistryUnchanged(secrets);
   });
 
