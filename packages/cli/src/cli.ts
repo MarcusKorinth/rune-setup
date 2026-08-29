@@ -1,9 +1,10 @@
 /**
  * The `rune` command line (docs/architecture.md §4.1, §10).
  *
- * One commander program with `exitOverride()` — RUNE, not the parser, decides exit codes,
- * and `main.ts` is the only `process.exit` site. Stream discipline: stdout carries only
- * requested machine output; everything else goes to stderr.
+ * One commander program with `exitOverride()` — RUNE, not the parser, decides exit codes;
+ * `main.ts` applies them, and the only other exit path is the documented second-Ctrl+C
+ * force quit (§9.3). Stream discipline: stdout carries only requested machine output;
+ * everything else goes to stderr.
  */
 
 import { Command, CommanderError } from 'commander';

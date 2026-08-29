@@ -399,7 +399,7 @@ The portability basis is **`${manifestDir}` anchoring** (§6.1, invariant 13): i
 
 ### Exit codes
 
-Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pipeline script branches the same way everywhere. Each error class maps to exactly one code — the map is owned by `errors.ts` (`exitCodeFor`) alone; `cli/main.ts` is the only `process.exit` call site in the CLI (the GUI shell's main process uses the same `exitCodeFor` and `rune run --gui` forwards its code, §9.4); every code is reachable by a test.
+Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pipeline script branches the same way everywhere. Each error class maps to exactly one code — the map is owned by `errors.ts` (`exitCodeFor`) alone; `cli/main.ts` applies the returned code, and the CLI's only other exit path is the documented second-`Ctrl+C` force quit (§7, §9.3), which cannot return through the ordinary code path (the GUI shell's main process uses the same `exitCodeFor` and `rune run --gui` forwards its code, §9.4); every code is reachable by a test.
 
 | Code | Meaning |
 |---|---|
