@@ -25,9 +25,15 @@ import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
-import { resolveReference, type RuntimeContext } from './context.js';
+import { resolveReference, runtimeContextFor, type RuntimeContext } from './context.js';
 import { scanTemplate, type TemplateReference } from './interpolate.js';
-import type { InputState, Resolution, ValueSource } from './inputs.js';
+import {
+  resolutionSnapshotFor,
+  type InputState,
+  type Resolution,
+  type ResolutionSnapshot,
+  type ValueSource,
+} from './inputs.js';
 import { SecretString } from './secrets.js';
 import type { SecretRegistry } from './secrets.js';
 import { deepFreeze } from './freeze.js';
@@ -119,13 +125,21 @@ export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
 export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
   const manifestDescriptor = manifestDescriptorFor(manifest);
-  rejectIncompleteResolution(resolution);
-  const resolvedInputs = resolution.inputs.map(snapshotInput);
+  const resolved = resolutionSnapshotFor(resolution);
+  const trustedContext = runtimeContextFor(context);
+  if (resolved.manifest !== manifest) {
+    throw new InternalError('the input resolution belongs to a different manifest');
+  }
+  if (resolved.context !== trustedContext) {
+    throw new InternalError('the input resolution belongs to a different runtime context');
+  }
+  rejectIncompleteResolution(resolved);
+  const resolvedInputs = resolved.inputs.map(snapshotInput);
 
   const steps = manifest.steps.map((step): PlannedStep => {
     const title = step.title ?? step.id;
 
-    const command = commandFor(step.run, context);
+    const command = commandFor(step.run, trustedContext);
     if (command === undefined) {
       return {
         id: step.id,
@@ -135,7 +149,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
       };
     }
 
-    if (step.when !== undefined && !holds(step.when, step.id, resolution, context)) {
+    if (step.when !== undefined && !holds(step.when, step.id, resolved, trustedContext)) {
       return {
         id: step.id,
         title,
@@ -148,7 +162,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
       id: step.id,
       title,
       state: 'PENDING',
-      command: resolveCommand(command, step.id, resolution, context),
+      command: resolveCommand(command, step.id, resolved, trustedContext),
     };
   });
 
@@ -156,8 +170,8 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     planSchemaVersion: PLAN_SCHEMA_VERSION,
     manifestPath: manifestDescriptor.path,
     manifestSha256: manifestDescriptor.sha256,
-    platform: context.platform,
-    preview: context.preview,
+    platform: trustedContext.platform,
+    preview: trustedContext.preview,
     resolvedInputs,
     executionOptions: {
       failFast: manifest.execution.failFast,
@@ -167,7 +181,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   });
   executionContexts.set(
     plan,
-    snapshotExecutionContext(manifest, manifestDescriptor, resolution.secrets),
+    snapshotExecutionContext(manifest, manifestDescriptor, resolved.secrets),
   );
   return plan;
 }
@@ -209,7 +223,7 @@ function snapshotInput(state: InputState): PlanInput {
 }
 
 /** Planning is the last gate before execution, so incomplete frontend state fails closed. */
-function rejectIncompleteResolution(resolution: Resolution): void {
+function rejectIncompleteResolution(resolution: ResolutionSnapshot): void {
   const missingIssues: RuneIssue[] = resolution.missing.map((id) => ({
     code: 'RUNE-201',
     message: `required input "${id}" is missing`,
@@ -245,7 +259,7 @@ function commandFor(
 function holds(
   condition: string,
   stepId: string,
-  resolution: Resolution,
+  resolution: ResolutionSnapshot,
   context: RuntimeContext,
 ): boolean {
   const parsed = parseCondition(condition);
@@ -257,7 +271,7 @@ function holds(
 
 function lookup(
   reference: ConditionReference,
-  resolution: Resolution,
+  resolution: ResolutionSnapshot,
   context: RuntimeContext,
 ): boolean | string | readonly string[] | SecretString {
   const resolved = resolveReference(reference.segments, [...resolution.byId.keys()]);
@@ -278,7 +292,7 @@ function lookup(
 function resolveCommand(
   spec: CommandSpec,
   stepId: string,
-  resolution: Resolution,
+  resolution: ResolutionSnapshot,
   context: RuntimeContext,
 ): ResolvedCommand {
   const inputIds = [...resolution.byId.keys()];

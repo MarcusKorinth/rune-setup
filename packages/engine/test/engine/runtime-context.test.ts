@@ -2,8 +2,8 @@ import { homedir, tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { ResolutionError } from '../../src/errors.js';
+import { createRuntimeContext, hostPlatform, runtimeContextFor } from '../../src/engine/context.js';
+import { InternalError, ResolutionError } from '../../src/errors.js';
 
 const product = { name: 'Example', version: '1.0.0' };
 
@@ -89,5 +89,41 @@ describe('hostPlatform', () => {
   it('is what a context without an explicit platform uses', () => {
     expect(contextFor().platform).toBe(hostPlatform());
     expect(contextFor().preview).toBe(false);
+  });
+});
+
+describe('runtime context provenance', () => {
+  it('snapshots caller-owned values and freezes the exact facade', () => {
+    const mutableProduct = { name: 'Before', version: '1.0.0' };
+    const mutableEnvironment: Record<string, string> = { TOKEN: 'before' };
+    const options = {
+      manifestDir: '/before',
+      product: mutableProduct,
+      platform: hostPlatform(),
+      environment: mutableEnvironment,
+    } as const;
+    const context = createRuntimeContext(options);
+
+    mutableProduct.name = 'After';
+    mutableProduct.version = '2.0.0';
+    mutableEnvironment['TOKEN'] = 'after';
+    Object.assign(options, { manifestDir: '/after' });
+
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(context.manifestDir).toBe('/before');
+    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/before');
+    expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Before');
+    expect(context.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
+    expect(context.valueOf({ kind: 'environment', name: 'TOKEN' })).toBe('before');
+  });
+
+  it('rejects a structural copy without provenance', () => {
+    const context = contextFor();
+    const copy = { ...context };
+
+    expect(() => runtimeContextFor(copy)).toThrow(InternalError);
+    expect(() => runtimeContextFor(copy)).toThrow(
+      /runtime context was not created by createRuntimeContext/,
+    );
   });
 });

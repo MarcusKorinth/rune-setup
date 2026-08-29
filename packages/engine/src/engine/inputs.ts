@@ -19,7 +19,7 @@ import { environmentName } from '../manifest/v1/rules.js';
 import type { InputSpec, ManifestV1 } from '../manifest/v1/schema.js';
 import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
-import { resolveReference, type RuntimeContext } from './context.js';
+import { resolveReference, runtimeContextFor, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
 import { SecretRegistry, SecretString } from './secrets.js';
 
@@ -94,6 +94,29 @@ export interface Resolution {
   readonly problems: readonly RuneIssue[];
 }
 
+/** Canonical resolution state kept behind the exact public facade returned to the caller. */
+export interface ResolutionSnapshot {
+  readonly manifest: ManifestV1;
+  readonly context: RuntimeContext;
+  readonly inputs: readonly InputState[];
+  readonly byId: ReadonlyMap<string, InputState>;
+  readonly secrets: SecretRegistry;
+  readonly missing: readonly string[];
+  readonly warnings: readonly string[];
+  readonly problems: readonly RuneIssue[];
+}
+
+const resolutionSnapshots = new WeakMap<Resolution, ResolutionSnapshot>();
+
+/** Internal fail-closed lookup: structural resolution copies have no resolver provenance. */
+export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapshot {
+  const snapshot = resolutionSnapshots.get(resolution);
+  if (snapshot === undefined) {
+    throw new InternalError('the input resolution was not created by resolveInputs');
+  }
+  return snapshot;
+}
+
 /**
  * Merges the layers for every input of a manifest.
  *
@@ -103,6 +126,7 @@ export interface Resolution {
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
+  runtimeContextFor(context);
   const ids = Object.keys(manifest.inputs);
   const environment = options.environment ?? process.env;
   const secrets = options.secrets ?? new SecretRegistry();
@@ -206,15 +230,52 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
   }
 
-  const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
-  return {
+  const inputs = Object.freeze(
+    order
+      .map((id) => states.get(id))
+      .filter((state) => state !== undefined)
+      .map(snapshotInputState),
+  );
+  const canonicalById = new Map(inputs.map((state) => [state.id, state]));
+  const publicById = new Map(canonicalById);
+  Object.freeze(publicById);
+  const missing = Object.freeze(
+    inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
+  );
+  const frozenWarnings = Object.freeze([...warnings]);
+  const frozenProblems = Object.freeze(issues.map(freezeIssue));
+  const resolution: Resolution = Object.freeze({
     inputs,
-    byId: states,
+    byId: publicById,
     secrets,
-    missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-    warnings,
-    problems: issues,
-  };
+    missing,
+    warnings: frozenWarnings,
+    problems: frozenProblems,
+  });
+  resolutionSnapshots.set(
+    resolution,
+    Object.freeze({
+      manifest,
+      context,
+      inputs,
+      byId: canonicalById,
+      secrets,
+      missing,
+      warnings: frozenWarnings,
+      problems: frozenProblems,
+    }),
+  );
+  return resolution;
+}
+
+function snapshotInputState(state: InputState): InputState {
+  const value = Array.isArray(state.value) ? Object.freeze([...state.value]) : state.value;
+  return Object.freeze({ ...state, value });
+}
+
+function freezeIssue(issue: RuneIssue): RuneIssue {
+  const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
+  return Object.freeze({ ...issue, location });
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */

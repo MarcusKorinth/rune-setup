@@ -8,7 +8,7 @@
 
 import { homedir, tmpdir } from 'node:os';
 
-import { ResolutionError } from '../errors.js';
+import { InternalError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
@@ -207,17 +207,33 @@ export interface RuntimeContext {
   valueOf(reference: Reference): string;
 }
 
+const runtimeContexts = new WeakMap<RuntimeContext, RuntimeContext>();
+
+/** Internal fail-closed lookup: structural context copies have no runtime provenance. */
+export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
+  const trusted = runtimeContexts.get(context);
+  if (trusted === undefined) {
+    throw new InternalError('the runtime context was not created by createRuntimeContext');
+  }
+  return trusted;
+}
+
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
   const platform = options.platform ?? hostPlatform();
   const preview = platform !== hostPlatform();
-  const environment = options.environment ?? process.env;
+  const manifestDir = options.manifestDir;
+  const product = Object.freeze({
+    name: options.product.name,
+    version: options.product.version,
+  });
+  const environment = Object.freeze({ ...(options.environment ?? process.env) });
 
   const hostDependent = (name: BuiltInVariable, value: () => string): string =>
     preview ? `<${name}@${platform}>` : value();
 
-  return {
+  const context: RuntimeContext = Object.freeze({
     platform,
-    manifestDir: options.manifestDir,
+    manifestDir,
     preview,
     valueOf(reference: Reference): string {
       switch (reference.kind) {
@@ -230,11 +246,11 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
             case 'platform':
               return platform;
             case 'manifestDir':
-              return options.manifestDir;
+              return manifestDir;
           }
         // eslint-disable-next-line no-fallthrough -- every branch above returns
         case 'product':
-          return options.product[reference.field];
+          return product[reference.field];
         case 'environment': {
           const value = environment[reference.name];
           if (value === undefined) {
@@ -252,5 +268,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
           );
       }
     },
-  };
+  });
+  runtimeContexts.set(context, context);
+  return context;
 }

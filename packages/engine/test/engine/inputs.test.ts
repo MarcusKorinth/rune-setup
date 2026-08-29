@@ -14,7 +14,7 @@ import {
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
-import { exitCodeFor, ResolutionError, type InputError } from '../../src/errors.js';
+import { exitCodeFor, InternalError, ResolutionError, type InputError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -73,6 +73,40 @@ function values(file: string, entries: Record<string, unknown>): ValuesDocument 
 }
 
 const SIMPLE = ['inputs:', '  target:', '    type: text'];
+
+describe('resolution provenance', () => {
+  it('rejects a structural runtime context without factory provenance', () => {
+    const manifest = manifestOf(...SIMPLE);
+    const fakeContext = { ...contextFor(manifest) };
+
+    expect(() => resolveInputs({ manifest, context: fakeContext, environment: {} })).toThrow(
+      InternalError,
+    );
+    expect(() => resolveInputs({ manifest, context: fakeContext, environment: {} })).toThrow(
+      /runtime context was not created by createRuntimeContext/,
+    );
+  });
+
+  it('freezes the facade, input states and copied array values', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+    );
+    const resolution = resolve(manifest, {
+      overrides: new Map([['tools', 'git,docker']]),
+    });
+    const state = resolution.inputs[0];
+
+    expect(Object.isFrozen(resolution)).toBe(true);
+    expect(Object.isFrozen(resolution.inputs)).toBe(true);
+    expect(Object.isFrozen(resolution.byId)).toBe(true);
+    expect(Object.isFrozen(state)).toBe(true);
+    expect(Object.isFrozen(state?.value)).toBe(true);
+    expect(state?.value).toEqual(['git', 'docker']);
+  });
+});
 
 describe('precedence', () => {
   const manifest = manifestOf(

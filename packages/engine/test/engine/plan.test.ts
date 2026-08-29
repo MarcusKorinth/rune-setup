@@ -385,7 +385,7 @@ describe('secrets in the plan', () => {
     expect(String(step.command.argv[1])).toBe('***');
   });
 
-  it('rejects a manipulated plain-text secret without exposing its value', () => {
+  it('freezes a resolved secret state before planning without exposing its value', () => {
     const plaintext = 'must-not-reach-the-plan';
     const { manifest, resolution, context } = planFor(
       [
@@ -400,22 +400,13 @@ describe('secrets in the plan', () => {
       ],
       { overrides: new Map([['token', 'original-secret']]) },
     );
-    Object.assign(resolution.inputs[0] as object, { value: plaintext });
-
-    let caught: unknown;
-    try {
-      buildPlan({ manifest, resolution, context });
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(InternalError);
-    expect(caught).toMatchObject({ code: 'RUNE-500' });
-    expect(caught instanceof Error && caught.message).toContain(
-      'secret input "token" is not wrapped after resolution',
+    expect(() => Object.assign(resolution.inputs[0] as object, { value: plaintext })).toThrow(
+      TypeError,
     );
-    expect(caught instanceof Error && caught.message).not.toContain(plaintext);
-    expect(JSON.stringify(caught)).not.toContain(plaintext);
+
+    const plan = buildPlan({ manifest, resolution, context });
+    expect(JSON.stringify(plan)).not.toContain(plaintext);
+    expect(plan.resolvedInputs[0]?.value).toBeInstanceOf(SecretString);
   });
 });
 
@@ -482,8 +473,10 @@ describe('the plan itself', () => {
       ignored: undefined,
     });
 
-    (resolution.inputs[0]?.value as string[]).push('changed');
-    Object.assign(resolution.inputs[0] as object, { id: 'changed', source: 'answer' });
+    expect(() => (resolution.inputs[0]?.value as string[]).push('changed')).toThrow(TypeError);
+    expect(() =>
+      Object.assign(resolution.inputs[0] as object, { id: 'changed', source: 'answer' }),
+    ).toThrow(TypeError);
     expect(plan.resolvedInputs[0]).toMatchObject({
       id: 'tools',
       value: ['git', 'docker'],
@@ -535,6 +528,82 @@ describe('the plan itself', () => {
     expect(() => buildPlan({ manifest: copy, resolution, context })).toThrow(
       /manifest was not created by parseManifest/,
     );
+  });
+});
+
+describe('planning provenance', () => {
+  it('rejects a structural copy of a resolution', () => {
+    const { manifest, resolution, context } = planFor(['steps: []']);
+    const forged = { ...resolution };
+
+    expect(() => buildPlan({ manifest, resolution: forged, context })).toThrow(InternalError);
+    expect(() => buildPlan({ manifest, resolution: forged, context })).toThrow(
+      /input resolution was not created by resolveInputs/,
+    );
+  });
+
+  it('rejects a resolution belonging to another manifest instance', () => {
+    const { resolution, context } = planFor(['steps: []']);
+    const otherManifest = parseManifestText([...HEAD, 'steps: []', ''].join('\n'), 'other.yaml');
+
+    expect(() => buildPlan({ manifest: otherManifest, resolution, context })).toThrow(
+      /input resolution belongs to a different manifest/,
+    );
+  });
+
+  it('rejects a resolution paired with another authentic context', () => {
+    const { manifest, resolution } = planFor(['steps: []']);
+    const otherContext = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+
+    expect(() => buildPlan({ manifest, resolution, context: otherContext })).toThrow(
+      /input resolution belongs to a different runtime context/,
+    );
+  });
+
+  it('rejects a structural runtime context without factory provenance', () => {
+    const { manifest, resolution, context } = planFor(['steps: []']);
+    const fakeContext = { ...context };
+
+    expect(() => buildPlan({ manifest, resolution, context: fakeContext })).toThrow(InternalError);
+    expect(() => buildPlan({ manifest, resolution, context: fakeContext })).toThrow(
+      /runtime context was not created by createRuntimeContext/,
+    );
+  });
+
+  it('plans from the private snapshot after the public byId map is changed', () => {
+    const { manifest, resolution, context } = planFor(
+      [
+        'inputs:',
+        '  target:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      args: ["${target}"]',
+      ],
+      { overrides: new Map([['target', 'resolved']]) },
+    );
+    const publicById = resolution.byId as Map<string, (typeof resolution.inputs)[number]>;
+
+    publicById.delete('target');
+    const afterDeletion = buildPlan({ manifest, resolution, context });
+    const deletedStep = afterDeletion.steps[0];
+    expect(deletedStep?.state === 'PENDING' && deletedStep.command.argv[1]).toBe('resolved');
+
+    const original = resolution.inputs[0];
+    if (original === undefined) {
+      throw new Error('expected target input');
+    }
+    publicById.set('target', { ...original, value: 'forged' });
+    const afterReplacement = buildPlan({ manifest, resolution, context });
+    const replacedStep = afterReplacement.steps[0];
+    expect(replacedStep?.state === 'PENDING' && replacedStep.command.argv[1]).toBe('resolved');
   });
 });
 

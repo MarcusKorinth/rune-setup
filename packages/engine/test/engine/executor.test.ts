@@ -1233,13 +1233,15 @@ describe('the plan execution context', () => {
     });
     const plan = buildPlan({ manifest, resolution, context });
 
-    (resolution.inputs[0]?.value as string[]).push('changed');
-    Object.assign(resolution.inputs[0] as object, {
-      id: 'changed',
-      source: 'answer',
-      enabled: false,
-      ignored: 'set',
-    });
+    expect(() => (resolution.inputs[0]?.value as string[]).push('changed')).toThrow(TypeError);
+    expect(() =>
+      Object.assign(resolution.inputs[0] as object, {
+        id: 'changed',
+        source: 'answer',
+        enabled: false,
+        ignored: 'set',
+      }),
+    ).toThrow(TypeError);
     const described = describePlan({ plan });
     const executed = await executeRun({
       plan,
