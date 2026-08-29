@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { InternalError } from '../errors.js';
 import { RUNE_VERSION } from '../version.js';
 import type { InputState, Resolution } from './inputs.js';
 import type { ExecutionPlan, PlannedStep } from './plan.js';
@@ -43,6 +44,11 @@ export interface ExecuteOptions {
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
 export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const { plan, secrets } = options;
+  if (plan.preview) {
+    throw new InternalError(
+      'a cross-platform preview plan can only be described, never executed (§6.1)',
+    );
+  }
   const observer = options.observer ?? (() => undefined);
   const cancel = options.cancel ?? new CancelToken();
   const runner = options.runner ?? new SpawnRunner();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
-import { createRuntimeContext } from '../../src/engine/context.js';
+import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { describePlan, executeRun } from '../../src/engine/executor.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
@@ -36,7 +36,7 @@ function setup(
   const context = createRuntimeContext({
     manifestDir: '/project',
     product: manifest.product,
-    platform: 'linux',
+    platform: hostPlatform(),
     environment: {},
   });
   const secrets = new SecretRegistry();
@@ -309,6 +309,27 @@ describe('skipped steps and the dry run', () => {
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
     expect(result.steps[0]?.command).toEqual(['a']);
+  });
+
+  it('refuses to execute a cross-platform preview plan', async () => {
+    const manifest = parseManifestText(
+      [...HEAD, 'steps:', '  - id: a', '    run:', '      command: a', ''].join('\n'),
+      'installer.yaml',
+    );
+    const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: foreign,
+      environment: {},
+    });
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputs({ manifest, context, environment: {}, secrets });
+    const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+
+    await expect(
+      executeRun({ plan, resolution, product: manifest.product, secrets }),
+    ).rejects.toThrow(/preview plan/);
   });
 
   it('masks a secret in the argv a result shows', async () => {
