@@ -64,8 +64,8 @@ export interface ResolveInputsOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   /** `--set key=value`, already split. */
   readonly overrides?: ReadonlyMap<string, string>;
-  /** What an interactive frontend has been told so far (layer 5). */
-  readonly answers?: ReadonlyMap<string, InputValue>;
+  /** What an interactive frontend has been told so far (layer 5), raw — coerced like every other layer. */
+  readonly answers?: ReadonlyMap<string, unknown>;
   /** Registers secrets for masking as they resolve — before any step can launch (§10). */
   readonly secrets?: SecretRegistry;
   /**
