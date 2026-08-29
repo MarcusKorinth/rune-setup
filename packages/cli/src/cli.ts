@@ -11,6 +11,7 @@ import { Command, CommanderError } from 'commander';
 import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
 
 import { ExitWithCode, type CliIo } from './io.js';
+import type { Interaction } from './prompt.js';
 import { runCommand, type RunFlags } from './runCmd.js';
 import { schemaCommand } from './schemaCmd.js';
 import { validateCommand } from './validateCmd.js';
@@ -35,8 +36,23 @@ const processIo: CliIo = {
   },
 };
 
+const processInteraction: Interaction = {
+  input: process.stdin,
+  isTTY: process.stdin.isTTY === true,
+  write: (text) => {
+    process.stderr.write(text);
+  },
+  // The one exception to main.ts owning process.exit: the documented second-Ctrl+C
+  // force quit (§9.3) cannot return through the ordinary code path.
+  forceExit: (code) => process.exit(code),
+};
+
 /** Runs the CLI for one argv; returns the process exit code (§10 table). */
-export async function run(argv: readonly string[], io: CliIo = processIo): Promise<number> {
+export async function run(
+  argv: readonly string[],
+  io: CliIo = processIo,
+  interaction: Interaction = processInteraction,
+): Promise<number> {
   const program = new Command('rune');
   program
     .description('One manifest. Guided or automated.')
@@ -79,7 +95,7 @@ export async function run(argv: readonly string[], io: CliIo = processIo): Promi
     .option('--locale <tag>', 'display locale')
     .option('--platform <platform>', 'preview a foreign platform (dry-run only)')
     .action(async (manifest: string, flags: RunFlags) => {
-      await runCommand(manifest, flags, io);
+      await runCommand(manifest, flags, io, interaction);
     });
 
   try {

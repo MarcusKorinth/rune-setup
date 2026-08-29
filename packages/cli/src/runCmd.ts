@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CancelledError,
   EXIT_CODE_BY_STATUS,
   exitCodeFor,
   RUNE_VERSION,
@@ -18,10 +19,11 @@ import {
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { RunResult, RunStatus } from '@rune/engine';
+import type { RunMode, RunResult, RunStatus } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
+import { Prompter, promptForInputs, summaryLoop, type Interaction } from './prompt.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
 
 export interface RunFlags {
@@ -35,11 +37,21 @@ export interface RunFlags {
   readonly platform?: string | undefined;
 }
 
-export async function runCommand(manifestPath: string, flags: RunFlags, io: CliIo): Promise<void> {
+export async function runCommand(
+  manifestPath: string,
+  flags: RunFlags,
+  io: CliIo,
+  interaction: Interaction,
+): Promise<void> {
   if (flags.platform !== undefined && flags.dryRun !== true) {
     throw new UsageError('--platform previews a plan and combines only with --dry-run');
   }
   const platform = parsePlatform(flags.platform);
+
+  // Interactive is the TTY default (§4.1); no TTY auto-degrades to non-interactive (§10).
+  const interactive = flags.nonInteractive !== true && interaction.isTTY;
+  const mode: RunMode = interactive ? 'interactive' : 'non-interactive';
+  const prompter = interactive ? new Prompter(interaction) : undefined;
 
   let session: Session | undefined;
   try {
@@ -48,11 +60,23 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
       overrides: parseOverrides(flags.set ?? []),
       locale: flags.locale,
       logFile: flags.logFile,
+      mode,
       ...(platform === undefined ? {} : { platform }),
     });
 
+    if (prompter !== undefined) {
+      await promptForInputs(session, prompter);
+      if (flags.dryRun !== true && (await summaryLoop(session, prompter, io)) === 'cancel') {
+        throw new CancelledError('cancelled at the summary');
+      }
+      // The prompt phase is over; the input stream is released before anything executes.
+      prompter.close();
+    }
+
     const result =
-      flags.dryRun === true ? session.describe() : await session.execute(progressObserver(io));
+      flags.dryRun === true
+        ? session.describe()
+        : await executeWithCancel(session, io, interaction);
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
@@ -78,10 +102,39 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
     ) {
       io.stderr(error.message);
       const code = exitCodeFor(error);
-      deliverResult(failureShell({ session, code, manifestPath, flags }), flags.result, io);
+      deliverResult(failureShell({ session, code, manifestPath, flags, mode }), flags.result, io);
       throw new ExitWithCode(code);
     }
     throw error;
+  } finally {
+    prompter?.close();
+  }
+}
+
+/**
+ * Runs with the §9.3 cancel flow: the first Ctrl+C fires the CancelToken (the interrupted
+ * step becomes CANCELLED, the run exits 6 through the ordinary path), a second force-quits.
+ */
+async function executeWithCancel(
+  session: Session,
+  io: CliIo,
+  interaction: Interaction,
+): Promise<RunResult> {
+  let cancelledOnce = false;
+  const onSigint = (): void => {
+    if (cancelledOnce) {
+      interaction.forceExit(6);
+      return;
+    }
+    cancelledOnce = true;
+    io.stderr('cancelling - press Ctrl+C again to force quit');
+    session.cancel();
+  };
+  process.on('SIGINT', onSigint);
+  try {
+    return await session.execute(progressObserver(io));
+  } finally {
+    process.removeListener('SIGINT', onSigint);
   }
 }
 
@@ -104,6 +157,7 @@ function failureShell(options: {
   code: number;
   manifestPath: string;
   flags: RunFlags;
+  mode: RunMode;
 }): RunResult {
   const { session, code, flags } = options;
   const now = new Date().toISOString();
@@ -115,6 +169,7 @@ function failureShell(options: {
     id: randomUUID(),
     status: statusForExit(code),
     exitCode: code,
+    mode: options.mode,
     dryRun: flags.dryRun === true,
     crossPlatformPreview: platform !== host,
     platform,
