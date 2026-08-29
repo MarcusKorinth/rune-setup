@@ -1,3 +1,5 @@
+import { resolve as resolvePath, sep } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
@@ -308,6 +310,67 @@ describe('interpolation into the command', () => {
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && step.command.argv[0]).toBe('pwsh');
     expect(step?.state === 'PENDING' && step.command.cwd).toBe('/project');
+  });
+
+  it('keeps Windows target absolute command and cwd paths byte-identical', () => {
+    const command = 'C:\\tools\\install.exe';
+    const cwd = '\\\\server\\share\\work';
+    const { plan } = planFor(
+      [
+        'steps:',
+        '  - id: install',
+        '    run:',
+        `      command: '${command}'`,
+        `      cwd: '${cwd}'`,
+      ],
+      { platform: 'windows' },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
+  });
+
+  it('keeps Linux target absolute command and cwd paths byte-identical', () => {
+    const command = '/opt/tools/install';
+    const cwd = '/var/lib/example';
+    const { plan } = planFor(
+      [
+        'steps:',
+        '  - id: install',
+        '    run:',
+        `      command: '${command}'`,
+        `      cwd: '${cwd}'`,
+      ],
+      { platform: 'linux' },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
+  });
+
+  it('anchors Windows-looking values for a Linux target from the manifest directory', () => {
+    const command = 'C:\\tools\\install.exe';
+    const cwd = '\\\\server\\share\\work';
+    const { plan } = planFor(
+      [
+        'steps:',
+        '  - id: install',
+        '    run:',
+        `      command: '${command}'`,
+        `      cwd: '${cwd}'`,
+      ],
+      { platform: 'linux' },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
+      resolvePath('/project', `.${sep}${command}`),
+    );
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(
+      resolvePath('/project', `.${sep}${cwd}`),
+    );
   });
 });
 

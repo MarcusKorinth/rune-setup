@@ -6,8 +6,6 @@
  * static plan: what dry-run renders is byte for byte what run will spawn (invariant 4).
  */
 
-import { isAbsolute, resolve as resolvePath } from 'node:path';
-
 import {
   ExecutionError,
   InputError,
@@ -43,6 +41,7 @@ import {
 } from './inputs.js';
 import type { SecretMasker } from './secrets.js';
 import { deepFreeze } from './freeze.js';
+import { resolveTargetPathFrom } from './paths.js';
 
 /** The independently versioned public shape of an execution plan (§7). */
 export const PLAN_SCHEMA_VERSION = 1;
@@ -337,7 +336,7 @@ function resolveCommand(
   };
 
   const manifestDir = context.manifestDir;
-  const command = anchorCommandValue(render(spec.command), manifestDir);
+  const command = anchorCommandValue(render(spec.command), manifestDir, context.platform);
   const commandShown = isSecretString(command) ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
@@ -352,7 +351,9 @@ function resolveCommand(
   }
 
   const cwd =
-    spec.cwd === undefined ? context.manifestDir : anchorPathValue(render(spec.cwd), manifestDir);
+    spec.cwd === undefined
+      ? context.manifestDir
+      : anchorPathValue(render(spec.cwd), manifestDir, context.platform);
 
   const env: Record<string, string | SecretString> = {};
   for (const [name, value] of Object.entries(spec.env)) {
@@ -371,28 +372,43 @@ function resolveCommand(
 function anchorCommandValue(
   value: string | SecretString,
   manifestDir: string,
+  platform: RuntimeContext['platform'],
 ): string | SecretString {
   if (isSecretString(value)) {
-    return secretMatches(value, /[\\/]/) ? resolveSecretPathFrom(value, manifestDir) : value;
+    return secretMatches(value, /[\\/]/)
+      ? resolveSecretPathFrom(value, manifestDir, platform)
+      : value;
   }
-  return anchorCommand(value, manifestDir);
+  return anchorCommand(value, manifestDir, platform);
 }
 
-function anchorPathValue(value: string | SecretString, manifestDir: string): string | SecretString {
+function anchorPathValue(
+  value: string | SecretString,
+  manifestDir: string,
+  platform: RuntimeContext['platform'],
+): string | SecretString {
   return isSecretString(value)
-    ? resolveSecretPathFrom(value, manifestDir)
-    : anchorPath(value, manifestDir);
+    ? resolveSecretPathFrom(value, manifestDir, platform)
+    : anchorPath(value, manifestDir, platform);
 }
 
 /**
  * A command that is written as a path resolves against the manifest's directory, never the
  * caller's cwd (invariant 13); a bare name is left for the PATH lookup at spawn.
  */
-function anchorCommand(command: string, manifestDir: string): string {
+function anchorCommand(
+  command: string,
+  manifestDir: string,
+  platform: RuntimeContext['platform'],
+): string {
   const looksLikePath = command.includes('/') || command.includes('\\');
-  return looksLikePath ? anchorPath(command, manifestDir) : command;
+  return looksLikePath ? anchorPath(command, manifestDir, platform) : command;
 }
 
-function anchorPath(path: string, manifestDir: string): string {
-  return isAbsolute(path) ? path : resolvePath(manifestDir, path);
+function anchorPath(
+  path: string,
+  manifestDir: string,
+  platform: RuntimeContext['platform'],
+): string {
+  return resolveTargetPathFrom(path, manifestDir, platform);
 }

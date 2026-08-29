@@ -7,7 +7,8 @@
  * registry catches what the wrapper cannot: a script that echoes the password it was given.
  */
 
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import type { Platform } from './context.js';
+import { resolveTargetPathFrom } from './paths.js';
 
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
@@ -81,12 +82,15 @@ export function composeSecretString(parts: readonly (string | SecretString)[]): 
 }
 
 /** Lazily anchors a path while keeping the value opaque. */
-export function resolveSecretPathFrom(secret: SecretString, basePath: string): SecretString {
+export function resolveSecretPathFrom(
+  secret: SecretString,
+  basePath: string,
+  platform: Platform,
+): SecretString {
   const baseSnapshot = basePath;
-  return secretFromResolver(() => {
-    const value = resolveSecret(secret);
-    return isAbsolute(value) ? value : resolvePath(baseSnapshot, value);
-  });
+  return secretFromResolver(() =>
+    resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
+  );
 }
 
 /** Tests an opaque value without returning its text. */

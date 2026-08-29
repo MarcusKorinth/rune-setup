@@ -1,5 +1,5 @@
 import { inspect } from 'node:util';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -51,6 +51,7 @@ describe('SecretString', () => {
     const composed = resolveSecretPathFrom(
       composeSecretString(['prefix-', secret, '-${env.SHOULD_NOT_BE_RESCANNED}']),
       '/project',
+      'linux',
     );
 
     expect(String(composed)).toBe(MASK);
@@ -69,6 +70,28 @@ describe('SecretString', () => {
   it('is recognisable', () => {
     expect(isSecretString(secret)).toBe(true);
     expect(isSecretString('hunter2')).toBe(false);
+  });
+});
+
+describe('opaque path anchoring', () => {
+  function expectOpaquePath(value: string, platform: 'windows' | 'linux', expected: string): void {
+    const anchored = resolveSecretPathFrom(createSecretString(value), '/project', platform);
+
+    expect(isSecretString(anchored)).toBe(true);
+    expect(String(anchored)).toBe(MASK);
+    expect(JSON.stringify(anchored)).toBe(`"${MASK}"`);
+    expect(secretEquals(anchored, expected)).toBe(true);
+  }
+
+  it('keeps target-absolute paths opaque and byte-identical', () => {
+    expectOpaquePath('C:\\tools\\install.exe', 'windows', 'C:\\tools\\install.exe');
+    expectOpaquePath('\\\\server\\share\\work', 'windows', '\\\\server\\share\\work');
+    expectOpaquePath('/opt/tools/install', 'linux', '/opt/tools/install');
+  });
+
+  it('anchors a target-relative Windows-looking path without exposing it', () => {
+    const value = 'C:\\tools\\install.exe';
+    expectOpaquePath(value, 'linux', resolvePath('/project', `.${sep}${value}`));
   });
 });
 
