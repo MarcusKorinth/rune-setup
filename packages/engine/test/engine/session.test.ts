@@ -84,6 +84,18 @@ describe('answering inputs', () => {
     expect(session.allInputs()[0]?.value).toBe(false);
     expect(() => session.setValue('nope', 'x')).toThrow(/names no input/);
   });
+
+  it('keeps an accepted answer through a later rejected edit', async () => {
+    const session = await Session.open(fixture(BASE), { environment: {} });
+    session.setValue('installDatabase', true);
+    session.setValue('databasePort', '5432');
+
+    expect(() => session.setValue('installDatabase', 'garbage')).toThrow(/installDatabase/);
+    session.setValue('installDatabase', true);
+
+    expect(session.allInputs().find((input) => input.id === 'databasePort')?.value).toBe('5432');
+    expect(session.pendingInputs()).toEqual([]);
+  });
 });
 
 describe('planning and executing', () => {

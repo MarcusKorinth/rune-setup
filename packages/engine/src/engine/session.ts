@@ -192,12 +192,19 @@ export class Session {
       throw new InputError('RUNE-203', `"${id}" names no input of this manifest`);
     }
     const before = this.#resolution;
+    const hadPrevious = this.#answers.has(id);
+    const previous = this.#answers.get(id);
     this.#answers.set(id, raw);
     let after: Resolution;
     try {
       after = this.#resolve();
     } catch (error) {
-      this.#answers.delete(id);
+      // Restore, never delete: a rejected edit must not discard an earlier accepted answer.
+      if (hadPrevious) {
+        this.#answers.set(id, previous);
+      } else {
+        this.#answers.delete(id);
+      }
       throw error;
     }
     this.#resolution = after;
