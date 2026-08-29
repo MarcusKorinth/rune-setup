@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { hostPlatform } from '../../src/engine/context.js';
+import { InputError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner } from '../../src/runners/base.js';
@@ -95,6 +96,14 @@ describe('answering inputs', () => {
 
     expect(session.allInputs().find((input) => input.id === 'databasePort')?.value).toBe('5432');
     expect(session.pendingInputs()).toEqual([]);
+  });
+
+  it('rejects an undefined answer without falling back to a default', async () => {
+    const session = await Session.open(fixture(BASE), { environment: {} });
+    session.setValue('installDatabase', true);
+
+    expect(() => session.setValue('installDatabase', undefined)).toThrow(InputError);
+    expect(session.allInputs()[0]).toMatchObject({ value: true, source: 'answer' });
   });
 });
 

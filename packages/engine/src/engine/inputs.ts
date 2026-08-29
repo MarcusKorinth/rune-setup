@@ -237,9 +237,13 @@ function highestLayer(
   options: ResolveInputsOptions,
   environment: Readonly<Record<string, string | undefined>>,
 ): SuppliedValue | undefined {
-  const answer = options.answers?.get(id);
-  if (answer !== undefined) {
-    return { source: 'answer', raw: answer, location: undefined, origin: SOURCE_NAMES.answer };
+  if (options.answers?.has(id) === true) {
+    return {
+      source: 'answer',
+      raw: options.answers.get(id),
+      location: undefined,
+      origin: SOURCE_NAMES.answer,
+    };
   }
 
   const override = options.overrides?.get(id);
