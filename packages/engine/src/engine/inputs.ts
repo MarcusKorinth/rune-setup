@@ -115,13 +115,13 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const states = new Map<string, InputState>();
   const order: string[] = [];
 
-  for (const [index, id] of ids.entries()) {
+  for (const id of ids) {
     const spec = manifest.inputs[id];
     if (spec === undefined) {
       continue;
     }
     const handler = inputTypes.get(spec.type);
-    const enabled = isEnabled(spec, id, ids.slice(0, index), states, context);
+    const enabled = isEnabled(spec, id, order, states, context);
     const supplied = highestLayer(id, spec, options);
 
     if (!enabled) {
@@ -262,7 +262,9 @@ function highestLayer(
   }
 
   // Later files override earlier ones, so the last one that mentions the input wins.
-  for (const document of [...(options.values ?? [])].reverse()) {
+  const documents = options.values ?? [];
+  for (let index = documents.length - 1; index >= 0; index -= 1) {
+    const document = documents[index]!;
     if (document.values.has(id)) {
       return {
         source: 'values',
@@ -406,8 +408,10 @@ function checkUnknownKeys(
   ids: readonly string[],
   issues: RuneIssue[],
 ): void {
+  const knownIds = new Set(ids);
+
   const report = (key: string, origin: string, location: Location | undefined): void => {
-    if (ids.includes(key)) {
+    if (knownIds.has(key)) {
       return;
     }
     const suggestion = suggest(key, ids);

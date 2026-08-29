@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
 import {
@@ -491,6 +491,45 @@ describe('values a type refuses', () => {
 });
 
 describe('keys that name no input', () => {
+  it('does not rescan known ids or values-file order for every input', () => {
+    const inputCount = 200;
+    const documentCount = 48;
+    const ids = Array.from({ length: inputCount }, (_, index) => `input${index}`);
+    const supplied = Object.fromEntries(ids.map((id) => [id, `value-${id}`]));
+    const manifest = manifestOf('inputs:', ...ids.flatMap((id) => [`  ${id}:`, '    type: text']));
+    const documents = Array.from({ length: documentCount }, (_, index) =>
+      values(`values-${index}.yaml`, supplied),
+    );
+    let iteratorRequests = 0;
+    const monitoredDocuments = new Proxy(documents, {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          iteratorRequests += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const includes = vi.spyOn(Array.prototype, 'includes');
+    let includesCalls = 0;
+    let resolution: Resolution | undefined;
+
+    try {
+      resolution = resolve(manifest, { values: monitoredDocuments });
+      includesCalls = includes.mock.calls.length;
+    } finally {
+      includes.mockRestore();
+    }
+
+    // Unknown-key validation iterates the documents once. Resolution must then index from the
+    // end instead of creating and reversing a new document array for each input.
+    expect(iteratorRequests).toBe(1);
+    expect(includesCalls).toBe(0);
+    expect(resolution?.byId.get('input0')).toMatchObject({
+      value: 'value-input0',
+      source: 'values',
+    });
+  });
+
   it('refuses a typo rather than letting it do nothing', () => {
     expect(
       problems(manifestOf('inputs:', '  installDirectory:', '    type: directory'), {
