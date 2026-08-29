@@ -226,29 +226,21 @@ export interface RuntimeContext {
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
   const host = hostPlatform();
   const platform = options.platform ?? host;
+  const manifestDir = options.manifestDir;
+  const productName = options.product.name;
+  const productVersion = options.product.version;
   const preview = platform !== host;
   const environment = options.environment ?? process.env;
+  const environmentValues = snapshotEnvironment(environment, host === 'windows');
+  const home = preview ? `<home@${platform}>` : homedir();
+  const temp = preview ? `<temp@${platform}>` : tmpdir();
 
-  const hostDependent = (name: BuiltInVariable, value: () => string): string =>
-    preview ? `<${name}@${platform}>` : value();
-
-  const environmentValue = (name: string): string | undefined => {
-    const key =
-      host === 'windows'
-        ? Object.getOwnPropertyNames(environment).find(
-            (candidate) => candidate.toLowerCase() === name.toLowerCase(),
-          )
-        : name;
-    if (key === undefined || !Object.hasOwn(environment, key)) {
-      return undefined;
-    }
-    const value: unknown = environment[key];
-    return typeof value === 'string' ? value : undefined;
-  };
+  const environmentValue = (name: string): string | undefined =>
+    environmentValues.get(host === 'windows' ? name.toLowerCase() : name);
 
   return {
     platform,
-    manifestDir: options.manifestDir,
+    manifestDir,
     preview,
     environmentValue,
     valueOf(reference: Reference): string {
@@ -256,17 +248,17 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
         case 'builtin':
           switch (reference.name) {
             case 'home':
-              return hostDependent('home', homedir);
+              return home;
             case 'temp':
-              return hostDependent('temp', tmpdir);
+              return temp;
             case 'platform':
               return platform;
             case 'manifestDir':
-              return options.manifestDir;
+              return manifestDir;
           }
         // eslint-disable-next-line no-fallthrough -- every branch above returns
         case 'product':
-          return options.product[reference.field];
+          return reference.field === 'name' ? productName : productVersion;
         case 'environment': {
           const value = environmentValue(reference.name);
           if (value === undefined) {
@@ -285,4 +277,21 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
       }
     },
   };
+}
+
+function snapshotEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  caseInsensitive: boolean,
+): ReadonlyMap<string, string> {
+  const values = new Map<string, string>();
+  for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(environment))) {
+    if (!('value' in descriptor) || typeof descriptor.value !== 'string') {
+      continue;
+    }
+    const key = caseInsensitive ? name.toLowerCase() : name;
+    if (!values.has(key)) {
+      values.set(key, descriptor.value);
+    }
+  }
+  return values;
 }

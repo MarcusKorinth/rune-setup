@@ -71,6 +71,39 @@ describe('the values behind the built-in names', () => {
     expect(own.valueOf({ kind: 'environment', name: 'OWN_VALUE' })).toBe('available');
   });
 
+  it('snapshots own environment values when the context is created', () => {
+    const environment: Record<string, string> = {
+      CHANGED: 'before',
+      DELETED: 'kept',
+    };
+    const runtime = contextFor('linux', environment);
+
+    environment.CHANGED = 'after';
+    delete environment.DELETED;
+    environment.ADDED = 'too-late';
+
+    expect(runtime.environmentValue('CHANGED')).toBe('before');
+    expect(runtime.environmentValue('DELETED')).toBe('kept');
+    expect(runtime.environmentValue('ADDED')).toBeUndefined();
+  });
+
+  it('does not execute or expose environment accessors', () => {
+    let reads = 0;
+    const environment = Object.defineProperty({}, 'LAZY', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return 'not-an-environment-value';
+      },
+    });
+
+    const runtime = contextFor('linux', unsafeEnvironment(environment));
+
+    expect(reads).toBe(0);
+    expect(runtime.environmentValue('LAZY')).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
   it('ignores an own property whose value is not a string', () => {
     const nonString = contextFor('linux', unsafeEnvironment({ NOT_TEXT: { nested: true } }));
 
@@ -97,6 +130,41 @@ describe('the values behind the built-in names', () => {
         'the environment variable PATH is not set',
       );
     }
+  });
+
+  it('keeps the first own environment name under host casing semantics', () => {
+    const runtime = contextFor(host, { Path: 'first', PATH: 'second' });
+
+    expect(runtime.environmentValue('Path')).toBe('first');
+    expect(runtime.environmentValue('PATH')).toBe(host === 'windows' ? 'first' : 'second');
+    expect(runtime.environmentValue('path')).toBe(host === 'windows' ? 'first' : undefined);
+  });
+
+  it('snapshots manifest, product, and selected platform values', () => {
+    const options: {
+      manifestDir: string;
+      product: { name: string; version: string };
+      platform: 'windows' | 'linux';
+      environment: Record<string, string>;
+    } = {
+      manifestDir: '/before',
+      product: { name: 'Before', version: '1.0.0' },
+      platform: host,
+      environment: {},
+    };
+    const runtime = createRuntimeContext(options);
+
+    options.manifestDir = '/after';
+    options.product.name = 'After';
+    options.product.version = '2.0.0';
+    options.platform = other;
+
+    expect(runtime.manifestDir).toBe('/before');
+    expect(runtime.platform).toBe(host);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/before');
+    expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
+    expect(runtime.valueOf({ kind: 'product', field: 'name' })).toBe('Before');
+    expect(runtime.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
   });
 
   it('refuses an environment variable the machine does not have', () => {
