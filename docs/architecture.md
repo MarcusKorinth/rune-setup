@@ -315,23 +315,29 @@ The engine–frontend boundary is one facade plus one observer interface; the GU
 ```ts
 // packages/engine/src/engine/session.ts
 export class Session {
-  static open(manifestPath: string, opts: {
+  static open(manifestPath: string, options?: {
     values?: readonly string[];            // --values files, in order (layer 2)
-    overrides?: Readonly<Record<string, string>>; // --set (layer 4); RUNE_INPUT_* is read from process.env (layer 3)
-    locale?: string;
-    options?: SessionOptions;
+    overrides?: Readonly<Record<string, string>>; // --set (layer 4); RUNE_INPUT_* comes from the environment (layer 3)
+    locale?: string;                       // --locale (§6.3)
+    platform?: Platform;                   // foreign-platform preview — validate/--dry-run only
+    logFile?: string;                      // --log-file; overrides execution.logFile (§10)
+    environment?: Readonly<Record<string, string | undefined>>; // defaults to process.env
+    runner?: Runner;                       // the §13 seam; the default is the real spawn runner
   }): Promise<Session>;
   readonly manifest: Manifest;
-  pendingInputs(): readonly InputSpec[];         // unresolved AND enabled, declaration order
-  allInputs(): readonly InputState[];            // {spec, value | null, enabled, source} — GUI prefill
-  setValue(name: string, raw: unknown, source: ValueSource): readonly InputStateChanged[];
-                                                 // registry-validated (type, options, pattern);
-                                                 // re-evaluates input when: for later inputs
+  pendingInputs(): readonly InputState[];        // unresolved AND enabled, declaration order
+  allInputs(): readonly InputState[];            // {id, spec, value, enabled, source} — GUI prefill
+  warnings(): readonly string[];                 // §5/§10 warnings a frontend says out loud
+  setValue(id: string, raw: unknown): readonly InputStateChanged[];
+                                                 // an answer is always layer 5; registry-validated
+                                                 // (type, options, pattern); a rejected value throws
+                                                 // and changes nothing; re-evaluates input when:
   plan(): ExecutionPlan;                         // throws listing ALL missing inputs
-  execute(observer: EngineObserver, cancel?: CancelToken): Promise<RunResult>;
+  describe(): RunResult;                         // the dry run: status `planned`, nothing executed
+  execute(observer?: EngineObserver, cancel?: CancelToken): Promise<RunResult>;
                                                  // async; resolves when the run is over
   cancel(): void;                                // fires the CancelToken of the running execute()
-  getStrings(): Strings;                         // resolved manifest + chrome text, session locale (§6.3)
+  getStrings(): StringTable;                     // resolved manifest + chrome text, session locale (§6.3)
   getThemeConfig(): ThemeConfig;                 // gui: block, paths absolute; empty if absent
 }
 ```
