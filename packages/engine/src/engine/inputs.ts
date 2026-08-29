@@ -20,6 +20,7 @@ import {
 } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
+import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
 import { loadYamlFile } from '../manifest/loader.js';
 import { startOfFile, type Location, type SourceMap } from '../manifest/source.js';
 import { environmentName } from '../manifest/v1/rules.js';
@@ -33,6 +34,15 @@ import { SecretString, type SecretRegistry } from './secrets.js';
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
 export type ValueSource = (typeof VALUE_SOURCES)[number];
+
+/** A rejected value retained only as safe, frontend-readable input state. */
+export interface InputRejection {
+  /** The value a frontend may prefill; unsafe native values and secrets are never retained. */
+  readonly candidate: string | boolean | readonly string[] | undefined;
+  readonly source: ValueSource;
+  /** The exact issue also present in {@link Resolution.problems}. */
+  readonly issue: RuneIssue;
+}
 
 /** How a source is named in a message, so a reader knows where to go and change it. */
 const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
@@ -48,9 +58,12 @@ export interface InputState {
   readonly spec: InputSpec;
   /** False when the input's `when:` is false: not required, never prompted, empty (§5). */
   readonly enabled: boolean;
-  /** The resolved value, or nothing when a required enabled input is still unanswered. */
+  /** The successfully validated value; unanswered and rejected inputs have no value. */
   readonly value: InputValue | undefined;
+  /** Provenance of the validated value only; a rejection carries its own source below. */
   readonly source: ValueSource | undefined;
+  /** Details of the supplied value rejected by the input handler, if one was collected. */
+  readonly rejection: InputRejection | undefined;
   /** The layer whose value was discarded because the input turned out to be disabled. */
   readonly ignored: ValueSource | undefined;
 }
@@ -142,6 +155,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
         enabled: false,
         value: handler.empty(spec),
         source: undefined,
+        rejection: undefined,
         ignored: discarded?.source,
       });
       order.push(id);
@@ -157,6 +171,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
         // ask, and the non-interactive driver refuses (§10).
         value: spec.required ? undefined : handler.empty(spec),
         source: undefined,
+        rejection: undefined,
         ignored: undefined,
       });
       order.push(id);
@@ -165,13 +180,19 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
 
     const coerced = coerce(supplied, spec, id, context);
     if (!coerced.ok) {
-      issues.push({ code: 'RUNE-202', message: coerced.message, location: supplied.location });
+      const issue: RuneIssue = {
+        code: 'RUNE-202',
+        message: coerced.message,
+        location: supplied.location,
+      };
+      issues.push(issue);
       states.set(id, {
         id,
         spec,
         enabled: true,
         value: undefined,
         source: undefined,
+        rejection: { candidate: coerced.candidate, source: supplied.source, issue },
         ignored: undefined,
       });
       order.push(id);
@@ -195,6 +216,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       enabled: true,
       value: coerced.value,
       source: supplied.source,
+      rejection: undefined,
       ignored: undefined,
     });
     order.push(id);
@@ -292,7 +314,11 @@ function highestLayer(
 
 type CoercionOutcome =
   | { readonly ok: true; readonly value: InputValue }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      readonly candidate: InputRejection['candidate'];
+    };
 
 function coerce(
   supplied: SuppliedValue,
@@ -317,7 +343,22 @@ function coerce(
   // belongs to and where the value came from, which is what a reader needs to go and fix it.
   return result.ok
     ? result
-    : { ok: false, message: `${id} (from ${supplied.origin}): ${result.message}` };
+    : {
+        ok: false,
+        message: `${id} (from ${supplied.origin}): ${result.message}`,
+        candidate: rejectedCandidate(raw, handler.secret),
+      };
+}
+
+/** Retains only values that are safe for a frontend to prefill after validation failed. */
+function rejectedCandidate(raw: unknown, secret: boolean): InputRejection['candidate'] {
+  if (secret) {
+    return undefined;
+  }
+  if (typeof raw === 'string' || typeof raw === 'boolean') {
+    return raw;
+  }
+  return nativeStringArraySnapshot(raw);
 }
 
 /** Only the free-text types carry templates; a select default is one of its option values. */

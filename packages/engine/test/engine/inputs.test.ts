@@ -14,6 +14,7 @@ import {
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
+import type { InputRejection } from '../../src/index.js';
 import type { InputValue } from '../../src/inputs/base.js';
 import { exitCodeFor, InputError, ManifestError, ResolutionError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -99,6 +100,14 @@ function valuesFromFile(contents: string): ValuesDocument {
   return parseValuesFile(path, 'v.yaml');
 }
 
+function rejectionFor(resolution: Resolution, id: string): InputRejection {
+  const rejection = resolution.byId.get(id)?.rejection;
+  if (rejection === undefined) {
+    throw new Error(`expected ${id} to have a rejected value`);
+  }
+  return rejection;
+}
+
 const SIMPLE = ['inputs:', '  target:', '    type: text'];
 
 describe('precedence', () => {
@@ -113,6 +122,7 @@ describe('precedence', () => {
     expect(resolve(manifest).byId.get('target')).toMatchObject({
       value: 'from-default',
       source: 'default',
+      rejection: undefined,
     });
   });
 
@@ -267,6 +277,7 @@ describe('resolved multiselect values', () => {
       },
     ]);
     expect(resolution.byId.get('tools')?.value).toBeUndefined();
+    expect(rejectionFor(resolution, 'tools').candidate).toBeUndefined();
     expect(getterCalls).toBe(0);
   });
 });
@@ -282,6 +293,7 @@ describe('what is still missing', () => {
 
     expect(resolution.missing).toEqual([]);
     expect(resolution.byId.get('target')).toMatchObject({ value: '', source: undefined });
+    expect(resolution.byId.get('target')).toHaveProperty('rejection', undefined);
   });
 
   it('does not treat an answered input as missing', () => {
@@ -392,6 +404,7 @@ describe('conditional inputs', () => {
       enabled: false,
       value: '',
       source: undefined,
+      rejection: undefined,
       ignored: undefined,
     });
     expect(resolution.missing).toEqual([]);
@@ -412,6 +425,7 @@ describe('conditional inputs', () => {
       enabled: false,
       value: '',
       source: undefined,
+      rejection: undefined,
       ignored: 'set',
     });
     expect(resolution.warnings).toEqual([
@@ -710,7 +724,12 @@ describe('a frontend that can ask again', () => {
       'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
     ]);
     expect(resolution.problems.map((problem) => problem.code)).toEqual(['RUNE-202']);
-    expect(resolution.byId.get('port')?.value).toBeUndefined();
+    expect(resolution.byId.get('port')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: 'eighty', source: 'set' },
+    });
+    expect(rejectionFor(resolution, 'port').issue).toBe(resolution.problems[0]);
     expect(resolution.missing).toEqual(['port']);
   });
 
@@ -718,6 +737,205 @@ describe('a frontend that can ask again', () => {
     expect(() => resolve(manifest, { overrides: new Map([['port', 'eighty']]) })).toThrow(
       /does not match/,
     );
+  });
+});
+
+describe('collected rejected values', () => {
+  it('retains the rendered default, its source and the exact collected issue', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]+"',
+      '    default: "${env.PORT_SEED}"',
+    );
+    const resolution = resolve(
+      manifest,
+      { invalidValues: 'collect' },
+      { PORT_SEED: 'rendered-eighty' },
+    );
+
+    expect(resolution.byId.get('port')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: 'rendered-eighty', source: 'default' },
+    });
+    expect(rejectionFor(resolution, 'port').issue).toBe(resolution.problems[0]);
+    expect(resolution.missing).toEqual(['port']);
+  });
+
+  it('retains a bad boolean from a values file without making an optional input missing', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  verbose:',
+      '    type: boolean',
+      '    required: false',
+    );
+    const resolution = resolve(manifest, {
+      values: [values('v.yaml', { verbose: 'sometimes' })],
+      invalidValues: 'collect',
+    });
+
+    expect(resolution.byId.get('verbose')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: 'sometimes', source: 'values' },
+    });
+    expect(rejectionFor(resolution, 'verbose').issue).toBe(resolution.problems[0]);
+    expect(resolution.missing).toEqual([]);
+  });
+
+  it('retains an invalid select value from the environment', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  channel:',
+      '    type: select',
+      '    options: [stable, preview]',
+    );
+    const resolution = resolve(
+      manifest,
+      { invalidValues: 'collect' },
+      { RUNE_INPUT_CHANNEL: 'Production' },
+    );
+
+    expect(resolution.byId.get('channel')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: 'Production', source: 'environment' },
+    });
+    expect(rejectionFor(resolution, 'channel').issue).toBe(resolution.problems[0]);
+  });
+
+  it('retains the written --set form of an invalid multiselect', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+    );
+    const resolution = resolve(manifest, {
+      overrides: new Map([['tools', 'git,podman']]),
+      invalidValues: 'collect',
+    });
+
+    expect(resolution.byId.get('tools')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: { candidate: 'git,podman', source: 'set' },
+    });
+    expect(rejectionFor(resolution, 'tools').issue).toBe(resolution.problems[0]);
+  });
+
+  it('takes an immutable answer snapshot independent of later array mutation', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+    );
+    const answer = ['git', 'podman'];
+    const resolution = resolve(manifest, {
+      answers: new Map([['tools', answer]]),
+      invalidValues: 'collect',
+    });
+    const rejection = rejectionFor(resolution, 'tools');
+    const candidate = rejection.candidate as readonly string[];
+
+    answer[0] = 'docker';
+    answer.push('other');
+
+    expect(candidate).toEqual(['git', 'podman']);
+    expect(candidate).not.toBe(answer);
+    expect(Object.isFrozen(candidate)).toBe(true);
+    expect(() => (candidate as string[]).push('docker')).toThrow(TypeError);
+    expect(rejection.source).toBe('answer');
+    expect(rejection.issue).toBe(resolution.problems[0]);
+  });
+
+  it('does not retain a rejected secret value or anything reachable from it', () => {
+    const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+    const sentinel = 'SECRET-REJECTION-SENTINEL';
+    const rejectedValues: readonly unknown[] = [
+      { payload: sentinel },
+      new Proxy(new SecretString(sentinel), {}),
+    ];
+
+    for (const raw of rejectedValues) {
+      const resolution = resolve(manifest, {
+        answers: new Map([['token', raw]]) as unknown as ReadonlyMap<string, InputValue>,
+        invalidValues: 'collect',
+      });
+      const state = resolution.byId.get('token');
+
+      expect(state).toMatchObject({
+        value: undefined,
+        source: undefined,
+        rejection: { candidate: undefined, source: 'answer' },
+      });
+      expect(rejectionFor(resolution, 'token').issue).toBe(resolution.problems[0]);
+      expect(inspect(state)).not.toContain(sentinel);
+      expect(JSON.stringify(state)).not.toContain(sentinel);
+    }
+  });
+
+  it('does not retain foreign objects, numbers or symbols as prefill candidates', () => {
+    const manifest = manifestOf('inputs:', '  note:', '    type: text');
+    const foreignValues: readonly unknown[] = [
+      { value: 'not-a-candidate' },
+      42,
+      Symbol('not-a-candidate'),
+    ];
+
+    for (const raw of foreignValues) {
+      const resolution = resolve(manifest, {
+        answers: new Map([['note', raw]]) as unknown as ReadonlyMap<string, InputValue>,
+        invalidValues: 'collect',
+      });
+
+      expect(rejectionFor(resolution, 'note').candidate).toBeUndefined();
+    }
+  });
+
+  it('uses the type-empty value in conditions and leaves disabled values ignored', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    required: false',
+      '  databasePort:',
+      '    type: text',
+      '    when: "${installDatabase}"',
+      '    pattern: "[0-9]+"',
+    );
+    const invalidController = resolve(manifest, {
+      overrides: new Map([['installDatabase', 'perhaps']]),
+      invalidValues: 'collect',
+    });
+
+    expect(invalidController.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      rejection: undefined,
+    });
+    expect(invalidController.missing).toEqual([]);
+
+    const ignoredInvalidValue = resolve(manifest, {
+      overrides: new Map([
+        ['installDatabase', 'false'],
+        ['databasePort', 'not-a-port'],
+      ]),
+      invalidValues: 'collect',
+    });
+
+    expect(ignoredInvalidValue.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      rejection: undefined,
+      ignored: 'set',
+    });
+    expect(ignoredInvalidValue.problems).toEqual([]);
   });
 });
 

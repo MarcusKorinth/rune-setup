@@ -7,8 +7,6 @@
  * value is matched against its `pattern`.
  */
 
-import { isProxy } from 'node:util/types';
-
 import { MASK, normalizeSecretString, SecretString } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
@@ -19,6 +17,7 @@ import {
   type InputTypeHandler,
   type InputValue,
 } from './base.js';
+import { nativeStringArraySnapshot } from './snapshot.js';
 
 /** The cap on a value that is matched against a pattern (§4.2). */
 export const MAX_PATTERN_INPUT_BYTES = 4096;
@@ -208,46 +207,6 @@ function membership(entries: readonly string[], spec: InputSpec): Coercion {
   return fail(
     `${named} ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (${listOptions(spec)})`,
   );
-}
-
-/**
- * Copies a native multiselect value without invoking anything the supplied array controls.
- * Proxies are not stable snapshots, and accessors or holes are not list entries, so only an
- * array's own data properties are accepted.
- */
-function nativeStringArraySnapshot(value: unknown): string[] | undefined {
-  try {
-    if (isProxy(value) || !Array.isArray(value)) {
-      return undefined;
-    }
-
-    const lengthProperty = Object.getOwnPropertyDescriptor(value, 'length');
-    const length = lengthProperty?.value;
-    if (
-      typeof length !== 'number' ||
-      !Number.isInteger(length) ||
-      length < 0 ||
-      length > 0xffff_ffff
-    ) {
-      return undefined;
-    }
-
-    const entries: string[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const entryProperty = Object.getOwnPropertyDescriptor(value, String(index));
-      if (
-        entryProperty === undefined ||
-        !('value' in entryProperty) ||
-        typeof entryProperty.value !== 'string'
-      ) {
-        return undefined;
-      }
-      entries[index] = entryProperty.value;
-    }
-    return entries;
-  } catch {
-    return undefined;
-  }
 }
 
 const multiselect: InputTypeHandler = {

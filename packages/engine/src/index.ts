@@ -64,6 +64,7 @@ export type {
 
 export { parseValuesFile, resolveInputs, VALUE_SOURCES } from './engine/inputs.js';
 export type {
+  InputRejection,
   InputState,
   Resolution,
   ResolveInputsOptions,
