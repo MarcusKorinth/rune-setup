@@ -221,7 +221,7 @@ function resolveInputsStaged(
       // The one place that unwraps a secret outside the runner: it has to know the text to
       // be able to remove it from everything a run prints (§10).
       const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
-      if (text !== '' && !stagedSecrets.register(text)) {
+      if (!stagedSecrets.register(text)) {
         warnings.push(
           `${id} cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace`,
         );

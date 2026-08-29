@@ -1139,6 +1139,43 @@ describe('secrets', () => {
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
 
+  it('does not warn when an optional secret is absent', () => {
+    const optional = manifestOf('inputs:', '  token:', '    type: secret', '    required: false');
+    const secrets = new SecretRegistry();
+    const resolution = resolve(optional, { secrets });
+
+    expect(resolution.warnings).toEqual([]);
+    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe('');
+    expect(resolution.missing).toEqual([]);
+    expect(secrets.size).toBe(0);
+  });
+
+  it('warns when an optional secret is explicitly empty', () => {
+    const optional = manifestOf('inputs:', '  token:', '    type: secret', '    required: false');
+    const secrets = new SecretRegistry();
+    const resolution = resolve(optional, { overrides: new Map([['token', '']]), secrets });
+
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe('');
+    expect(resolution.missing).toEqual([]);
+    expect(secrets.size).toBe(0);
+  });
+
+  it('warns when a required secret is explicitly empty', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, { overrides: new Map([['token', '']]), secrets });
+
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    expect(resolution.missing).toEqual(['token']);
+    expect(secrets.size).toBe(0);
+  });
+
   it('leaves a prefilled registry unchanged when an unknown key rejects resolution', () => {
     const secrets = existingRegistry();
     const error = inputError(manifest, {
