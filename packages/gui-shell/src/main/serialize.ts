@@ -6,9 +6,13 @@
  * no engine object crosses at all.
  */
 
-export function project<T>(value: T): unknown {
+export function project<T>(value: T, mask: (text: string) => string = (text) => text): unknown {
   if (value === undefined) {
     return undefined;
   }
-  return JSON.parse(JSON.stringify(value)) as unknown;
+  // The reviver applies mask() to every string — the second belt of §10 on top of the
+  // wrapper: even a string a secret leaked into crosses masked.
+  return JSON.parse(JSON.stringify(value), (_key, entry: unknown) =>
+    typeof entry === 'string' ? mask(entry) : entry,
+  ) as unknown;
 }

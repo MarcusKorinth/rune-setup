@@ -300,6 +300,14 @@ export class Session {
     this.#cancel?.cancel();
   }
 
+  /**
+   * Masks registered secrets in one line of text — the sink-safety belt a host applies to
+   * its own boundaries, e.g. the GUI shell's bridge serializer (§9.2, §10).
+   */
+  mask(text: string): string {
+    return this.#secrets.mask(text);
+  }
+
   /** The fully resolved string table for the session's locale (§6.3). */
   getStrings(): StringTable {
     return this.#strings;

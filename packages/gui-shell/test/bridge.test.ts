@@ -71,6 +71,22 @@ async function bridgeOver(session: Session): Promise<{
 }
 
 describe('the IPC bridge', () => {
+  it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {
+    // Required input left unanswered: execute() throws at plan time.
+    const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
+    session.setValue('installDatabase', true);
+    const errors: unknown[] = [];
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerBridge(
+      session,
+      { events: { send: () => undefined }, onExecuteError: (error) => errors.push(error) },
+      (channel, handler) => handlers.set(channel, handler),
+    );
+
+    await expect(handlers.get('rune:execute')?.()).rejects.toThrow(/token|databasePort/);
+    expect(errors).toHaveLength(1);
+  });
+
   it('is a 1:1 projection: exactly the pinned channels, nothing else', async () => {
     const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
     const bridge = await bridgeOver(session);

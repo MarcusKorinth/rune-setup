@@ -34,6 +34,7 @@ export const BRIDGE_CHANNELS = [
   'rune:cancel',
   'rune:getStrings',
   'rune:getThemeConfig',
+  'rune:warnings',
   'rune:done',
 ] as const;
 
@@ -48,8 +49,8 @@ async function main(): Promise<void> {
   try {
     session = await openSession(invocation);
   } catch (error) {
-    // A manifest or input error before any window exists: named on stderr, exit code
-    // from the one table, result file written by the host as §10 demands.
+    // A manifest or input error before any window exists: named on stderr, exit code from
+    // the one table. The §10 failure-shell result file arrives with the --gui wiring.
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     app.exit(error instanceof RuneError ? exitCodeFor(error) : 70);
     return;
@@ -77,6 +78,12 @@ async function openSession(invocation: ShellInvocation): Promise<Session> {
 async function headlessRun(session: Session, invocation: ShellInvocation): Promise<number> {
   try {
     const result = await session.execute();
+    for (const warning of session.warnings()) {
+      process.stderr.write(`warning: ${warning}` + String.fromCharCode(10));
+    }
+    if (result.nothingExecuted) {
+      process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
+    }
     deliver(result, invocation);
     return result.exitCode;
   } catch (error) {
@@ -100,7 +107,9 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
   window.once('ready-to-show', () => window.show());
 
   let running = false;
+  let closeRequested = false;
   let outcome: RunResult | undefined;
+  let fatalCode: number | undefined;
   let renderedDone = false;
 
   registerBridge(session, {
@@ -112,6 +121,19 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
       running = false;
       outcome = result;
       deliver(result, invocation);
+      if (closeRequested) {
+        // The shell finishes its own cancel (§9.4): the close that started it completes.
+        window.close();
+      }
+    },
+    onExecuteError: (error) => {
+      // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
+      running = false;
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
+      );
+      fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+      window.close();
     },
     onRendererDone: () => {
       renderedDone = true;
@@ -119,16 +141,23 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
     },
   });
 
-  // SIGTERM is the §9.4 cancel request from `rune run --gui`; the window close during a
-  // run is the same path — Session.cancel(), then the ordinary RunFinished.
-  process.on('SIGTERM', () => session.cancel());
+  // SIGTERM is the §9.4 cancel request from `rune run --gui`: during a run it fires the
+  // CancelToken; before one it is the close-window path.
+  process.on('SIGTERM', () => {
+    if (running) {
+      session.cancel();
+    } else {
+      window.close();
+    }
+  });
   window.on('close', (event) => {
     if (running) {
       event.preventDefault();
+      closeRequested = true;
       session.cancel();
       return;
     }
-    if (outcome === undefined && !renderedDone) {
+    if (outcome === undefined && fatalCode === undefined && !renderedDone) {
       // Closed before Proceed: a cancelled result over the plan when one exists (§10).
       outcome = tryDescribeCancelled(session);
       if (outcome !== undefined) {
@@ -140,6 +169,9 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
   await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
   await new Promise<void>((resolve) => window.on('closed', () => resolve()));
 
+  if (fatalCode !== undefined) {
+    return fatalCode;
+  }
   if (outcome !== undefined) {
     return outcome.exitCode;
   }
@@ -154,11 +186,24 @@ export function registerBridge(
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
     onExecuteEnd?: (result: RunResult) => void;
+    onExecuteError?: (error: unknown) => void;
     onRendererDone?: () => void;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
-    ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
+    ipcMain.handle(c, async (_event, ...args: unknown[]) => {
+      try {
+        return await h(...args);
+      } catch (error) {
+        // Electron serializes only the message across invoke; carry the RUNE code and the
+        // exit code the CLI would have used inside it (§9.2).
+        if (error instanceof RuneError) {
+          throw new Error(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`);
+        }
+        throw error;
+      }
+    }),
 ): void {
+  const mask = (text: string): string => session.mask(text);
   register('rune:open', () =>
     project({
       runeVersion: RUNE_VERSION,
@@ -169,23 +214,30 @@ export function registerBridge(
       },
     }),
   );
-  register('rune:pendingInputs', () => project(session.pendingInputs()));
-  register('rune:allInputs', () => project(session.allInputs()));
-  register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw)));
-  register('rune:plan', () => project(session.describe()));
+  register('rune:pendingInputs', () => project(session.pendingInputs(), mask));
+  register('rune:allInputs', () => project(session.allInputs(), mask));
+  register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw), mask));
+  register('rune:plan', () => project(session.describe(), mask));
   register('rune:getStrings', () => project(Object.fromEntries(session.getStrings().entries)));
   register('rune:getThemeConfig', () => project(session.getThemeConfig()));
+  register('rune:warnings', () => project(session.warnings(), mask));
   register('rune:cancel', () => {
     session.cancel();
     return undefined;
   });
   register('rune:execute', async () => {
     hooks.onExecuteStart?.();
-    const result = await session.execute((event: RunEvent) => {
-      hooks.events.send(EVENT_CHANNEL, project(event));
-    });
+    let result: RunResult;
+    try {
+      result = await session.execute((event: RunEvent) => {
+        hooks.events.send(EVENT_CHANNEL, project(event, mask));
+      });
+    } catch (error) {
+      hooks.onExecuteError?.(error);
+      throw error;
+    }
     hooks.onExecuteEnd?.(result);
-    return project(result);
+    return project(result, mask);
   });
   register('rune:done', () => {
     hooks.onRendererDone?.();
