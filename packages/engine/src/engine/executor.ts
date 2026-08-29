@@ -29,6 +29,7 @@ import {
   EXIT_CODE_BY_STATUS,
   RESULT_SCHEMA_VERSION,
   type ResultInput,
+  type ResultOutputLine,
   type ResultStep,
   type RunResult,
   type RunStatus,
@@ -79,7 +80,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   for (const [index, step] of plan.steps.entries()) {
     if (step.state === 'SKIPPED') {
-      steps.push(finishedStep(step, 'SKIPPED', null, 0, null, null, secrets));
+      steps.push(finishedStep(step, 'SKIPPED', null, 0, null, [], secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -101,7 +102,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       wasCancelled = true;
     }
     if (abortForFailure || abortForCancellation) {
-      steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), null, secrets));
+      steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), [], secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -120,8 +121,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       title: secrets.mask(step.title),
     });
 
-    const tail: { stream: string; line: string }[] = [];
-    const keepInTail = (stream: string, line: string): void => {
+    const tail: ResultOutputLine[] = [];
+    const keepInTail = (stream: ResultOutputLine['stream'], line: string): void => {
       tail.push({ stream, line });
       if (tail.length > OUTPUT_TAIL_LINES) {
         tail.shift();
@@ -203,15 +204,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     steps.push(
-      finishedStep(
-        step,
-        state,
-        exitCode,
-        durationMs,
-        maskArgv(step, secrets),
-        state === 'FAILED' ? tail : null,
-        secrets,
-      ),
+      finishedStep(step, state, exitCode, durationMs, maskArgv(step, secrets), tail, secrets),
     );
     emit({
       kind: 'stepFinished',
@@ -244,7 +237,7 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
     if (step.state === 'SKIPPED') {
-      return finishedStep(step, 'SKIPPED', null, 0, null, null, executionContext.secrets);
+      return finishedStep(step, 'SKIPPED', null, 0, null, [], executionContext.secrets);
     }
     return finishedStep(
       step,
@@ -252,7 +245,7 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
       null,
       0,
       maskArgv(step, executionContext.secrets),
-      null,
+      [],
       executionContext.secrets,
     );
   });
@@ -314,7 +307,7 @@ function assembleResult(input: {
 
 function resultInput(state: PlanInput, secrets: SecretRegistry): ResultInput {
   const value = state.value;
-  return {
+  const result = {
     id: state.id,
     value: state.secret || value instanceof SecretString ? null : maskInputValue(value, secrets),
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
@@ -322,8 +315,8 @@ function resultInput(state: PlanInput, secrets: SecretRegistry): ResultInput {
     source: state.source ?? state.ignored ?? null,
     secret: state.secret,
     enabled: state.enabled,
-    ignored: state.ignored === undefined ? null : 'input disabled',
   };
+  return state.ignored === undefined ? result : { ...result, ignored: 'input disabled' };
 }
 
 function finishedStep(
@@ -332,10 +325,10 @@ function finishedStep(
   exitCode: number | null,
   durationMs: number,
   command: readonly string[] | null,
-  outputTail: readonly { stream: string; line: string }[] | null,
+  outputTail: readonly ResultOutputLine[],
   secrets: SecretRegistry,
 ): ResultStep {
-  return {
+  const result = {
     id: step.id,
     title: secrets.mask(step.title),
     state,
@@ -343,8 +336,8 @@ function finishedStep(
     durationMs,
     command,
     skipReason: step.state === 'SKIPPED' ? secrets.mask(step.skipReason) : null,
-    outputTail,
   };
+  return state === 'FAILED' ? { ...result, outputTail } : result;
 }
 
 /** A clone-safe projection: observers never receive the opaque values used for spawning. */

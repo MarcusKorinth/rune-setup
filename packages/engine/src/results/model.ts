@@ -6,6 +6,7 @@
  */
 
 import type { ValueSource } from '../engine/inputs.js';
+import type { Platform } from '../engine/context.js';
 import type { StepState } from '../engine/state.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
@@ -44,7 +45,14 @@ export interface ResultInput {
   readonly source: ValueSource | null;
   readonly secret: boolean;
   readonly enabled: boolean;
-  readonly ignored: string | null;
+  /** Present only when a supplied value was discarded because the input is disabled (§10). */
+  readonly ignored?: 'input disabled';
+}
+
+/** One masked line retained from a failed step's combined output tail (§10). */
+export interface ResultOutputLine {
+  readonly stream: 'stdout' | 'stderr';
+  readonly line: string;
 }
 
 export interface ResultStep {
@@ -57,7 +65,7 @@ export interface ResultStep {
   readonly command: readonly string[] | null;
   readonly skipReason: string | null;
   /** The last lines of a FAILED step's output, masked — CI triage from one file (§7). */
-  readonly outputTail: readonly { readonly stream: string; readonly line: string }[] | null;
+  readonly outputTail?: readonly ResultOutputLine[];
 }
 
 export interface ResultManifest {
@@ -74,7 +82,7 @@ export interface RunResult {
   readonly exitCode: number;
   readonly dryRun: boolean;
   readonly crossPlatformPreview: boolean;
-  readonly platform: string;
+  readonly platform: Platform;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly durationMs: number;

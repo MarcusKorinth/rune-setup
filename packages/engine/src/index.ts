@@ -97,6 +97,7 @@ export { RESULT_SCHEMA_VERSION } from './results/model.js';
 export type {
   ResultInput,
   ResultManifest,
+  ResultOutputLine,
   ResultStep,
   RunResult,
   RunStatus,

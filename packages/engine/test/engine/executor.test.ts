@@ -214,7 +214,7 @@ describe('a run that succeeds', () => {
           inputs: Array<{ id: string }>;
           steps: Array<{
             state: string;
-            outputTail: Array<{ line: string }> | null;
+            outputTail?: Array<{ line: string }>;
           }>;
         };
         const attempt = (change: () => void): void => {
@@ -311,7 +311,7 @@ describe('a run that fails', () => {
     });
 
     expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stdout', line: 'the token is ***' }]);
-    expect(result.steps[1]?.outputTail).toBeNull();
+    expect(result.steps[1]).not.toHaveProperty('outputTail');
   });
 
   it('honours successExitCodes instead of assuming zero', async () => {
@@ -429,7 +429,7 @@ describe('a run that fails', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(result.status).toBe('succeeded');
-    expect(result.steps[0]?.outputTail).toBeNull();
+    expect(result.steps[0]).not.toHaveProperty('outputTail');
     expect(events.map((event) => event.kind)).toEqual([
       'runStarted',
       'stepStarted',
@@ -1119,8 +1119,8 @@ describe('the plan execution context', () => {
         value: ['git', 'docker'],
         source: 'set',
         enabled: true,
-        ignored: null,
       });
+      expect(result.inputs[0]).not.toHaveProperty('ignored');
     }
     expect(executed.status).toBe('failed');
   });
@@ -1228,5 +1228,125 @@ describe('the result run block', () => {
 
     const port = result.inputs.find((input) => input.id === 'databasePort');
     expect(port).toMatchObject({ enabled: false, ignored: 'input disabled', source: 'set' });
+  });
+
+  it('serializes ignored only for values discarded from disabled inputs', () => {
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  normal:',
+        '    type: text',
+        '    default: value',
+        '  disabledWithoutValue:',
+        '    type: text',
+        '    when: "${enabled}"',
+        '  disabledWithValue:',
+        '    type: text',
+        '    when: "${enabled}"',
+        'steps: []',
+      ],
+      { overrides: new Map([['disabledWithValue', 'ignored']]) },
+    );
+
+    const result = describePlan({ plan });
+    const serialized = JSON.parse(serializeResult(result)) as {
+      inputs: Array<Record<string, unknown>>;
+    };
+    const input = (id: string): Record<string, unknown> =>
+      serialized.inputs.find((entry) => entry['id'] === id)!;
+
+    expect(
+      Object.hasOwn(
+        result.inputs.find((entry) => entry.id === 'normal')!,
+        'ignored',
+      ),
+    ).toBe(false);
+    expect(
+      Object.hasOwn(
+        result.inputs.find((entry) => entry.id === 'disabledWithoutValue')!,
+        'ignored',
+      ),
+    ).toBe(false);
+    expect(
+      Object.hasOwn(
+        result.inputs.find((entry) => entry.id === 'disabledWithValue')!,
+        'ignored',
+      ),
+    ).toBe(true);
+    expect(Object.hasOwn(input('normal'), 'ignored')).toBe(false);
+    expect(Object.hasOwn(input('disabledWithoutValue'), 'ignored')).toBe(false);
+    expect(Object.hasOwn(input('disabledWithValue'), 'ignored')).toBe(true);
+    expect(input('disabledWithValue')).toMatchObject({ ignored: 'input disabled', source: 'set' });
+  });
+
+  it('serializes outputTail only for failed steps', async () => {
+    const pending = describePlan({ plan: setup(TWO_STEPS).plan });
+    const succeeded = await executeRun({
+      plan: setup(TWO_STEPS).plan,
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+    });
+    const skipped = await executeRun({
+      plan: setup([
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        'steps:',
+        '  - id: skipped',
+        '    when: "${enabled}"',
+        '    run:',
+        '      command: a',
+      ]).plan,
+    });
+    const cancelled = await executeRun({
+      plan: setup(TWO_STEPS).plan,
+      runner: stubRunner(() => ({ kind: 'cancelled' })),
+    });
+    const failedWithoutOutput = await executeRun({
+      plan: setup(TWO_STEPS).plan,
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+    });
+    const failedWithTail = await executeRun({
+      plan: setup(TWO_STEPS).plan,
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', 'failure details');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+    const absent = [
+      pending.steps[0]!,
+      skipped.steps[0]!,
+      succeeded.steps[0]!,
+      cancelled.steps[0]!,
+      failedWithoutOutput.steps[1]!,
+    ];
+
+    for (const step of absent) {
+      expect(Object.hasOwn(step, 'outputTail')).toBe(false);
+      const serialized = JSON.parse(serializeResult({ ...pending, steps: [step] })) as {
+        steps: Array<Record<string, unknown>>;
+      };
+      expect(Object.hasOwn(serialized.steps[0]!, 'outputTail')).toBe(false);
+    }
+    expect(failedWithoutOutput.steps[0]?.outputTail).toEqual([]);
+    expect(Object.hasOwn(failedWithoutOutput.steps[0]!, 'outputTail')).toBe(true);
+    const serializedFailedWithoutOutput = JSON.parse(serializeResult(failedWithoutOutput)) as {
+      steps: Array<Record<string, unknown>>;
+    };
+    expect(Object.hasOwn(serializedFailedWithoutOutput.steps[0]!, 'outputTail')).toBe(true);
+    expect(serializedFailedWithoutOutput.steps[0]).toMatchObject({ outputTail: [] });
+    expect(failedWithTail.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'failure details' },
+    ]);
+    const serializedFailedWithTail = JSON.parse(serializeResult(failedWithTail)) as {
+      steps: Array<Record<string, unknown>>;
+    };
+    expect(Object.hasOwn(serializedFailedWithTail.steps[0]!, 'outputTail')).toBe(true);
+    expect(serializedFailedWithTail.steps[0]).toMatchObject({
+      outputTail: [{ stream: 'stderr', line: 'failure details' }],
+    });
   });
 });
