@@ -17,6 +17,7 @@ import { evaluateCondition, parseCondition, type ConditionReference } from './co
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
 import type { Resolution } from './inputs.js';
+import type { StringTable } from '../i18n/strings.js';
 import { SecretString } from './secrets.js';
 
 /**
@@ -62,6 +63,8 @@ export interface PlanOptions {
   readonly manifestPath: string;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
+  /** Localized titles land in the plan, so events and results show them (S6.3). */
+  readonly strings?: StringTable | undefined;
 }
 
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
@@ -69,7 +72,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
 
   const steps = manifest.steps.map((step): PlannedStep => {
-    const title = step.title ?? step.id;
+    const title = options.strings?.stepTitle(step.id) ?? step.title ?? step.id;
 
     const command = commandFor(step.run, context);
     if (command === undefined) {

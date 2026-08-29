@@ -4,6 +4,8 @@ import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js'
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
+import { loadOverlayText } from '../../src/i18n/overlay.js';
+import { resolveStrings } from '../../src/i18n/strings.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -167,6 +169,45 @@ describe('the Windows honesty rule', () => {
 
   it('does not mind the same file name on linux', () => {
     expect(planFor(lines, { platform: 'linux' }).plan.steps[0]?.state).toBe('PENDING');
+  });
+});
+
+describe('localized titles', () => {
+  it('plans the localized step title, so events and results show it', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    title: Install',
+        '    run:',
+        '      command: node',
+        '',
+      ].join(String.fromCharCode(10)),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const overlay = loadOverlayText(
+      'steps.install.title: Installieren',
+      'locales/de.yaml',
+      'de',
+      manifest,
+    );
+    const plan = buildPlan({
+      manifest,
+      manifestPath: 'installer.yaml',
+      resolution,
+      context,
+      strings: resolveStrings({ manifest, overlay }),
+    });
+
+    expect(plan.steps[0]?.title).toBe('Installieren');
   });
 });
 
