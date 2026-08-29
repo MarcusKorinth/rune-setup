@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { hostPlatform } from '../../src/engine/context.js';
-import { InputError } from '../../src/errors.js';
+import { InputError, InternalError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner } from '../../src/runners/base.js';
@@ -134,6 +134,24 @@ describe('planning and executing', () => {
     const log = readFileSync(logFile, 'utf8');
     expect(log).toContain('[install] SUCCEEDED');
     expect(log).toContain('run finished: succeeded (exit 0)');
+  });
+
+  it('does not start a runner until the log is open and releases a failed execution', async () => {
+    const path = fixture(BASE);
+    const logFile = join(path, '..', 'blocked.log');
+    mkdirSync(logFile);
+    const run = vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }));
+    const session = await Session.open(path, { environment: {}, logFile, runner: { run } });
+
+    await expect(session.execute()).rejects.toMatchObject({
+      code: 'RUNE-500',
+      name: InternalError.name,
+    });
+    expect(run).not.toHaveBeenCalled();
+
+    rmdirSync(logFile);
+    await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it('describes a dry run without executing', async () => {

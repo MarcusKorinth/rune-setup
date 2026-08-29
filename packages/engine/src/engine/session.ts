@@ -251,12 +251,13 @@ export class Session {
     const plan = this.plan();
     const token = cancel ?? new CancelToken();
     this.#cancel = token;
-    const log = this.#logFile === undefined ? undefined : createLogFileSink(this.#logFile);
-    const observers: EngineObserver = (event) => {
-      log?.observer(event);
-      observer?.(event);
-    };
+    let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
     try {
+      log = this.#logFile === undefined ? undefined : await createLogFileSink(this.#logFile);
+      const observers: EngineObserver = (event) => {
+        log?.observer(event);
+        observer?.(event);
+      };
       return await executeRun({
         plan,
         resolution: this.#resolution,
@@ -267,8 +268,11 @@ export class Session {
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),
       });
     } finally {
-      this.#cancel = undefined;
-      await log?.close();
+      try {
+        await log?.close();
+      } finally {
+        this.#cancel = undefined;
+      }
     }
   }
 

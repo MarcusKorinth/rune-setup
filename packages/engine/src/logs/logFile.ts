@@ -4,10 +4,12 @@
  * masked — the executor masks before any observer sees them.
  */
 
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { createWriteStream, fstat, mkdirSync, type Stats, type WriteStream } from 'node:fs';
 import { dirname } from 'node:path';
+import { finished } from 'node:stream/promises';
 
 import type { EngineObserver, RunEvent } from '../engine/events.js';
+import { InternalError, messageOf } from '../errors.js';
 
 export interface LogFileSink {
   readonly observer: EngineObserver;
@@ -15,19 +17,139 @@ export interface LogFileSink {
   close(): Promise<void>;
 }
 
-export function createLogFileSink(path: string): LogFileSink {
-  mkdirSync(dirname(path), { recursive: true });
-  const stream: WriteStream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
+/** Opens the log before returning, so execution cannot start until the sink is usable. */
+export async function createLogFileSink(path: string): Promise<LogFileSink> {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+  } catch (cause) {
+    throw logError('prepare the directory for', path, cause);
+  }
+
+  let stream: WriteStream;
+  try {
+    stream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
+  } catch (cause) {
+    throw logError('open', path, cause);
+  }
+
+  let phase: 'opening' | 'writing' | 'closing' = 'opening';
+  let failure: InternalError | undefined;
+  const rememberFailure = (action: 'open' | 'write to' | 'close', cause: unknown): void => {
+    failure ??= logError(action, path, cause);
+  };
+  // This listener is deliberately permanent: every asynchronous stream failure must have
+  // an owner, including one emitted while end() is flushing buffered writes.
+  stream.on('error', (cause) => {
+    rememberFailure(
+      phase === 'opening' ? 'open' : phase === 'writing' ? 'write to' : 'close',
+      cause,
+    );
+  });
+
+  let descriptor: number;
+  try {
+    descriptor = await new Promise<number>((resolve, reject) => {
+      const opened = (fd: number): void => {
+        stream.removeListener('error', failed);
+        resolve(fd);
+      };
+      const failed = (cause: unknown): void => {
+        stream.removeListener('open', opened);
+        reject(cause);
+      };
+      stream.once('open', opened);
+      stream.once('error', failed);
+    });
+  } catch (cause) {
+    rememberFailure('open', cause);
+    stream.destroy();
+    throw failure;
+  }
+
+  let target: Stats;
+  try {
+    target = await fileStats(descriptor);
+  } catch (cause) {
+    rememberFailure('open', cause);
+    stream.destroy();
+    throw failure;
+  }
+  if (target.isDirectory()) {
+    rememberFailure('open', new Error('the path is a directory'));
+    stream.destroy();
+    throw failure;
+  }
+
+  if (failure !== undefined) {
+    stream.destroy();
+    throw failure;
+  }
+  phase = 'writing';
+
+  let closePromise: Promise<void> | undefined;
 
   return {
     observer: (event) => {
-      stream.write(`${new Date().toISOString()} ${describe(event)}\n`);
+      if (failure !== undefined || phase !== 'writing') {
+        return;
+      }
+      try {
+        stream.write(`${new Date().toISOString()} ${describe(event)}\n`, (cause) => {
+          if (cause !== undefined && cause !== null) {
+            rememberFailure('write to', cause);
+          }
+        });
+      } catch (cause) {
+        rememberFailure('write to', cause);
+      }
     },
-    close: () =>
-      new Promise((resolve) => {
-        stream.end(() => resolve());
-      }),
+    close: () => {
+      closePromise ??= closeStream();
+      return closePromise;
+    },
   };
+
+  async function closeStream(): Promise<void> {
+    phase = 'closing';
+    try {
+      stream.end();
+    } catch (cause) {
+      rememberFailure('close', cause);
+      stream.destroy();
+    }
+
+    try {
+      await finished(stream, { cleanup: true });
+    } catch (cause) {
+      rememberFailure('close', cause);
+    }
+
+    if (failure !== undefined) {
+      throw failure;
+    }
+  }
+}
+
+function fileStats(fd: number): Promise<Stats> {
+  return new Promise((resolve, reject) => {
+    fstat(fd, (cause, stats) => {
+      if (cause === null) {
+        resolve(stats);
+      } else {
+        reject(cause);
+      }
+    });
+  });
+}
+
+function logError(
+  action: 'prepare the directory for' | 'open' | 'write to' | 'close',
+  path: string,
+  cause: unknown,
+): InternalError {
+  return new InternalError(`could not ${action} log file "${path}": ${messageOf(cause)}`, {
+    cause,
+  });
 }
 
 function describe(event: RunEvent): string {
