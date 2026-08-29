@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, PLAN_SCHEMA_VERSION, type ExecutionPlan } from '../../src/engine/plan.js';
-import { isSecretString } from '../../src/engine/secrets.js';
-import { InputError, InternalError } from '../../src/errors.js';
+import { isSecretString, MASK } from '../../src/engine/secrets.js';
+import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -347,6 +347,56 @@ describe('the Windows honesty rule', () => {
     expect(message).toContain('***');
     expect(message).not.toContain('private-setup.cmd');
   });
+
+  it('masks registered secret bytes that collide with a literal command path', () => {
+    const secret = 'hidden-segment';
+    const error = executionError(() =>
+      planFor(
+        [
+          'inputs:',
+          '  token:',
+          '    type: secret',
+          'steps:',
+          '  - id: legacy',
+          '    run:',
+          `      command: tools/${secret}/setup.cmd`,
+        ],
+        { platform: 'windows', overrides: new Map([['token', secret]]) },
+      ),
+    );
+    const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+    expect(error.code).toBe('RUNE-405');
+    expect(diagnostic).not.toContain(secret);
+    expect(error.message).toContain(MASK);
+    expect(error.message).toContain('command: cmd');
+    expect(error.message).toContain('args: ["/c"');
+  });
+
+  it('masks registered secret bytes that collide with a step id', () => {
+    const secret = 'private-step';
+    const error = executionError(() =>
+      planFor(
+        [
+          'inputs:',
+          '  token:',
+          '    type: secret',
+          'steps:',
+          `  - id: ${secret}`,
+          '    run:',
+          '      command: setup.cmd',
+        ],
+        { platform: 'windows', overrides: new Map([['token', secret]]) },
+      ),
+    );
+    const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+    expect(error.code).toBe('RUNE-405');
+    expect(diagnostic).not.toContain(secret);
+    expect(error.message).toContain(MASK);
+    expect(error.message).toContain('command: cmd');
+    expect(error.message).toContain('args: ["/c"');
+  });
 });
 
 describe('secrets in the plan', () => {
@@ -630,4 +680,16 @@ function planningError(
     throw error;
   }
   throw new Error('expected planning to reject the incomplete resolution');
+}
+
+function executionError(action: () => unknown): ExecutionError {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof ExecutionError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error('expected planning to reject the shell-required command');
 }

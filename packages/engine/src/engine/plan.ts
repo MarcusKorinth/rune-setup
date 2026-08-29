@@ -347,10 +347,8 @@ function resolveCommand(
     ? secretMatches(command, /\.(bat|cmd)$/i)
     : /\.(bat|cmd)$/i.test(command);
   if (context.platform === 'windows' && isBatchFile) {
-    throw new ExecutionError(
-      'RUNE-405',
-      `step "${stepId}" runs "${commandShown}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${commandShown}", ...]`,
-    );
+    const message = `step "${stepId}" runs "${commandShown}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${commandShown}", ...]`;
+    throw new ExecutionError('RUNE-405', resolution.secrets.mask(message));
   }
 
   const cwd =
