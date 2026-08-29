@@ -239,7 +239,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
   const environmentValue = (name: string): string | undefined =>
     environmentValues.get(host === 'windows' ? name.toLowerCase() : name);
 
-  return {
+  return Object.freeze({
     platform,
     manifestDir,
     preview,
@@ -277,7 +277,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
           );
       }
     },
-  };
+  });
 }
 
 function validatePreviewPlatform(platform: unknown): Platform {

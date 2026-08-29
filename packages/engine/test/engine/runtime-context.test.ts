@@ -171,6 +171,25 @@ describe('the values behind the built-in names', () => {
     expect(runtime.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
   });
 
+  it('freezes its public snapshot', () => {
+    const runtime = contextFor(host, { SNAPSHOT_VALUE: 'kept' });
+
+    expect(Object.isFrozen(runtime)).toBe(true);
+    expect(Reflect.set(runtime, 'platform', other)).toBe(false);
+    expect(Reflect.set(runtime, 'manifestDir', '/other-project')).toBe(false);
+    expect(Reflect.set(runtime, 'preview', !runtime.preview)).toBe(false);
+    expect(Reflect.set(runtime, 'environmentValue', () => 'replaced')).toBe(false);
+    expect(Reflect.set(runtime, 'valueOf', () => 'replaced')).toBe(false);
+
+    expect(runtime.platform).toBe(host);
+    expect(runtime.manifestDir).toBe('/project');
+    expect(runtime.preview).toBe(false);
+    expect(runtime.environmentValue('SNAPSHOT_VALUE')).toBe('kept');
+    expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(runtime.valueOf({ kind: 'environment', name: 'SNAPSHOT_VALUE' })).toBe('kept');
+  });
+
   it('refuses an environment variable the machine does not have', () => {
     let thrown: unknown;
     try {
