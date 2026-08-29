@@ -69,6 +69,8 @@ export interface RunResult {
   readonly dryRun: boolean;
   readonly crossPlatformPreview: boolean;
   readonly platform: string;
+  /** The selected display locale of the run, `null` for the built-in defaults (§6.3, §10). */
+  readonly locale: string | null;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly durationMs: number;

@@ -54,6 +54,7 @@ export const runResultSchema = z.strictObject({
   dryRun: z.boolean(),
   crossPlatformPreview: z.boolean(),
   platform: z.string(),
+  locale: z.union([z.string(), z.null()]),
   startedAt: z.string(),
   finishedAt: z.string(),
   durationMs: z.number(),

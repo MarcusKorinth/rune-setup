@@ -16,6 +16,7 @@ describe('the result schema', () => {
         'product:',
         '  name: Example',
         '  version: "1.0.0"',
+        '  description: More than the identity fields',
         'steps:',
         '  - id: a',
         '    run:',

@@ -50,6 +50,8 @@ export type PlannedStep =
 
 export interface ExecutionPlan {
   readonly manifestPath: string;
+  /** The session's selected display locale, or nothing for the built-in defaults (§6.3). */
+  readonly locale: string | undefined;
   readonly platform: RuntimeContext['platform'];
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
@@ -103,6 +105,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
 
   return deepFreeze({
     manifestPath: options.manifestPath,
+    locale: options.strings?.locale,
     platform: context.platform,
     preview: context.preview,
     failFast: manifest.execution.failFast,

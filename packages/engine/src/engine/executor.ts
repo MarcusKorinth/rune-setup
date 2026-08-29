@@ -245,11 +245,14 @@ function assembleResult(input: {
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
+    locale: input.plan.locale ?? null,
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
     durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
     runeVersion: RUNE_VERSION,
-    product: input.product,
+    // Identity only: a manifest's product block may carry more (a description), and the
+    // result schema pins exactly these two fields (§10).
+    product: { name: input.product.name, version: input.product.version },
     manifestPath: input.plan.manifestPath,
     stepsTotal: steps.length,
     stepsExecuted: executed,
