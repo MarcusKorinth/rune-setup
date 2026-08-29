@@ -203,13 +203,14 @@ describe('precedence', () => {
 });
 
 describe('resolved multiselect values', () => {
+  const manifest = manifestOf(
+    'inputs:',
+    '  tools:',
+    '    type: multiselect',
+    '    options: [git, docker]',
+  );
+
   it('cannot be changed through the layer-5 array after resolution', () => {
-    const manifest = manifestOf(
-      'inputs:',
-      '  tools:',
-      '    type: multiselect',
-      '    options: [git, docker]',
-    );
     const answer = ['git'];
     const resolution = resolve(manifest, { answers: new Map([['tools', answer]]) });
     const resolved = resolution.byId.get('tools')?.value;
@@ -218,6 +219,55 @@ describe('resolved multiselect values', () => {
 
     expect(resolved).toEqual(['git']);
     expect(Object.isFrozen(resolved)).toBe(true);
+  });
+
+  it('classifies a proxied programmatic values entry as RUNE-202', () => {
+    const proxied = new Proxy(['git'], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error('must become an input error');
+      },
+    });
+    const error = inputError(manifest, {
+      values: [values('programmatic.yaml', { tools: proxied })],
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toMatchObject([
+      {
+        code: 'RUNE-202',
+        message: 'tools (from programmatic.yaml): array is not a list of option values',
+      },
+    ]);
+  });
+
+  it('collects an accessor answer as RUNE-202 without calling its getter', () => {
+    const answer = ['decoy'];
+    let getterCalls = 0;
+    Object.defineProperty(answer, '0', {
+      get: () => {
+        getterCalls += 1;
+        return 'git';
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    const resolution = resolveInputs({
+      manifest,
+      context: contextFor(manifest),
+      answers: new Map([['tools', answer]]),
+      secrets: new SecretRegistry(),
+      invalidValues: 'collect',
+    });
+
+    expect(resolution.problems).toMatchObject([
+      {
+        code: 'RUNE-202',
+        message: 'tools (from the answer): array is not a list of option values',
+      },
+    ]);
+    expect(resolution.byId.get('tools')?.value).toBeUndefined();
+    expect(getterCalls).toBe(0);
   });
 });
 

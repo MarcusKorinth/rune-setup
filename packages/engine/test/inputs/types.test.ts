@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SecretString } from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
@@ -261,6 +261,83 @@ describe('multiselect', () => {
     expect(handler('multiselect').fromNative(['git', 7], spec('multiselect', options)).ok).toBe(
       false,
     );
+  });
+
+  it('reads array subclasses without invoking their collection hooks', () => {
+    class HookedSelection extends Array<string> {}
+
+    const written = new HookedSelection();
+    Object.defineProperty(written, '0', {
+      value: 'git',
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    written.length = 1;
+
+    const hooks = ['some', 'filter', 'map'] as const;
+    const spies = hooks.map((name) => {
+      const hook = vi.fn(() => {
+        throw new Error(`${name} must not be called`);
+      });
+      Object.defineProperty(written, name, { value: hook });
+      return hook;
+    });
+    const iterator = vi.fn(() => {
+      throw new Error('iterator must not be called');
+    });
+    Object.defineProperty(written, Symbol.iterator, { value: iterator });
+
+    const result = handler('multiselect').fromNative(written, spec('multiselect', options));
+
+    expect(result).toEqual({ ok: true, value: ['git'] });
+    expect(Object.isFrozen(result.ok ? result.value : undefined)).toBe(true);
+    expect(spies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+    expect(iterator).not.toHaveBeenCalled();
+  });
+
+  it('rejects sparse and accessor entries without reading through them', () => {
+    const sparse = new Array<string>(1);
+    const accessor = ['decoy'];
+    let getterCalls = 0;
+    Object.defineProperty(accessor, '0', {
+      get: () => {
+        getterCalls += 1;
+        return 'git';
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    expect(handler('multiselect').fromNative(sparse, spec('multiselect', options))).toEqual({
+      ok: false,
+      message: 'array is not a list of option values',
+    });
+    expect(handler('multiselect').fromNative(accessor, spec('multiselect', options))).toEqual({
+      ok: false,
+      message: 'array is not a list of option values',
+    });
+    expect(getterCalls).toBe(0);
+  });
+
+  it('rejects throwing and revoked proxies without invoking their traps or throwing', () => {
+    let descriptorCalls = 0;
+    const throwing = new Proxy(['git'], {
+      getOwnPropertyDescriptor: () => {
+        descriptorCalls += 1;
+        throw new Error('descriptor trap must not escape');
+      },
+    });
+    const revocable = Proxy.revocable(['git'], {});
+    revocable.revoke();
+
+    for (const value of [throwing, revocable.proxy]) {
+      expect(() =>
+        handler('multiselect').fromNative(value, spec('multiselect', options)),
+      ).not.toThrow();
+      expect(handler('multiselect').fromNative(value, spec('multiselect', options)).ok).toBe(false);
+    }
+    expect(descriptorCalls).toBe(0);
   });
 
   it('also freezes selections parsed from text and the type-provided empty value', () => {

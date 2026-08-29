@@ -7,6 +7,8 @@
  * value is matched against its `pattern`.
  */
 
+import { isProxy } from 'node:util/types';
+
 import { MASK, normalizeSecretString, SecretString } from '../engine/secrets.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
@@ -208,6 +210,46 @@ function membership(entries: readonly string[], spec: InputSpec): Coercion {
   );
 }
 
+/**
+ * Copies a native multiselect value without invoking anything the supplied array controls.
+ * Proxies are not stable snapshots, and accessors or holes are not list entries, so only an
+ * array's own data properties are accepted.
+ */
+function nativeStringArraySnapshot(value: unknown): string[] | undefined {
+  try {
+    if (isProxy(value) || !Array.isArray(value)) {
+      return undefined;
+    }
+
+    const lengthProperty = Object.getOwnPropertyDescriptor(value, 'length');
+    const length = lengthProperty?.value;
+    if (
+      typeof length !== 'number' ||
+      !Number.isInteger(length) ||
+      length < 0 ||
+      length > 0xffff_ffff
+    ) {
+      return undefined;
+    }
+
+    const entries: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const entryProperty = Object.getOwnPropertyDescriptor(value, String(index));
+      if (
+        entryProperty === undefined ||
+        !('value' in entryProperty) ||
+        typeof entryProperty.value !== 'string'
+      ) {
+        return undefined;
+      }
+      entries[index] = entryProperty.value;
+    }
+    return entries;
+  } catch {
+    return undefined;
+  }
+}
+
 const multiselect: InputTypeHandler = {
   name: 'multiselect',
   secret: false,
@@ -218,10 +260,11 @@ const multiselect: InputTypeHandler = {
     if (typeof value === 'string') {
       return multiselectFromString(value, spec);
     }
-    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    const entries = nativeStringArraySnapshot(value);
+    if (entries === undefined) {
       return fail(`${describe(value)} is not a list of option values`);
     }
-    return membership(value as string[], spec);
+    return membership(entries, spec);
   },
   render: (value) => (Array.isArray(value) ? value.join(',') : String(value)),
   compare: (value) => (Array.isArray(value) ? (value as readonly string[]) : []),
