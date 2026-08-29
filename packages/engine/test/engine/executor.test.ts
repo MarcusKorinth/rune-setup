@@ -7,9 +7,9 @@ import { describe, expect, it } from 'vitest';
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { describePlan, executeRun, OUTPUT_TAIL_LINES } from '../../src/engine/executor.js';
-import { resolveInputs } from '../../src/engine/inputs.js';
+import { resolveInputs, resolveInputsWithRegistry } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
-import { isSecretString } from '../../src/engine/secrets.js';
+import { isSecretString, SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
@@ -995,6 +995,86 @@ describe('skipped steps and the dry run', () => {
 
     expect(result.steps[0]?.command).toEqual(['a', '--token', '***']);
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
+  });
+
+  it('keeps plan masking fixed after its retained registry later changes', async () => {
+    const original = 'resolved-secret';
+    const later = 'later-secret';
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  note:',
+        '    type: text',
+        `    default: ${later}`,
+        'steps:',
+        '  - id: use',
+        `    title: "${original} ${later}"`,
+        '    run:',
+        `      command: ${original}`,
+        `      args: [${later}]`,
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context,
+        environment: {},
+        overrides: new Map([['token', original]]),
+      },
+      secrets,
+    );
+    const plan = buildPlan({ manifest, resolution, context });
+
+    secrets.register(later);
+
+    const described = describePlan({ plan });
+    expect(described.inputs.find((input) => input.id === 'note')?.value).toBe(later);
+    expect(described.steps[0]).toMatchObject({
+      title: `*** ${later}`,
+      command: ['***', later],
+    });
+
+    const events: RunEvent[] = [];
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', `${original} ${later}`);
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    const started = events.find((event) => event.kind === 'runStarted');
+    expect(started?.kind).toBe('runStarted');
+    if (started?.kind !== 'runStarted') {
+      throw new Error('runStarted event was not emitted');
+    }
+    expect(started.plan.resolvedInputs.find((input) => input.id === 'note')?.value).toBe(later);
+    expect(started.plan.steps[0]).toMatchObject({
+      title: `*** ${later}`,
+      command: { argv: ['***', later] },
+    });
+    expect(events.find((event) => event.kind === 'stepOutput')).toMatchObject({
+      line: `*** ${later}`,
+    });
+    expect(result.inputs.find((input) => input.id === 'note')?.value).toBe(later);
+    expect(result.steps[0]).toMatchObject({
+      title: `*** ${later}`,
+      command: ['***', later],
+      outputTail: [{ stream: 'stderr', line: `*** ${later}` }],
+    });
   });
 
   it('serializes the manifest identity bound before the source file changes', async () => {

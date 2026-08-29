@@ -18,6 +18,11 @@ export const MASK = '***';
  */
 export const MIN_MASKABLE_LENGTH = 4;
 
+/** Internal mask-only capability captured with a resolved input set or execution plan. */
+export interface SecretMasker {
+  mask(text: string): string;
+}
+
 /**
  * A string that does not show itself. The public shape exposes only safe stringification;
  * every operation over the hidden text is a narrowly named package-internal helper.
@@ -172,59 +177,70 @@ export class SecretRegistry {
     return this.#values.size;
   }
 
+  /** Captures the current patterns without exposing registry mutation capabilities. */
+  snapshot(): SecretMasker {
+    const patterns = Object.freeze([...this.#patterns]);
+    return Object.freeze({ mask: (text: string): string => maskWithPatterns(text, patterns) });
+  }
+
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
-    // One slot per input position bounds temporary storage by the text length, even when
-    // many self-overlapping patterns all match at nearly every position.
-    const matchEnds = new Uint32Array(text.length);
-    let hasMatches = false;
-
-    // Match every pattern against the original text. Advancing one character at a time
-    // deliberately retains self-overlapping occurrences such as "aaaa" in "aaaaa".
-    for (const secret of this.#patterns) {
-      let start = text.indexOf(secret);
-      while (start !== -1) {
-        const end = start + secret.length;
-        if (end > (matchEnds[start] ?? 0)) {
-          matchEnds[start] = end;
-        }
-        hasMatches = true;
-        start = text.indexOf(secret, start + 1);
-      }
-    }
-
-    if (!hasMatches) {
-      return text;
-    }
-
-    const parts: string[] = [];
-    let cursor = 0;
-    let rangeStart = -1;
-    let rangeEnd = 0;
-
-    for (let start = 0; start < matchEnds.length; start += 1) {
-      const end = matchEnds[start] ?? 0;
-      if (end === 0) {
-        continue;
-      }
-
-      if (rangeStart === -1) {
-        rangeStart = start;
-        rangeEnd = end;
-      } else if (start < rangeEnd) {
-        rangeEnd = Math.max(rangeEnd, end);
-      } else {
-        // Adjacent occurrences are intentionally separate masks.
-        parts.push(text.slice(cursor, rangeStart), MASK);
-        cursor = rangeEnd;
-        rangeStart = start;
-        rangeEnd = end;
-      }
-    }
-
-    parts.push(text.slice(cursor, rangeStart), MASK);
-    cursor = rangeEnd;
-    parts.push(text.slice(cursor));
-    return parts.join('');
+    return maskWithPatterns(text, this.#patterns);
   }
+}
+
+/** Shared overlap-safe implementation for the mutable registry and immutable snapshots. */
+function maskWithPatterns(text: string, patterns: readonly string[]): string {
+  // One slot per input position bounds temporary storage by the text length, even when
+  // many self-overlapping patterns all match at nearly every position.
+  const matchEnds = new Uint32Array(text.length);
+  let hasMatches = false;
+
+  // Match every pattern against the original text. Advancing one character at a time
+  // deliberately retains self-overlapping occurrences such as "aaaa" in "aaaaa".
+  for (const secret of patterns) {
+    let start = text.indexOf(secret);
+    while (start !== -1) {
+      const end = start + secret.length;
+      if (end > (matchEnds[start] ?? 0)) {
+        matchEnds[start] = end;
+      }
+      hasMatches = true;
+      start = text.indexOf(secret, start + 1);
+    }
+  }
+
+  if (!hasMatches) {
+    return text;
+  }
+
+  const parts: string[] = [];
+  let cursor = 0;
+  let rangeStart = -1;
+  let rangeEnd = 0;
+
+  for (let start = 0; start < matchEnds.length; start += 1) {
+    const end = matchEnds[start] ?? 0;
+    if (end === 0) {
+      continue;
+    }
+
+    if (rangeStart === -1) {
+      rangeStart = start;
+      rangeEnd = end;
+    } else if (start < rangeEnd) {
+      rangeEnd = Math.max(rangeEnd, end);
+    } else {
+      // Adjacent occurrences are intentionally separate masks.
+      parts.push(text.slice(cursor, rangeStart), MASK);
+      cursor = rangeEnd;
+      rangeStart = start;
+      rangeEnd = end;
+    }
+  }
+
+  parts.push(text.slice(cursor, rangeStart), MASK);
+  cursor = rangeEnd;
+  parts.push(text.slice(cursor));
+  return parts.join('');
 }

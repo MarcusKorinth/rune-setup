@@ -102,6 +102,24 @@ describe('SecretRegistry', () => {
     expect(registry.mask('abcdefghijk')).toBe(MASK);
   });
 
+  it('captures immutable mask-only snapshots with the same overlap handling', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcde');
+    registry.register('defghijk');
+    const snapshot = registry.snapshot();
+
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(snapshot).not.toHaveProperty('register');
+    expect(snapshot).not.toHaveProperty('size');
+    expect(snapshot.mask('abcdefghijk')).toBe(MASK);
+
+    registry.register('later-secret');
+
+    expect(registry.mask('later-secret')).toBe(MASK);
+    expect(snapshot.mask('later-secret')).toBe('later-secret');
+    expect(snapshot.mask('abcdefghijk')).toBe(MASK);
+  });
+
   it('masks contained secrets as one range', () => {
     const registry = new SecretRegistry();
     registry.register('secret');

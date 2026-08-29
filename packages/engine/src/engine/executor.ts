@@ -19,7 +19,7 @@ import {
 } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import { deepFreeze } from './freeze.js';
-import { isSecretString, MASK, type SecretRegistry, type SecretString } from './secrets.js';
+import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
@@ -304,7 +304,7 @@ function assembleResult(input: {
   });
 }
 
-function resultInput(state: PlanInput, secrets: SecretRegistry): ResultInput {
+function resultInput(state: PlanInput, secrets: SecretMasker): ResultInput {
   const value = state.value;
   const result = {
     id: state.id,
@@ -325,7 +325,7 @@ function finishedStep(
   durationMs: number,
   command: readonly string[] | null,
   outputTail: readonly ResultOutputLine[],
-  secrets: SecretRegistry,
+  secrets: SecretMasker,
 ): ResultStep {
   const result = {
     id: step.id,
@@ -340,7 +340,7 @@ function finishedStep(
 }
 
 /** A clone-safe projection: observers never receive the opaque values used for spawning. */
-function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
+function planForObserver(plan: ExecutionPlan, secrets: SecretMasker): ExecutionPlan {
   return deepFreeze({
     planSchemaVersion: plan.planSchemaVersion,
     manifestPath: plan.manifestPath,
@@ -391,7 +391,7 @@ function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): Executio
 
 function maskInputValue(
   value: string | boolean | readonly string[],
-  secrets: SecretRegistry,
+  secrets: SecretMasker,
 ): ResultInput['value'] {
   if (typeof value === 'string') {
     return secrets.mask(value);
@@ -402,7 +402,7 @@ function maskInputValue(
   return value;
 }
 
-function maskPlanInputValue(input: PlanInput, secrets: SecretRegistry): PlanInput['value'] {
+function maskPlanInputValue(input: PlanInput, secrets: SecretMasker): PlanInput['value'] {
   if (input.secret || isSecretString(input.value)) {
     return MASK;
   }
@@ -415,11 +415,11 @@ function maskPlanInputValue(input: PlanInput, secrets: SecretRegistry): PlanInpu
   return input.value;
 }
 
-function maskCommandValue(value: string | SecretString, secrets: SecretRegistry): string {
+function maskCommandValue(value: string | SecretString, secrets: SecretMasker): string {
   return isSecretString(value) ? MASK : secrets.mask(value);
 }
 
-function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[] | null {
+function maskArgv(step: PlannedStep, secrets: SecretMasker): readonly string[] | null {
   if (step.state !== 'PENDING') {
     return null;
   }

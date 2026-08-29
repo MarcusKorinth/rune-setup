@@ -41,7 +41,7 @@ import {
   type ResolutionSnapshot,
   type ValueSource,
 } from './inputs.js';
-import type { SecretRegistry } from './secrets.js';
+import type { SecretMasker } from './secrets.js';
 import { deepFreeze } from './freeze.js';
 
 /** The independently versioned public shape of an execution plan (§7). */
@@ -113,7 +113,7 @@ export interface PlanOptions {
 export interface PlanExecutionContext {
   readonly product: { readonly name: string; readonly version: string };
   readonly manifest: ManifestDescriptor;
-  readonly secrets: SecretRegistry;
+  readonly secrets: SecretMasker;
 }
 
 const executionContexts = new WeakMap<ExecutionPlan, PlanExecutionContext>();
@@ -195,7 +195,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
 function snapshotExecutionContext(
   manifest: ManifestV1,
   manifestDescriptor: ManifestDescriptor,
-  secrets: SecretRegistry,
+  secrets: SecretMasker,
 ): PlanExecutionContext {
   const product = Object.freeze({
     name: manifest.product.name,

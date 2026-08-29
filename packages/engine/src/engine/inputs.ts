@@ -26,6 +26,7 @@ import {
   registerSecretForMasking,
   SecretRegistry,
   secretLength,
+  type SecretMasker,
   type SecretString,
 } from './secrets.js';
 
@@ -102,7 +103,7 @@ export interface ResolutionSnapshot {
   readonly context: RuntimeContext;
   readonly inputs: readonly InputState[];
   readonly byId: ReadonlyMap<string, InputState>;
-  readonly secrets: SecretRegistry;
+  readonly secrets: SecretMasker;
   readonly missing: readonly string[];
   readonly warnings: readonly string[];
   readonly problems: readonly RuneIssue[];
@@ -271,7 +272,7 @@ export function resolveInputsWithRegistry(
       context,
       inputs,
       byId: canonicalById,
-      secrets,
+      secrets: secrets.snapshot(),
       missing,
       warnings: frozenWarnings,
       problems: frozenProblems,

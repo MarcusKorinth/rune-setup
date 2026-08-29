@@ -9,6 +9,7 @@ import {
   parseValuesFile,
   resolveInputs,
   resolveInputsWithRegistry,
+  resolutionSnapshotFor,
   type Resolution,
   type ResolveInputsOptions,
   type ValuesDocument,
@@ -622,6 +623,27 @@ describe('secrets', () => {
 
     expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
     expect(resolution).not.toHaveProperty('secrets');
+  });
+
+  it('keeps the private masking snapshot stable when a retained registry changes', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context: contextFor(manifest),
+        environment: {},
+        overrides: new Map([['token', 'resolved-secret']]),
+      },
+      secrets,
+    );
+    const snapshot = resolutionSnapshotFor(resolution).secrets;
+
+    secrets.register('later-secret');
+
+    expect(snapshot.mask('resolved-secret')).toBe('***');
+    expect(snapshot.mask('later-secret')).toBe('later-secret');
+    expect(snapshot).not.toHaveProperty('register');
+    expect(snapshot).not.toHaveProperty('size');
   });
 
   it('warns about a secret too short to mask instead of failing or staying silent', () => {
