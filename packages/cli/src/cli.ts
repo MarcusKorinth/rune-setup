@@ -100,9 +100,10 @@ function report(error: unknown, io: CliIo): number {
     return exitCodeFor(error);
   }
   if (error instanceof CommanderError) {
-    // commander already printed its message through configureOutput; --version and help
-    // "fail" parsing with dedicated codes that mean a clean exit.
-    return error.code === 'commander.version' || error.code === 'commander.help' ? 0 : 2;
+    // commander already printed through configureOutput. `--version` and requested help
+    // ('commander.helpDisplayed') are clean exits; everything else — including
+    // 'commander.help', which commander throws for a bare invocation — is CLI misuse (§10).
+    return error.code === 'commander.version' || error.code === 'commander.helpDisplayed' ? 0 : 2;
   }
   io.stderr(`internal error: ${error instanceof Error ? error.message : String(error)}`);
   return 70;

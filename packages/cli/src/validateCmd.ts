@@ -8,13 +8,16 @@ import { dirname, resolve } from 'node:path';
 
 import { discoverOverlays, formatLocation, loadOverlay, validateManifest } from '@rune/engine';
 
+import { parsePlatform } from './args.js';
 import type { CliIo } from './io.js';
 
 export async function validateCommand(
   manifestPath: string,
-  _flags: { platform?: string | undefined; locale?: string | undefined },
+  flags: { platform?: string | undefined; locale?: string | undefined },
   io: CliIo,
 ): Promise<void> {
+  // Validation is fully static, but a bogus value must fail the same way run fails it.
+  parsePlatform(flags.platform);
   const absolute = resolve(manifestPath);
   const report = validateManifest(absolute);
   const { manifest } = report;

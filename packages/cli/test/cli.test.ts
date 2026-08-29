@@ -140,6 +140,41 @@ describe('rune run', () => {
   });
 });
 
+describe('help and misuse', () => {
+  it('exits 0 for requested help and 2 for a bare invocation', async () => {
+    expect(await run(['--help'], capture())).toBe(0);
+    expect(await run([], capture())).toBe(2);
+  });
+});
+
+describe('result files for failed outcomes', () => {
+  it('writes a config_error result when the manifest is invalid', async () => {
+    const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--result', resultPath], io)).toBe(3);
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written['status']).toBe('config_error');
+    expect(written['exitCode']).toBe(3);
+  });
+
+  it('keeps stdout pure JSON under --dry-run --result -', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--dry-run', '--non-interactive', '--set', 'greeting=hi', '--result', '-'],
+      io,
+    );
+
+    expect(code).toBe(0);
+    const result = JSON.parse(io.out.join('\n')) as Record<string, unknown>;
+    expect(result['status']).toBe('planned');
+    expect(result['dryRun']).toBe(true);
+  });
+});
+
 describe('rune --version', () => {
   it('prints its own version and the engine version', async () => {
     const io = capture();

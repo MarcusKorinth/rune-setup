@@ -9,16 +9,18 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  EXIT_CODE_BY_STATUS,
   exitCodeFor,
-  InputError,
   RUNE_VERSION,
+  RuneError,
   Session,
   UsageError,
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { RunResult } from '@rune/engine';
+import type { RunResult, RunStatus } from '@rune/engine';
 
+import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
 
@@ -39,39 +41,47 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
   }
   const platform = parsePlatform(flags.platform);
 
-  const session = await Session.open(manifestPath, {
-    values: flags.values ?? [],
-    overrides: parseOverrides(flags.set ?? []),
-    locale: flags.locale,
-    logFile: flags.logFile,
-    ...(platform === undefined ? {} : { platform }),
-  });
-
-  let result: RunResult;
+  let session: Session | undefined;
   try {
-    result =
+    session = await Session.open(manifestPath, {
+      values: flags.values ?? [],
+      overrides: parseOverrides(flags.set ?? []),
+      locale: flags.locale,
+      logFile: flags.logFile,
+      ...(platform === undefined ? {} : { platform }),
+    });
+
+    const result =
       flags.dryRun === true ? session.describe() : await session.execute(progressObserver(io));
+
+    // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
+    if (flags.dryRun === true && flags.result !== '-') {
+      renderPlan(result, io);
+    }
+    renderOutcome(result, session.warnings(), io);
+    if (flags.result !== undefined) {
+      deliverResult(result, flags.result, io);
+    }
+    if (result.exitCode !== 0) {
+      throw new ExitWithCode(result.exitCode);
+    }
   } catch (error) {
-    // Resolution said no (every missing input already listed): still deliver a result file
-    // with the matching status before the exit code (§10, never-block contract).
-    if (error instanceof InputError && flags.result !== undefined) {
+    if (error instanceof ExitWithCode) {
+      throw error;
+    }
+    // The result file is written on every outcome the run owns — manifest, input,
+    // resolution, cancellation, internal — only usage errors skip it (§10).
+    if (
+      error instanceof RuneError &&
+      !(error instanceof UsageError) &&
+      flags.result !== undefined
+    ) {
       io.stderr(error.message);
       const code = exitCodeFor(error);
-      deliverResult(failureShell(session, code, manifestPath), flags.result, io);
+      deliverResult(failureShell({ session, code, manifestPath, flags }), flags.result, io);
       throw new ExitWithCode(code);
     }
     throw error;
-  }
-
-  if (flags.dryRun === true) {
-    renderPlan(result, io);
-  }
-  renderOutcome(result, session.warnings(), io);
-  if (flags.result !== undefined) {
-    deliverResult(result, flags.result, io);
-  }
-  if (result.exitCode !== 0) {
-    throw new ExitWithCode(result.exitCode);
   }
 }
 
@@ -85,48 +95,40 @@ function deliverResult(result: RunResult, destination: string, io: CliIo): void 
   io.stderr(`result written to ${destination}`);
 }
 
-function parseOverrides(pairs: readonly string[]): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  for (const pair of pairs) {
-    const separator = pair.indexOf('=');
-    if (separator <= 0) {
-      throw new UsageError(`--set expects key=value, got "${pair}"`);
-    }
-    overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
-  }
-  return overrides;
-}
-
-function parsePlatform(raw: string | undefined): 'windows' | 'linux' | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (raw !== 'windows' && raw !== 'linux') {
-    throw new UsageError(`--platform must be windows or linux, got "${raw}"`);
-  }
-  return raw;
-}
-
 /**
- * The result file of a run that never started (§10): the input_error shell with zero
- * counters — honest about the fact that resolution refused before any plan existed.
+ * The result file of a run that never happened (§10): the failing status with zero
+ * counters — honest about the fact that the pipeline refused before any plan existed.
  */
-function failureShell(session: Session, exitCode: number, manifestPath: string): RunResult {
+function failureShell(options: {
+  session: Session | undefined;
+  code: number;
+  manifestPath: string;
+  flags: RunFlags;
+}): RunResult {
+  const { session, code, flags } = options;
   const now = new Date().toISOString();
+  const host = process.platform === 'win32' ? 'windows' : 'linux';
+  const platform =
+    flags.platform === 'windows' || flags.platform === 'linux' ? flags.platform : host;
   return {
     resultSchemaVersion: 1,
     id: randomUUID(),
-    status: 'input_error',
-    exitCode,
-    dryRun: false,
-    crossPlatformPreview: false,
-    platform: process.platform === 'win32' ? 'windows' : 'linux',
+    status: statusForExit(code),
+    exitCode: code,
+    dryRun: flags.dryRun === true,
+    crossPlatformPreview: platform !== host,
+    platform,
+    locale: session?.getStrings().locale ?? null,
     startedAt: now,
     finishedAt: now,
     durationMs: 0,
     runeVersion: RUNE_VERSION,
-    product: session.manifest.product,
-    manifestPath,
+    // A manifest that failed to parse has no product to report; empty identity says so.
+    product:
+      session === undefined
+        ? { name: '', version: '' }
+        : { name: session.manifest.product.name, version: session.manifest.product.version },
+    manifestPath: options.manifestPath,
     stepsTotal: 0,
     stepsExecuted: 0,
     stepsSucceeded: 0,
@@ -138,4 +140,14 @@ function failureShell(session: Session, exitCode: number, manifestPath: string):
     inputs: [],
     steps: [],
   };
+}
+
+/** The §10 table read backwards: every exit code implies exactly one status. */
+function statusForExit(code: number): RunStatus {
+  for (const [status, exit] of Object.entries(EXIT_CODE_BY_STATUS)) {
+    if (exit === code && status !== 'planned' && status !== 'succeeded') {
+      return status as RunStatus;
+    }
+  }
+  return 'internal_error';
 }
