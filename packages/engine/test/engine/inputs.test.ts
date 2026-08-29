@@ -1057,6 +1057,20 @@ describe('collected rejected values', () => {
 describe('secrets', () => {
   const manifest = manifestOf('inputs:', '  token:', '    type: secret');
 
+  function existingRegistry(): SecretRegistry {
+    const secrets = new SecretRegistry();
+    secrets.register('existing-secret');
+    // Exercise replacement after the lazy longest-first cache has already been populated.
+    expect(secrets.mask('existing-secret')).toBe('***');
+    return secrets;
+  }
+
+  function expectExistingRegistryUnchanged(secrets: SecretRegistry): void {
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('existing-secret')).toBe('***');
+    expect(secrets.mask('candidate-secret')).toBe('candidate-secret');
+  }
+
   it('takes a resolved value back as an answer, which is how a frontend re-resolves', () => {
     const first = resolve(manifest, { overrides: new Map([['token', 'hunter2-and-more']]) });
     const answer = first.byId.get('token')?.value;
@@ -1102,6 +1116,101 @@ describe('secrets', () => {
     expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
     expect(secrets.size).toBe(1);
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
+  });
+
+  it('leaves a prefilled registry unchanged when an unknown key rejects resolution', () => {
+    const secrets = existingRegistry();
+    const error = inputError(manifest, {
+      overrides: new Map([
+        ['token', 'candidate-secret'],
+        ['unknown', 'value'],
+      ]),
+      secrets,
+    });
+
+    expect(error.code).toBe('RUNE-203');
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('leaves a prefilled registry unchanged when a later input is invalid', () => {
+    const withInvalidLaterInput = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]+"',
+    );
+    const secrets = existingRegistry();
+    const error = inputError(withInvalidLaterInput, {
+      overrides: new Map([
+        ['token', 'candidate-secret'],
+        ['port', 'not-a-port'],
+      ]),
+      secrets,
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('leaves a prefilled registry unchanged when a later default cannot resolve', () => {
+    const withUnresolvedLaterDefault = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  directory:',
+      '    type: directory',
+      '    default: "${env.NOT_SET_ANYWHERE}/app"',
+    );
+    const secrets = existingRegistry();
+
+    expect(() =>
+      resolve(withUnresolvedLaterDefault, {
+        overrides: new Map([['token', 'candidate-secret']]),
+        secrets,
+      }),
+    ).toThrow(ResolutionError);
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('replaces stale secrets after success and stays stable on identical re-resolution', () => {
+    const secrets = new SecretRegistry();
+
+    resolve(manifest, { overrides: new Map([['token', 'first-secret']]), secrets });
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('first-secret')).toBe('***');
+
+    resolve(manifest, { overrides: new Map([['token', 'second-secret']]), secrets });
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('first-secret')).toBe('first-secret');
+    expect(secrets.mask('second-secret')).toBe('***');
+
+    resolve(manifest, { overrides: new Map([['token', 'second-secret']]), secrets });
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('second-secret')).toBe('***');
+  });
+
+  it('publishes only accepted secrets when invalid values are collected', () => {
+    const withRejectedSecret = manifestOf(
+      'inputs:',
+      '  accepted:',
+      '    type: secret',
+      '  rejected:',
+      '    type: secret',
+    );
+    const secrets = existingRegistry();
+    const resolution = resolve(withRejectedSecret, {
+      overrides: new Map([['accepted', 'current-secret']]),
+      answers: new Map([['rejected', undefined as unknown as InputValue]]),
+      invalidValues: 'collect',
+      secrets,
+    });
+
+    expect(resolution.problems).toMatchObject([{ code: 'RUNE-202' }]);
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('existing-secret')).toBe('existing-secret');
+    expect(secrets.mask('current-secret')).toBe('***');
   });
 
   it('registers exactly the stable value returned from an untrusted wrapper', () => {

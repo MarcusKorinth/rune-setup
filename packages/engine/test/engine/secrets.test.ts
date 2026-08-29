@@ -186,6 +186,22 @@ describe('SecretRegistry', () => {
     expect(registry.size).toBe(1);
   });
 
+  it('replaces its contents from a private snapshot of another registry', () => {
+    const target = new SecretRegistry();
+    target.register('previous-secret');
+    expect(target.mask('previous-secret')).toBe(MASK);
+
+    const source = new SecretRegistry();
+    source.register('current-secret');
+    target.replaceWith(source);
+    source.register('later-secret');
+
+    expect(target.size).toBe(1);
+    expect(target.mask('previous-secret')).toBe('previous-secret');
+    expect(target.mask('current-secret')).toBe(MASK);
+    expect(target.mask('later-secret')).toBe('later-secret');
+  });
+
   it('sorts registered secrets only before masking after the set changes', () => {
     const registry = new SecretRegistry();
     const sort = vi.spyOn(Array.prototype, 'sort');

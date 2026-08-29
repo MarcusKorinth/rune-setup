@@ -6,8 +6,10 @@
  * that supplied each value recorded. That single path is what makes a GUI run, an interactive
  * run and a pipeline run agree about what the values are (invariant 7).
  *
- * Resolution is a pure function of what it is given: a frontend that changes one answer
- * resolves again rather than patching state, which is what keeps conditional inputs honest.
+ * Resolution is recomputed completely and reproducibly from what it is given: a frontend
+ * that changes one answer resolves again rather than patching state, which is what keeps
+ * conditional inputs honest. Secret registrations are published as the active snapshot only
+ * after resolution succeeds; an error leaves the caller's registry unchanged.
  */
 
 import {
@@ -29,7 +31,7 @@ import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretString, type SecretRegistry } from './secrets.js';
+import { SecretRegistry, SecretString } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -120,6 +122,7 @@ export interface Resolution {
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
+  const stagedSecrets = new SecretRegistry();
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -203,7 +206,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       // The one place that unwraps a secret outside the runner: it has to know the text to
       // be able to remove it from everything a run prints (§10).
       const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
-      if (text !== '' && !options.secrets.register(text)) {
+      if (text !== '' && !stagedSecrets.register(text)) {
         warnings.push(
           `${id} cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace`,
         );
@@ -231,13 +234,15 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   }
 
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
-  return {
+  const resolution = {
     inputs,
     byId: states,
     missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
     warnings,
     problems: issues,
   };
+  options.secrets.replaceWith(stagedSecrets);
+  return resolution;
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */

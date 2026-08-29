@@ -124,6 +124,20 @@ export class SecretRegistry {
     return this.#values.size;
   }
 
+  /** Replaces this registry with the completed secret set of one successful resolution. */
+  replaceWith(source: SecretRegistry): void {
+    const values = new Set(source.#values);
+    const ordered = [...source.#ordered];
+    const orderedDirty = source.#orderedDirty;
+
+    this.#values.clear();
+    for (const value of values) {
+      this.#values.add(value);
+    }
+    this.#ordered = ordered;
+    this.#orderedDirty = orderedDirty;
+  }
+
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
     if (this.#orderedDirty) {
