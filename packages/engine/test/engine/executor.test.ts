@@ -331,4 +331,33 @@ describe('skipped steps and the dry run', () => {
     expect(result.steps[0]?.command).toEqual(['a', '--token', '***']);
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
+
+  it('never lets a secret reach an observer, not even inside RunStarted', async () => {
+    const { plan, resolution, secrets, product } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: a',
+        '      args: ["${token}"]',
+      ],
+      { overrides: new Map([['token', 'super-secret-value']]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+    });
+
+    expect(JSON.stringify(events)).not.toContain('super-secret-value');
+    expect(JSON.stringify(result)).not.toContain('super-secret-value');
+  });
 });

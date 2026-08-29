@@ -9,20 +9,30 @@
 
 import { spawn } from 'node:child_process';
 
+import { SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
 
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
+
+/** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
+function reveal(value: string | SecretString): string {
+  return value instanceof SecretString ? value.reveal() : value;
+}
 
 export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
     return new Promise((resolve) => {
       const { command } = request;
       const [executable, ...args] = command.argv;
+      const env: Record<string, string | undefined> = { ...process.env };
+      for (const [name, value] of Object.entries(command.env)) {
+        env[name] = reveal(value);
+      }
 
-      const child = spawn(executable ?? '', args, {
-        cwd: command.cwd,
-        env: { ...process.env, ...command.env, ...request.extraEnv },
+      const child = spawn(reveal(executable ?? ''), args.map(reveal), {
+        cwd: reveal(command.cwd),
+        env: { ...env, ...request.extraEnv },
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: false,
         // Its own process group on POSIX, so the kill path can address the whole tree.

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
+import { SecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
 import { SpawnRunner } from '../../src/runners/spawnRunner.js';
 
@@ -67,6 +68,26 @@ describe('SpawnRunner', () => {
     );
 
     expect(lines).toContain('hello step');
+  });
+
+  it('unwraps a secret-wrapped argument and env value only for the child', async () => {
+    const lines: string[] = [];
+
+    await run(
+      {
+        ...nodeCommand('console.log(process.argv[1], process.env.TOKEN)'),
+        argv: [
+          process.execPath,
+          '-e',
+          'console.log(process.argv[1], process.env.TOKEN)',
+          new SecretString('wrapped-arg'),
+        ],
+        env: { TOKEN: new SecretString('wrapped-env') },
+      },
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toContain('wrapped-arg wrapped-env');
   });
 
   it('runs in the working directory the plan chose', async () => {

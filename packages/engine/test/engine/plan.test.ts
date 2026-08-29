@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
+import { SecretString } from '../../src/engine/secrets.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -166,6 +167,35 @@ describe('the Windows honesty rule', () => {
 
   it('does not mind the same file name on linux', () => {
     expect(planFor(lines, { platform: 'linux' }).plan.steps[0]?.state).toBe('PENDING');
+  });
+});
+
+describe('secrets in the plan', () => {
+  it('keeps a rendering a secret flowed into wrapped, so the plan serializes as ***', () => {
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      args: ["--token=${token}"]',
+        '      env:',
+        '        API_TOKEN: "${token}"',
+      ],
+      { overrides: new Map([['token', 'super-secret-value']]) },
+    );
+
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    expect(step.command.argv[1]).toBeInstanceOf(SecretString);
+    expect(step.command.env['API_TOKEN']).toBeInstanceOf(SecretString);
+    expect(JSON.stringify(plan)).not.toContain('super-secret-value');
+    expect(String(step.command.argv[1])).toBe('***');
   });
 });
 

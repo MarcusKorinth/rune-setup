@@ -13,7 +13,7 @@ import type { InputState, Resolution } from './inputs.js';
 import type { ExecutionPlan, PlannedStep } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import type { SecretRegistry } from './secrets.js';
-import { SecretString } from './secrets.js';
+import { MASK, SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
@@ -292,5 +292,10 @@ function finishedStep(
 }
 
 function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[] | null {
-  return step.state === 'PENDING' ? step.command.argv.map((entry) => secrets.mask(entry)) : null;
+  if (step.state !== 'PENDING') {
+    return null;
+  }
+  return step.command.argv.map((entry) =>
+    entry instanceof SecretString ? MASK : secrets.mask(entry),
+  );
 }

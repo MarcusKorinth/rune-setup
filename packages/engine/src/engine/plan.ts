@@ -9,6 +9,7 @@
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { ExecutionError, InternalError } from '../errors.js';
+import { MASK } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
@@ -19,15 +20,15 @@ import type { Resolution } from './inputs.js';
 import { SecretString } from './secrets.js';
 
 /**
- * A command ready to spawn. The argv is the real text — a secret is already revealed in it,
- * because the child process needs the value, not the mask. Nothing renders a plan directly:
- * every display and every serialization goes through the SecretRegistry (§10, invariant 6).
+ * A command ready to spawn. Any piece whose rendering touched a secret input stays wrapped
+ * in a SecretString inside the plan — serializing or inspecting the plan renders `***` —
+ * and is unwrapped only inside the runner, at spawn (§7, §8, invariant 6).
  */
 export interface ResolvedCommand {
-  readonly argv: readonly string[];
-  readonly cwd: string;
+  readonly argv: readonly (string | SecretString)[];
+  readonly cwd: string | SecretString;
   /** Merged over the parent environment at spawn (§8). */
-  readonly env: Readonly<Record<string, string>>;
+  readonly env: Readonly<Record<string, string | SecretString>>;
   readonly timeoutSeconds: number | null;
   readonly successExitCodes: readonly number[];
 }
@@ -157,8 +158,9 @@ function resolveCommand(
   resolution: Resolution,
   context: RuntimeContext,
 ): ResolvedCommand {
-  const render = (template: string): string =>
-    renderTemplate(template, (reference) => {
+  const render = (template: string): string | SecretString => {
+    let touchedSecret = false;
+    const text = renderTemplate(template, (reference) => {
       const resolved = resolveReference(reference.segments, [...resolution.byId.keys()]);
       if (!resolved.ok) {
         throw new InternalError(
@@ -174,26 +176,36 @@ function resolveCommand(
       }
       const handler = inputTypes.get(state.spec.type);
       const value = state.value ?? handler.empty(state.spec);
-      // The child process needs the secret itself, not the mask; this text never reaches a
-      // sink unmasked, because every sink runs through the SecretRegistry (§10).
-      return value instanceof SecretString ? value.reveal() : handler.render(value);
+      if (value instanceof SecretString) {
+        touchedSecret = true;
+        return value.reveal();
+      }
+      return handler.render(value);
     });
+    // Anything a secret flowed into stays wrapped: the plan itself never holds a secret in
+    // the clear, and only the runner unwraps it, at spawn (§8).
+    return touchedSecret ? new SecretString(text) : text;
+  };
 
-  const command = anchorCommand(render(spec.command), context);
+  const command = rewrap(render(spec.command), (text) => anchorCommand(text, context));
+  const commandShown = command instanceof SecretString ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
   // it before anything executes (§8): a batch file needs a shell, and RUNE never provides
   // one implicitly.
-  if (context.platform === 'windows' && /\.(bat|cmd)$/i.test(command)) {
+  if (context.platform === 'windows' && /\.(bat|cmd)$/i.test(textOf(command))) {
     throw new ExecutionError(
       'RUNE-405',
-      `step "${stepId}" runs "${command}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${command}", ...]`,
+      `step "${stepId}" runs "${commandShown}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${commandShown}", ...]`,
     );
   }
 
-  const cwd = spec.cwd === undefined ? context.manifestDir : anchorPath(render(spec.cwd), context);
+  const cwd =
+    spec.cwd === undefined
+      ? context.manifestDir
+      : rewrap(render(spec.cwd), (text) => anchorPath(text, context));
 
-  const env: Record<string, string> = {};
+  const env: Record<string, string | SecretString> = {};
   for (const [name, value] of Object.entries(spec.env)) {
     env[name] = render(value);
   }
@@ -205,6 +217,24 @@ function resolveCommand(
     timeoutSeconds: spec.timeoutSeconds,
     successExitCodes: spec.successExitCodes,
   };
+}
+
+/**
+ * Applies a plan-time text transformation (anchoring, the batch-file test) to a rendering.
+ * A secret-wrapped rendering is open only for the duration of the call and wrapped again
+ * before anything stores it — the plan never carries the clear text.
+ */
+function rewrap(
+  value: string | SecretString,
+  transform: (text: string) => string,
+): string | SecretString {
+  return value instanceof SecretString
+    ? new SecretString(transform(value.reveal()))
+    : transform(value);
+}
+
+function textOf(value: string | SecretString): string {
+  return value instanceof SecretString ? value.reveal() : value;
 }
 
 /**
