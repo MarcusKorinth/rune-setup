@@ -44,7 +44,6 @@ function resolve(
   return resolveInputs({
     manifest,
     context: contextFor(manifest, environment),
-    environment,
     ...options,
   });
 }
@@ -151,6 +150,28 @@ describe('precedence', () => {
       resolve(named, {}, { RUNE_INPUT_INSTALL_DIR: '/opt/app' }).byId.get('install_dir')?.value,
     ).toBe('/opt/app');
   });
+
+  it('uses the context environment for both input values and env references', () => {
+    const shared = manifestOf(
+      'inputs:',
+      '  target:',
+      '    type: text',
+      '  logs:',
+      '    type: directory',
+      '    default: "${env.USER}/logs"',
+    );
+    const resolution = resolve(
+      shared,
+      {},
+      {
+        RUNE_INPUT_TARGET: 'from-environment',
+        USER: 'marcus',
+      },
+    );
+
+    expect(resolution.byId.get('target')?.value).toBe('from-environment');
+    expect(resolution.byId.get('logs')?.value).toBe('marcus/logs');
+  });
 });
 
 describe('what is still missing', () => {
@@ -201,7 +222,7 @@ describe('defaults are templates', () => {
       environment: {},
     });
 
-    const resolution = resolveInputs({ manifest, context: preview, environment: {} });
+    const resolution = resolveInputs({ manifest, context: preview });
 
     expect(resolution.byId.get('logs')?.value).toMatch(/^<home@(linux|windows)>\/logs$/);
   });
@@ -478,7 +499,6 @@ describe('a frontend that can ask again', () => {
     const resolution = resolveInputs({
       manifest,
       context: contextFor(manifest),
-      environment: {},
       overrides: new Map([['port', 'eighty']]),
       invalidValues: 'collect',
     });

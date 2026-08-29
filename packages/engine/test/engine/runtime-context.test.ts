@@ -16,6 +16,10 @@ function contextFor(platform?: 'windows' | 'linux', environment: Record<string, 
   });
 }
 
+function unsafeEnvironment(value: object): Record<string, string> {
+  return value as Record<string, string>;
+}
+
 describe('the values behind the built-in names', () => {
   const context = contextFor(hostPlatform(), { JAVA_HOME: '/opt/java' });
 
@@ -34,6 +38,57 @@ describe('the values behind the built-in names', () => {
 
   it('reads any environment variable, because there is no allowlist', () => {
     expect(context.valueOf({ kind: 'environment', name: 'JAVA_HOME' })).toBe('/opt/java');
+  });
+
+  it.each(['toString', 'constructor', '__proto__'])(
+    'does not read the inherited prototype name %s as an environment variable',
+    (name) => {
+      const empty = contextFor('linux');
+
+      expect(empty.environmentValue(name)).toBeUndefined();
+      expect(() => empty.valueOf({ kind: 'environment', name })).toThrow(
+        `the environment variable ${name} is not set`,
+      );
+    },
+  );
+
+  it('ignores a custom inherited string property', () => {
+    const environment = Object.create({ INHERITED: 'not-an-environment-value' }) as object;
+    const inherited = contextFor('linux', unsafeEnvironment(environment));
+
+    expect(inherited.environmentValue('INHERITED')).toBeUndefined();
+    expect(() => inherited.valueOf({ kind: 'environment', name: 'INHERITED' })).toThrow(
+      'the environment variable INHERITED is not set',
+    );
+  });
+
+  it('reads an own string property', () => {
+    const own = contextFor('linux', { OWN_VALUE: 'available' });
+
+    expect(own.environmentValue('OWN_VALUE')).toBe('available');
+    expect(own.valueOf({ kind: 'environment', name: 'OWN_VALUE' })).toBe('available');
+  });
+
+  it('ignores an own property whose value is not a string', () => {
+    const nonString = contextFor('linux', unsafeEnvironment({ NOT_TEXT: { nested: true } }));
+
+    expect(nonString.environmentValue('NOT_TEXT')).toBeUndefined();
+    expect(() => nonString.valueOf({ kind: 'environment', name: 'NOT_TEXT' })).toThrow(
+      'the environment variable NOT_TEXT is not set',
+    );
+  });
+
+  it('matches environment names case-insensitively for a Windows context', () => {
+    const windows = contextFor('windows', { Path: 'C:\\Tools' });
+
+    expect(windows.environmentValue('PATH')).toBe('C:\\Tools');
+    expect(windows.valueOf({ kind: 'environment', name: 'path' })).toBe('C:\\Tools');
+  });
+
+  it('matches environment names case-sensitively for a Linux context', () => {
+    const linux = contextFor('linux', { Path: '/tools' });
+
+    expect(linux.environmentValue('PATH')).toBeUndefined();
   });
 
   it('refuses an environment variable the machine does not have', () => {

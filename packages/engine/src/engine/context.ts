@@ -203,6 +203,8 @@ export interface RuntimeContext {
   readonly manifestDir: string;
   /** True when `platform` is not the host's, so host-dependent values are placeholders. */
   readonly preview: boolean;
+  /** Reads one string-valued own property using the platform's environment-name semantics. */
+  environmentValue(name: string): string | undefined;
   /** The text a reference contributes. Throws {@link ResolutionError} for an unset variable. */
   valueOf(reference: Reference): string;
 }
@@ -215,10 +217,25 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
   const hostDependent = (name: BuiltInVariable, value: () => string): string =>
     preview ? `<${name}@${platform}>` : value();
 
+  const environmentValue = (name: string): string | undefined => {
+    const key =
+      platform === 'windows'
+        ? Object.getOwnPropertyNames(environment).find(
+            (candidate) => candidate.toLowerCase() === name.toLowerCase(),
+          )
+        : name;
+    if (key === undefined || !Object.hasOwn(environment, key)) {
+      return undefined;
+    }
+    const value: unknown = environment[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+
   return {
     platform,
     manifestDir: options.manifestDir,
     preview,
+    environmentValue,
     valueOf(reference: Reference): string {
       switch (reference.kind) {
         case 'builtin':
@@ -236,7 +253,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
         case 'product':
           return options.product[reference.field];
         case 'environment': {
-          const value = environment[reference.name];
+          const value = environmentValue(reference.name);
           if (value === undefined) {
             throw new ResolutionError(
               'RUNE-301',

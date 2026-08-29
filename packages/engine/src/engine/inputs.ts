@@ -60,8 +60,6 @@ export interface ResolveInputsOptions {
   readonly context: RuntimeContext;
   /** Values files in the order they were given; a later file overrides an earlier one. */
   readonly values?: readonly ValuesDocument[];
-  /** Defaults to this process's environment. */
-  readonly environment?: Readonly<Record<string, string | undefined>>;
   /** `--set key=value`, already split. */
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
@@ -102,7 +100,6 @@ export interface Resolution {
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
-  const environment = options.environment ?? process.env;
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -119,7 +116,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     }
     const handler = inputTypes.get(spec.type);
     const enabled = isEnabled(spec, id, ids.slice(0, index), states, context);
-    const supplied = highestLayer(id, spec, options, environment);
+    const supplied = highestLayer(id, spec, options);
 
     if (!enabled) {
       // A manifest default is not something anybody *supplied* for this run: it is what the
@@ -235,7 +232,6 @@ function highestLayer(
   id: string,
   spec: InputSpec,
   options: ResolveInputsOptions,
-  environment: Readonly<Record<string, string | undefined>>,
 ): SuppliedValue | undefined {
   const answer = options.answers?.get(id);
   if (answer !== undefined) {
@@ -248,7 +244,7 @@ function highestLayer(
   }
 
   const variable = environmentName(id);
-  const fromEnvironment = environment[variable];
+  const fromEnvironment = options.context.environmentValue(variable);
   if (fromEnvironment !== undefined) {
     return {
       source: 'environment',
