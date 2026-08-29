@@ -25,7 +25,7 @@ import {
   type Platform,
   type RuntimeContext,
 } from './context.js';
-import { describePlan, executeRun } from './executor.js';
+import { describeCancelled, describePlan, executeRun } from './executor.js';
 import type { EngineObserver } from './events.js';
 import {
   parseValuesFile,
@@ -239,6 +239,21 @@ export class Session {
       resolution: this.#resolution,
       context: this.#context,
       strings: this.#strings,
+    });
+  }
+
+  /**
+   * The result of cancelling after the plan existed but before anything ran — the CLI
+   * edit-loop Cancel, the GUI window closed before Proceed (§10): every pending step
+   * NOT_RUN, inputs listed, status `cancelled`.
+   */
+  describeCancelled(): RunResult {
+    return describeCancelled({
+      plan: this.plan(),
+      resolution: this.#resolution,
+      product: this.manifest.product,
+      secrets: this.#secrets,
+      mode: this.#mode,
     });
   }
 

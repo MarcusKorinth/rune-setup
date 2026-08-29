@@ -198,6 +198,40 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   return result;
 }
 
+/**
+ * The result of a run cancelled after planning but before execution — the CLI edit-loop
+ * Cancel, the GUI window closed before Proceed (§10): every pending step NOT_RUN, plan-time
+ * skips kept, the resolved inputs listed, status `cancelled`.
+ */
+export function describeCancelled(options: {
+  readonly plan: ExecutionPlan;
+  readonly resolution: Resolution;
+  readonly product: { readonly name: string; readonly version: string };
+  readonly secrets: SecretRegistry;
+  readonly mode?: RunMode;
+}): RunResult {
+  const now = new Date();
+  const steps = options.plan.steps.map((step): ResultStep => {
+    if (step.state === 'SKIPPED') {
+      return finishedStep(step, 'SKIPPED', null, 0, null, null);
+    }
+    return finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, options.secrets), null);
+  });
+
+  return assembleResult({
+    runId: randomUUID(),
+    plan: options.plan,
+    resolution: options.resolution,
+    product: options.product,
+    steps,
+    status: 'cancelled',
+    mode: options.mode ?? 'non-interactive',
+    dryRun: false,
+    startedAt: now,
+    finishedAt: now,
+  });
+}
+
 /** The result of a dry-run: the plan described, nothing executed (§10, status `planned`). */
 export function describePlan(options: {
   readonly plan: ExecutionPlan;

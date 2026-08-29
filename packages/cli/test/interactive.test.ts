@@ -141,9 +141,21 @@ describe('the interactive run', () => {
     const code = await run(['run', path, '--result', resultPath], io, interaction);
 
     expect(code).toBe(6);
-    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
-    expect(written['status']).toBe('cancelled');
-    expect(written['mode']).toBe('interactive');
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as {
+      status: string;
+      mode: string;
+      stepsTotal: number;
+      stepsNotRun: number;
+      steps: readonly { state: string }[];
+      inputs: readonly { id: string }[];
+    };
+    expect(written.status).toBe('cancelled');
+    expect(written.mode).toBe('interactive');
+    // A plan existed at the summary, so the result reports it: all steps NOT_RUN (§10).
+    expect(written.stepsTotal).toBe(1);
+    expect(written.stepsNotRun).toBe(1);
+    expect(written.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
+    expect(written.inputs.map((input) => input.id)).toEqual(['greeting', 'token']);
   });
 
   it('degrades to non-interactive without a TTY and records that mode', async () => {

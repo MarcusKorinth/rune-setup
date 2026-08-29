@@ -102,7 +102,12 @@ export async function runCommand(
     ) {
       io.stderr(error.message);
       const code = exitCodeFor(error);
-      deliverResult(failureShell({ session, code, manifestPath, flags, mode }), flags.result, io);
+      deliverResult(
+        cancelledWithPlan(session, error) ??
+          failureShell({ session, code, manifestPath, flags, mode }),
+        flags.result,
+        io,
+      );
       throw new ExitWithCode(code);
     }
     throw error;
@@ -127,7 +132,7 @@ async function executeWithCancel(
       return;
     }
     cancelledOnce = true;
-    io.stderr('cancelling - press Ctrl+C again to force quit');
+    io.stderr(session.getStrings().chrome('rune.run.cancelling'));
     session.cancel();
   };
   process.on('SIGINT', onSigint);
@@ -146,6 +151,23 @@ function deliverResult(result: RunResult, destination: string, io: CliIo): void 
   }
   writeResult(result, destination);
   io.stderr(`result written to ${destination}`);
+}
+
+/**
+ * A cancellation after the plan existed — the summary's Cancel — reports that plan: all
+ * pending steps NOT_RUN, inputs listed (§10's cancelled row). Anything else falls back to
+ * the zero-counter shell below.
+ */
+function cancelledWithPlan(session: Session | undefined, error: RuneError): RunResult | undefined {
+  if (!(error instanceof CancelledError) || session === undefined) {
+    return undefined;
+  }
+  try {
+    return session.describeCancelled();
+  } catch {
+    // Cancelled while inputs were still missing: no plan can exist — the shell is honest.
+    return undefined;
+  }
 }
 
 /**
