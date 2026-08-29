@@ -1056,6 +1056,15 @@ describe('collected rejected values', () => {
 
 describe('secrets', () => {
   const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+  const disabledSecret = manifestOf(
+    'inputs:',
+    '  enabled:',
+    '    type: boolean',
+    '    default: false',
+    '  token:',
+    '    type: secret',
+    '    when: "${enabled}"',
+  );
 
   function publicErrorSurfaces(error: Error): readonly string[] {
     const surfaces: string[] = [];
@@ -1347,6 +1356,185 @@ describe('secrets', () => {
     expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
     expectExistingRegistryUnchanged(secrets);
   });
+
+  it('redacts a later-declared secret from an earlier resolution error atomically', () => {
+    const sentinel = 'F038_LATER_DECLARED_SECRET';
+    const withUnresolvedEarlyDefault = manifestOf(
+      'inputs:',
+      '  directory:',
+      '    type: directory',
+      `    default: "\${env.${sentinel}}/app"`,
+      '  token:',
+      '    type: secret',
+    );
+    const secrets = existingRegistry();
+    let thrown: unknown;
+    try {
+      resolve(withUnresolvedEarlyDefault, {
+        overrides: new Map([['token', sentinel]]),
+        secrets,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    const error = thrown as ResolutionError;
+    expect(error.code).toBe('RUNE-301');
+    expect(error.cause).toBeInstanceOf(ResolutionError);
+    expect(error.issues).not.toHaveLength(0);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('existing-secret')).toBe('***');
+    expect(secrets.mask(sentinel)).toBe(sentinel);
+  });
+
+  it('uses a disabled secret to redact later thrown and collected input diagnostics', () => {
+    const sentinel = 'F038_DISABLED_DIAGNOSTIC_SECRET';
+    const withDisabledSecret = manifestOf(
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  token:',
+      '    type: secret',
+      '    when: "${enabled}"',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const supplied = new Map([
+      ['token', sentinel],
+      ['note', `prefix/${sentinel}/suffix`],
+    ]);
+    const thrownSecrets = existingRegistry();
+    const error = inputError(withDisabledSecret, {
+      overrides: supplied,
+      secrets: thrownSecrets,
+    });
+
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    expect(thrownSecrets.size).toBe(1);
+    expect(thrownSecrets.mask(sentinel)).toBe(sentinel);
+
+    const collectedSecrets = new SecretRegistry();
+    const resolution = resolve(withDisabledSecret, {
+      overrides: supplied,
+      invalidValues: 'collect',
+      secrets: collectedSecrets,
+    });
+    const rejection = rejectionFor(resolution, 'note');
+
+    expect(rejection.candidate).toBe('prefix/***/suffix');
+    expect(rejection.issue).toBe(resolution.problems[0]);
+    expect(inspect(resolution)).not.toContain(sentinel);
+    expect(collectedSecrets.mask(sentinel)).toBe('***');
+  });
+
+  it.each([
+    {
+      layer: 'values',
+      options: { values: [values('v.yaml', { token: 'F038_VALUES_SECRET' })] },
+      environment: {},
+      source: 'values',
+      sentinel: 'F038_VALUES_SECRET',
+    },
+    {
+      layer: 'environment',
+      options: {},
+      environment: { RUNE_INPUT_TOKEN: 'F038_ENVIRONMENT_SECRET' },
+      source: 'environment',
+      sentinel: 'F038_ENVIRONMENT_SECRET',
+    },
+    {
+      layer: '--set',
+      options: { overrides: new Map([['token', 'F038_SET_SECRET']]) },
+      environment: {},
+      source: 'set',
+      sentinel: 'F038_SET_SECRET',
+    },
+    {
+      layer: 'answer',
+      options: { answers: new Map([['token', 'F038_ANSWER_SECRET']]) },
+      environment: {},
+      source: 'answer',
+      sentinel: 'F038_ANSWER_SECRET',
+    },
+  ] as const)(
+    'keeps a disabled secret supplied by $layer in the successful masking snapshot',
+    ({ options, environment, source, sentinel }) => {
+      const secrets = new SecretRegistry();
+      const resolution = resolve(disabledSecret, { ...options, secrets }, environment);
+      const state = resolution.byId.get('token');
+
+      expect(state).toMatchObject({
+        enabled: false,
+        source: undefined,
+        rejection: undefined,
+        ignored: source,
+      });
+      expect(state?.value).toBeInstanceOf(SecretString);
+      expect((state?.value as SecretString).reveal()).toBe('');
+      expect(secrets.mask(sentinel)).toBe('***');
+      expect(resolution.warnings).toHaveLength(1);
+      expect(resolution.warnings[0]).not.toContain(sentinel);
+    },
+  );
+
+  it.each([
+    { name: 'short', value: 'ab', maskable: undefined },
+    { name: 'empty', value: '', maskable: undefined },
+    { name: 'partly maskable multiline', value: 'long-secret\nabc', maskable: 'long-secret' },
+  ])(
+    'warns exactly once for a $name disabled secret and protects every maskable part',
+    ({ value, maskable }) => {
+      const secrets = new SecretRegistry();
+      const resolution = resolve(disabledSecret, {
+        overrides: new Map([['token', value]]),
+        secrets,
+      });
+
+      expect(
+        resolution.warnings.filter((warning) => warning.includes('cannot be masked reliably')),
+      ).toHaveLength(1);
+      expect(resolution.warnings).toHaveLength(2);
+      expect(resolution.byId.get('token')).toMatchObject({
+        enabled: false,
+        ignored: 'set',
+      });
+      if (maskable !== undefined) {
+        expect(secrets.mask(maskable)).toBe('***');
+      } else {
+        expect(secrets.size).toBe(0);
+      }
+    },
+  );
+
+  it.each([
+    ['undefined', undefined],
+    ['invalid object', { nested: 'F038_OBJECT_CONTENT' }],
+  ] as const)(
+    'does not expose a lower-layer secret through an explicit higher %s candidate',
+    (_name, higher) => {
+      const lower = 'F038_LOWER_LAYER_SECRET';
+      const secrets = new SecretRegistry();
+      const resolution = resolve(disabledSecret, {
+        overrides: new Map([['token', lower]]),
+        answers: new Map([['token', higher]]) as unknown as ReadonlyMap<string, InputValue>,
+        secrets,
+      });
+
+      expect(resolution.byId.get('token')).toMatchObject({
+        enabled: false,
+        source: undefined,
+        rejection: undefined,
+        ignored: 'answer',
+      });
+      expect(resolution.problems).toEqual([]);
+      expect(secrets.mask(lower)).toBe(lower);
+      expect(secrets.size).toBe(0);
+    },
+  );
 
   it('replaces stale secrets after success and stays stable on identical re-resolution', () => {
     const secrets = new SecretRegistry();

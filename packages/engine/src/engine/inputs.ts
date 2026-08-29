@@ -32,7 +32,11 @@ import { suggest } from '../suggest.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretRegistry, SecretString } from './secrets.js';
+import { normalizeSecretString, SecretRegistry, SecretString } from './secrets.js';
+
+// Capture the base implementation before an in-process client can replace it. The supplied
+// wrapper is normalized first; calling the cached method then reads only that stable copy.
+const BASE_SECRET_REVEAL = SecretString.prototype.reveal;
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -138,6 +142,7 @@ function resolveInputsStaged(
 ): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
+  const suppliedSecrets = stageSuppliedSecrets(options, ids, stagedSecrets);
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -154,7 +159,9 @@ function resolveInputsStaged(
     }
     const handler = inputTypes.get(spec.type);
     const enabled = isEnabled(spec, id, order, states, context);
-    const supplied = highestLayer(id, spec, options);
+    const supplied = handler.secret
+      ? suppliedSecrets.get(id)?.supplied
+      : highestLayer(id, spec, options);
 
     if (!enabled) {
       // A manifest default is not something anybody *supplied* for this run: it is what the
@@ -166,6 +173,7 @@ function resolveInputsStaged(
         warnings.push(
           `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
         );
+        warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
       }
       states.set(id, {
         id,
@@ -218,14 +226,7 @@ function resolveInputsStaged(
     }
 
     if (handler.secret) {
-      // The one place that unwraps a secret outside the runner: it has to know the text to
-      // be able to remove it from everything a run prints (§10).
-      const text = coerced.value instanceof SecretString ? coerced.value.reveal() : '';
-      if (!stagedSecrets.register(text)) {
-        warnings.push(
-          `${id} cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace`,
-        );
-      }
+      warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
     }
 
     states.set(id, {
@@ -279,6 +280,72 @@ function resolveInputsStaged(
   };
   options.secrets.replaceWith(stagedSecrets);
   return resolution;
+}
+
+interface StagedSecret {
+  readonly supplied: SuppliedValue;
+  /** Undefined means the raw candidate could not be read safely as authentic secret text. */
+  readonly maskable: boolean | undefined;
+}
+
+/**
+ * Registers every safely readable winning layer-2–5 secret before resolution can diagnose
+ * anything. The registry remains staged until success, but it can already redact an error
+ * raised by an earlier-declared input. Disabled values stay registered because their
+ * environment variables remain inherited by child processes (§10).
+ */
+function stageSuppliedSecrets(
+  options: ResolveInputsOptions,
+  ids: readonly string[],
+  stagedSecrets: SecretRegistry,
+): ReadonlyMap<string, StagedSecret> {
+  const suppliedSecrets = new Map<string, StagedSecret>();
+
+  for (const id of ids) {
+    const spec = options.manifest.inputs[id];
+    if (spec?.type !== 'secret') {
+      continue;
+    }
+
+    const supplied = highestLayer(id, spec, options);
+    if (supplied === undefined || supplied.source === 'default') {
+      continue;
+    }
+
+    const text = authenticSecretText(supplied.raw);
+    suppliedSecrets.set(id, {
+      supplied,
+      maskable: text === undefined ? undefined : stagedSecrets.register(text),
+    });
+  }
+
+  return suppliedSecrets;
+}
+
+/** Reads only strings and genuine wrappers, without dispatching through supplied methods. */
+function authenticSecretText(raw: unknown): string | undefined {
+  if (typeof raw === 'string') {
+    return raw;
+  }
+
+  const normalized = normalizeSecretString(raw);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  const text: unknown = Reflect.apply(BASE_SECRET_REVEAL, normalized, []);
+  return typeof text === 'string' ? text : undefined;
+}
+
+function warnIfUnreliablyMasked(
+  id: string,
+  staged: StagedSecret | undefined,
+  warnings: string[],
+): void {
+  if (staged?.maskable === false) {
+    warnings.push(
+      `${id} cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace`,
+    );
+  }
 }
 
 /** Redacts the frontend-readable parts of a collected rejected value. */
