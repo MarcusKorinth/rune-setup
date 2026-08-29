@@ -156,6 +156,40 @@ describe('SecretRegistry', () => {
     expect(registry.mask('abcdefgh')).toBe(`${MASK}${MASK}`);
   });
 
+  it('masks a secret created by replacing text immediately before it', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('***ghi');
+
+    expect(registry.mask('abcdefghi')).toBe(MASK);
+  });
+
+  it('masks a secret created by replacing text immediately after it', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('ghi***');
+
+    expect(registry.mask('ghiabcdef')).toBe(MASK);
+  });
+
+  it('masks a secret jointly created by two replacements', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('ghijkl');
+    registry.register('***middle***');
+
+    expect(registry.mask('abcdefmiddleghijkl')).toBe(MASK);
+  });
+
+  it('continues masking until no replacement creates another secret', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('***ghi');
+    registry.register('***JKLM');
+
+    expect(registry.mask('abcdefghiJKLM')).toBe(MASK);
+  });
+
   it('orders matches by text position rather than registration order', () => {
     const registry = new SecretRegistry();
     registry.register('aaaa');

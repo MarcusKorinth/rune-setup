@@ -172,6 +172,58 @@ function advanceMatch(text: string, match: SecretMatchStream): boolean {
   return true;
 }
 
+/** Replaces every range containing a secret found in this version of `text`. */
+function maskOnce(text: string, orderedSecrets: readonly string[]): string {
+  // The heap owns one reusable stream per registered secret, rather than one object per
+  // occurrence. Its size is therefore independent of how often secrets appear in the text.
+  const matchHeap: SecretMatchStream[] = [];
+  for (const secret of orderedSecrets) {
+    const match: SecretMatchStream = {
+      secret,
+      start: 0,
+      end: 0,
+      searchFrom: 0,
+      pendingStart: undefined,
+    };
+    if (advanceMatch(text, match)) {
+      pushMatch(matchHeap, match);
+    }
+  }
+
+  if (matchHeap.length === 0) {
+    return text;
+  }
+
+  let out = '';
+  let cursor = 0;
+  const first = popMatch(matchHeap);
+  let matchStart = first.start;
+  let matchEnd = first.end;
+  if (advanceMatch(text, first)) {
+    pushMatch(matchHeap, first);
+  }
+
+  while (matchHeap.length > 0) {
+    const match = popMatch(matchHeap);
+    const start = match.start;
+    const end = match.end;
+    if (advanceMatch(text, match)) {
+      pushMatch(matchHeap, match);
+    }
+
+    if (start < matchEnd) {
+      matchEnd = Math.max(matchEnd, end);
+    } else {
+      out += text.slice(cursor, matchStart) + MASK;
+      cursor = matchEnd;
+      matchStart = start;
+      matchEnd = end;
+    }
+  }
+
+  return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
+}
+
 /**
  * The secrets a run knows about, and the one function that removes them from text.
  *
@@ -253,53 +305,16 @@ export class SecretRegistry {
       this.#orderedDirty = false;
     }
 
-    // The heap owns one reusable stream per registered secret, rather than one object per
-    // occurrence. Its size is therefore independent of how often secrets appear in the text.
-    const matchHeap: SecretMatchStream[] = [];
-    for (const secret of this.#ordered) {
-      const match: SecretMatchStream = {
-        secret,
-        start: 0,
-        end: 0,
-        searchFrom: 0,
-        pendingStart: undefined,
-      };
-      if (advanceMatch(text, match)) {
-        pushMatch(matchHeap, match);
-      }
-    }
-
-    if (matchHeap.length === 0) {
-      return text;
-    }
-
-    let out = '';
-    let cursor = 0;
-    const first = popMatch(matchHeap);
-    let matchStart = first.start;
-    let matchEnd = first.end;
-    if (advanceMatch(text, first)) {
-      pushMatch(matchHeap, first);
-    }
-
-    while (matchHeap.length > 0) {
-      const match = popMatch(matchHeap);
-      const start = match.start;
-      const end = match.end;
-      if (advanceMatch(text, match)) {
-        pushMatch(matchHeap, match);
+    let masked = text;
+    while (true) {
+      const next = maskOnce(masked, this.#ordered);
+      if (next === masked) {
+        return masked;
       }
 
-      if (start < matchEnd) {
-        matchEnd = Math.max(matchEnd, end);
-      } else {
-        out += text.slice(cursor, matchStart) + MASK;
-        cursor = matchEnd;
-        matchStart = start;
-        matchEnd = end;
-      }
+      // A registered secret is at least four UTF-16 code units, while MASK has three, so
+      // every successful pass strictly shortens the text and the iteration must terminate.
+      masked = next;
     }
-
-    return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
   }
 }
