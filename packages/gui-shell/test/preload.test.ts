@@ -24,6 +24,7 @@ describe('the preload bridge', () => {
         'cancel',
         'getStrings',
         'getThemeConfig',
+        'warnings',
         'done',
         'onEvent',
       ].sort(),
