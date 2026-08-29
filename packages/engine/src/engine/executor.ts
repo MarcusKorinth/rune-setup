@@ -98,6 +98,12 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     });
 
     const tail: { stream: string; line: string }[] = [];
+    const keepInTail = (stream: string, line: string): void => {
+      tail.push({ stream, line });
+      if (tail.length > OUTPUT_TAIL_LINES) {
+        tail.shift();
+      }
+    };
     const stepStart = Date.now();
 
     const outcome = await runner.run({
@@ -106,10 +112,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       cancel,
       onOutput: (stream, rawLine) => {
         const line = secrets.mask(rawLine);
-        tail.push({ stream, line });
-        if (tail.length > OUTPUT_TAIL_LINES) {
-          tail.shift();
-        }
+        keepInTail(stream, line);
         emit({ kind: 'stepOutput', stepId: step.id, stream, line });
       },
     });
@@ -127,7 +130,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         state = 'FAILED';
         const line = `step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
         emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
-        tail.push({ stream: 'stderr', line });
+        keepInTail('stderr', line);
         break;
       }
       case 'cancelled':
@@ -137,7 +140,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         state = 'FAILED';
         const line = `step "${step.id}" could not be started: ${secrets.mask(outcome.message)}`;
         emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
-        tail.push({ stream: 'stderr', line });
+        keepInTail('stderr', line);
         break;
       }
     }
