@@ -11,7 +11,7 @@ import { buildPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
 import type { ResolvedCommand } from '../../src/engine/plan.js';
 import { parseManifestText } from '../../src/manifest/index.js';
-import { SpawnRunner } from '../../src/runners/spawnRunner.js';
+import { mergeSpawnEnvironment, SpawnRunner } from '../../src/runners/spawnRunner.js';
 
 /** A real command on any platform: this very Node binary. */
 function nodeCommand(script: string, overrides: Partial<ResolvedCommand> = {}): ResolvedCommand {
@@ -98,6 +98,49 @@ function stopProcess(pid: number): void {
 }
 
 describe('SpawnRunner', () => {
+  it('merges environment layers case-insensitively on Windows', () => {
+    const environment = mergeSpawnEnvironment(
+      {
+        Path: 'parent-path',
+        rune_run_id: 'parent-run',
+        rune_step_id: 'parent-step',
+        PARENT_ONLY: 'parent',
+      },
+      {
+        PATH: 'command-path',
+        Rune_Run_Id: 'command-run',
+        COMMAND_ONLY: 'command',
+      },
+      { RUNE_RUN_ID: 'extra-run', RUNE_STEP_ID: 'extra-step' },
+      'win32',
+    );
+
+    expect(environment).toEqual({
+      PARENT_ONLY: 'parent',
+      PATH: 'command-path',
+      COMMAND_ONLY: 'command',
+      RUNE_RUN_ID: 'extra-run',
+      RUNE_STEP_ID: 'extra-step',
+    });
+  });
+
+  it('keeps differently cased environment names separate on Linux', () => {
+    const environment = mergeSpawnEnvironment(
+      { Path: 'parent-path', rune_run_id: 'parent-run' },
+      { PATH: 'command-path', Rune_Run_Id: 'command-run' },
+      { PATH: 'extra-path', RUNE_RUN_ID: 'extra-run' },
+      'linux',
+    );
+
+    expect(environment).toEqual({
+      Path: 'parent-path',
+      rune_run_id: 'parent-run',
+      PATH: 'extra-path',
+      Rune_Run_Id: 'command-run',
+      RUNE_RUN_ID: 'extra-run',
+    });
+  });
+
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
       kind: 'exited',

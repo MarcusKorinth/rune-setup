@@ -29,6 +29,32 @@ function reveal(value: string | SecretString): string {
   return value instanceof SecretString ? value.reveal() : value;
 }
 
+/** Merges spawn environment layers with the host platform's variable-name semantics. */
+export function mergeSpawnEnvironment(
+  parentEnv: Readonly<Record<string, string | undefined>>,
+  commandEnv: Readonly<Record<string, string | undefined>>,
+  extraEnv: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform,
+): Record<string, string | undefined> {
+  const merged: Record<string, string | undefined> = {};
+
+  for (const layer of [parentEnv, commandEnv, extraEnv]) {
+    for (const [name, value] of Object.entries(layer)) {
+      if (platform === 'win32') {
+        const foldedName = name.toUpperCase();
+        for (const existingName of Object.keys(merged)) {
+          if (existingName.toUpperCase() === foldedName) {
+            delete merged[existingName];
+          }
+        }
+      }
+      merged[name] = value;
+    }
+  }
+
+  return merged;
+}
+
 export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
     return new Promise((resolve) => {
@@ -36,14 +62,20 @@ export class SpawnRunner implements Runner {
       let child: ReturnType<typeof spawn>;
       try {
         const [executable, ...args] = command.argv;
-        const env: Record<string, string | undefined> = { ...process.env };
+        const commandEnv: Record<string, string> = {};
         for (const [name, value] of Object.entries(command.env)) {
-          env[name] = reveal(value);
+          commandEnv[name] = reveal(value);
         }
+        const env = mergeSpawnEnvironment(
+          process.env,
+          commandEnv,
+          request.extraEnv,
+          process.platform,
+        );
 
         child = spawn(reveal(executable ?? ''), args.map(reveal), {
           cwd: reveal(command.cwd),
-          env: { ...env, ...request.extraEnv },
+          env,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: false,
           // Its own process group on POSIX, so the kill path can address the whole tree.
