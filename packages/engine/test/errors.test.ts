@@ -9,6 +9,7 @@ import {
   InputError,
   InternalError,
   ManifestError,
+  PlatformError,
   ResolutionError,
   RuneError,
   UsageError,
@@ -19,6 +20,7 @@ import {
 /** Every code of docs/architecture.md §7 with the exit code §10 assigns to it. */
 const EXPECTED_EXIT_CODES: ReadonlyArray<readonly [RuneCode, number]> = [
   ['RUNE-001', 2],
+  ['RUNE-002', 2],
   ['RUNE-101', 3],
   ['RUNE-102', 3],
   ['RUNE-103', 3],
@@ -46,6 +48,7 @@ describe('exit codes', () => {
 
   it('maps every error class to its documented code family', () => {
     expect(exitCodeFor(new UsageError('bad flag'))).toBe(2);
+    expect(exitCodeFor(new PlatformError('unsupported host'))).toBe(2);
     expect(exitCodeFor(new ManifestError('RUNE-103', 'bad manifest'))).toBe(3);
     expect(exitCodeFor(new InputError('RUNE-201', 'missing'))).toBe(4);
     expect(exitCodeFor(new ResolutionError('RUNE-301', 'undefined variable'))).toBe(5);

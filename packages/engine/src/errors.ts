@@ -14,6 +14,7 @@ export type { Location };
  */
 export type RuneCode =
   | 'RUNE-001' // CLI misuse
+  | 'RUNE-002' // unsupported host platform
   | 'RUNE-101' // manifest syntax
   | 'RUNE-102' // schemaVersion missing or unsupported
   | 'RUNE-103' // manifest schema
@@ -122,6 +123,13 @@ export class UsageError extends RuneError {
   }
 }
 
+/** RUNE cannot run on this host platform (exit 2). */
+export class PlatformError extends RuneError {
+  constructor(message: string, options?: RuneErrorOptions) {
+    super('RUNE-002', message, options);
+  }
+}
+
 /** The manifest could not be read, parsed, or validated (exit 3). */
 export class ManifestError extends RuneError {
   constructor(code: ManifestCode, message: string, options?: RuneErrorOptions) {
@@ -206,6 +214,7 @@ export class InternalError extends RuneError {
 /** Exit codes are fixed and identical on every platform (docs/architecture.md §10). */
 const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
   'RUNE-001': 2,
+  'RUNE-002': 2,
   'RUNE-101': 3,
   'RUNE-102': 3,
   'RUNE-103': 3,

@@ -8,7 +8,7 @@
 
 import { homedir, tmpdir } from 'node:os';
 
-import { ResolutionError } from '../errors.js';
+import { PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
@@ -178,7 +178,21 @@ export type Platform = 'windows' | 'linux';
 
 /** The platform this process is on. */
 export function hostPlatform(): Platform {
-  return process.platform === 'win32' ? 'windows' : 'linux';
+  return platformForNode(process.platform);
+}
+
+/** Maps Node's host identifier without treating an unsupported host as Linux. */
+export function platformForNode(platform: NodeJS.Platform): Platform {
+  switch (platform) {
+    case 'win32':
+      return 'windows';
+    case 'linux':
+      return 'linux';
+    default:
+      throw new PlatformError(
+        `host platform "${platform}" is not supported; supported Node platforms are win32 and linux`,
+      );
+  }
 }
 
 export interface RuntimeContextOptions {

@@ -2,8 +2,8 @@ import { homedir, tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { ResolutionError } from '../../src/errors.js';
+import { createRuntimeContext, hostPlatform, platformForNode } from '../../src/engine/context.js';
+import { exitCodeFor, PlatformError, ResolutionError } from '../../src/errors.js';
 
 const product = { name: 'Example', version: '1.0.0' };
 
@@ -136,9 +136,37 @@ describe('previewing the other platform', () => {
 });
 
 describe('hostPlatform', () => {
-  it('names one of the two platforms RUNE runs on', () => {
-    expect(['windows', 'linux']).toContain(hostPlatform());
-    expect(hostPlatform()).toBe(process.platform === 'win32' ? 'windows' : 'linux');
+  it.each([
+    ['win32', 'windows'],
+    ['linux', 'linux'],
+  ] as const)('maps the Node platform %s to %s', (nodePlatform, platform) => {
+    expect(platformForNode(nodePlatform)).toBe(platform);
+  });
+
+  it.each(['darwin', 'freebsd'] as const)(
+    'rejects the unsupported Node platform %s',
+    (platform) => {
+      let thrown: unknown;
+      try {
+        platformForNode(platform);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(PlatformError);
+      expect((thrown as PlatformError).code).toBe('RUNE-002');
+      expect((thrown as PlatformError).message).toBe(
+        `host platform "${platform}" is not supported; supported Node platforms are win32 and linux`,
+      );
+      expect(exitCodeFor(thrown)).toBe(2);
+    },
+  );
+
+  it('maps the actual CI host correctly', () => {
+    const expected = process.platform === 'win32' ? 'windows' : 'linux';
+
+    expect(['win32', 'linux']).toContain(process.platform);
+    expect(hostPlatform()).toBe(expected);
   });
 
   it('is what a context without an explicit platform uses', () => {

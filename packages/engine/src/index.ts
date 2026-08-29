@@ -21,6 +21,7 @@ export {
   InternalError,
   INTERNAL_EXIT_CODE,
   ManifestError,
+  PlatformError,
   ResolutionError,
   RuneError,
   UsageError,
