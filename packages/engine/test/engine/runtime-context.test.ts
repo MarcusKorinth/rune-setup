@@ -22,6 +22,10 @@ function unsafeEnvironment(value: object): Record<string, string> {
   return value as Record<string, string>;
 }
 
+function unsafePlatform(value: unknown): 'windows' | 'linux' {
+  return value as 'windows' | 'linux';
+}
+
 describe('the values behind the built-in names', () => {
   const context = contextFor(hostPlatform(), { JAVA_HOME: '/opt/java' });
 
@@ -207,6 +211,32 @@ describe('previewing the other platform', () => {
     expect(context.valueOf({ kind: 'builtin', name: 'platform' })).toBe(other);
     expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
     expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Example');
+  });
+
+  it.each([
+    ['darwin', 'darwin'],
+    ['', ''],
+    [null, 'null'],
+    [42, '42'],
+  ] as const)('rejects the unsupported preview platform %s', (platform, renderedPlatform) => {
+    let thrown: unknown;
+    try {
+      createRuntimeContext({
+        manifestDir: '/project',
+        product,
+        platform: unsafePlatform(platform),
+        environment: {},
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(PlatformError);
+    expect((thrown as PlatformError).code).toBe('RUNE-002');
+    expect((thrown as PlatformError).message).toBe(
+      `preview platform "${renderedPlatform}" is not supported; supported preview platforms are windows and linux`,
+    );
+    expect(exitCodeFor(thrown)).toBe(2);
   });
 });
 

@@ -225,7 +225,8 @@ export interface RuntimeContext {
 
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
   const host = hostPlatform();
-  const platform = options.platform ?? host;
+  const platform =
+    options.platform === undefined ? host : validatePreviewPlatform(options.platform);
   const manifestDir = options.manifestDir;
   const productName = options.product.name;
   const productVersion = options.product.version;
@@ -277,6 +278,15 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
       }
     },
   };
+}
+
+function validatePreviewPlatform(platform: unknown): Platform {
+  if (platform === 'windows' || platform === 'linux') {
+    return platform;
+  }
+  throw new PlatformError(
+    `preview platform "${String(platform)}" is not supported; supported preview platforms are windows and linux`,
+  );
 }
 
 function snapshotEnvironment(
