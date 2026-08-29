@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { InternalError } from '../../src/errors.js';
 import { SecretString } from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
 import { MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
@@ -32,60 +33,153 @@ describe('the registry', () => {
     expect(() => registry.register(handler('text'))).toThrow(/registered twice/);
   });
 
-  it('reads a handler name once and registers it under that stable name', () => {
+  it('snapshots every handler property once under the stable registered name', () => {
     const booleanHandler = handler('boolean');
     const registry = new InputTypeRegistry([booleanHandler]);
-    let nameReads = 0;
+    const textHandler = handler('text');
+    const reads = {
+      name: 0,
+      secret: 0,
+      empty: 0,
+      isAbsent: 0,
+      fromString: 0,
+      fromNative: 0,
+      render: 0,
+      compare: 0,
+    };
+    const firstFromString = vi.fn(textHandler.fromString);
+    const replacementFromString = vi.fn(() => ({ ok: true, value: 'replacement' }) as const);
     const changingHandler: InputTypeHandler = {
-      ...handler('text'),
       get name() {
-        nameReads += 1;
-        return nameReads === 1 ? 'text' : 'boolean';
+        reads.name += 1;
+        return reads.name === 1 ? 'text' : 'boolean';
+      },
+      get secret() {
+        reads.secret += 1;
+        return reads.secret === 1 ? false : true;
+      },
+      get empty() {
+        reads.empty += 1;
+        return textHandler.empty;
+      },
+      get isAbsent() {
+        reads.isAbsent += 1;
+        return textHandler.isAbsent;
+      },
+      get fromString() {
+        reads.fromString += 1;
+        return reads.fromString === 1 ? firstFromString : replacementFromString;
+      },
+      get fromNative() {
+        reads.fromNative += 1;
+        return textHandler.fromNative;
+      },
+      get render() {
+        reads.render += 1;
+        return textHandler.render;
+      },
+      get compare() {
+        reads.compare += 1;
+        return textHandler.compare;
       },
     };
 
     registry.register(changingHandler);
+    const registered = registry.get('text');
 
-    expect(nameReads).toBe(1);
-    expect(registry.get('text')).toBe(changingHandler);
-    expect(registry.get('boolean')).toBe(booleanHandler);
+    expect(reads).toEqual({
+      name: 1,
+      secret: 1,
+      empty: 1,
+      isAbsent: 1,
+      fromString: 1,
+      fromNative: 1,
+      render: 1,
+      compare: 1,
+    });
+    expect(registered).not.toBe(changingHandler);
+    expect(registered.secret).toBe(false);
+    expect(registry.get('text')).toBe(registered);
+    expect(registered.fromString('original', spec('text'))).toEqual({
+      ok: true,
+      value: 'original',
+    });
+    expect(firstFromString).toHaveBeenCalledOnce();
+    expect(replacementFromString).not.toHaveBeenCalled();
+    expect(registry.get('boolean')).not.toBe(booleanHandler);
+    expect(registry.get('boolean').name).toBe('boolean');
     expect(registry.names()).toEqual(['boolean', 'text']);
   });
 
-  it('does not freeze a handler when its stable name is already registered', () => {
+  it('reads only a duplicate handler name and does not read its other fields', () => {
     const registry = new InputTypeRegistry([handler('text')]);
     let nameReads = 0;
-    const duplicate: InputTypeHandler = {
-      ...handler('boolean'),
+    const duplicate = {
       get name() {
         nameReads += 1;
         return nameReads === 1 ? 'text' : 'boolean';
       },
-    };
+    } as InputTypeHandler;
+    for (const field of [
+      'secret',
+      'empty',
+      'isAbsent',
+      'fromString',
+      'fromNative',
+      'render',
+      'compare',
+    ] as const) {
+      Object.defineProperty(duplicate, field, {
+        get: () => {
+          throw new Error(`${field} must not be read`);
+        },
+      });
+    }
 
     expect(() => registry.register(duplicate)).toThrow('the input type "text" is registered twice');
     expect(nameReads).toBe(1);
-    expect(Object.isFrozen(duplicate)).toBe(false);
     expect(registry.names()).toEqual(['text']);
   });
 
-  it('keeps a registered handler stable against property replacement', () => {
+  it('keeps a frozen snapshot when its original handler is later changed', () => {
     const registry = new InputTypeRegistry();
     const mutableHandler = { ...handler('text') };
     const replacement = vi.fn(() => ({ ok: true, value: 'replaced' }) as const);
 
     registry.register(mutableHandler);
+    const registered = registry.get('text');
 
-    expect(Object.isFrozen(mutableHandler)).toBe(true);
-    expect(Reflect.set(mutableHandler, 'name', 'boolean')).toBe(false);
-    expect(Reflect.set(mutableHandler, 'fromString', replacement)).toBe(false);
+    expect(Object.isFrozen(mutableHandler)).toBe(false);
+    expect(Object.isFrozen(registered)).toBe(true);
+    expect(Reflect.set(mutableHandler, 'name', 'boolean')).toBe(true);
+    expect(Reflect.set(mutableHandler, 'fromString', replacement)).toBe(true);
     expect(registry.names()).toEqual(['text']);
-    expect(registry.get('text').fromString('original', spec('text'))).toEqual({
+    expect(registered.fromString('original', spec('text'))).toEqual({
       ok: true,
       value: 'original',
     });
     expect(replacement).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['secret', 'not a boolean'],
+    ['empty', undefined],
+    ['isAbsent', undefined],
+    ['fromString', undefined],
+    ['fromNative', undefined],
+    ['render', undefined],
+    ['compare', undefined],
+  ] as const)(
+    'rejects a handler with an invalid %s field without registering it',
+    (field, value) => {
+      const registry = new InputTypeRegistry();
+      const invalid = { ...handler('text'), [field]: value } as unknown as InputTypeHandler;
+
+      expect(() => registry.register(invalid)).toThrow(InternalError);
+      expect(() => registry.register(invalid)).toThrow(`input type handler field "${field}"`);
+      expect(registry.has('text')).toBe(false);
+    },
+  );
 
   it('treats asking for an unregistered type as a bug', () => {
     expect(() => new InputTypeRegistry().get('text')).toThrow(/no handler is registered/);
