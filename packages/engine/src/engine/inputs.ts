@@ -93,9 +93,9 @@ export interface Resolution {
 /**
  * Merges the layers for every input of a manifest.
  *
- * Throws {@link InputError} listing *every* problem: a value no type accepts, a key that
- * names no input. Missing values are not a failure here — a frontend is allowed to ask —
- * they are reported in {@link Resolution.missing}.
+ * Throws {@link InputError} listing every unknown key and, unless a frontend is collecting,
+ * every value no type accepts. Missing values are not a failure here — a frontend is allowed
+ * to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
@@ -193,7 +193,8 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     order.push(id);
   }
 
-  if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
+  const hasUnknownKey = issues.some((issue) => issue.code === 'RUNE-203');
+  if (issues.length > 0 && ((options.invalidValues ?? 'throw') === 'throw' || hasUnknownKey)) {
     // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
     // the values (§7).
     const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');

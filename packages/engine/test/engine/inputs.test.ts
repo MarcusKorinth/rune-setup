@@ -14,7 +14,7 @@ import {
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
-import { exitCodeFor, ResolutionError, type InputError } from '../../src/errors.js';
+import { exitCodeFor, InputError, ResolutionError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -62,6 +62,23 @@ function problems(
   throw new Error('expected the values to be rejected');
 }
 
+/** The input error a resolution was rejected with. */
+function inputError(
+  manifest: ManifestV1,
+  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  environment: Record<string, string> = {},
+): InputError {
+  try {
+    resolve(manifest, options, environment);
+  } catch (error) {
+    if (error instanceof InputError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error('expected the values to be rejected');
+}
+
 /** A values document without touching the disk. */
 function values(file: string, entries: Record<string, unknown>): ValuesDocument {
   return {
@@ -69,6 +86,14 @@ function values(file: string, entries: Record<string, unknown>): ValuesDocument 
     values: new Map(Object.entries(entries)),
     sourceMap: { location: () => undefined, keyLocation: () => undefined, best: () => undefined },
   } as unknown as ValuesDocument;
+}
+
+/** A parsed values document with its real source locations. */
+function valuesFromFile(contents: string): ValuesDocument {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
+  const path = join(directory, 'values.yaml');
+  writeFileSync(path, contents);
+  return parseValuesFile(path, 'v.yaml');
 }
 
 const SIMPLE = ['inputs:', '  target:', '    type: text'];
@@ -475,6 +500,61 @@ describe('keys that name no input', () => {
       problems(manifestOf(...SIMPLE), { values: [values('v.yaml', { nope: 'x' })] })[0],
     ).toContain('(set from v.yaml)');
   });
+
+  it('refuses an unknown override when a frontend collects invalid values', () => {
+    const error = inputError(manifestOf(...SIMPLE), {
+      overrides: new Map([['nope', 'x']]),
+      invalidValues: 'collect',
+    });
+
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues).toMatchObject([{ code: 'RUNE-203' }]);
+  });
+
+  it('keeps the values-file origin and location when collecting invalid values', () => {
+    const error = inputError(manifestOf(...SIMPLE), {
+      values: [valuesFromFile('nope: x\n')],
+      invalidValues: 'collect',
+    });
+
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues).toMatchObject([
+      {
+        code: 'RUNE-203',
+        message: expect.stringContaining('(set from v.yaml)'),
+        location: { file: 'v.yaml', line: 1, column: 1 },
+      },
+    ]);
+  });
+
+  it('refuses an unknown layer-5 answer when a frontend collects invalid values', () => {
+    const error = inputError(manifestOf(...SIMPLE), {
+      answers: new Map([['nope', 'x']]),
+      invalidValues: 'collect',
+    });
+
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues).toMatchObject([{ code: 'RUNE-203' }]);
+  });
+
+  it('throws a mixed batch while preserving every issue and its invalid-value code', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]{2,5}"',
+    );
+    const error = inputError(manifest, {
+      overrides: new Map([
+        ['nope', 'x'],
+        ['port', 'eighty'],
+      ]),
+      invalidValues: 'collect',
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues.map((issue) => issue.code)).toEqual(['RUNE-203', 'RUNE-202']);
+  });
 });
 
 describe('what counts as an answer', () => {
@@ -514,6 +594,13 @@ describe('what counts as an answer', () => {
 describe('a frontend that can ask again', () => {
   const manifest = manifestOf('inputs:', '  port:', '    type: text', '    pattern: "[0-9]{2,5}"');
 
+  it('still throws a registry value problem by default', () => {
+    const error = inputError(manifest, { overrides: new Map([['port', 'eighty']]) });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toMatchObject([{ code: 'RUNE-202' }]);
+  });
+
   it('collects the problem instead of throwing, and treats the value as unanswered', () => {
     const resolution = resolveInputs({
       manifest,
@@ -525,6 +612,7 @@ describe('a frontend that can ask again', () => {
     expect(resolution.problems.map((problem) => problem.message)).toEqual([
       'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
     ]);
+    expect(resolution.problems.map((problem) => problem.code)).toEqual(['RUNE-202']);
     expect(resolution.byId.get('port')?.value).toBeUndefined();
     expect(resolution.missing).toEqual(['port']);
   });
