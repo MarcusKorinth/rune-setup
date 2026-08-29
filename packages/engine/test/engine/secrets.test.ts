@@ -17,8 +17,8 @@ describe('SecretString', () => {
     expect(String(secret)).toBe(MASK);
     expect(`${String(secret)}`).toBe(MASK);
     expect([secret].join('')).toBe(MASK);
-    expect(JSON.stringify(secret)).toBe('null');
-    expect(JSON.stringify({ token: secret })).toBe('{"token":null}');
+    expect(JSON.stringify(secret)).toBe(`"${MASK}"`);
+    expect(JSON.stringify({ token: secret })).toBe(`{"token":"${MASK}"}`);
     expect(inspect(secret)).toBe(MASK);
     expect(inspect({ token: secret })).toContain(MASK);
     expect(inspect({ token: secret })).not.toContain('hunter2');

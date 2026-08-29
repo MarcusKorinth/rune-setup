@@ -41,8 +41,8 @@ export class SecretString {
     return MASK;
   }
 
-  toJSON(): null {
-    return null;
+  toJSON(): string {
+    return MASK;
   }
 
   [Symbol.for('nodejs.util.inspect.custom')](): string {
