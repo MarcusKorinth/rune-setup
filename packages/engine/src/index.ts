@@ -71,8 +71,15 @@ export { isSecretString, MASK, SecretRegistry, SecretString } from './engine/sec
 export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
 export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
 
-export { buildPlan } from './engine/plan.js';
-export type { ExecutionPlan, PlannedStep, PlanOptions, ResolvedCommand } from './engine/plan.js';
+export { buildPlan, PLAN_SCHEMA_VERSION } from './engine/plan.js';
+export type {
+  ExecutionPlan,
+  PlannedStep,
+  PlanExecutionOptions,
+  PlanInput,
+  PlanOptions,
+  ResolvedCommand,
+} from './engine/plan.js';
 
 export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
 export type { ExecuteOptions } from './engine/executor.js';

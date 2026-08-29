@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
-import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
+import { buildPlan, PLAN_SCHEMA_VERSION, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
-import { InputError } from '../../src/errors.js';
+import { InputError, InternalError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -186,6 +186,39 @@ describe('input completeness', () => {
     expect(error.issues.map((issue) => issue.code)).toEqual(['RUNE-202', 'RUNE-201']);
   });
 
+  it('does not report an optional collected invalid value as additionally missing', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    required: false',
+        '    pattern: "[0-9]{2,5}"',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['port', 'not-a-number']]),
+      invalidValues: 'collect',
+    });
+
+    const error = planningError(manifest, resolution, context);
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toEqual([resolution.problems[0]]);
+  });
+
   it('keeps collected problems and every missing input in stable order', () => {
     const manifest = parseManifestText(
       [
@@ -323,7 +356,7 @@ describe('the Windows honesty rule', () => {
 });
 
 describe('secrets in the plan', () => {
-  it('keeps a rendering a secret flowed into wrapped, so the plan serializes as ***', () => {
+  it('keeps resolved and rendered secrets wrapped, so the plan serializes as ***', () => {
     const { plan } = planFor(
       [
         'inputs:',
@@ -344,31 +377,142 @@ describe('secrets in the plan', () => {
     if (step?.state !== 'PENDING') {
       throw new Error('expected a pending step');
     }
+    expect(plan.resolvedInputs[0]?.value).toBeInstanceOf(SecretString);
     expect(step.command.argv[1]).toBeInstanceOf(SecretString);
     expect(step.command.env['API_TOKEN']).toBeInstanceOf(SecretString);
     expect(JSON.stringify(plan)).not.toContain('super-secret-value');
+    expect(JSON.parse(JSON.stringify(plan)).resolvedInputs[0].value).toBe('***');
     expect(String(step.command.argv[1])).toBe('***');
+  });
+
+  it('rejects a manipulated plain-text secret without exposing its value', () => {
+    const plaintext = 'must-not-reach-the-plan';
+    const { manifest, resolution, context } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      args: ["${token}"]',
+      ],
+      { overrides: new Map([['token', 'original-secret']]) },
+    );
+    Object.assign(resolution.inputs[0] as object, { value: plaintext });
+
+    let caught: unknown;
+    try {
+      buildPlan({ manifest, resolution, context });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InternalError);
+    expect(caught).toMatchObject({ code: 'RUNE-500' });
+    expect(caught instanceof Error && caught.message).toContain(
+      'secret input "token" is not wrapped after resolution',
+    );
+    expect(caught instanceof Error && caught.message).not.toContain(plaintext);
+    expect(JSON.stringify(caught)).not.toContain(plaintext);
   });
 });
 
 describe('the plan itself', () => {
-  it('is frozen and carries what execution and rendering need', () => {
+  it('has the complete versioned shape without legacy flat execution options', () => {
     const { plan } = planFor(['steps:', '  - id: a', '    run:', '      command: node'], {
       platform: hostPlatform(),
     });
 
+    expect(Object.keys(plan)).toEqual([
+      'planSchemaVersion',
+      'manifestPath',
+      'manifestSha256',
+      'platform',
+      'preview',
+      'resolvedInputs',
+      'executionOptions',
+      'steps',
+    ]);
+    expect(plan).not.toHaveProperty('failFast');
+    expect(plan).not.toHaveProperty('logFile');
+    expect(plan).toMatchObject({
+      planSchemaVersion: PLAN_SCHEMA_VERSION,
+      manifestPath: 'installer.yaml',
+      manifestSha256: '35c8f84df4785677ec842f1adcead819c45a313b74121e196522375db90d6697',
+      platform: hostPlatform(),
+      preview: false,
+      resolvedInputs: [],
+      executionOptions: { failFast: true, logFile: undefined },
+    });
+  });
+
+  it('deeply freezes copied inputs, options and steps', () => {
+    const { plan, resolution } = planFor(
+      [
+        'inputs:',
+        '  tools:',
+        '    type: multiselect',
+        '    options: [git, docker]',
+        'steps:',
+        '  - id: a',
+        '    run:',
+        '      command: node',
+      ],
+      { overrides: new Map([['tools', 'git,docker']]) },
+    );
+
     expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.resolvedInputs)).toBe(true);
+    expect(Object.isFrozen(plan.resolvedInputs[0])).toBe(true);
+    expect(Object.isFrozen(plan.resolvedInputs[0]?.value)).toBe(true);
+    expect(Object.isFrozen(plan.executionOptions)).toBe(true);
     expect(Object.isFrozen(plan.steps)).toBe(true);
     expect(Object.isFrozen(plan.steps[0])).toBe(true);
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && Object.isFrozen(step.command)).toBe(true);
     expect(step?.state === 'PENDING' && Object.isFrozen(step.command.argv)).toBe(true);
-    expect(plan).toMatchObject({
-      manifestPath: 'installer.yaml',
-      manifestSha256: '35c8f84df4785677ec842f1adcead819c45a313b74121e196522375db90d6697',
-      platform: hostPlatform(),
-      preview: false,
-      failFast: true,
+    expect(plan.resolvedInputs[0]).toMatchObject({
+      id: 'tools',
+      value: ['git', 'docker'],
+      source: 'set',
+      secret: false,
+      enabled: true,
+      ignored: undefined,
+    });
+
+    (resolution.inputs[0]?.value as string[]).push('changed');
+    Object.assign(resolution.inputs[0] as object, { id: 'changed', source: 'answer' });
+    expect(plan.resolvedInputs[0]).toMatchObject({
+      id: 'tools',
+      value: ['git', 'docker'],
+      source: 'set',
+    });
+  });
+
+  it('captures a disabled input with its empty value and ignored provenance', () => {
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  destination:',
+        '    type: text',
+        '    when: "${enabled}"',
+        'steps: []',
+      ],
+      { overrides: new Map([['destination', 'discarded']]) },
+    );
+
+    expect(plan.resolvedInputs[1]).toEqual({
+      id: 'destination',
+      value: '',
+      source: undefined,
+      secret: false,
+      enabled: false,
+      ignored: 'set',
     });
   });
 

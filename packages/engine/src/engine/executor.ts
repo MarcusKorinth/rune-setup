@@ -14,7 +14,7 @@ import {
   executionContextFor,
   type ExecutionPlan,
   type PlanExecutionContext,
-  type PlanInputSnapshot,
+  type PlanInput,
   type PlannedStep,
 } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
@@ -95,7 +95,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     // cancellation exactly when it prevents a pending step from starting. `wasCancelled`
     // also carries a runner-reported cancellation forward when a custom runner does not
     // own the supplied token.
-    const abortForFailure = failed && plan.failFast;
+    const abortForFailure = failed && plan.executionOptions.failFast;
     const abortForCancellation = !abortForFailure && (wasCancelled || cancel.cancelled);
     if (abortForCancellation) {
       wasCancelled = true;
@@ -305,20 +305,21 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.executionContext.inputs.map((state) =>
+    inputs: input.plan.resolvedInputs.map((state) =>
       resultInput(state, input.executionContext.secrets),
     ),
     steps,
   });
 }
 
-function resultInput(state: PlanInputSnapshot, secrets: SecretRegistry): ResultInput {
+function resultInput(state: PlanInput, secrets: SecretRegistry): ResultInput {
+  const value = state.value;
   return {
     id: state.id,
-    value: maskInputValue(state.value, secrets),
+    value: state.secret || value instanceof SecretString ? null : maskInputValue(value, secrets),
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
-    source: state.source,
+    source: state.source ?? state.ignored ?? null,
     secret: state.secret,
     enabled: state.enabled,
     ignored: state.ignored === undefined ? null : 'input disabled',
@@ -349,12 +350,23 @@ function finishedStep(
 /** A clone-safe projection: observers never receive the opaque values used for spawning. */
 function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
   return deepFreeze({
+    planSchemaVersion: plan.planSchemaVersion,
     manifestPath: plan.manifestPath,
     manifestSha256: plan.manifestSha256,
     platform: plan.platform,
     preview: plan.preview,
-    failFast: plan.failFast,
-    logFile: plan.logFile,
+    resolvedInputs: plan.resolvedInputs.map((input): PlanInput => ({
+      id: input.id,
+      value: maskPlanInputValue(input, secrets),
+      source: input.source,
+      secret: input.secret,
+      enabled: input.enabled,
+      ignored: input.ignored,
+    })),
+    executionOptions: {
+      failFast: plan.executionOptions.failFast,
+      logFile: plan.executionOptions.logFile,
+    },
     steps: plan.steps.map((step): PlannedStep => {
       if (step.state === 'SKIPPED') {
         return {
@@ -386,7 +398,7 @@ function planForObserver(plan: ExecutionPlan, secrets: SecretRegistry): Executio
 }
 
 function maskInputValue(
-  value: PlanInputSnapshot['value'],
+  value: string | boolean | readonly string[],
   secrets: SecretRegistry,
 ): ResultInput['value'] {
   if (typeof value === 'string') {
@@ -396,6 +408,19 @@ function maskInputValue(
     return value.map((entry) => secrets.mask(entry));
   }
   return value;
+}
+
+function maskPlanInputValue(input: PlanInput, secrets: SecretRegistry): PlanInput['value'] {
+  if (input.secret || input.value instanceof SecretString) {
+    return MASK;
+  }
+  if (typeof input.value === 'string') {
+    return secrets.mask(input.value);
+  }
+  if (Array.isArray(input.value)) {
+    return input.value.map((entry) => secrets.mask(entry));
+  }
+  return input.value;
 }
 
 function maskCommandValue(value: string | SecretString, secrets: SecretRegistry): string {

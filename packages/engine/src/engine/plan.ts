@@ -32,6 +32,9 @@ import { SecretString } from './secrets.js';
 import type { SecretRegistry } from './secrets.js';
 import { deepFreeze } from './freeze.js';
 
+/** The independently versioned public shape of an execution plan (§7). */
+export const PLAN_SCHEMA_VERSION = 1;
+
 /**
  * A command ready to spawn. Any piece whose rendering touched a secret input stays wrapped
  * in a SecretString inside the plan — serializing or inspecting the plan renders `***` —
@@ -60,14 +63,31 @@ export type PlannedStep =
       readonly skipReason: string;
     };
 
+/** One final input state captured in the static plan. */
+export interface PlanInput {
+  readonly id: string;
+  readonly value: string | boolean | readonly string[] | SecretString;
+  readonly source: ValueSource | undefined;
+  readonly secret: boolean;
+  readonly enabled: boolean;
+  readonly ignored: ValueSource | undefined;
+}
+
+/** Execution settings captured alongside the inputs and steps they govern. */
+export interface PlanExecutionOptions {
+  readonly failFast: boolean;
+  readonly logFile: string | undefined;
+}
+
 export interface ExecutionPlan {
+  readonly planSchemaVersion: typeof PLAN_SCHEMA_VERSION;
   readonly manifestPath: string;
   readonly manifestSha256: string;
   readonly platform: RuntimeContext['platform'];
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
-  readonly failFast: boolean;
-  readonly logFile: string | undefined;
+  readonly resolvedInputs: readonly PlanInput[];
+  readonly executionOptions: PlanExecutionOptions;
   readonly steps: readonly PlannedStep[];
 }
 
@@ -77,21 +97,10 @@ export interface PlanOptions {
   readonly context: RuntimeContext;
 }
 
-/** Result metadata bound to one concrete plan without becoming part of its public JSON. */
-export interface PlanInputSnapshot {
-  readonly id: string;
-  readonly value: string | boolean | readonly string[] | null;
-  readonly source: ValueSource | null;
-  readonly secret: boolean;
-  readonly enabled: boolean;
-  readonly ignored: ValueSource | undefined;
-}
-
 /** Execution-only context. Deliberately not re-exported from the package entry point. */
 export interface PlanExecutionContext {
   readonly product: { readonly name: string; readonly version: string };
   readonly manifest: ManifestDescriptor;
-  readonly inputs: readonly PlanInputSnapshot[];
   readonly secrets: SecretRegistry;
 }
 
@@ -111,6 +120,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
   const manifestDescriptor = manifestDescriptorFor(manifest);
   rejectIncompleteResolution(resolution);
+  const resolvedInputs = resolution.inputs.map(snapshotInput);
 
   const steps = manifest.steps.map((step): PlannedStep => {
     const title = step.title ?? step.id;
@@ -142,54 +152,60 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     };
   });
 
-  const plan = deepFreeze({
+  const plan: ExecutionPlan = deepFreeze({
+    planSchemaVersion: PLAN_SCHEMA_VERSION,
     manifestPath: manifestDescriptor.path,
     manifestSha256: manifestDescriptor.sha256,
     platform: context.platform,
     preview: context.preview,
-    failFast: manifest.execution.failFast,
-    logFile: manifest.execution.logFile,
+    resolvedInputs,
+    executionOptions: {
+      failFast: manifest.execution.failFast,
+      logFile: manifest.execution.logFile,
+    },
     steps,
   });
-  executionContexts.set(plan, snapshotExecutionContext(manifest, manifestDescriptor, resolution));
+  executionContexts.set(
+    plan,
+    snapshotExecutionContext(manifest, manifestDescriptor, resolution.secrets),
+  );
   return plan;
 }
 
 function snapshotExecutionContext(
   manifest: ManifestV1,
   manifestDescriptor: ManifestDescriptor,
-  resolution: Resolution,
+  secrets: SecretRegistry,
 ): PlanExecutionContext {
   const product = Object.freeze({
     name: manifest.product.name,
     version: manifest.product.version,
   });
-  const inputs = Object.freeze(resolution.inputs.map(snapshotInput));
   return Object.freeze({
     product,
     manifest: manifestDescriptor,
-    inputs,
-    secrets: resolution.secrets,
+    secrets,
   });
 }
 
-function snapshotInput(state: InputState): PlanInputSnapshot {
+function snapshotInput(state: InputState): PlanInput {
+  if (state.value === undefined) {
+    throw new InternalError(`input "${state.id}" has no value after resolution was accepted`);
+  }
+  if (state.spec.type === 'secret' && !(state.value instanceof SecretString)) {
+    throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
+  }
   const secret = state.spec.type === 'secret' || state.value instanceof SecretString;
-  const value =
-    secret || state.value === undefined
-      ? null
-      : Array.isArray(state.value)
-        ? Object.freeze([...state.value])
-        : state.value;
+  const value = Array.isArray(state.value) ? [...state.value] : state.value;
 
-  return Object.freeze({
+  return {
     id: state.id,
     value,
-    source: state.source ?? state.ignored ?? null,
+    source: state.source,
     secret,
     enabled: state.enabled,
     ignored: state.ignored,
-  });
+  };
 }
 
 /** Planning is the last gate before execution, so incomplete frontend state fails closed. */

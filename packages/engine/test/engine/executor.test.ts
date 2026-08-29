@@ -997,8 +997,31 @@ describe('skipped steps and the dry run', () => {
       (Object.isFrozen(value) && Object.values(value).every(isDeeplyFrozen));
 
     expect(projection).not.toBe(plan);
+    expect(Object.keys(projection)).toEqual(Object.keys(plan));
+    expect(projection.planSchemaVersion).toBe(1);
     expect(projection.manifestPath).toBe(plan.manifestPath);
     expect(projection.manifestSha256).toBe(plan.manifestSha256);
+    expect(projection.executionOptions).toEqual(plan.executionOptions);
+    expect(projection.resolvedInputs).toMatchObject([
+      { id: 'token', value: '***', source: 'set', secret: true, enabled: true },
+      {
+        id: 'note',
+        value: 'prefix *** suffix',
+        source: 'default',
+        secret: false,
+        enabled: true,
+      },
+      {
+        id: 'selections',
+        value: ['***', 'other'],
+        source: 'default',
+        secret: false,
+        enabled: true,
+      },
+    ]);
+    expect(projection.resolvedInputs.map(({ value: _value, ...metadata }) => metadata)).toEqual(
+      plan.resolvedInputs.map(({ value: _value, ...metadata }) => metadata),
+    );
     expect(containsSecretString(projection)).toBe(false);
     expect(isDeeplyFrozen(projection)).toBe(true);
     expect(clonedProjection).toEqual(projection);

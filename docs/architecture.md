@@ -250,7 +250,7 @@ One pipeline, shared by every verb and frontend, orchestrated by `Session`:
 
 `rune validate` = stages 1–2 (fully static), followed by the environment-variable audit report (§4.3). `rune run --dry-run` = stages 1–4, rendering the plan (final argv with secrets masked, cwd, skip reasons, disabled inputs) and executing nothing. There is **no fake runner**: dry-run and run share the same plan object, so they cannot drift.
 
-`ExecutionPlan` (deep-frozen, `readonly` types, versioned): `manifestPath`, `manifestSha256`, `platform`, `locale`, `resolvedInputs` (secrets wrapped; disabled inputs carry their empty value and state), `executionOptions`, `steps: readonly PlannedStep[]` in declaration order. `PlannedStep` carries the real `ResolvedCommand` (secret-wrapped argv, cwd, env delta, timeout, success codes); masking happens only at render/serialization time — never a second "masked plan".
+`ExecutionPlan` (deep-frozen, `readonly` types, versioned): `planSchemaVersion` (currently `1`), `manifestPath`, `manifestSha256`, `platform`, `locale`, `resolvedInputs` (secrets wrapped; disabled inputs carry their empty value and state), `executionOptions`, `steps: readonly PlannedStep[]` in declaration order. `PlannedStep` carries the real `ResolvedCommand` (secret-wrapped argv, cwd, env delta, timeout, success codes); masking happens only at render/serialization time — never a second "masked plan".
 
 ### Step lifecycle
 
