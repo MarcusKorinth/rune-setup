@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { ManifestError } from '../../src/errors.js';
 import {
   discoverOverlays,
   matchOverlay,
@@ -64,5 +65,24 @@ describe('overlay discovery and matching', () => {
 
   it('treats a missing locales directory as no overlays', () => {
     expect(discoverOverlays(mkdtempSync(join(tmpdir(), 'rune-i18n-')))).toEqual([]);
+  });
+
+  it('fails loudly when locales is not a directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    writeFileSync(localesPath, 'not a directory');
+
+    let thrown: unknown;
+    try {
+      discoverOverlays(dir);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-101');
+    expect(error.message).toContain(localesPath);
+    expect(error.message).toMatch(/ENOTDIR|not a directory/i);
   });
 });

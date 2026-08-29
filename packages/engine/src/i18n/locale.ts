@@ -8,6 +8,8 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { ManifestError, messageOf } from '../errors.js';
+
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
 
@@ -60,8 +62,13 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
   let names: string[];
   try {
     names = readdirSync(directory);
-  } catch {
-    return [];
+  } catch (cause) {
+    if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw new ManifestError('RUNE-101', `${directory} cannot be read: ${messageOf(cause)}`, {
+      cause,
+    });
   }
   return names
     .filter((name) => /\.ya?ml$/i.test(name))
