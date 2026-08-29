@@ -15,6 +15,9 @@ import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
 
+/** Startup failures may contain argv, cwd, or environment values in Node's error text. */
+const FAILED_TO_START_MESSAGE = 'process could not be started';
+
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
 function reveal(value: string | SecretString): string {
   return value instanceof SecretString ? value.reveal() : value;
@@ -24,20 +27,26 @@ export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
     return new Promise((resolve) => {
       const { command } = request;
-      const [executable, ...args] = command.argv;
-      const env: Record<string, string | undefined> = { ...process.env };
-      for (const [name, value] of Object.entries(command.env)) {
-        env[name] = reveal(value);
-      }
+      let child: ReturnType<typeof spawn>;
+      try {
+        const [executable, ...args] = command.argv;
+        const env: Record<string, string | undefined> = { ...process.env };
+        for (const [name, value] of Object.entries(command.env)) {
+          env[name] = reveal(value);
+        }
 
-      const child = spawn(reveal(executable ?? ''), args.map(reveal), {
-        cwd: reveal(command.cwd),
-        env: { ...env, ...request.extraEnv },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        // Its own process group on POSIX, so the kill path can address the whole tree.
-        detached: process.platform !== 'win32',
-      });
+        child = spawn(reveal(executable ?? ''), args.map(reveal), {
+          cwd: reveal(command.cwd),
+          env: { ...env, ...request.extraEnv },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+          // Its own process group on POSIX, so the kill path can address the whole tree.
+          detached: process.platform !== 'win32',
+        });
+      } catch {
+        resolve({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
+        return;
+      }
 
       let settled = false;
       let timedOut = false;
@@ -83,8 +92,8 @@ export class SpawnRunner implements Runner {
         escalate.unref();
       };
 
-      child.on('error', (cause) => {
-        settle({ kind: 'failedToStart', message: cause.message });
+      child.on('error', () => {
+        settle({ kind: 'failedToStart', message: FAILED_TO_START_MESSAGE });
       });
 
       forwardLines(child.stdout, (line) => request.onOutput('stdout', line));

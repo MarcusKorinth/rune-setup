@@ -36,6 +36,9 @@ import {
 /** How many lines of a failed step's output the result file keeps (§7). */
 export const OUTPUT_TAIL_LINES = 50;
 
+/** Runner failures must not surface exception text that can contain command values. */
+const RUNNER_FAILURE_MESSAGE = 'runner failed before reporting an outcome';
+
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
   readonly observer?: EngineObserver;
@@ -116,16 +119,41 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     };
     const stepStart = Date.now();
 
-    const outcome = await runner.run({
-      command: step.command,
-      extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
-      cancel,
-      onOutput: (stream, rawLine) => {
-        const line = secrets.mask(rawLine);
-        keepInTail(stream, line);
-        emit({ kind: 'stepOutput', stepId: step.id, stream, line });
-      },
-    });
+    let acceptingOutput = true;
+    let outcome: Awaited<ReturnType<Runner['run']>>;
+    try {
+      outcome = await runner
+        .run({
+          command: step.command,
+          extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
+          cancel,
+          onOutput: (stream, rawLine) => {
+            // Deferring delivery by one microtask lets the runner's settlement handler close
+            // this gate before output queued after resolve/reject can reach an engine sink.
+            queueMicrotask(() => {
+              if (!acceptingOutput) {
+                return;
+              }
+              const line = secrets.mask(rawLine);
+              keepInTail(stream, line);
+              emit({ kind: 'stepOutput', stepId: step.id, stream, line });
+            });
+          },
+        })
+        .then(
+          (reportedOutcome) => {
+            acceptingOutput = false;
+            return reportedOutcome;
+          },
+          () => {
+            acceptingOutput = false;
+            return { kind: 'failedToStart', message: RUNNER_FAILURE_MESSAGE } as const;
+          },
+        );
+    } catch {
+      acceptingOutput = false;
+      outcome = { kind: 'failedToStart', message: RUNNER_FAILURE_MESSAGE };
+    }
 
     const durationMs = Date.now() - stepStart;
     let state: StepState;

@@ -190,6 +190,43 @@ describe('SpawnRunner', () => {
     expect(outcome.kind).toBe('failedToStart');
   });
 
+  it('reports a missing working directory as failed to start, not as a crash', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'rune-missing-cwd-'));
+    const outcome = await run(nodeCommand('', { cwd: join(parent, 'missing') }));
+
+    expect(outcome).toEqual({
+      kind: 'failedToStart',
+      message: 'process could not be started',
+    });
+  });
+
+  it.each([
+    ['executable', nodeCommand('', { argv: ['invalid\0executable'] })],
+    ['argument', nodeCommand('', { argv: [process.execPath, 'invalid\0argument'] })],
+    ['working directory', nodeCommand('', { cwd: 'invalid\0directory' })],
+    ['environment value', nodeCommand('', { env: { INVALID: 'invalid\0value' } })],
+    ['environment name', nodeCommand('', { env: { ['INVALID\0NAME']: 'value' } })],
+  ])('reports an invalid NUL-containing %s without rejecting', async (_name, command) => {
+    await expect(run(command)).resolves.toEqual({
+      kind: 'failedToStart',
+      message: 'process could not be started',
+    });
+  });
+
+  it('does not include a secret-wrapped invalid value in a startup failure', async () => {
+    const secret = new SecretString('needle-before\0needle-after');
+    const outcome = await run(nodeCommand('', { argv: [process.execPath, secret] }));
+    const serialized = JSON.stringify(outcome);
+
+    expect(outcome).toEqual({
+      kind: 'failedToStart',
+      message: 'process could not be started',
+    });
+    expect(serialized).not.toContain('needle-before');
+    expect(serialized).not.toContain('needle-after');
+    expect(serialized).not.toContain('\\u0000');
+  });
+
   it('kills a process that exceeds its timeout', async () => {
     const outcome = await run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }));
 

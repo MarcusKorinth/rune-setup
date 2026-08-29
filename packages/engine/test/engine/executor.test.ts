@@ -192,6 +192,137 @@ describe('a run that fails', () => {
     expect(result.status).toBe('failed');
     expect(result.steps[0]?.outputTail?.[0]?.line).toContain('could not be started');
   });
+
+  it('contains a rejecting runner and completes the event bracket', async () => {
+    const { plan } = setup(['steps:', '  - id: rejected', '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => {
+        throw new Error('exception text must stay private');
+      }),
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.steps[0]?.outputTail).toEqual([
+      {
+        stream: 'stderr',
+        line: 'step "rejected" could not be started: runner failed before reporting an outcome',
+      },
+    ]);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(JSON.stringify({ events, result })).not.toContain('exception text');
+  });
+
+  it('contains a secret NUL startup failure without exposing raw or escaped fragments', async () => {
+    const secret = 'needle-before\0needle-after';
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: invalid-argument',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        '      args: ["${token}"]',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+    });
+    const serialized = JSON.stringify({ events, result });
+
+    expect(result.status).toBe('failed');
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(result.steps[0]?.outputTail?.[0]?.line).toContain('process could not be started');
+    expect(serialized).not.toContain('needle-before');
+    expect(serialized).not.toContain('needle-after');
+    expect(serialized).not.toContain('\\u0000');
+  });
+
+  it('drops output queued after a runner resolves', async () => {
+    const { plan } = setup(['steps:', '  - id: late-output', '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+    const runner: Runner = {
+      run: (request) =>
+        new Promise((resolve) => {
+          resolve({ kind: 'exited', exitCode: 0 });
+          queueMicrotask(() => request.onOutput('stdout', 'late microtask'));
+          setTimeout(() => request.onOutput('stderr', 'late timer'), 0);
+        }),
+    };
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(result.status).toBe('succeeded');
+    expect(result.steps[0]?.outputTail).toBeNull();
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
+  it('drops output queued after a runner rejects', async () => {
+    const { plan } = setup(['steps:', '  - id: late-output', '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+    const runner: Runner = {
+      run: (request) =>
+        new Promise((_resolve, reject) => {
+          reject(new Error('private rejection'));
+          queueMicrotask(() => request.onOutput('stdout', 'late microtask'));
+          setTimeout(() => request.onOutput('stderr', 'late timer'), 0);
+        }),
+    };
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(result.status).toBe('failed');
+    expect(result.steps[0]?.outputTail).toEqual([
+      {
+        stream: 'stderr',
+        line: 'step "late-output" could not be started: runner failed before reporting an outcome',
+      },
+    ]);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(JSON.stringify({ events, result })).not.toContain('private rejection');
+  });
 });
 
 describe('cancellation and timeout', () => {
