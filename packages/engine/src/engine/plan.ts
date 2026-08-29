@@ -8,7 +8,7 @@
 
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { ExecutionError, InternalError } from '../errors.js';
+import { ExecutionError, InputError, InternalError, type RuneIssue } from '../errors.js';
 import { MASK } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
@@ -67,6 +67,7 @@ export interface PlanOptions {
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
 export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context } = options;
+  rejectIncompleteResolution(resolution);
 
   const steps = manifest.steps.map((step): PlannedStep => {
     const title = step.title ?? step.id;
@@ -106,6 +107,29 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     logFile: manifest.execution.logFile,
     steps,
   });
+}
+
+/** Planning is the last gate before execution, so incomplete frontend state fails closed. */
+function rejectIncompleteResolution(resolution: Resolution): void {
+  const missingIssues: RuneIssue[] = resolution.missing.map((id) => ({
+    code: 'RUNE-201',
+    message: `required input "${id}" is missing`,
+    location: undefined,
+  }));
+  const issues = [...resolution.problems, ...missingIssues];
+  if (issues.length === 0) {
+    return;
+  }
+
+  // Keep collected coercion/unknown-key issues intact and use the same top-level distinction
+  // as resolveInputs. A missing-input issue only leads when there is no more specific problem.
+  const code =
+    resolution.problems.length === 0
+      ? 'RUNE-201'
+      : resolution.problems.every((issue) => issue.code === 'RUNE-203')
+        ? 'RUNE-203'
+        : 'RUNE-202';
+  throw InputError.fromIssues(code, issues);
 }
 
 /** The command block that applies on this platform, or nothing when the step skips it. */

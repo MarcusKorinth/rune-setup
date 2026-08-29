@@ -4,6 +4,7 @@ import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js'
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretString } from '../../src/engine/secrets.js';
+import { InputError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -100,6 +101,120 @@ describe('conditions', () => {
     ]);
 
     expect(plan.steps[0]?.state).toBe('PENDING');
+  });
+});
+
+describe('input completeness', () => {
+  it('reports every missing required input before interpolating any step', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  first:',
+        '    type: text',
+        '  second:',
+        '    type: directory',
+        'steps:',
+        '  - id: unreachable',
+        '    run:',
+        '      command: node',
+        '      args: ["${env.NEVER_SET}"]',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
+
+    const error = planningError(manifest, resolution, context);
+    expect(error.code).toBe('RUNE-201');
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-201',
+        message: 'required input "first" is missing',
+        location: undefined,
+      },
+      {
+        code: 'RUNE-201',
+        message: 'required input "second" is missing',
+        location: undefined,
+      },
+    ]);
+  });
+
+  it('rejects invalid values that a frontend collected for correction', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    pattern: "[0-9]{2,5}"',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['port', 'not-a-number']]),
+      invalidValues: 'collect',
+    });
+
+    const error = planningError(manifest, resolution, context);
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues[0]).toBe(resolution.problems[0]);
+    expect(error.issues.map((issue) => issue.code)).toEqual(['RUNE-202', 'RUNE-201']);
+  });
+
+  it('keeps collected problems and every missing input in stable order', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '  target:',
+        '    type: directory',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['porrt', '8080']]),
+      invalidValues: 'collect',
+    });
+
+    const error = planningError(manifest, resolution, context);
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues.map((issue) => issue.message)).toEqual([
+      resolution.problems[0]?.message,
+      'required input "port" is missing',
+      'required input "target" is missing',
+    ]);
   });
 });
 
@@ -215,3 +330,19 @@ describe('the plan itself', () => {
     });
   });
 });
+
+function planningError(
+  manifest: ManifestV1,
+  resolution: Resolution,
+  context: ReturnType<typeof createRuntimeContext>,
+): InputError {
+  try {
+    buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
+  } catch (error) {
+    if (error instanceof InputError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error('expected planning to reject the incomplete resolution');
+}
