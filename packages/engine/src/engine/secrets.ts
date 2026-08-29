@@ -62,8 +62,7 @@ export function isSecretString(value: unknown): value is SecretString {
  */
 export class SecretRegistry {
   readonly #values = new Set<string>();
-  /** Longest first: masking the longer secret first keeps a shorter one inside it from
-   * splitting the replacement into pieces that no longer match. */
+  /** Registered secrets in deterministic longest-first order. */
   #ordered: readonly string[] = [];
 
   /**
@@ -105,10 +104,46 @@ export class SecretRegistry {
 
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
-    let out = text;
+    const matches: Array<{ start: number; end: number }> = [];
+
     for (const secret of this.#ordered) {
-      out = out.split(secret).join(MASK);
+      let searchFrom = 0;
+      while (searchFrom <= text.length - secret.length) {
+        const start = text.indexOf(secret, searchFrom);
+        if (start === -1) {
+          break;
+        }
+
+        matches.push({ start, end: start + secret.length });
+        // Advancing one code unit finds overlapping occurrences of the same secret too.
+        searchFrom = start + 1;
+      }
     }
-    return out;
+
+    if (matches.length === 0) {
+      return text;
+    }
+
+    matches.sort((left, right) => left.start - right.start || left.end - right.end);
+
+    let out = '';
+    let cursor = 0;
+    let matchStart = matches[0]!.start;
+    let matchEnd = matches[0]!.end;
+
+    for (let index = 1; index < matches.length; index += 1) {
+      const match = matches[index]!;
+      if (match.start < matchEnd) {
+        matchEnd = Math.max(matchEnd, match.end);
+        continue;
+      }
+
+      out += text.slice(cursor, matchStart) + MASK;
+      cursor = matchEnd;
+      matchStart = match.start;
+      matchEnd = match.end;
+    }
+
+    return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
   }
 }
