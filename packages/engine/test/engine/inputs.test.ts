@@ -1179,6 +1179,13 @@ describe('values files', () => {
     expect(exitCodeFor(error)).toBe(4);
     expect(error.message).toContain('not valid UTF-8');
     expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: 'values.yaml is not valid UTF-8',
+        location: { file: 'values.yaml', line: 1, column: 1 },
+      },
+    ]);
     expect(error.cause).toBeUndefined();
   });
 
@@ -1197,6 +1204,13 @@ describe('values files', () => {
     expect(exitCodeFor(error)).toBe(4);
     expect(error.message).toContain('cannot be read');
     expect(error.location).toEqual({ file: 'missing.yaml', line: 1, column: 1 });
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: 'missing.yaml cannot be read',
+        location: { file: 'missing.yaml', line: 1, column: 1 },
+      },
+    ]);
     expect(error.cause).toBeUndefined();
   });
 

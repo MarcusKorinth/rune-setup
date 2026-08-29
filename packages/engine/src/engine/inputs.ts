@@ -527,14 +527,15 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
 
 /** Values files are runtime input, even though they share the manifest YAML loader. */
 function valuesFileLoadError(error: ManifestError, file: string): InputError {
+  const fallbackLocation = error.location ?? startOfFile(file);
   const issues = error.issues.map((issue) => ({
     code: 'RUNE-202' as const,
     message: valuesFileLoaderMessage(issue.message, file),
-    location: issue.location,
+    location: issue.location ?? fallbackLocation,
   }));
   return new InputError('RUNE-202', formatIssues(issues), {
     issues,
-    location: error.location ?? startOfFile(file),
+    location: fallbackLocation,
   });
 }
 
