@@ -343,6 +343,253 @@ describe('cancellation and timeout', () => {
     expect(result.steps.map((step) => step.state)).toEqual(['CANCELLED', 'NOT_RUN']);
   });
 
+  it('stops after a runner reports cancellation without changing the shared token', async () => {
+    const { plan } = setup(TWO_STEPS);
+    let calls = 0;
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'cancelled' };
+      }),
+    });
+
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsExecuted: 1,
+      stepsCancelled: 1,
+      stepsNotRun: 1,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['CANCELLED', 'NOT_RUN']);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepFinished',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
+  it('consumes cancellation at RunStarted before the first pending step', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const cancel = new CancelToken();
+    let calls = 0;
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        events.push(event);
+        if (event.kind === 'runStarted') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsExecuted: 0,
+      stepsNotRun: 2,
+      nothingExecuted: true,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['NOT_RUN', 'NOT_RUN']);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepFinished',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
+  it('passes cancellation from StepStarted to the running step', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const cancel = new CancelToken();
+    let calls = 0;
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'stepStarted') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner((request) => {
+        calls += 1;
+        expect(request.cancel.cancelled).toBe(true);
+        return { kind: 'cancelled' };
+      }),
+    });
+
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, stepsCancelled: 1 });
+    expect(result.steps.map((step) => step.state)).toEqual(['CANCELLED', 'NOT_RUN']);
+  });
+
+  it('consumes cancellation at a middle StepFinished before later pending work', async () => {
+    const { plan } = setup([
+      'steps:',
+      '  - id: first',
+      '    run:',
+      '      command: a',
+      '  - id: middle',
+      '    run:',
+      '      command: b',
+      '  - id: last',
+      '    run:',
+      '      command: c',
+    ]);
+    const cancel = new CancelToken();
+    let calls = 0;
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'stepFinished' && event.stepId === 'middle') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => {
+        calls += 1;
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(calls).toBe(2);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsSucceeded: 2,
+      stepsNotRun: 1,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SUCCEEDED', 'NOT_RUN']);
+  });
+
+  it('does not turn a completed run into cancellation at the last StepFinished', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const cancel = new CancelToken();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'stepFinished' && event.stepId === 'second') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+    });
+
+    expect(cancel.cancelled).toBe(true);
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      exitCode: 0,
+      stepsSucceeded: 2,
+      stepsNotRun: 0,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SUCCEEDED']);
+  });
+
+  it('keeps fail-fast failure ahead of a later cancellation request', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const cancel = new CancelToken();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'stepFinished' && event.stepId === 'first') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+    });
+
+    expect(cancel.cancelled).toBe(true);
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      stepsFailed: 1,
+      stepsNotRun: 1,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'NOT_RUN']);
+  });
+
+  it('consumes cancellation after a failure when fail-fast is disabled', async () => {
+    const { plan } = setup(TWO_STEPS, { failFast: false });
+    const cancel = new CancelToken();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'stepFinished' && event.stepId === 'first') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+    });
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsFailed: 1,
+      stepsNotRun: 1,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'NOT_RUN']);
+  });
+
+  it('leaves skipped steps skipped while cancellation prevents pending work', async () => {
+    const { plan } = setup([
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: skipped',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: a',
+      '  - id: pending',
+      '    run:',
+      '      command: b',
+    ]);
+    const cancel = new CancelToken();
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => {
+        if (event.kind === 'runStarted') {
+          cancel.cancel();
+        }
+      },
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+    });
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['SKIPPED', 'NOT_RUN']);
+  });
+
   it('treats a timeout as a step failure, with the timeout named in the output', async () => {
     const { plan } = setup([
       'steps:',

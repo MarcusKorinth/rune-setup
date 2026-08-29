@@ -89,8 +89,17 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       continue;
     }
 
-    const abort = cancel.cancelled || (failed && plan.failFast);
-    if (abort) {
+    // Once fail-fast has made the rest of the plan unreachable, a later token change
+    // cannot cancel work that the engine was no longer going to run. Otherwise, consume
+    // cancellation exactly when it prevents a pending step from starting. `wasCancelled`
+    // also carries a runner-reported cancellation forward when a custom runner does not
+    // own the supplied token.
+    const abortForFailure = failed && plan.failFast;
+    const abortForCancellation = !abortForFailure && (wasCancelled || cancel.cancelled);
+    if (abortForCancellation) {
+      wasCancelled = true;
+    }
+    if (abortForFailure || abortForCancellation) {
       steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), null));
       emit({
         kind: 'stepFinished',
@@ -215,7 +224,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan,
     executionContext,
     steps,
-    status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
+    status: wasCancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
     dryRun: false,
     startedAt,
     finishedAt,
