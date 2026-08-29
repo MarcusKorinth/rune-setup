@@ -93,6 +93,47 @@ describe('SecretRegistry', () => {
     expect(registry.mask('abcdabcd')).toBe(`${MASK}${MASK}`);
   });
 
+  it('masks many adjacent occurrences without retaining every match', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcd');
+
+    expect(registry.mask('abcd'.repeat(1_000_000))).toBe(MASK.repeat(1_000_000));
+  });
+
+  it('unites a chain of overlaps across different secrets', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('defghi');
+    registry.register('ghijkl');
+
+    expect(registry.mask('abcdefghijkl')).toBe(MASK);
+  });
+
+  it('keeps adjacent occurrences of different secrets as separate masks', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcd');
+    registry.register('efgh');
+
+    expect(registry.mask('abcdefgh')).toBe(`${MASK}${MASK}`);
+  });
+
+  it('orders matches by text position rather than registration order', () => {
+    const registry = new SecretRegistry();
+    registry.register('aaaa');
+    registry.register('bbbb');
+    registry.register('cccc');
+    registry.register('dddd');
+
+    expect(registry.mask('aaaa----ccccddddbbbb')).toBe(`${MASK}----${MASK}${MASK}${MASK}`);
+  });
+
+  it('leaves empty text unchanged', () => {
+    const registry = new SecretRegistry();
+    registry.register('secret');
+
+    expect(registry.mask('')).toBe('');
+  });
+
   it('keeps separate matches and their surrounding text unchanged', () => {
     const registry = new SecretRegistry();
     registry.register('secret');

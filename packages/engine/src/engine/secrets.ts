@@ -77,6 +77,95 @@ export function isSecretString(value: unknown): value is SecretString {
   return value instanceof SecretString;
 }
 
+interface SecretMatchStream {
+  readonly secret: string;
+  start: number;
+  end: number;
+  searchFrom: number;
+  pendingStart: number | undefined;
+}
+
+function compareMatches(left: SecretMatchStream, right: SecretMatchStream): number {
+  return left.start - right.start || left.end - right.end;
+}
+
+function pushMatch(heap: SecretMatchStream[], match: SecretMatchStream): void {
+  heap.push(match);
+  let index = heap.length - 1;
+
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareMatches(heap[parent]!, match) <= 0) {
+      break;
+    }
+    heap[index] = heap[parent]!;
+    index = parent;
+  }
+
+  heap[index] = match;
+}
+
+function popMatch(heap: SecretMatchStream[]): SecretMatchStream {
+  const first = heap[0]!;
+  const last = heap.pop()!;
+  if (heap.length === 0) {
+    return first;
+  }
+
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) {
+      break;
+    }
+
+    const right = left + 1;
+    const child =
+      right < heap.length && compareMatches(heap[right]!, heap[left]!) < 0 ? right : left;
+    if (compareMatches(last, heap[child]!) <= 0) {
+      break;
+    }
+
+    heap[index] = heap[child]!;
+    index = child;
+  }
+
+  heap[index] = last;
+  return first;
+}
+
+/** Advances one secret's stream to its next self-overlap-compressed match. */
+function advanceMatch(text: string, match: SecretMatchStream): boolean {
+  const start = match.pendingStart ?? text.indexOf(match.secret, match.searchFrom);
+  if (start === -1) {
+    return false;
+  }
+
+  match.pendingStart = undefined;
+  let end = start + match.secret.length;
+  let searchFrom = start + 1;
+
+  while (true) {
+    const next = text.indexOf(match.secret, searchFrom);
+    if (next === -1) {
+      match.searchFrom = text.length + 1;
+      break;
+    }
+    if (next >= end) {
+      match.pendingStart = next;
+      match.searchFrom = next + 1;
+      break;
+    }
+
+    end = Math.max(end, next + match.secret.length);
+    searchFrom = next + 1;
+  }
+
+  match.start = start;
+  match.end = end;
+  return true;
+}
+
 /**
  * The secrets a run knows about, and the one function that removes them from text.
  *
@@ -158,59 +247,51 @@ export class SecretRegistry {
       this.#orderedDirty = false;
     }
 
-    const matches: Array<{ start: number; end: number }> = [];
-
+    // The heap owns one reusable stream per registered secret, rather than one object per
+    // occurrence. Its size is therefore independent of how often secrets appear in the text.
+    const matchHeap: SecretMatchStream[] = [];
     for (const secret of this.#ordered) {
-      let searchFrom = 0;
-      let matchStart: number | undefined;
-      let matchEnd: number | undefined;
-      while (searchFrom <= text.length - secret.length) {
-        const start = text.indexOf(secret, searchFrom);
-        if (start === -1) {
-          break;
-        }
-
-        const end = start + secret.length;
-        if (matchEnd !== undefined && start < matchEnd) {
-          matchEnd = Math.max(matchEnd, end);
-        } else {
-          if (matchStart !== undefined && matchEnd !== undefined) {
-            matches.push({ start: matchStart, end: matchEnd });
-          }
-          matchStart = start;
-          matchEnd = end;
-        }
-        // Advancing one code unit finds overlapping occurrences of the same secret too.
-        searchFrom = start + 1;
-      }
-
-      if (matchStart !== undefined && matchEnd !== undefined) {
-        matches.push({ start: matchStart, end: matchEnd });
+      const match: SecretMatchStream = {
+        secret,
+        start: 0,
+        end: 0,
+        searchFrom: 0,
+        pendingStart: undefined,
+      };
+      if (advanceMatch(text, match)) {
+        pushMatch(matchHeap, match);
       }
     }
 
-    if (matches.length === 0) {
+    if (matchHeap.length === 0) {
       return text;
     }
 
-    matches.sort((left, right) => left.start - right.start || left.end - right.end);
-
     let out = '';
     let cursor = 0;
-    let matchStart = matches[0]!.start;
-    let matchEnd = matches[0]!.end;
+    const first = popMatch(matchHeap);
+    let matchStart = first.start;
+    let matchEnd = first.end;
+    if (advanceMatch(text, first)) {
+      pushMatch(matchHeap, first);
+    }
 
-    for (let index = 1; index < matches.length; index += 1) {
-      const match = matches[index]!;
-      if (match.start < matchEnd) {
-        matchEnd = Math.max(matchEnd, match.end);
-        continue;
+    while (matchHeap.length > 0) {
+      const match = popMatch(matchHeap);
+      const start = match.start;
+      const end = match.end;
+      if (advanceMatch(text, match)) {
+        pushMatch(matchHeap, match);
       }
 
-      out += text.slice(cursor, matchStart) + MASK;
-      cursor = matchEnd;
-      matchStart = match.start;
-      matchEnd = match.end;
+      if (start < matchEnd) {
+        matchEnd = Math.max(matchEnd, end);
+      } else {
+        out += text.slice(cursor, matchStart) + MASK;
+        cursor = matchEnd;
+        matchStart = start;
+        matchEnd = end;
+      }
     }
 
     return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
