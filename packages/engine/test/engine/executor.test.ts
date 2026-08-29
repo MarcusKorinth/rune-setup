@@ -216,6 +216,46 @@ describe('a run that fails', () => {
     expect(result.status).toBe('failed');
     expect(result.steps[0]?.outputTail?.[0]?.line).toContain('could not be started');
   });
+
+  it('finishes a failed run when a runner rejects and masks the rejection', async () => {
+    const secretMarker = 'nul-secret-value';
+    const secret = `${secretMarker}\0suffix`;
+    const { plan, resolution, secrets, product } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: a',
+        '      env:',
+        '        TOKEN: "${token}"',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => Promise.reject(new Error(`invalid env value: ${secret}`))),
+    });
+
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+    expect(result.steps[0]?.state).toBe('FAILED');
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'step "use" could not be started: invalid env value: ***' },
+    ]);
+    expect(events.filter((event) => event.kind === 'runStarted')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+    expect(events[0]?.kind).toBe('runStarted');
+    expect(events.at(-1)?.kind).toBe('runFinished');
+    expect(JSON.stringify({ events, result })).not.toContain(secretMarker);
+  });
 });
 
 describe('cancellation and timeout', () => {

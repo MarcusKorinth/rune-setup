@@ -109,6 +109,21 @@ describe('SpawnRunner', () => {
     expect(outcome.kind).toBe('failedToStart');
   });
 
+  it('settles a synchronous spawn validation error without exposing its secret value', async () => {
+    const secretMarker = 'nul-secret-value';
+    const secret = `${secretMarker}\0suffix`;
+
+    const outcome = await run(
+      nodeCommand('process.exit(0)', { env: { TOKEN: new SecretString(secret) } }),
+    );
+
+    expect(outcome).toEqual({
+      kind: 'failedToStart',
+      message: 'the process launch configuration is invalid',
+    });
+    expect(JSON.stringify(outcome)).not.toContain(secretMarker);
+  });
+
   it('kills a process that exceeds its timeout', async () => {
     const outcome = await run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }));
 

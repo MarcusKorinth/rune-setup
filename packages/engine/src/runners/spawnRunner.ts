@@ -30,14 +30,22 @@ export class SpawnRunner implements Runner {
         env[name] = reveal(value);
       }
 
-      const child = spawn(reveal(executable ?? ''), args.map(reveal), {
-        cwd: reveal(command.cwd),
-        env: { ...env, ...request.extraEnv },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        // Its own process group on POSIX, so the kill path can address the whole tree.
-        detached: process.platform !== 'win32',
-      });
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(reveal(executable ?? ''), args.map(reveal), {
+          cwd: reveal(command.cwd),
+          env: { ...env, ...request.extraEnv },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+          // Its own process group on POSIX, so the kill path can address the whole tree.
+          detached: process.platform !== 'win32',
+        });
+      } catch {
+        // Node's synchronous validation errors may quote argv, cwd, or env values. Those values
+        // can contain secrets, so keep this runner-level diagnostic deliberately value-free.
+        resolve({ kind: 'failedToStart', message: 'the process launch configuration is invalid' });
+        return;
+      }
 
       let settled = false;
       let timedOut = false;

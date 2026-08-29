@@ -18,7 +18,7 @@ import { MASK, SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import type { StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
-import type { Runner } from '../runners/base.js';
+import type { Runner, SpawnOutcome } from '../runners/base.js';
 import {
   EXIT_CODE_BY_STATUS,
   RESULT_SCHEMA_VERSION,
@@ -112,16 +112,24 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     };
     const stepStart = Date.now();
 
-    const outcome = await runner.run({
-      command: step.command,
-      extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
-      cancel,
-      onOutput: (stream, rawLine) => {
-        const line = secrets.mask(rawLine);
-        keepInTail(stream, line);
-        emit({ kind: 'stepOutput', stepId: step.id, stream, line });
-      },
-    });
+    let outcome: SpawnOutcome;
+    try {
+      outcome = await runner.run({
+        command: step.command,
+        extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
+        cancel,
+        onOutput: (stream, rawLine) => {
+          const line = secrets.mask(rawLine);
+          keepInTail(stream, line);
+          emit({ kind: 'stepOutput', stepId: step.id, stream, line });
+        },
+      });
+    } catch (cause) {
+      outcome = {
+        kind: 'failedToStart',
+        message: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
 
     const durationMs = Date.now() - stepStart;
     let state: StepState;
