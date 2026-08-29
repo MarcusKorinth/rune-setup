@@ -62,6 +62,17 @@ const TWO_STEPS = [
   '      command: b',
 ];
 
+const FROZEN_RESULT_STEP = [
+  'inputs:',
+  '  setting:',
+  '    type: text',
+  '    default: value',
+  'steps:',
+  '  - id: failed',
+  '    run:',
+  '      command: a',
+];
+
 describe('a run that succeeds', () => {
   it('walks every step, emits the event bracket, and counts what happened', async () => {
     const { plan } = setup(TWO_STEPS);
@@ -112,6 +123,140 @@ describe('a run that succeeds', () => {
     });
 
     expect(seen).toEqual(['first', 'second']);
+  });
+
+  it('freezes every event and the complete returned result graph', async () => {
+    const { plan } = setup(FROZEN_RESULT_STEP);
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', 'failure details');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(events.map((event) => Object.isFrozen(event))).toEqual([true, true, true, true, true]);
+    expect(events[0]?.kind === 'runStarted' && Object.isFrozen(events[0].plan)).toBe(true);
+    const finishedEvent = events.at(-1);
+    expect(finishedEvent?.kind === 'runFinished' && Object.isFrozen(finishedEvent.result)).toBe(
+      true,
+    );
+
+    const step = result.steps[0];
+    const input = result.inputs[0];
+    expect(step).toBeDefined();
+    expect(input).toBeDefined();
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(input)).toBe(true);
+    expect(Object.isFrozen(result.steps)).toBe(true);
+    expect(Object.isFrozen(step)).toBe(true);
+    expect(Object.isFrozen(step?.command)).toBe(true);
+    expect(Object.isFrozen(step?.outputTail)).toBe(true);
+    expect(Object.isFrozen(step?.outputTail?.[0])).toBe(true);
+  });
+
+  it('prevents a RunFinished observer from mutating its returned result', async () => {
+    const { plan } = setup(FROZEN_RESULT_STEP);
+    const events: RunEvent[] = [];
+    let mutationWasSwallowed = false;
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => {
+        events.push(event);
+        if (event.kind === 'runFinished') {
+          mutationWasSwallowed = true;
+          (event.result as unknown as { status: string }).status = 'succeeded';
+        }
+      },
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', 'failure details');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(mutationWasSwallowed).toBe(true);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+  });
+
+  it('does not expose mutable aliases for a RunFinished result', async () => {
+    const { plan } = setup(FROZEN_RESULT_STEP);
+    const attempts: boolean[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => {
+        if (event.kind !== 'runFinished') {
+          return;
+        }
+        const mutable = event.result as unknown as {
+          status: string;
+          exitCode: number;
+          stepsFailed: number;
+          product: { name: string };
+          inputs: Array<{ id: string }>;
+          steps: Array<{
+            state: string;
+            outputTail: Array<{ line: string }> | null;
+          }>;
+        };
+        const attempt = (change: () => void): void => {
+          try {
+            change();
+          } catch {
+            attempts.push(true);
+          }
+        };
+
+        attempt(() => {
+          mutable.status = 'succeeded';
+        });
+        attempt(() => {
+          mutable.exitCode = 0;
+        });
+        attempt(() => {
+          mutable.stepsFailed = 0;
+        });
+        attempt(() => {
+          mutable.product.name = 'Changed';
+        });
+        attempt(() => {
+          mutable.inputs[0]!.id = 'changed';
+        });
+        attempt(() => {
+          mutable.steps[0]!.state = 'SUCCEEDED';
+        });
+        attempt(() => {
+          mutable.steps[0]!.outputTail?.push({ line: 'changed' });
+        });
+        attempt(() => {
+          mutable.steps[0]!.outputTail![0]!.line = 'changed';
+        });
+      },
+      runner: stubRunner((request) => {
+        request.onOutput('stderr', 'failure details');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(attempts).toHaveLength(8);
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+    expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
+    expect(result.inputs[0]?.id).toBe('setting');
+    expect(result.steps[0]).toMatchObject({ state: 'FAILED' });
+    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line: 'failure details' }]);
   });
 });
 
@@ -654,6 +799,29 @@ describe('skipped steps and the dry run', () => {
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
     expect(result.steps[0]?.command).toEqual(['a']);
+  });
+
+  it('returns a deeply frozen dry-run result', () => {
+    const { plan } = setup([
+      'inputs:',
+      '  setting:',
+      '    type: text',
+      '    default: value',
+      'steps:',
+      '  - id: a',
+      '    run:',
+      '      command: a',
+    ]);
+
+    const result = describePlan({ plan });
+
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(result.inputs[0])).toBe(true);
+    expect(Object.isFrozen(result.steps)).toBe(true);
+    expect(Object.isFrozen(result.steps[0])).toBe(true);
+    expect(Object.isFrozen(result.steps[0]?.command)).toBe(true);
   });
 
   it('refuses to execute a cross-platform preview plan', async () => {

@@ -25,6 +25,7 @@ import { scanTemplate, type TemplateReference } from './interpolate.js';
 import type { InputState, Resolution, ValueSource } from './inputs.js';
 import { SecretString } from './secrets.js';
 import type { SecretRegistry } from './secrets.js';
+import { deepFreeze } from './freeze.js';
 
 /**
  * A command ready to spawn. Any piece whose rendering touched a secret input stays wrapped
@@ -349,15 +350,4 @@ function anchorCommand(command: string, manifestDir: string): string {
 
 function anchorPath(path: string, manifestDir: string): string {
   return isAbsolute(path) ? path : resolvePath(manifestDir, path);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
-    return value;
-  }
-  Object.freeze(value);
-  for (const entry of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(entry);
-  }
-  return value;
 }

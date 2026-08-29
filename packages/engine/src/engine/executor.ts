@@ -18,6 +18,7 @@ import {
   type PlannedStep,
 } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
+import { deepFreeze } from './freeze.js';
 import type { SecretRegistry } from './secrets.js';
 import { MASK, SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
@@ -63,7 +64,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const emit = (event: RunEvent): void => {
     try {
-      observer(event);
+      observer(deepFreeze(event));
     } catch {
       // A broken renderer must never corrupt a run (§9.1).
     }
@@ -271,7 +272,7 @@ function assembleResult(input: {
   const count = (state: StepState): number => steps.filter((step) => step.state === state).length;
   const executed = count('SUCCEEDED') + count('FAILED') + count('CANCELLED');
 
-  return {
+  return deepFreeze({
     resultSchemaVersion: RESULT_SCHEMA_VERSION,
     id: input.runId,
     status: input.status,
@@ -295,7 +296,7 @@ function assembleResult(input: {
     nothingExecuted: executed === 0,
     inputs: input.executionContext.inputs.map(resultInput),
     steps,
-  };
+  });
 }
 
 function resultInput(state: PlanInputSnapshot): ResultInput {
