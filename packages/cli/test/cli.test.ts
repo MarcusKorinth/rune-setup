@@ -181,6 +181,31 @@ describe('rune run --gui usage rules', () => {
     expect(await run(['run', path, '--gui', '--non-interactive'], capture())).toBe(2);
     expect(await run(['run', path, '--gui', '--dry-run'], capture())).toBe(2);
     expect(await run(['run', path, '--gui', '--result', '-'], capture())).toBe(2);
+    expect(await run(['run', path, '--gui', '--set', 'nonsense'], capture())).toBe(2);
+  });
+
+  it('exits 2 with the install hint when no shell is installed', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const saved = {
+      override: process.env['RUNE_GUI_SHELL'],
+      local: process.env['LOCALAPPDATA'],
+      xdg: process.env['XDG_CACHE_HOME'],
+    };
+    const empty = mkdtempSync(join(tmpdir(), 'rune-nocache-'));
+    delete process.env['RUNE_GUI_SHELL'];
+    process.env['LOCALAPPDATA'] = empty;
+    process.env['XDG_CACHE_HOME'] = empty;
+    try {
+      expect(await run(['run', path, '--gui'], io)).toBe(2);
+      expect(io.err.join(' ')).toContain('rune gui install');
+    } finally {
+      if (saved.override !== undefined) process.env['RUNE_GUI_SHELL'] = saved.override;
+      if (saved.local !== undefined) process.env['LOCALAPPDATA'] = saved.local;
+      else delete process.env['LOCALAPPDATA'];
+      if (saved.xdg !== undefined) process.env['XDG_CACHE_HOME'] = saved.xdg;
+      else delete process.env['XDG_CACHE_HOME'];
+    }
   });
 });
 

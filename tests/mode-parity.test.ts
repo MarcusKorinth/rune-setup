@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { run } from '@rune/cli';
 import type { CliIo } from '@rune/cli';
-import { Session, type RunResult } from '@rune/engine';
+import { Session, type RunEvent, type RunResult } from '@rune/engine';
 
 /**
  * The mode-parity contract suite (docs/architecture.md §14): one fixture through the
@@ -70,7 +70,10 @@ function fixture(): string {
   return join(dir, 'installer.yaml');
 }
 
-/** What necessarily differs between legs is stripped; everything else must be identical. */
+/**
+ * What necessarily differs between legs is stripped — run ids, timestamps, durations, the
+ * mode field, per-input provenance (§14) — and nothing else.
+ */
 function normalize(result: RunResult): unknown {
   return {
     ...result,
@@ -79,10 +82,25 @@ function normalize(result: RunResult): unknown {
     startedAt: '<t>',
     finishedAt: '<t>',
     durationMs: 0,
-    manifestPath: '<path>',
     inputs: result.inputs.map((input) => ({ ...input, source: '<source>' })),
     steps: result.steps.map((step) => ({ ...step, durationMs: 0 })),
   };
+}
+
+/** An event sequence with only the necessarily-differing parts stripped. */
+function normalizeEvents(events: readonly RunEvent[]): unknown[] {
+  return events.map((event) => {
+    if (event.kind === 'stepFinished') {
+      return { ...event, durationMs: 0 };
+    }
+    if (event.kind === 'runFinished') {
+      return { kind: 'runFinished', result: normalize(event.result) };
+    }
+    if (event.kind === 'runStarted') {
+      return { kind: 'runStarted' };
+    }
+    return event;
+  });
 }
 
 function silentIo(): CliIo & { out: string[] } {
@@ -135,33 +153,63 @@ async function interactiveLeg(manifest: string): Promise<RunResult> {
 }
 
 /** Exactly the call sequence the Electron main process makes over the facade (§9.2). */
-async function guiLeg(manifest: string): Promise<RunResult> {
+async function guiLeg(
+  manifest: string,
+): Promise<{ result: RunResult; events: RunEvent[]; changes: unknown[] }> {
   const session = await Session.open(manifest, { environment: {}, mode: 'gui' });
   session.allInputs();
+  const changes: unknown[] = [];
   for (const [id, value] of Object.entries(ANSWERS)) {
-    session.setValue(id, value);
+    changes.push(...session.setValue(id, value));
   }
   session.describe();
-  return session.execute();
+  const events: RunEvent[] = [];
+  const result = await session.execute((event) => events.push(event));
+  return { result, events, changes };
 }
 
 describe('mode parity', () => {
   it('produces one result across non-interactive, interactive, and the GUI leg', async () => {
     const manifest = fixture();
 
-    const [nonInteractive, interactive, gui] = await Promise.all([
-      nonInteractiveLeg(manifest),
-      interactiveLeg(fixture()),
-      guiLeg(fixture()),
-    ]);
+    const nonInteractive = await nonInteractiveLeg(manifest);
+    const interactive = await interactiveLeg(manifest);
+    const gui = await guiLeg(manifest);
 
     expect(nonInteractive.mode).toBe('non-interactive');
     expect(interactive.mode).toBe('interactive');
-    expect(gui.mode).toBe('gui');
+    expect(gui.result.mode).toBe('gui');
     expect(normalize(interactive)).toEqual(normalize(nonInteractive));
-    expect(normalize(gui)).toEqual(normalize(nonInteractive));
+    expect(normalize(gui.result)).toEqual(normalize(nonInteractive));
     expect(nonInteractive.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SKIPPED']);
     expect(JSON.stringify(nonInteractive)).not.toContain('super-secret-value');
+
+    // The InputStateChanged list where a value flips a when: (§9.1, §14).
+    expect(gui.changes).toContainEqual({ inputId: 'databasePort', enabled: true });
+  });
+
+  it('plans and emits identically however the values arrived', async () => {
+    // Two facade legs over ONE manifest: layers 4 (overrides) versus 5 (answers). The
+    // plan JSON and the event sequence must be byte-identical — how a value arrived may
+    // never change what runs (§14).
+    const manifest = fixture();
+    const overrides = Object.fromEntries(
+      Object.entries(ANSWERS).map(([id, value]) => [id, String(value)]),
+    );
+    const bySet = await Session.open(manifest, { environment: {}, overrides, mode: 'gui' });
+    const byAnswer = await Session.open(manifest, { environment: {}, mode: 'gui' });
+    for (const [id, value] of Object.entries(ANSWERS)) {
+      byAnswer.setValue(id, value);
+    }
+
+    expect(JSON.stringify(bySet.plan())).toBe(JSON.stringify(byAnswer.plan()));
+
+    const eventsBySet: RunEvent[] = [];
+    const eventsByAnswer: RunEvent[] = [];
+    await bySet.execute((event) => eventsBySet.push(event));
+    await byAnswer.execute((event) => eventsByAnswer.push(event));
+    expect(normalizeEvents(eventsByAnswer)).toEqual(normalizeEvents(eventsBySet));
+    expect(eventsBySet.map((event) => event.kind)).toContain('stepOutput');
   });
 
   it('resolves identical localized titles through every leg', async () => {
