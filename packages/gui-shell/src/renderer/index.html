@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' file:"
+    />
+    <title>RUNE Setup</title>
+    <link rel="stylesheet" href="../theme/default.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header class="header">
+        <img id="logo" class="logo" alt="" hidden />
+        <div>
+          <h1 id="product-name" class="product-name"></h1>
+          <p id="product-version" class="product-version"></p>
+        </div>
+      </header>
+      <main id="page" class="page"></main>
+      <footer class="footer">
+        <button id="back" class="button secondary" hidden></button>
+        <span class="spacer"></span>
+        <button id="cancel" class="button secondary"></button>
+        <button id="next" class="button primary"></button>
+      </footer>
+    </div>
+    <script type="module" src="../../dist/renderer/index.js"></script>
+  </body>
+</html>
