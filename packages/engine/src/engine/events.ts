@@ -1,0 +1,54 @@
+/**
+ * Run events (docs/architecture.md §9.1).
+ *
+ * The one stream every frontend renders: the CLI prints it, the GUI's progress page is
+ * driven by it, and the log file is written from it. Delivery is synchronous and in order;
+ * `RunStarted` is first, `RunFinished` is last, exactly once each.
+ */
+
+import type { StepState } from './state.js';
+import type { ExecutionPlan } from './plan.js';
+import type { RunResult } from '../results/model.js';
+
+export interface RunStarted {
+  readonly kind: 'runStarted';
+  readonly plan: ExecutionPlan;
+}
+
+export interface StepStarted {
+  readonly kind: 'stepStarted';
+  readonly stepId: string;
+  /** Position in the plan, counting every planned step — skipped ones included. */
+  readonly index: number;
+  readonly total: number;
+  readonly title: string;
+}
+
+export interface StepOutput {
+  readonly kind: 'stepOutput';
+  readonly stepId: string;
+  readonly stream: 'stdout' | 'stderr';
+  /** Already masked: a secret never reaches an observer (§10). */
+  readonly line: string;
+}
+
+export interface StepFinished {
+  readonly kind: 'stepFinished';
+  readonly stepId: string;
+  readonly state: StepState;
+  readonly exitCode: number | undefined;
+  readonly durationMs: number;
+}
+
+export interface RunFinished {
+  readonly kind: 'runFinished';
+  readonly result: RunResult;
+}
+
+export type RunEvent = RunStarted | StepStarted | StepOutput | StepFinished | RunFinished;
+
+/**
+ * What a frontend implements to watch a run. Observers must return quickly and must not
+ * throw; an exception is caught and swallowed — a broken renderer cannot corrupt a run.
+ */
+export type EngineObserver = (event: RunEvent) => void;
