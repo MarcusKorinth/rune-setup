@@ -6,10 +6,18 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -65,6 +73,7 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
   const target = shellCacheDir();
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-shell-'));
   const archive = join(temporaryDirectory, archiveName);
+  let stagingDirectory: string | undefined;
 
   try {
     io.stderr(`fetching ${url}`);
@@ -77,10 +86,13 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     }
     await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
 
-    mkdirSync(target, { recursive: true });
+    const cacheParent = dirname(target);
+    mkdirSync(cacheParent, { recursive: true });
+    stagingDirectory = mkdtempSync(join(cacheParent, '.rune-shell-stage-'));
+    const extractionDirectory = stagingDirectory;
     // bsdtar ships with Windows 10+ and handles both formats; argv only, never a shell (§12).
     const code = await new Promise<number>((resolve) => {
-      const child = spawn('tar', ['-xf', archive, '-C', target], {
+      const child = spawn('tar', ['-xf', archive, '-C', extractionDirectory], {
         stdio: ['ignore', 'ignore', 'inherit'],
         shell: false,
       });
@@ -91,9 +103,42 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
       io.stderr(`unpacking ${archive} failed (tar exit ${code})`);
       throw new ExitWithCode(1);
     }
+
+    const stagedShell = join(stagingDirectory, SHELL_BINARY);
+    if (statSync(stagedShell, { throwIfNoEntry: false })?.isFile() !== true) {
+      io.stderr(`unpacked shell is missing the expected binary ${SHELL_BINARY}`);
+      throw new ExitWithCode(1);
+    }
+
+    promoteStagedDirectory(stagingDirectory, target);
+    stagingDirectory = undefined;
     io.stderr(`GUI shell ${RUNE_VERSION} installed to ${target}`);
   } finally {
+    if (stagingDirectory !== undefined) {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
     rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+function promoteStagedDirectory(stagingDirectory: string, target: string): void {
+  const backup = `${stagingDirectory}-backup`;
+  const hadExistingTarget = existsSync(target);
+  if (hadExistingTarget) {
+    renameSync(target, backup);
+  }
+
+  try {
+    renameSync(stagingDirectory, target);
+  } catch (cause) {
+    if (hadExistingTarget) {
+      renameSync(backup, target);
+    }
+    throw cause;
+  }
+
+  if (hadExistingTarget) {
+    rmSync(backup, { recursive: true, force: true });
   }
 }
 
