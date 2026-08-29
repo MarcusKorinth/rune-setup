@@ -1,6 +1,6 @@
 import { inspect } from 'node:util';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   isSecretString,
@@ -184,5 +184,38 @@ describe('SecretRegistry', () => {
     registry.register('hunter2');
 
     expect(registry.size).toBe(1);
+  });
+
+  it('sorts registered secrets only before masking after the set changes', () => {
+    const registry = new SecretRegistry();
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    const registeredSorts = (): number =>
+      sort.mock.contexts.filter(
+        (value): value is string[] =>
+          Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((item) => typeof item === 'string'),
+      ).length;
+
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        registry.register(`secret-${index}`);
+      }
+      expect(sort).not.toHaveBeenCalled();
+
+      expect(registry.mask('secret-99')).toBe(MASK);
+      expect(registeredSorts()).toBe(1);
+
+      registry.mask('secret-99');
+      registry.register('secret-99');
+      registry.mask('secret-99');
+      expect(registeredSorts()).toBe(1);
+
+      registry.register('secret-new');
+      registry.mask('secret-new');
+      expect(registeredSorts()).toBe(2);
+    } finally {
+      sort.mockRestore();
+    }
   });
 });

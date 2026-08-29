@@ -87,6 +87,7 @@ export class SecretRegistry {
   readonly #values = new Set<string>();
   /** Registered secrets in deterministic longest-first order. */
   #ordered: readonly string[] = [];
+  #orderedDirty = false;
 
   /**
    * Registers every maskable part of a secret. Returns false when any content line is too
@@ -99,19 +100,17 @@ export class SecretRegistry {
     // Each line is registered as well, which is what actually protects a key or certificate.
     const lines = value.split(/\r\n|\r|\n/);
     const parts = lines.length > 1 ? [value, ...lines] : lines;
-    let registered = false;
 
     for (const part of parts) {
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
       if (part.trim().length >= MIN_MASKABLE_LENGTH) {
+        const size = this.#values.size;
         this.#values.add(part);
-        registered = true;
+        if (this.#values.size !== size) {
+          this.#orderedDirty = true;
+        }
       }
-    }
-
-    if (registered) {
-      this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
     }
 
     const contentLines = lines.filter((line) => line.trim() !== '');
@@ -127,6 +126,11 @@ export class SecretRegistry {
 
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
+    if (this.#orderedDirty) {
+      this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
+      this.#orderedDirty = false;
+    }
+
     const matches: Array<{ start: number; end: number }> = [];
 
     for (const secret of this.#ordered) {
