@@ -115,6 +115,19 @@ describe('rune run', () => {
     expect(written['status']).toBe('input_error');
   });
 
+  it('rejects __proto__ as an unknown --set key', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--non-interactive', '--set', 'greeting=hello', '--set', '__proto__=secret'],
+      io,
+    );
+
+    expect(code).toBe(4);
+    expect(io.err.join('\n')).toContain('"__proto__" is not an input of this manifest');
+  });
+
   it('exits 1 when a step fails', async () => {
     const path = fixture([
       'schemaVersion: 1',

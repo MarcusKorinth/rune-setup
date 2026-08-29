@@ -3,7 +3,7 @@
 import { UsageError } from '@rune/engine';
 
 export function parseOverrides(pairs: readonly string[]): Record<string, string> {
-  const overrides: Record<string, string> = {};
+  const overrides: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const pair of pairs) {
     const separator = pair.indexOf('=');
     if (separator <= 0) {
