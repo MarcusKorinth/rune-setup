@@ -21,21 +21,13 @@ import {
 } from '@rune/engine';
 import type { RunMode, RunResult, RunStatus } from '@rune/engine';
 
-import { parseOverrides, parsePlatform } from './args.js';
+import { parseOverrides, parsePlatform, type RunFlags } from './args.js';
+
+export type { RunFlags } from './args.js';
+import { launchGui } from './guiCmd.js';
 import { ExitWithCode, type CliIo } from './io.js';
 import { Prompter, promptForInputs, summaryLoop, type Interaction } from './prompt.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
-
-export interface RunFlags {
-  readonly nonInteractive?: boolean | undefined;
-  readonly dryRun?: boolean | undefined;
-  readonly set?: readonly string[] | undefined;
-  readonly values?: readonly string[] | undefined;
-  readonly result?: string | undefined;
-  readonly logFile?: string | undefined;
-  readonly locale?: string | undefined;
-  readonly platform?: string | undefined;
-}
 
 export async function runCommand(
   manifestPath: string,
@@ -47,6 +39,19 @@ export async function runCommand(
     throw new UsageError('--platform previews a plan and combines only with --dry-run');
   }
   const platform = parsePlatform(flags.platform);
+
+  if (flags.gui === true) {
+    // The GUI never combines with headless or preview modes, and carries no stdout
+    // contract (paragraphs 4.1, 9.4).
+    if (flags.nonInteractive === true || flags.dryRun === true) {
+      throw new UsageError('--gui combines with neither --non-interactive nor --dry-run');
+    }
+    if (flags.result === '-') {
+      throw new UsageError('--gui has no stdout contract; use --result <path>');
+    }
+    await launchGui(manifestPath, flags, io, interaction);
+    return;
+  }
 
   // Interactive is the TTY default (§4.1); no TTY auto-degrades to non-interactive (§10).
   const interactive = flags.nonInteractive !== true && interaction.isTTY;

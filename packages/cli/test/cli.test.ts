@@ -175,6 +175,15 @@ describe('result files for failed outcomes', () => {
   });
 });
 
+describe('rune run --gui usage rules', () => {
+  it('refuses the combinations the contract forbids', async () => {
+    const path = fixture(MANIFEST);
+    expect(await run(['run', path, '--gui', '--non-interactive'], capture())).toBe(2);
+    expect(await run(['run', path, '--gui', '--dry-run'], capture())).toBe(2);
+    expect(await run(['run', path, '--gui', '--result', '-'], capture())).toBe(2);
+  });
+});
+
 describe('rune --version', () => {
   it('prints its own version and the engine version', async () => {
     const io = capture();
