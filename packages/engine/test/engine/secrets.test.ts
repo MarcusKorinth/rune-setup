@@ -152,14 +152,38 @@ describe('SecretRegistry', () => {
     expect(registry.mask('    indented output')).toBe('    indented output');
   });
 
-  it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
+  it('does not register multiline secrets made only of short lines', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register('ab\ncd')).toBe(false);
+    expect(registry.size).toBe(0);
+    expect(registry.mask('ab\ncd')).toBe('ab\ncd');
+  });
+
+  it('registers maskable multiline lines even when a short line leaves coverage incomplete', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register('long-line\nno')).toBe(false);
+    expect(registry.size).toBe(1);
+    expect(registry.mask('long-line\nno')).toBe(`${MASK}\nno`);
+  });
+
+  it('treats CRLF and empty separator lines as logical line boundaries', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register('first-line\r\n\r\nsecond-line\r\n')).toBe(true);
+    expect(registry.size).toBe(2);
+    expect(registry.mask('first-line and second-line')).toBe(`${MASK} and ${MASK}`);
+  });
+
+  it('masks a certificate-like secret line by line, which is all a sink ever sees', () => {
     const registry = new SecretRegistry();
     const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
-    registerSecretForMasking(createSecretString(key), registry);
+    expect(registerSecretForMasking(createSecretString(key), registry)).toBe(true);
 
     // Output is read line by line, so the whole-key string would never match anything.
     expect(registry.mask('writing MIIBpayloadLine to disk')).toBe(`writing ${MASK} to disk`);
-    expect(registry.mask(key)).toBe(MASK);
+    expect(registry.mask(key)).toBe([MASK, MASK, MASK].join('\n'));
   });
 
   it('counts a secret once, however often it is registered', () => {

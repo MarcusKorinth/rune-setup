@@ -138,23 +138,34 @@ export class SecretRegistry {
   register(value: string): boolean {
     // Every sink RUNE masks is line-oriented — a child's output is read line by line, and so
     // is the log — so a secret spanning several lines would never match anything a sink sees.
-    // Each line is registered as well, which is what actually protects a key or certificate.
-    const parts = value.includes('\n') ? [value, ...value.split(/\r?\n/)] : [value];
+    // Only its non-empty logical lines are registered, which is what actually protects a key
+    // or certificate. Empty separator lines need no coverage.
+    const multiline = /\r\n|\r|\n/.test(value);
+    const parts = multiline ? value.split(/\r\n|\r|\n/) : [value];
     let registered = false;
+    let hasNonEmptyLine = false;
+    let allNonEmptyLinesMaskable = true;
 
     for (const part of parts) {
+      if (multiline && part.length === 0) {
+        continue;
+      }
+      hasNonEmptyLine = true;
+
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
       if (part.trim().length >= MIN_MASKABLE_LENGTH) {
         this.#values.add(part);
         registered = true;
+      } else {
+        allNonEmptyLinesMaskable = false;
       }
     }
 
     if (registered) {
       this.#patterns = [...this.#values];
     }
-    return registered;
+    return multiline ? hasNonEmptyLine && allNonEmptyLinesMaskable : registered;
   }
 
   get size(): number {

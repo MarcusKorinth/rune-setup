@@ -220,7 +220,7 @@ export function resolveInputsWithRegistry(
         !registerSecretForMasking(value, secrets)
       ) {
         warnings.push(
-          `${id} is too short to mask reliably, so it may appear in logs — a value of at least 4 characters is masked everywhere`,
+          `${id} contains a non-empty value or line that is too short to mask reliably, so it may appear in logs — each non-empty value or line needs at least 4 non-whitespace characters to be masked`,
         );
       }
     }

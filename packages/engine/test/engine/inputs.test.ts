@@ -639,6 +639,25 @@ describe('secrets', () => {
     expect(secrets.size).toBe(0);
     expect(resolution.warnings[0]).toContain('too short to mask reliably');
   });
+
+  it('propagates partial multiline secret masking as a warning', () => {
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context: contextFor(manifest),
+        environment: {},
+        overrides: new Map([['token', 'long-line\nno']]),
+      },
+      secrets,
+    );
+
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('long-line\nno')).toBe('***\nno');
+    expect(resolution.warnings).toEqual([
+      'token contains a non-empty value or line that is too short to mask reliably, so it may appear in logs — each non-empty value or line needs at least 4 non-whitespace characters to be masked',
+    ]);
+  });
 });
 
 describe('values files', () => {
