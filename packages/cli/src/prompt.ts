@@ -142,7 +142,9 @@ export async function summaryLoop(
     renderPlan(session.describe(), stderrOnly);
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
-      io.stderr(`  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(state)}`);
+      io.stderr(
+        `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(state, strings)}`,
+      );
     });
 
     const choice = (
@@ -164,7 +166,7 @@ export async function summaryLoop(
     const index = Number.parseInt(choice, 10);
     const chosen = editable[index - 1];
     if (Number.isNaN(index) || chosen === undefined) {
-      io.stderr(`"${choice}" is not p, c, or the number of a value`);
+      io.stderr(strings.chrome('rune.summary.invalidChoice', { choice }));
       continue;
     }
     await askUntilAccepted(session, chosen, strings, prompter);
@@ -211,13 +213,11 @@ function questionFor(state: InputState, strings: StringTable, prompter: Prompter
       lines.push(`  - ${strings.optionLabel(state.id, value)} (${value})`);
     }
     lines.push(
-      spec.type === 'select'
-        ? 'enter the value of one option'
-        : 'enter option values, separated by commas',
+      strings.chrome(spec.type === 'select' ? 'rune.prompt.selectOne' : 'rune.prompt.selectMany'),
     );
   }
   if (spec.type === 'boolean') {
-    lines.push('enter true or false');
+    lines.push(strings.chrome('rune.prompt.boolean'));
   }
   for (const line of lines) {
     prompter.say(line);
@@ -225,10 +225,10 @@ function questionFor(state: InputState, strings: StringTable, prompter: Prompter
   return `${strings.chrome('rune.prompt.value', { title })}: `;
 }
 
-function displayValue(state: InputState): string {
+function displayValue(state: InputState, strings: StringTable): string {
   const value = state.value;
   if (value === undefined) {
-    return '(not set)';
+    return strings.chrome('rune.summary.notSet');
   }
   if (Array.isArray(value)) {
     return value.join(', ');
