@@ -131,15 +131,30 @@ export class SecretRegistry {
 
     for (const secret of this.#ordered) {
       let searchFrom = 0;
+      let matchStart: number | undefined;
+      let matchEnd: number | undefined;
       while (searchFrom <= text.length - secret.length) {
         const start = text.indexOf(secret, searchFrom);
         if (start === -1) {
           break;
         }
 
-        matches.push({ start, end: start + secret.length });
+        const end = start + secret.length;
+        if (matchEnd !== undefined && start < matchEnd) {
+          matchEnd = Math.max(matchEnd, end);
+        } else {
+          if (matchStart !== undefined && matchEnd !== undefined) {
+            matches.push({ start: matchStart, end: matchEnd });
+          }
+          matchStart = start;
+          matchEnd = end;
+        }
         // Advancing one code unit finds overlapping occurrences of the same secret too.
         searchFrom = start + 1;
+      }
+
+      if (matchStart !== undefined && matchEnd !== undefined) {
+        matches.push({ start: matchStart, end: matchEnd });
       }
     }
 

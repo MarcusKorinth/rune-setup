@@ -79,6 +79,20 @@ describe('SecretRegistry', () => {
     expect(registry.mask('aaaaa')).toBe(MASK);
   });
 
+  it('compresses many self-overlapping occurrences before sorting them', () => {
+    const registry = new SecretRegistry();
+    registry.register('aaaa');
+
+    expect(registry.mask('a'.repeat(1_000_000))).toBe(MASK);
+  });
+
+  it('keeps adjacent occurrences of the same secret as separate masks', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcd');
+
+    expect(registry.mask('abcdabcd')).toBe(`${MASK}${MASK}`);
+  });
+
   it('keeps separate matches and their surrounding text unchanged', () => {
     const registry = new SecretRegistry();
     registry.register('secret');
