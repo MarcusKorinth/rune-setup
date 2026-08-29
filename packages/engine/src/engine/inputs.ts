@@ -10,7 +10,13 @@
  * resolves again rather than patching state, which is what keeps conditional inputs honest.
  */
 
-import { InputError, InternalError, ResolutionError, type RuneIssue } from '../errors.js';
+import {
+  InputError,
+  InternalError,
+  ManifestError,
+  ResolutionError,
+  type RuneIssue,
+} from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
 import { loadYamlFile } from '../manifest/loader.js';
@@ -433,7 +439,15 @@ function checkUnknownKeys(
  * else is refused here, where the file and the line are still known.
  */
 export function parseValuesFile(path: string, file: string = path): ValuesDocument {
-  const document = loadYamlFile(file, path);
+  let document: ReturnType<typeof loadYamlFile>;
+  try {
+    document = loadYamlFile(file, path);
+  } catch (cause) {
+    if (cause instanceof ManifestError) {
+      throw valuesFileLoadError(cause, file);
+    }
+    throw cause;
+  }
   const values = new Map<string, unknown>();
   const issues: RuneIssue[] = [];
 
@@ -463,6 +477,15 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   }
 
   return { file: document.file, values, sourceMap: document.sourceMap };
+}
+
+/** Values files are runtime input, even though they share the manifest YAML loader. */
+function valuesFileLoadError(error: ManifestError, file: string): InputError {
+  return new InputError('RUNE-202', error.message, {
+    issues: error.issues.map((issue) => ({ ...issue, code: 'RUNE-202' })),
+    location: error.location ?? startOfFile(file),
+    cause: error,
+  });
 }
 
 /**

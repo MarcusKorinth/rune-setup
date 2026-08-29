@@ -14,7 +14,7 @@ import {
 } from '../../src/engine/inputs.js';
 import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
-import { exitCodeFor, InputError, ResolutionError } from '../../src/errors.js';
+import { exitCodeFor, InputError, ManifestError, ResolutionError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -713,11 +713,23 @@ describe('secrets', () => {
 });
 
 describe('values files', () => {
-  function file(contents: string): string {
+  function file(contents: string | Uint8Array): string {
     const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
     const path = join(directory, 'values.yaml');
     writeFileSync(path, contents);
     return path;
+  }
+
+  function loadError(contents: string | Uint8Array, displayName = 'values.yaml'): InputError {
+    try {
+      parseValuesFile(file(contents), displayName);
+    } catch (error) {
+      if (error instanceof InputError) {
+        return error;
+      }
+      throw error;
+    }
+    throw new Error('expected the values file to be rejected');
   }
 
   it('reads a flat mapping of ids to values', () => {
@@ -736,8 +748,79 @@ describe('values files', () => {
     expect(parseValuesFile(file('')).values.size).toBe(0);
   });
 
+  it('classifies YAML syntax errors as invalid values input and keeps their location', () => {
+    const error = loadError('target:\n\tvalue: x\n');
+
+    expect(error).not.toBeInstanceOf(ManifestError);
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.issues).toMatchObject([
+      { code: 'RUNE-202', location: { file: 'values.yaml', line: 2 } },
+    ]);
+  });
+
+  it('classifies every duplicate-key issue as invalid values input', () => {
+    const error = loadError('target: first\ntarget: second\n');
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toMatchObject([
+      {
+        code: 'RUNE-202',
+        message: expect.stringContaining('duplicate key "target"'),
+        location: { file: 'values.yaml', line: 2, column: 1 },
+      },
+    ]);
+  });
+
+  it('classifies unknown YAML tags as invalid values input', () => {
+    const error = loadError('target: !unknown value\n');
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toMatchObject([
+      {
+        code: 'RUNE-202',
+        message: expect.stringMatching(/[Uu]nresolved tag/),
+        location: { file: 'values.yaml', line: 1 },
+      },
+    ]);
+  });
+
+  it('keeps the loader cause chain when the file is not valid UTF-8', () => {
+    const error = loadError(Buffer.from([0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x3a, 0xff, 0x0a]));
+
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.message).toContain('not valid UTF-8');
+    expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
+    expect(error.cause).toBeInstanceOf(ManifestError);
+    expect((error.cause as ManifestError).cause).toBeDefined();
+  });
+
+  it('keeps the loader cause chain when the values file cannot be read', () => {
+    const missing = join(mkdtempSync(join(tmpdir(), 'rune-values-')), 'missing.yaml');
+    let thrown: unknown;
+    try {
+      parseValuesFile(missing, 'missing.yaml');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.message).toContain('cannot be read');
+    expect(error.location).toEqual({ file: 'missing.yaml', line: 1, column: 1 });
+    expect(error.cause).toBeInstanceOf(ManifestError);
+    expect((error.cause as ManifestError).cause).toBeDefined();
+  });
+
   it('refuses a document that is not a mapping', () => {
-    expect(() => parseValuesFile(file('- a\n- b\n'))).toThrow(/must contain a mapping/);
+    const error = loadError('- a\n- b\n');
+
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.message).toMatch(/must contain a mapping/);
   });
 
   it('refuses a nested section, because a values file has no sections', () => {
