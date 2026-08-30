@@ -18,6 +18,14 @@ describe('normalizeLocaleTag', () => {
     expect(normalizeLocaleTag('de')).toBe('de');
     expect(normalizeLocaleTag('EN')).toBe('en');
     expect(normalizeLocaleTag('pt_br')).toBe('pt-BR');
+    expect(normalizeLocaleTag('SR_latn_rs')).toBe('sr-Latn-RS');
+    expect(normalizeLocaleTag('sr_RS@latin')).toBe('sr-RS');
+  });
+
+  it('rejects malformed tags after removing OS-specific suffixes', () => {
+    expect(normalizeLocaleTag('de-')).toBeUndefined();
+    expect(normalizeLocaleTag('de--DE')).toBeUndefined();
+    expect(normalizeLocaleTag('de--DE.UTF-8')).toBeUndefined();
   });
 
   it('treats the POSIX pseudo-locales as no preference', () => {
@@ -46,6 +54,13 @@ describe('selectLocale', () => {
     expect(
       selectLocale({ environment: { RUNE_LOCALE: 'POSIX' }, systemLocale: 'de-DE' }),
     ).toBeUndefined();
+    expect(
+      selectLocale({
+        flag: 'de--DE',
+        environment: { RUNE_LOCALE: 'de' },
+        systemLocale: 'en-US',
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -72,6 +87,16 @@ describe('overlay discovery and matching', () => {
     expect(overlays).toHaveLength(1);
     expect(overlays[0]?.locale).toBe('de-DE');
     expect(matchOverlay('de-DE', overlays)?.locale).toBe('de-DE');
+  });
+
+  it('canonicalizes the full script and region casing claimed by a file name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    mkdirSync(join(dir, 'locales'));
+    writeFileSync(join(dir, 'locales', 'zh_hANT_tw.yaml'), 'rune.button.next: Continue\n');
+
+    const overlays = discoverOverlays(dir);
+    expect(overlays).toHaveLength(1);
+    expect(overlays[0]?.locale).toBe('zh-Hant-TW');
   });
 
   it('treats a missing locales directory as no overlays', () => {
@@ -141,6 +166,29 @@ describe('overlay discovery and matching', () => {
     expect(error.code).toBe('RUNE-104');
     expect(error.message).toContain(invalidPath);
   });
+
+  it.each(['de.backup.yaml', 'de@backup.yaml', 'de-.yaml', 'de--DE.yaml'])(
+    'rejects the complete invalid locale claim in %s',
+    (fileName) => {
+      const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+      const localesPath = join(dir, 'locales');
+      const invalidPath = join(localesPath, fileName);
+      mkdirSync(localesPath);
+      writeFileSync(invalidPath, 'rune.button.next: Weiter\n');
+
+      let thrown: unknown;
+      try {
+        discoverOverlays(dir);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ManifestError);
+      const error = thrown as ManifestError;
+      expect(error.code).toBe('RUNE-104');
+      expect(error.message).toContain(invalidPath);
+    },
+  );
 
   it('fails loudly when locales is not a directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));

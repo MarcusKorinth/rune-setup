@@ -13,6 +13,14 @@ import { ManifestError, messageOf } from '../errors.js';
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
 
+function canonicalizeLocaleTag(tag: string): string | undefined {
+  try {
+    return Intl.getCanonicalLocales(tag)[0];
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Normalizes what a flag, an environment variable, or the OS reports to a BCP-47-style tag:
  * `de_DE.UTF-8` → `de-DE`, `EN` → `en`. The POSIX pseudo-locales mean "no preference".
@@ -22,12 +30,17 @@ export function normalizeLocaleTag(raw: string): string | undefined {
   if (bare === '' || /^(c|posix)$/i.test(bare)) {
     return undefined;
   }
-  const [language, ...rest] = bare.split('-');
-  if (language === undefined || !/^[A-Za-z]{2,8}$/.test(language)) {
+
+  return canonicalizeLocaleTag(bare);
+}
+
+function normalizeOverlayLocaleClaim(raw: string): string | undefined {
+  const tag = raw.replace(/_/g, '-');
+  if (tag === '' || /^(c|posix)$/i.test(tag)) {
     return undefined;
   }
-  const tail = rest.map((part) => (part.length === 2 ? part.toUpperCase() : part));
-  return [language.toLowerCase(), ...tail].join('-');
+
+  return canonicalizeLocaleTag(tag);
 }
 
 export interface LocaleSelectionOptions {
@@ -84,7 +97,7 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
     .sort()
     .map((name) => {
       const path = join(directory, name);
-      const locale = normalizeLocaleTag(name.replace(/\.ya?ml$/i, ''));
+      const locale = normalizeOverlayLocaleClaim(name.replace(/\.ya?ml$/i, ''));
       if (locale === undefined) {
         throw new ManifestError(
           'RUNE-104',
