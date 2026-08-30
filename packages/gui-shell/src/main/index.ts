@@ -269,9 +269,8 @@ export async function windowedRun(
     onExecuteError: (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
-      process.stderr.write(
-        `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(session.mask(message) + String.fromCharCode(10));
       const code = error instanceof RuneError ? exitCodeFor(error) : 70;
       fatalCode = deliverFailure(code, invocation, writer, session) ? code : 70;
       window.close();
@@ -356,7 +355,9 @@ export function registerBridge(
         // Electron serializes only the message across invoke; carry the RUNE code and the
         // exit code the CLI would have used inside it (§9.2).
         if (error instanceof RuneError) {
-          throw new Error(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`);
+          throw new Error(
+            session.mask(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`),
+          );
         }
         throw error;
       }
@@ -470,7 +471,8 @@ function failWith(
   session: Session,
   writer: typeof writeResult,
 ): number {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${session.mask(message)}\n`);
   const code = error instanceof RuneError ? exitCodeFor(error) : 70;
   if (error instanceof CancelledError) {
     const cancelled = tryDescribeCancelled(session);

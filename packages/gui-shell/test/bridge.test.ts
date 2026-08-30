@@ -325,6 +325,88 @@ describe('the IPC bridge', () => {
     expect(errors).toHaveLength(1);
   });
 
+  it('masks a known secret in a windowed execute error and preserves its exit code', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    vi.spyOn(session, 'execute').mockRejectedValue(
+      new ManifestError('RUNE-103', 'windowed failure for super-secret-value'),
+    );
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = windowedRun(session, invocation, (result) => delivered.push(result));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    expect(execute).toBeDefined();
+    await expect(execute?.({})).rejects.toThrow('RUNE-103 (exit 3): windowed failure for ***');
+
+    expect(await run).toBe(3);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ exitCode: 3, status: 'config_error' });
+    const diagnostics = stderr.mock.calls.map(([message]) => String(message)).join('');
+    expect(diagnostics).toContain('windowed failure for ***');
+    expect(diagnostics).not.toContain('super-secret-value');
+  });
+
+  it('masks a known secret in a non-Error headless failure and preserves exit 70', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      overrides: { token: 'super-secret-value' },
+    });
+    vi.spyOn(session, 'execute').mockRejectedValue('headless failure for super-secret-value');
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await headlessRun(session, invocation, (result) => delivered.push(result));
+
+    expect(code).toBe(70);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ exitCode: 70, status: 'internal_error' });
+    const diagnostics = stderr.mock.calls.map(([message]) => String(message)).join('');
+    expect(diagnostics).toContain('headless failure for ***');
+    expect(diagnostics).not.toContain('super-secret-value');
+  });
+
+  it('masks a known secret in a rejected IPC RuneError and preserves code metadata', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    vi.spyOn(session, 'describe').mockImplementation(() => {
+      throw new ManifestError('RUNE-103', 'IPC failure for super-secret-value');
+    });
+    registerBridge(session, { events: { send: () => undefined } });
+    const plan = electron.handlers.get('rune:plan');
+    expect(plan).toBeDefined();
+
+    let rejection: unknown;
+    try {
+      await plan?.({});
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(Error);
+    const message = rejection instanceof Error ? rejection.message : String(rejection);
+    expect(message).toBe('RUNE-103 (exit 3): IPC failure for ***');
+    expect(message).not.toContain('super-secret-value');
+  });
+
   it('retains opened-session metadata in GUI failure results', async () => {
     const manifestPath = emptyFixture();
     const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
