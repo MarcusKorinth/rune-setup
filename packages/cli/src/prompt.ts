@@ -284,7 +284,7 @@ export async function summaryLoop(
       ),
     );
 
-    if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias || choice === '') {
+    if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
       return 'proceed';
     }
     if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {

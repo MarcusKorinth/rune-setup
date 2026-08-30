@@ -197,6 +197,27 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(io.out.join('\n')).not.toContain('super-secret-value');
   });
 
+  it('rejects a blank summary choice before an explicit proceed', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const interaction = scripted(['hello', 'super-secret-value', '', 'p']);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(0);
+    expect(io.err.join('\n')).toContain('"" is not p, c, or the number of a value');
+    expect(
+      interaction.transcript().match(/Proceed \(p\) \/ Change a value <n> \/ Cancel \(c\): /g),
+    ).toHaveLength(2);
+
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      steps: readonly { state: string }[];
+    };
+    expect(result.status).toBe('succeeded');
+    expect(result.steps.map((step) => step.state)).toEqual(['SUCCEEDED']);
+  });
+
   it('re-prompts on a pattern mismatch, showing the hint', async () => {
     const path = fixture([
       'schemaVersion: 1',
