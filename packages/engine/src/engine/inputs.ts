@@ -199,9 +199,24 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
 
   if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
     // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
-    // the values (§7).
+    // the values (§7). Mask only after the complete pass: a valid secret declared after an
+    // invalid ordinary value must protect that earlier issue just like one declared before it.
     const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+    const safeIssues =
+      options.secrets === undefined
+        ? issues
+        : issues.map((issue): RuneIssue => ({
+            code: issue.code,
+            message: options.secrets!.mask(issue.message),
+            location:
+              issue.location === undefined
+                ? undefined
+                : {
+                    ...issue.location,
+                    file: options.secrets!.mask(issue.location.file),
+                  },
+          }));
+    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', safeIssues);
   }
 
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);

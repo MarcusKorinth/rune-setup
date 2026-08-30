@@ -10,7 +10,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { ExecutionError, InternalError } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
-import { MASK } from './secrets.js';
+import { MASK, SecretString, type SecretRegistry } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
@@ -19,7 +19,12 @@ import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
 import type { Resolution, ValueSource } from './inputs.js';
 import type { StringTable } from '../i18n/strings.js';
-import { SecretString } from './secrets.js';
+
+/** One immutable sink projection per canonical plan and registry. */
+const sinkProjections = new WeakMap<
+  ExecutionPlan,
+  WeakMap<SecretRegistry, { readonly registered: number; readonly plan: ExecutionPlan }>
+>();
 
 /**
  * A command ready to spawn. Any piece whose rendering touched a secret input stays wrapped
@@ -163,6 +168,88 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     },
     steps,
   });
+}
+
+/**
+ * Projects the canonical execution plan across a sink boundary without changing any
+ * execution decision. Only free-form/value-bearing strings are masked; ids, enums, hashes,
+ * versions, counters, booleans and numbers remain identical. The projection is cached so
+ * {@link Session.plan} and `RunStarted.plan` expose the same frozen object.
+ */
+export function projectPlanForSink(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
+  let byRegistry = sinkProjections.get(plan);
+  if (byRegistry === undefined) {
+    byRegistry = new WeakMap();
+    sinkProjections.set(plan, byRegistry);
+  }
+  const existing = byRegistry.get(secrets);
+  if (existing?.registered === secrets.size) {
+    return existing.plan;
+  }
+
+  const projection = deepFreeze({
+    executionPlanVersion: plan.executionPlanVersion,
+    manifestPath: secrets.mask(plan.manifestPath),
+    manifestSha256: plan.manifestSha256,
+    manifestSchemaVersion: plan.manifestSchemaVersion,
+    locale: plan.locale,
+    platform: plan.platform,
+    preview: plan.preview,
+    resolvedInputs: plan.resolvedInputs.map((input): ResolvedPlanInput => ({
+      id: input.id,
+      type: input.type,
+      value: projectInputValue(input.value, secrets),
+      enabled: input.enabled,
+      source: input.source,
+      ignored: input.ignored,
+    })),
+    executionOptions: {
+      failFast: plan.executionOptions.failFast,
+      logFile:
+        plan.executionOptions.logFile === null ? null : secrets.mask(plan.executionOptions.logFile),
+    },
+    steps: plan.steps.map((step): PlannedStep =>
+      step.state === 'SKIPPED'
+        ? {
+            id: step.id,
+            title: secrets.mask(step.title),
+            state: step.state,
+            skipReason: secrets.mask(step.skipReason),
+          }
+        : {
+            id: step.id,
+            title: secrets.mask(step.title),
+            state: step.state,
+            command: {
+              argv: step.command.argv.map((entry) => projectText(entry, secrets)),
+              cwd: projectText(step.command.cwd, secrets),
+              env: Object.fromEntries(
+                Object.entries(step.command.env).map(([name, value]) => [
+                  name,
+                  projectText(value, secrets),
+                ]),
+              ),
+              timeoutSeconds: step.command.timeoutSeconds,
+              successExitCodes: [...step.command.successExitCodes],
+            },
+          },
+    ),
+  });
+  byRegistry.set(secrets, { registered: secrets.size, plan: projection });
+  return projection;
+}
+
+function projectInputValue(value: InputValue, secrets: SecretRegistry): InputValue {
+  if (Array.isArray(value)) {
+    return value.map((entry) => secrets.mask(entry));
+  }
+  return typeof value === 'string' || value instanceof SecretString
+    ? projectText(value, secrets)
+    : value;
+}
+
+function projectText(value: string | SecretString, secrets: SecretRegistry): string {
+  return value instanceof SecretString ? MASK : secrets.mask(value);
 }
 
 /** The command block that applies on this platform, or nothing when the step skips it. */

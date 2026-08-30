@@ -6,6 +6,10 @@
 
 import { formatLocation, type Location } from './manifest/source.js';
 
+const INTERNAL_ERROR_SUFFIX =
+  ' — this is a bug in RUNE, please report it with the manifest that triggered it';
+const PROJECTED_INTERNAL_ERROR: unique symbol = Symbol('RUNE.projectedInternalError');
+
 export type { Location };
 
 /**
@@ -194,13 +198,106 @@ export class CancelledError extends RuneError {
 
 /** A bug in RUNE (exit 70). */
 export class InternalError extends RuneError {
-  constructor(message: string, options?: RuneErrorOptions) {
+  constructor(message: string, options?: RuneErrorOptions);
+  constructor(
+    message: string,
+    options: RuneErrorOptions | undefined,
+    projection: typeof PROJECTED_INTERNAL_ERROR,
+  );
+  constructor(
+    message: string,
+    options?: RuneErrorOptions,
+    projection?: typeof PROJECTED_INTERNAL_ERROR,
+  ) {
     super(
       'RUNE-500',
-      `${message} — this is a bug in RUNE, please report it with the manifest that triggered it`,
+      projection === PROJECTED_INTERNAL_ERROR ? message : `${message}${INTERNAL_ERROR_SUFFIX}`,
       options,
     );
   }
+}
+
+/**
+ * Rebuilds a RuneError for a sink boundary while retaining its taxonomy, issue locations,
+ * and a sanitized cause chain. The returned error never retains the original error object:
+ * its message or stack could contain the very bytes this projection removes.
+ */
+export function projectRuneError(
+  error: RuneError,
+  projectText: (text: string) => string,
+): RuneError {
+  const location = projectLocation(error.location, projectText);
+  const issues = error.issues.map((issue): RuneIssue => ({
+    code: issue.code,
+    message: projectText(issue.message),
+    location: projectLocation(issue.location, projectText),
+  }));
+  const options: RuneErrorOptions = {
+    issues,
+    ...(location === undefined ? {} : { location }),
+    ...(error.cause === undefined ? {} : { cause: projectCause(error.cause, projectText) }),
+  };
+  const message = projectText(error.message);
+
+  if (error instanceof UsageError) {
+    return new UsageError(message, options);
+  }
+  if (error instanceof ManifestError) {
+    return new ManifestError(error.code as ManifestCode, message, options);
+  }
+  if (error instanceof InputError) {
+    return new InputError(error.code as InputCode, message, options);
+  }
+  if (error instanceof ResolutionError) {
+    return new ResolutionError(error.code as ResolutionCode, message, options);
+  }
+  if (error instanceof ConditionError) {
+    return new ConditionError(error.code as ConditionCode, message, options);
+  }
+  if (error instanceof ExecutionError) {
+    return new ExecutionError(error.code as ExecutionCode, message, options);
+  }
+  if (error instanceof CancelledError) {
+    return new CancelledError(message, options);
+  }
+  if (error instanceof InternalError) {
+    const detail = error.message.endsWith(INTERNAL_ERROR_SUFFIX)
+      ? error.message.slice(0, -INTERNAL_ERROR_SUFFIX.length)
+      : error.message;
+    return new InternalError(
+      projectText(`${detail}${INTERNAL_ERROR_SUFFIX}`),
+      options,
+      PROJECTED_INTERNAL_ERROR,
+    );
+  }
+  return new RuneError(error.code, message, options);
+}
+
+function projectLocation(
+  location: Location | undefined,
+  projectText: (text: string) => string,
+): Location | undefined {
+  return location === undefined
+    ? undefined
+    : { file: projectText(location.file), line: location.line, column: location.column };
+}
+
+function projectCause(cause: unknown, projectText: (text: string) => string): unknown {
+  if (cause instanceof RuneError) {
+    return projectRuneError(cause, projectText);
+  }
+  if (cause instanceof Error) {
+    const projected = new Error(
+      projectText(cause.message),
+      cause.cause === undefined ? undefined : { cause: projectCause(cause.cause, projectText) },
+    );
+    projected.name = cause.name;
+    return projected;
+  }
+  if (cause === null || typeof cause === 'boolean' || typeof cause === 'number') {
+    return cause;
+  }
+  return projectText(String(cause));
 }
 
 /** Exit codes are fixed and identical on every platform (docs/architecture.md §10). */

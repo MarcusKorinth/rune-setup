@@ -9,12 +9,14 @@ import {
   InputError,
   InternalError,
   ManifestError,
+  projectRuneError,
   ResolutionError,
   RuneError,
   UsageError,
   type RuneCode,
   type RuneIssue,
 } from '../src/errors.js';
+import { SecretRegistry } from '../src/engine/secrets.js';
 
 /** Every code of docs/architecture.md §7 with the exit code §10 assigns to it. */
 const EXPECTED_EXIT_CODES: ReadonlyArray<readonly [RuneCode, number]> = [
@@ -79,6 +81,26 @@ describe('RuneError', () => {
   it('keeps the cause when one is given', () => {
     const cause = new Error('ENOENT');
     expect(new ManifestError('RUNE-101', 'cannot read', { cause }).cause).toBe(cause);
+  });
+
+  it('projects the complete InternalError text once, including its fixed suffix and stack', () => {
+    const marker = 'RUNE';
+    const secrets = new SecretRegistry();
+    secrets.register(marker);
+    const originalCause = new Error(`cause contains ${marker}`);
+    const original = new InternalError(`detail contains ${marker}`, { cause: originalCause });
+
+    const projected = projectRuneError(original, (text) => secrets.mask(text));
+
+    expect(projected).toBeInstanceOf(InternalError);
+    expect(projected.code).toBe('RUNE-500');
+    expect(projected.message).not.toContain(marker);
+    expect(projected.stack).not.toContain(marker);
+    expect(projected.issues[0]?.message).not.toContain(marker);
+    expect(projected.message.match(/this is a bug/g)).toHaveLength(1);
+    expect(projected.cause).toBeInstanceOf(Error);
+    expect(projected.cause).not.toBe(originalCause);
+    expect((projected.cause as Error).message).not.toContain(marker);
   });
 
   it('collects many issues into one error whose message lists them all', () => {

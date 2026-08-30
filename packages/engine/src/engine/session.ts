@@ -9,7 +9,13 @@
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { snapshotEnvironment, type Environment } from '../environment.js';
-import { InputError, InternalError, type RuneIssue } from '../errors.js';
+import {
+  InputError,
+  InternalError,
+  projectRuneError,
+  RuneError,
+  type RuneIssue,
+} from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { parseManifestWithMetadata, type Manifest } from '../manifest/index.js';
@@ -36,8 +42,8 @@ import {
   type Resolution,
   type ValuesDocument,
 } from './inputs.js';
-import { buildPlan, type ExecutionPlan } from './plan.js';
-import { SecretRegistry } from './secrets.js';
+import { buildPlan, projectPlanForSink, type ExecutionPlan } from './plan.js';
+import { MASK_FOR_SINK, SecretRegistry } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
 export interface InputStateChanged {
@@ -167,6 +173,21 @@ export class Session {
     const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
     const overrides = new Map(Object.entries(options.overrides ?? {}));
     const secrets = new SecretRegistry();
+    let resolution: Resolution;
+    try {
+      resolution = resolveInputs({
+        manifest,
+        context,
+        values,
+        environment,
+        overrides,
+        secrets,
+      });
+    } catch (error) {
+      throw error instanceof RuneError
+        ? projectRuneError(error, (text) => secrets.mask(text))
+        : error;
+    }
 
     return new Session({
       manifest,
@@ -179,16 +200,9 @@ export class Session {
       values,
       overrides,
       environment,
-      // All-or-nothing: a value no type accepts, or a key naming no input, throws here and
-      // no session exists (paragraph 10).
-      resolution: resolveInputs({
-        manifest,
-        context,
-        values,
-        environment,
-        overrides,
-        secrets,
-      }),
+      // All-or-nothing: a value no type accepts, or a key naming no input, threw above and
+      // no session exists (§10).
+      resolution,
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
       runner: options.runner,
     });
@@ -235,7 +249,7 @@ export class Session {
       } else {
         this.#answers.delete(id);
       }
-      throw error;
+      throw this.#projectError(error);
     }
     this.#resolution = after;
     this.#plan = undefined;
@@ -251,32 +265,13 @@ export class Session {
 
   /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
   plan(): ExecutionPlan {
-    const missing = this.#resolution.missing;
-    if (missing.length > 0) {
-      throw InputError.fromIssues(
-        'RUNE-201',
-        missing.map((id) => this.#missingIssue(id)),
-      );
-    }
-    if (this.#plan !== undefined) {
-      return this.#plan;
-    }
-    this.#plan = buildPlan({
-      manifest: this.manifest,
-      manifestPath: this.manifestPath,
-      manifestSha256: this.manifestSha256,
-      resolution: this.#resolution,
-      context: this.#context,
-      logFile: this.#logFile,
-      strings: this.#strings,
-    });
-    return this.#plan;
+    return projectPlanForSink(this.#executionPlan(), this.#secrets);
   }
 
   /** The dry-run result: the plan described, nothing executed (§10, status `planned`). */
   describe(): RunResult {
     return describePlan({
-      plan: this.plan(),
+      plan: this.#executionPlan(),
       product: this.manifest.product,
       secrets: this.#secrets,
       mode: this.mode,
@@ -288,34 +283,38 @@ export class Session {
     if (this.#activeExecution !== undefined) {
       throw new InternalError('a session cannot have more than one active execution');
     }
-    const plan = this.plan();
-    const activeExecution = { cancel: cancel ?? new CancelToken() };
-    this.#activeExecution = activeExecution;
-    let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
     try {
-      const logFile = plan.executionOptions.logFile;
-      log = logFile === null ? undefined : await createLogFileSink(logFile);
-      const observers: EngineObserver = (event) => {
-        log?.observer(event);
-        observer?.(event);
-      };
-      return await executeRun({
-        plan,
-        product: this.manifest.product,
-        secrets: this.#secrets,
-        mode: this.mode,
-        observer: observers,
-        cancel: activeExecution.cancel,
-        ...(this.#runner === undefined ? {} : { runner: this.#runner }),
-      });
-    } finally {
+      const plan = this.#executionPlan();
+      const activeExecution = { cancel: cancel ?? new CancelToken() };
+      this.#activeExecution = activeExecution;
+      let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
       try {
-        await log?.close();
+        const logFile = plan.executionOptions.logFile;
+        log = logFile === null ? undefined : await createLogFileSink(logFile);
+        const observers: EngineObserver = (event) => {
+          log?.observer(event);
+          observer?.(event);
+        };
+        return await executeRun({
+          plan,
+          product: this.manifest.product,
+          secrets: this.#secrets,
+          mode: this.mode,
+          observer: observers,
+          cancel: activeExecution.cancel,
+          ...(this.#runner === undefined ? {} : { runner: this.#runner }),
+        });
       } finally {
-        if (this.#activeExecution === activeExecution) {
-          this.#activeExecution = undefined;
+        try {
+          await log?.close();
+        } finally {
+          if (this.#activeExecution === activeExecution) {
+            this.#activeExecution = undefined;
+          }
         }
       }
+    } catch (error) {
+      throw this.#projectError(error);
     }
   }
 
@@ -346,6 +345,44 @@ export class Session {
         ? {}
         : { windowTitle: this.#strings.windowTitle() ?? gui.windowTitle }),
     };
+  }
+
+  /** Engine-internal sink capability used by createFailureResult; never exported publicly. */
+  [MASK_FOR_SINK](text: string): string {
+    return this.#secrets.mask(text);
+  }
+
+  #executionPlan(): ExecutionPlan {
+    try {
+      const missing = this.#resolution.missing;
+      if (missing.length > 0) {
+        throw InputError.fromIssues(
+          'RUNE-201',
+          missing.map((id) => this.#missingIssue(id)),
+        );
+      }
+      if (this.#plan !== undefined) {
+        return this.#plan;
+      }
+      this.#plan = buildPlan({
+        manifest: this.manifest,
+        manifestPath: this.manifestPath,
+        manifestSha256: this.manifestSha256,
+        resolution: this.#resolution,
+        context: this.#context,
+        logFile: this.#logFile,
+        strings: this.#strings,
+      });
+      return this.#plan;
+    } catch (error) {
+      throw this.#projectError(error);
+    }
+  }
+
+  #projectError(error: unknown): unknown {
+    return error instanceof RuneError
+      ? projectRuneError(error, (text) => this.#secrets.mask(text))
+      : error;
   }
 
   #resolve(): Resolution {

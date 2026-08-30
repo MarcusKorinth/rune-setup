@@ -35,6 +35,8 @@ describe('createFailureResult', () => {
       '    when: "${enabled}"',
       '  token:',
       '    type: secret',
+      '  mirror:',
+      '    type: text',
       'steps:',
       '  - id: skipped',
       '    when: "${enabled}"',
@@ -43,11 +45,11 @@ describe('createFailureResult', () => {
       '  - id: pending',
       '    run:',
       '      command: deploy',
-      '      args: ["--token=${token}"]',
+      `      args: ["--token=\${token}", "prefix-${SECRET}", "\${mirror}"]`,
     ]);
     const session = await Session.open(path, {
       environment: {},
-      overrides: { ignoredInput: 'discarded', token: SECRET },
+      overrides: { ignoredInput: 'discarded', token: SECRET, mirror: `mirror-${SECRET}` },
     });
     const plan = session.plan();
 
@@ -70,7 +72,11 @@ describe('createFailureResult', () => {
       nothingExecuted: true,
       steps: [
         { id: 'skipped', state: 'SKIPPED', command: null },
-        { id: 'pending', state: 'NOT_RUN', command: ['deploy', '***'] },
+        {
+          id: 'pending',
+          state: 'NOT_RUN',
+          command: ['deploy', '***', 'prefix-***', 'mirror-***'],
+        },
       ],
     });
     expect(result.inputs).toMatchObject([
@@ -84,6 +90,7 @@ describe('createFailureResult', () => {
         ignored: 'input disabled',
       },
       { id: 'token', value: null, source: 'set', secret: true, enabled: true },
+      { id: 'mirror', value: 'mirror-***', source: 'set', secret: false, enabled: true },
     ]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
     expect(Object.isFrozen(result)).toBe(true);

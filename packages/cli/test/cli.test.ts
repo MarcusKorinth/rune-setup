@@ -98,6 +98,97 @@ describe('rune run', () => {
     expect(io.err.join('\n')).toContain('hello');
   });
 
+  it('masks registered bytes in ordinary dry-run values and literal argv', async () => {
+    const marker = 'shared-secret-marker';
+    const mirror = `prefix-${marker}-suffix`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      'steps:',
+      '  - id: use',
+      '    run:',
+      '      command: node',
+      `      args: ["\${mirror}", "literal-${marker}"]`,
+    ]);
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--dry-run',
+        '--non-interactive',
+        '--set',
+        `token=${marker}`,
+        '--set',
+        `mirror=${mirror}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(io.out.join('\n')).not.toContain(marker);
+    expect(io.out.join('\n')).toContain('prefix-***-suffix');
+    expect(io.out.join('\n')).toContain('literal-***');
+  });
+
+  it.each(['before', 'after'] as const)(
+    'masks a rejected ordinary value when the matching secret is declared %s it',
+    async (order) => {
+      const marker = 'rejected-shared-secret';
+      const inputs =
+        order === 'before'
+          ? [
+              '  token:',
+              '    type: secret',
+              '  channel:',
+              '    type: select',
+              '    options: [stable]',
+            ]
+          : [
+              '  channel:',
+              '    type: select',
+              '    options: [stable]',
+              '  token:',
+              '    type: secret',
+            ];
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        ...inputs,
+        'steps: []',
+      ]);
+      const io = capture();
+
+      const code = await run(
+        [
+          'run',
+          path,
+          '--non-interactive',
+          '--set',
+          `token=${marker}`,
+          '--set',
+          `channel=prefix-${marker}`,
+        ],
+        io,
+      );
+
+      expect(code).toBe(4);
+      expect(io.err.join('\n')).not.toContain(marker);
+      expect(io.err.join('\n')).toContain('prefix-***');
+    },
+  );
+
   it('renders the complete, unambiguous plan under --dry-run without leaking secrets', async () => {
     const secret = 'super-secret-value';
     const path = fixture([
@@ -327,6 +418,7 @@ describe('result files for failed outcomes', () => {
   });
 
   it('passes a completed plan to failure-result construction', async () => {
+    const marker = 'log-open-shared-secret';
     const path = fixture([
       'schemaVersion: 1',
       'product:',
@@ -336,6 +428,10 @@ describe('result files for failed outcomes', () => {
       '  enabled:',
       '    type: boolean',
       '    default: false',
+      '  token:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
       'steps:',
       '  - id: skipped',
       '    when: "${enabled}"',
@@ -344,13 +440,26 @@ describe('result files for failed outcomes', () => {
       '  - id: pending',
       '    run:',
       '      command: node',
+      `      args: ["\${mirror}", "literal-${marker}"]`,
     ]);
     const directory = join(path, '..');
     const resultPath = join(directory, 'planned-failure.json');
     const io = capture();
 
     const code = await run(
-      ['run', path, '--non-interactive', '--log-file', directory, '--result', resultPath],
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--set',
+        `token=${marker}`,
+        '--set',
+        `mirror=prefix-${marker}`,
+        '--log-file',
+        directory,
+        '--result',
+        resultPath,
+      ],
       io,
     );
 
@@ -365,9 +474,11 @@ describe('result files for failed outcomes', () => {
       nothingExecuted: true,
       steps: [
         { id: 'skipped', state: 'SKIPPED', command: null },
-        { id: 'pending', state: 'NOT_RUN', command: ['node'] },
+        { id: 'pending', state: 'NOT_RUN', command: ['node', 'prefix-***', 'literal-***'] },
       ],
     });
+    expect(JSON.stringify(written)).not.toContain(marker);
+    expect(io.err.join('\n')).not.toContain(marker);
     expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
   });
 

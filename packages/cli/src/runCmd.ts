@@ -70,7 +70,7 @@ export async function runCommand(
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
-      renderPlan(plan, session.manifest.product, io);
+      renderPlan(plan, result.product, io);
     }
     renderOutcome(result, session.warnings(), io);
     if (flags.result !== undefined) {

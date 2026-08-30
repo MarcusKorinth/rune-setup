@@ -510,6 +510,49 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(events)).not.toContain('super-secret-value');
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
+
+  it('masks registered bytes carried by ordinary plan fields without changing spawn data', async () => {
+    const marker = 'shared-ordinary-secret';
+    const mirror = `prefix-${marker}`;
+    const { plan, secrets, product } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: a',
+        `      args: ["\${mirror}", "literal-${marker}"]`,
+      ],
+      {
+        overrides: new Map([
+          ['token', marker],
+          ['mirror', mirror],
+        ]),
+      },
+    );
+    const events: RunEvent[] = [];
+    const spawned: unknown[] = [];
+
+    const result = await executeRun({
+      plan,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        spawned.push(...request.command.argv);
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(spawned).toEqual(['a', mirror, `literal-${marker}`]);
+    expect(JSON.stringify({ events, result })).not.toContain(marker);
+    expect(result.inputs.find((input) => input.id === 'mirror')?.value).toBe('prefix-***');
+    expect(result.steps[0]?.command).toEqual(['a', 'prefix-***', 'literal-***']);
+  });
 });
 
 describe('the result run block', () => {

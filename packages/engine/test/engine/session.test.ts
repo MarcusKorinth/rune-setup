@@ -277,6 +277,60 @@ describe('planning and executing', () => {
     expect(log).toContain('run finished: succeeded (exit 0)');
   });
 
+  it('uses one safe plan projection while the runner receives the canonical clear values', async () => {
+    const marker = 'shared-secret-marker';
+    const mirror = `prefix-${marker}-suffix`;
+    const literal = `literal-${marker}`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      'steps:',
+      '  - id: use',
+      '    title: Use token',
+      '    run:',
+      '      command: node',
+      `      args: ["\${mirror}", "${literal}"]`,
+      '      env:',
+      '        MIRROR: "${mirror}"',
+    ]);
+    const spawnedArgv: unknown[] = [];
+    const spawnedEnv: unknown[] = [];
+    const runner: Runner = {
+      run: async (request) => {
+        spawnedArgv.push(...request.command.argv);
+        spawnedEnv.push(request.command.env['MIRROR']);
+        request.onOutput('stdout', `child echoed ${mirror}`);
+        return { kind: 'exited', exitCode: 0 };
+      },
+    };
+    const session = await Session.open(path, {
+      environment: {},
+      overrides: { token: marker, mirror },
+      runner,
+    });
+
+    const safePlan = session.plan();
+    const planned = session.describe();
+    const events: RunEvent[] = [];
+    const live = await session.execute((event) => events.push(event));
+
+    expect(JSON.stringify({ safePlan, planned, live, events })).not.toContain(marker);
+    expect(safePlan.resolvedInputs.find((input) => input.id === 'mirror')?.value).toBe(
+      'prefix-***-suffix',
+    );
+    expect(events[0]).toMatchObject({ kind: 'runStarted' });
+    expect(events[0]?.kind === 'runStarted' && events[0].plan).toBe(safePlan);
+    expect(spawnedArgv).toEqual(['node', mirror, literal]);
+    expect(spawnedEnv).toEqual([mirror]);
+  });
+
   it('does not start a runner until the log is open and releases a failed execution', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'blocked.log');
