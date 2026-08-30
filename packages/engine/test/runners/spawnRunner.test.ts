@@ -1,4 +1,5 @@
-import { copyFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -19,6 +20,7 @@ import {
   mergeSpawnEnvironment,
   OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
   SpawnRunner,
+  waitForTaskkill,
 } from '../../src/runners/spawnRunner.js';
 
 /** A real command on any platform: this very Node binary. */
@@ -615,9 +617,10 @@ describe('SpawnRunner', () => {
     20000,
   );
 
-  it('kills the child and settles after a stdout read failure', async () => {
+  it('kills the child and reports whether stdout-failure termination was confirmed', async () => {
     const originalSetEncoding = Readable.prototype.setEncoding;
     const encodedStreams = new Set<Readable>();
+    const previousSystemRoot = process.env.SystemRoot;
     let pid: number | undefined;
     const setEncoding = vi.spyOn(Readable.prototype, 'setEncoding').mockImplementation(function (
       this: Readable,
@@ -634,23 +637,61 @@ describe('SpawnRunner', () => {
             return;
           }
           pid = Number(line);
+          if (process.platform === 'win32') {
+            process.env.SystemRoot = 'relative-missing-root';
+          }
           encodedStreams.values().next().value?.emit('error', new Error('private stdout failure'));
         },
       });
 
-      await expect(withDeadline(pending, 15000)).resolves.toEqual({
-        kind: 'streamFailed',
-        stream: 'stdout',
-      });
+      await expect(withDeadline(pending, 15000)).resolves.toEqual(
+        process.platform === 'win32'
+          ? { kind: 'terminationFailed' }
+          : { kind: 'streamFailed', stream: 'stdout' },
+      );
       expect(pid).toBeTypeOf('number');
       expect(processIsAlive(pid!)).toBe(false);
     } finally {
+      if (previousSystemRoot === undefined) {
+        delete process.env.SystemRoot;
+      } else {
+        process.env.SystemRoot = previousSystemRoot;
+      }
       setEncoding.mockRestore();
       if (pid !== undefined && processIsAlive(pid)) {
         stopProcess(pid);
       }
     }
   }, 20000);
+
+  it('bounds a taskkill helper that never closes and contains its later events', async () => {
+    vi.useFakeTimers();
+    try {
+      const helper = new EventEmitter() as EventEmitter & {
+        kill: ReturnType<typeof vi.fn>;
+      };
+      helper.kill = vi.fn(() => true);
+      let settlements = 0;
+      const pending = waitForTaskkill(
+        helper as unknown as Parameters<typeof waitForTaskkill>[0],
+        10,
+      ).then((result) => {
+        settlements += 1;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(pending).resolves.toBe(false);
+      expect(helper.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+      expect(() => helper.emit('error', new Error('late helper error'))).not.toThrow();
+      helper.emit('close', 0);
+      await Promise.resolve();
+      expect(settlements).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('unsubscribes from cancellation after normal settlement', async () => {
     const cancel = new TrackedCancelToken();
@@ -731,6 +772,7 @@ describe('SpawnRunner', () => {
 
   it('does not resolve termination until a real child process tree is gone', async () => {
     const cancel = new CancelToken();
+    const previousPath = process.env.PATH;
     const directory = mkdtempSync(join(tmpdir(), 'rune-process-tree-'));
     const readyPath = join(directory, 'grandchild-ready');
     const grandchildScript = [
@@ -757,12 +799,17 @@ describe('SpawnRunner', () => {
     const processIds = new Promise<readonly [number, number]>((resolveIds) => {
       resolveProcessIds = resolveIds;
     });
+    if (process.platform === 'win32') {
+      process.env.PATH = '';
+    }
     const pending = run(nodeCommand(parentScript), {
       cancel,
       onOutput: (_stream, line) => {
         const match = /^(\d+):(\d+)$/.exec(line);
         if (match?.[1] !== undefined && match[2] !== undefined) {
-          resolveProcessIds([Number(match[1]), Number(match[2])]);
+          parentPid = Number(match[1]);
+          grandchildPid = Number(match[2]);
+          resolveProcessIds([parentPid, grandchildPid]);
         }
       },
     });
@@ -778,6 +825,13 @@ describe('SpawnRunner', () => {
       expect(processIsAlive(parentPid)).toBe(false);
       expect(processIsAlive(grandchildPid)).toBe(false);
     } finally {
+      if (process.platform === 'win32') {
+        if (previousPath === undefined) {
+          delete process.env.PATH;
+        } else {
+          process.env.PATH = previousPath;
+        }
+      }
       cancel.cancel();
       if (parentPid !== undefined) {
         stopProcess(parentPid);
@@ -785,54 +839,127 @@ describe('SpawnRunner', () => {
       if (grandchildPid !== undefined) {
         stopProcess(grandchildPid);
       }
+      try {
+        await withDeadline(pending, 5000);
+      } catch {
+        // The explicit PID cleanup below remains the integration-test backstop.
+      }
+      if (parentPid !== undefined) {
+        stopProcess(parentPid);
+      }
+      if (grandchildPid !== undefined) {
+        stopProcess(grandchildPid);
+      }
+      rmSync(directory, { recursive: true, force: true });
     }
   }, 25000);
 
   it.runIf(process.platform === 'win32')(
-    'falls back safely when taskkill cannot be started',
+    'reports unconfirmed termination when SystemRoot cannot locate taskkill',
     async () => {
-      const previousPath = process.env.PATH;
+      const previousSystemRoot = process.env.SystemRoot;
       const cancel = new CancelToken();
+      let pending: ReturnType<typeof run> | undefined;
+      let pid: number | undefined;
+      let resolvePid = (_pid: number): void => undefined;
+      const ready = new Promise<number>((resolve) => {
+        resolvePid = resolve;
+      });
       try {
-        process.env.PATH = '';
-        const pending = run(nodeCommand('setInterval(() => {}, 1000)'), { cancel });
-        setTimeout(() => cancel.cancel(), 100);
+        pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
+          cancel,
+          onOutput: (stream, line) => {
+            if (stream === 'stdout') {
+              pid = Number(line);
+              resolvePid(pid);
+            }
+          },
+        });
+        pid = await withDeadline(ready, 5000);
+        process.env.SystemRoot = 'relative-missing-root';
+        cancel.cancel();
 
-        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'terminationFailed' });
+        expect(processIsAlive(pid)).toBe(false);
       } finally {
-        if (previousPath === undefined) {
-          delete process.env.PATH;
+        if (previousSystemRoot === undefined) {
+          delete process.env.SystemRoot;
         } else {
-          process.env.PATH = previousPath;
+          process.env.SystemRoot = previousSystemRoot;
         }
         cancel.cancel();
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
+        if (pending !== undefined) {
+          try {
+            await withDeadline(pending, 5000);
+          } catch {
+            // The explicit PID cleanup below remains the integration-test backstop.
+          }
+        }
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
       }
     },
-    10000,
+    15000,
   );
 
   it.runIf(process.platform === 'win32')(
-    'falls back safely when taskkill exits unsuccessfully',
+    'reports unconfirmed termination when the absolute taskkill helper exits unsuccessfully',
     async () => {
-      const directory = mkdtempSync(join(tmpdir(), 'rune-fake-taskkill-'));
-      copyFileSync(process.execPath, join(directory, 'taskkill.exe'));
-      const previousPath = process.env.PATH;
+      const directory = mkdtempSync(join(tmpdir(), 'rune-fake-system-root-'));
+      const system32 = join(directory, 'System32');
+      mkdirSync(system32);
+      copyFileSync(process.execPath, join(system32, 'taskkill.exe'));
+      const previousSystemRoot = process.env.SystemRoot;
       const cancel = new CancelToken();
+      let pending: ReturnType<typeof run> | undefined;
+      let pid: number | undefined;
+      let resolvePid = (_pid: number): void => undefined;
+      const ready = new Promise<number>((resolve) => {
+        resolvePid = resolve;
+      });
       try {
-        process.env.PATH = directory;
-        const pending = run(nodeCommand('setInterval(() => {}, 1000)'), { cancel });
-        setTimeout(() => cancel.cancel(), 100);
+        pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
+          cancel,
+          onOutput: (stream, line) => {
+            if (stream === 'stdout') {
+              pid = Number(line);
+              resolvePid(pid);
+            }
+          },
+        });
+        pid = await withDeadline(ready, 5000);
+        process.env.SystemRoot = directory;
+        cancel.cancel();
 
-        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'terminationFailed' });
+        expect(processIsAlive(pid)).toBe(false);
       } finally {
-        if (previousPath === undefined) {
-          delete process.env.PATH;
+        if (previousSystemRoot === undefined) {
+          delete process.env.SystemRoot;
         } else {
-          process.env.PATH = previousPath;
+          process.env.SystemRoot = previousSystemRoot;
         }
         cancel.cancel();
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
+        if (pending !== undefined) {
+          try {
+            await withDeadline(pending, 5000);
+          } catch {
+            // The explicit PID cleanup below remains the integration-test backstop.
+          }
+        }
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
+        rmSync(directory, { recursive: true, force: true });
       }
     },
-    10000,
+    15000,
   );
 });

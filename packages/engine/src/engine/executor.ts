@@ -71,6 +71,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const steps: ResultStep[] = [];
   let failed = false;
   let wasCancelled = false;
+  let fatalTerminationFailure = false;
 
   emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
   wasCancelled = cancel.isCancelled;
@@ -93,12 +94,13 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     // cancellation exactly when it prevents a pending step from starting. `wasCancelled`
     // also carries a runner-reported cancellation forward when a custom runner does not
     // own the supplied token.
-    const abortForFailure = failed && plan.executionOptions.failFast;
-    const abortForCancellation = !abortForFailure && (wasCancelled || cancel.isCancelled);
+    const abortForFailure = !fatalTerminationFailure && failed && plan.executionOptions.failFast;
+    const abortForCancellation =
+      !fatalTerminationFailure && !abortForFailure && (wasCancelled || cancel.isCancelled);
     if (abortForCancellation) {
       wasCancelled = true;
     }
-    if (abortForFailure || abortForCancellation) {
+    if (fatalTerminationFailure || abortForFailure || abortForCancellation) {
       steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), [], secrets));
       emit({
         kind: 'stepFinished',
@@ -190,6 +192,12 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       case 'cancelled':
         state = 'CANCELLED';
         break;
+      case 'terminationFailed': {
+        state = 'FAILED';
+        fatalTerminationFailure = true;
+        diagnostic = `RUNE-401 step "${step.id}" process-tree termination could not be confirmed`;
+        break;
+      }
       case 'streamFailed': {
         state = 'FAILED';
         diagnostic = `RUNE-401 step "${step.id}" ${outcome.stream} stream could not be read`;
@@ -233,7 +241,13 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan,
     executionContext,
     steps,
-    status: wasCancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
+    status: fatalTerminationFailure
+      ? 'failed'
+      : wasCancelled
+        ? 'cancelled'
+        : failed
+          ? 'failed'
+          : 'succeeded',
     dryRun: false,
     startedAt,
     finishedAt,

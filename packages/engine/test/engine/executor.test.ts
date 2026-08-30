@@ -914,6 +914,68 @@ describe('cancellation and timeout', () => {
     ]);
   });
 
+  it('fails safely and abandons pending work when tree termination is unconfirmed', async () => {
+    const { plan } = setup(['inputs:', '  token:', '    type: secret', ...TWO_STEPS], {
+      failFast: false,
+      overrides: new Map([['token', 'termination-secret']]),
+    });
+    const cancel = new CancelToken();
+    const events: RunEvent[] = [];
+    let calls = 0;
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        calls += 1;
+        request.onOutput('stderr', 'before termination-secret after');
+        cancel.cancel();
+        return { kind: 'terminationFailed' };
+      }),
+    });
+
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      stepsTotal: 2,
+      stepsExecuted: 1,
+      stepsSucceeded: 0,
+      stepsFailed: 1,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 1,
+      nothingExecuted: false,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'NOT_RUN']);
+    expect(result.steps[0]?.exitCode).toBeNull();
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: 'before *** after' },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "first" process-tree termination could not be confirmed',
+      },
+    ]);
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepOutput',
+      'stepFinished',
+      'stepFinished',
+      'runFinished',
+    ]);
+    const runFinished = events.at(-1);
+    expect(runFinished?.kind).toBe('runFinished');
+    if (runFinished?.kind === 'runFinished') {
+      expect(runFinished.result).toBe(result);
+      expect(Object.isFrozen(runFinished.result)).toBe(true);
+      expect(Object.isFrozen(runFinished.result.steps)).toBe(true);
+      expect(Object.isFrozen(runFinished.result.steps[0]?.outputTail)).toBe(true);
+    }
+  });
+
   it('consumes cancellation at RunStarted before the first pending step', async () => {
     const { plan } = setup(TWO_STEPS);
     const cancel = new CancelToken();

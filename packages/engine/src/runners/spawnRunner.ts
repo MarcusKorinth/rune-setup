@@ -2,19 +2,23 @@
  * The one runner of the MVP (docs/architecture.md §8).
  *
  * `child_process.spawn` with an argv array and never a shell; output consumed as streams and
- * split into lines; timeout and cancellation share one kill path that takes the whole process
+ * split into lines; every termination cause shares one kill path that takes the whole process
  * tree with it, because an installer step that leaves orphans behind is worse than one that
  * fails.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { win32 } from 'node:path';
 
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest, StartFailureReason } from './base.js';
 
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
+
+/** A stuck Windows helper must not leave an engine run pending forever. */
+const TASKKILL_TIMEOUT_MS = 5000;
 
 /** Polling keeps process-group termination awaitable without blocking the event loop. */
 const PROCESS_POLL_MS = 25;
@@ -29,6 +33,16 @@ type TerminationCause =
   | { readonly kind: 'timedOut' }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'streamFailed'; readonly stream: 'stdout' | 'stderr' };
+
+interface TerminationResult {
+  readonly confirmed: boolean;
+  readonly awaitChildClose: boolean;
+}
+
+interface TaskkillProcess {
+  readonly once: ChildProcess['once'];
+  readonly kill: ChildProcess['kill'];
+}
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
 function reveal(value: string | SecretString): string {
@@ -113,18 +127,18 @@ export class SpawnRunner implements Runner {
       let terminationTask: Promise<void> | undefined;
       let timeout: NodeJS.Timeout | undefined;
       let unsubscribeCancel = (): void => undefined;
-      let childDone = false;
-      let resolveChildDone = (): void => undefined;
-      const childDonePromise = new Promise<void>((resolveDone) => {
-        resolveChildDone = resolveDone;
+      let childClosed = false;
+      let resolveChildClosed = (): void => undefined;
+      const childClosePromise = new Promise<void>((resolveClose) => {
+        resolveChildClosed = resolveClose;
       });
 
-      const completeChild = (): void => {
-        if (childDone) {
+      const completeChildClose = (): void => {
+        if (childClosed) {
           return;
         }
-        childDone = true;
-        resolveChildDone();
+        childClosed = true;
+        resolveChildClosed();
       };
 
       const clearRunTimeout = (): void => {
@@ -151,9 +165,11 @@ export class SpawnRunner implements Runner {
         terminationCause = cause;
         clearRunTimeout();
         terminationTask = (async () => {
-          await terminateTree(child);
-          await childDonePromise;
-          settle(cause);
+          const termination = await terminateTree(child);
+          if (termination.awaitChildClose && !childClosed) {
+            await childClosePromise;
+          }
+          settle(termination.confirmed ? cause : { kind: 'terminationFailed' });
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
         // absorb platform process errors and therefore cannot reject.
@@ -161,7 +177,6 @@ export class SpawnRunner implements Runner {
       };
 
       child.once('error', (error) => {
-        completeChild();
         if (settled || startupFailureClaimed || terminationCause !== undefined) {
           return;
         }
@@ -187,7 +202,7 @@ export class SpawnRunner implements Runner {
       );
 
       child.once('close', (code) => {
-        completeChild();
+        completeChildClose();
         if (!startupFailureClaimed && terminationCause === undefined) {
           settle(
             typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
@@ -221,54 +236,88 @@ async function classifyStartFailure(error: Error, cwd: string): Promise<StartFai
 }
 
 /** Terminates the platform process tree and resolves only after the kill operation is complete. */
-async function terminateTree(child: ChildProcess): Promise<void> {
+async function terminateTree(child: ChildProcess): Promise<TerminationResult> {
   const { pid } = child;
   if (pid === undefined) {
-    return;
+    return process.platform === 'win32'
+      ? { confirmed: false, awaitChildClose: false }
+      : { confirmed: true, awaitChildClose: true };
   }
   if (process.platform === 'win32') {
     const killedTree = await runTaskkill(pid);
-    if (!killedTree) {
-      killDirectChild(child);
+    if (killedTree) {
+      return { confirmed: true, awaitChildClose: true };
     }
-    return;
+    return { confirmed: false, awaitChildClose: killDirectChild(child) };
   }
   await terminateProcessGroup(pid);
+  return { confirmed: true, awaitChildClose: true };
 }
 
 /** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
 function runTaskkill(pid: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    let taskkill: ChildProcess;
-    try {
-      taskkill = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+  const systemRoot = process.env.SystemRoot;
+  if (systemRoot === undefined || systemRoot.length === 0 || !win32.isAbsolute(systemRoot)) {
+    return Promise.resolve(false);
+  }
+
+  let taskkill: ChildProcess;
+  try {
+    taskkill = spawn(
+      win32.join(systemRoot, 'System32', 'taskkill.exe'),
+      ['/PID', String(pid), '/T', '/F'],
+      {
         stdio: 'ignore',
         shell: false,
-      });
-    } catch {
-      resolve(false);
-      return;
-    }
+      },
+    );
+  } catch {
+    return Promise.resolve(false);
+  }
 
+  return waitForTaskkill(taskkill);
+}
+
+/** @internal Waits for the Windows tree-kill helper without trusting it to terminate. */
+export function waitForTaskkill(
+  taskkill: TaskkillProcess,
+  timeoutMs = TASKKILL_TIMEOUT_MS,
+): Promise<boolean> {
+  return new Promise((resolve) => {
     let completed = false;
+    let watchdog: NodeJS.Timeout | undefined;
     const complete = (succeeded: boolean): void => {
       if (completed) {
         return;
       }
       completed = true;
+      if (watchdog !== undefined) {
+        clearTimeout(watchdog);
+        watchdog = undefined;
+      }
       resolve(succeeded);
     };
     taskkill.once('error', () => complete(false));
     taskkill.once('close', (code) => complete(code === 0));
+
+    watchdog = setTimeout(() => {
+      try {
+        taskkill.kill('SIGKILL');
+      } catch {
+        // Completion below still releases the engine when the helper refuses its own kill.
+      }
+      complete(false);
+    }, timeoutMs);
+    watchdog.unref();
   });
 }
 
 /** Best-effort fallback when Windows cannot start or complete taskkill. */
-function killDirectChild(child: ChildProcess): void {
+function killDirectChild(child: ChildProcess): boolean {
   try {
-    child.kill('SIGKILL');
+    return child.kill('SIGKILL');
   } catch {
-    // The child is already gone.
+    return false;
   }
 }
 
