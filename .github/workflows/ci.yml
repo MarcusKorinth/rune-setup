@@ -37,10 +37,14 @@ jobs:
       - run: npm test
 
   shell:
-    name: shell (ubuntu)
+    name: shell (${{ matrix.os }})
     needs: core
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     steps:
@@ -51,4 +55,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
+      - if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
+      - if: runner.os == 'Windows'
+        run: npm run test:smoke --workspace @rune/gui-shell
