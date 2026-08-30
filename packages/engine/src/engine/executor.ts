@@ -106,7 +106,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   for (const [index, step] of plan.steps.entries()) {
     if (step.state === 'SKIPPED') {
-      steps.push(finishedStep(step, 'SKIPPED', null, 0, null, [], secrets));
+      steps.push(skippedResultStep(step, secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -131,7 +131,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     if (fatalTerminationFailure || abortForFailure || abortForCancellation) {
       transitionStepState(step.state, 'NOT_RUN');
       const state = 'NOT_RUN';
-      steps.push(finishedStep(step, state, null, 0, maskArgv(step, secrets), [], secrets));
+      steps.push(commandResultStep(step, state, null, 0, [], secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
@@ -261,9 +261,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       wasCancelled = true;
     }
 
-    steps.push(
-      finishedStep(step, state, exitCode, durationMs, maskArgv(step, secrets), tail, secrets),
-    );
+    steps.push(commandResultStep(step, state, exitCode, durationMs, tail, secrets));
     emit({
       kind: 'stepFinished',
       stepId: step.id,
@@ -320,17 +318,9 @@ export function describePlan(options: {
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
     if (step.state === 'SKIPPED') {
-      return finishedStep(step, 'SKIPPED', null, 0, null, [], executionContext.secrets);
+      return skippedResultStep(step, executionContext.secrets);
     }
-    return finishedStep(
-      step,
-      'PENDING',
-      null,
-      0,
-      maskArgv(step, executionContext.secrets),
-      [],
-      executionContext.secrets,
-    );
+    return commandResultStep(step, 'PENDING', null, 0, [], executionContext.secrets);
   });
 
   return assembleResult({
@@ -426,24 +416,69 @@ function resultInput(state: PlanInput, secrets: SecretMasker): ResultInput {
     : { ...common, value: maskInputValue(value, secrets), secret: false };
 }
 
-function finishedStep(
-  step: PlannedStep,
-  state: ResultStep['state'],
+function skippedResultStep(
+  step: Extract<PlannedStep, { readonly state: 'SKIPPED' }>,
+  secrets: SecretMasker,
+): ResultStep {
+  return {
+    id: step.id,
+    title: secrets.mask(step.title),
+    state: 'SKIPPED',
+    exitCode: null,
+    durationMs: 0,
+    command: null,
+    skipReason: secrets.mask(step.skipReason),
+  };
+}
+
+function commandResultStep(
+  step: Extract<PlannedStep, { readonly state: 'PENDING' }>,
+  state: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'NOT_RUN',
   exitCode: number | null,
   durationMs: number,
-  command: readonly string[] | null,
   outputTail: readonly ResultOutputLine[],
   secrets: SecretMasker,
 ): ResultStep {
-  const result = {
+  const command = maskArgv(step, secrets);
+  const identity = {
     id: step.id,
     title: secrets.mask(step.title),
-    exitCode,
     durationMs,
     command,
-    skipReason: step.state === 'SKIPPED' ? secrets.mask(step.skipReason) : null,
+    skipReason: null,
   };
-  return state === 'FAILED' ? { ...result, state, outputTail } : { ...result, state };
+
+  switch (state) {
+    case 'PENDING':
+    case 'CANCELLED':
+    case 'NOT_RUN': {
+      if (exitCode !== null) {
+        throw new InternalError('the executor produced contradictory result step fields');
+      }
+      return {
+        ...identity,
+        state,
+        exitCode,
+      };
+    }
+    case 'SUCCEEDED': {
+      if (exitCode === null) {
+        throw new InternalError('the executor produced contradictory result step fields');
+      }
+      return {
+        ...identity,
+        state,
+        exitCode,
+      };
+    }
+    case 'FAILED':
+      return {
+        ...identity,
+        state,
+        exitCode,
+        outputTail,
+      };
+  }
 }
 
 function maskInputValue(
@@ -463,9 +498,9 @@ function maskCommandValue(value: string | SecretString, secrets: SecretMasker): 
   return isSecretString(value) ? MASK : secrets.mask(value);
 }
 
-function maskArgv(step: PlannedStep, secrets: SecretMasker): readonly string[] | null {
-  if (step.state !== 'PENDING') {
-    return null;
-  }
+function maskArgv(
+  step: Extract<PlannedStep, { readonly state: 'PENDING' }>,
+  secrets: SecretMasker,
+): readonly string[] {
   return step.command.argv.map((entry) => maskCommandValue(entry, secrets));
 }

@@ -91,30 +91,108 @@ const _checkResultInputCorrelation = (): void => {
 };
 
 const _checkResultStepCorrelation = (): void => {
-  const body = {
+  const identity = {
     id: 'step',
     title: 'Step',
-    exitCode: null,
     durationMs: 0,
-    command: null,
-    skipReason: null,
   } as const;
   const valid: readonly ResultStep[] = [
-    { ...body, state: 'PENDING' },
-    { ...body, state: 'SKIPPED' },
-    { ...body, state: 'SUCCEEDED' },
-    { ...body, state: 'FAILED' },
-    { ...body, state: 'FAILED', outputTail: [{ stream: 'stderr', line: 'failure' }] },
-    { ...body, state: 'CANCELLED' },
-    { ...body, state: 'NOT_RUN' },
+    { ...identity, state: 'PENDING', exitCode: null, command: ['tool'], skipReason: null },
+    {
+      ...identity,
+      state: 'SKIPPED',
+      exitCode: null,
+      command: null,
+      skipReason: '',
+    },
+    { ...identity, state: 'SUCCEEDED', exitCode: 0, command: ['tool'], skipReason: null },
+    { ...identity, state: 'FAILED', exitCode: null, command: ['tool'], skipReason: null },
+    {
+      ...identity,
+      state: 'FAILED',
+      exitCode: 1,
+      command: ['tool'],
+      skipReason: null,
+      outputTail: [{ stream: 'stderr', line: 'failure' }],
+    },
+    { ...identity, state: 'CANCELLED', exitCode: null, command: ['tool'], skipReason: null },
+    { ...identity, state: 'NOT_RUN', exitCode: null, command: ['tool'], skipReason: null },
   ];
+  const runningFields = {
+    ...identity,
+    state: 'RUNNING',
+    exitCode: null,
+    command: ['tool'],
+    skipReason: null,
+  } as const;
   // @ts-expect-error RUNNING is an internal lifecycle state, never a result step state
-  const running: ResultStep = { ...body, state: 'RUNNING' };
+  const running: ResultStep = runningFields;
   // @ts-expect-error outputTail is exclusive to FAILED result steps
-  const succeededWithOutput: ResultStep = { ...body, state: 'SUCCEEDED', outputTail: [] };
+  const succeededWithOutput: ResultStep = {
+    ...identity,
+    state: 'SUCCEEDED',
+    exitCode: 0,
+    command: ['tool'],
+    skipReason: null,
+    outputTail: [],
+  };
+  // @ts-expect-error PENDING result steps always retain their command
+  const pendingWithoutCommand: ResultStep = {
+    ...identity,
+    state: 'PENDING',
+    exitCode: null,
+    command: null,
+    skipReason: null,
+  };
+  // @ts-expect-error SKIPPED result steps have no command and require a reason
+  const skippedWithCommand: ResultStep = {
+    ...identity,
+    state: 'SKIPPED',
+    exitCode: null,
+    command: ['tool'],
+    skipReason: null,
+  };
+  // @ts-expect-error SUCCEEDED result steps require an exit code
+  const succeededWithoutExitCode: ResultStep = {
+    ...identity,
+    state: 'SUCCEEDED',
+    exitCode: null,
+    command: ['tool'],
+    skipReason: null,
+  };
+  // @ts-expect-error FAILED result steps cannot carry a skip reason
+  const failedWithSkipReason: ResultStep = {
+    ...identity,
+    state: 'FAILED',
+    exitCode: null,
+    command: ['tool'],
+    skipReason: 'not run',
+  };
+  // @ts-expect-error CANCELLED result steps never carry an exit code
+  const cancelledWithExitCode: ResultStep = {
+    ...identity,
+    state: 'CANCELLED',
+    exitCode: 1,
+    command: ['tool'],
+    skipReason: null,
+  };
+  // @ts-expect-error NOT_RUN result steps always retain their command
+  const notRunWithoutCommand: ResultStep = {
+    ...identity,
+    state: 'NOT_RUN',
+    exitCode: null,
+    command: null,
+    skipReason: null,
+  };
   void valid;
   void running;
   void succeededWithOutput;
+  void pendingWithoutCommand;
+  void skippedWithCommand;
+  void succeededWithoutExitCode;
+  void failedWithSkipReason;
+  void cancelledWithExitCode;
+  void notRunWithoutCommand;
 };
 
 interface SchemaNode {
@@ -122,6 +200,7 @@ interface SchemaNode {
   readonly const?: unknown;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
   readonly items?: SchemaNode;
+  readonly anyOf?: readonly SchemaNode[];
   readonly oneOf?: readonly SchemaNode[];
   readonly required?: readonly string[];
   readonly additionalProperties?: boolean;
@@ -200,18 +279,25 @@ function resultWithSingleStepState(state: ResultStep['state']): RunResult {
     stepsSkipped: state === 'SKIPPED' ? 1 : 0,
     stepsNotRun: state === 'NOT_RUN' || state === 'PENDING' ? 1 : 0,
     nothingExecuted: !executed,
-    steps: [
-      {
-        id: 'state-step',
-        title: 'State step',
-        state,
-        exitCode: null,
-        durationMs: 0,
-        command: null,
-        skipReason: state === 'SKIPPED' ? 'condition false' : null,
-      } as ResultStep,
-    ],
+    steps: [resultStepForState(state)],
   } as Partial<RunResult>);
+}
+
+function resultStepForState(state: ResultStep['state']): ResultStep {
+  const identity = { id: 'state-step', title: 'State step', durationMs: 0 } as const;
+  switch (state) {
+    case 'PENDING':
+      return { ...identity, state, exitCode: null, command: ['tool'], skipReason: null };
+    case 'SKIPPED':
+      return { ...identity, state, exitCode: null, command: null, skipReason: 'condition false' };
+    case 'SUCCEEDED':
+      return { ...identity, state, exitCode: 0, command: ['tool'], skipReason: null };
+    case 'FAILED':
+      return { ...identity, state, exitCode: null, command: ['tool'], skipReason: null };
+    case 'CANCELLED':
+    case 'NOT_RUN':
+      return { ...identity, state, exitCode: null, command: ['tool'], skipReason: null };
+  }
 }
 
 function resultForStatus(status: RunResult['status']): RunResult {
@@ -277,6 +363,37 @@ describe('resultJsonSchema', () => {
         expect(stepBranch.properties).not.toHaveProperty('outputTail');
       }
     }
+
+    const stepBranchByState = new Map(
+      (stepBranches ?? []).map((branch) => [branch.properties?.['state']?.const, branch] as const),
+    );
+    expect(stepBranchByState.get('PENDING')?.properties).toMatchObject({
+      command: { type: 'array' },
+      skipReason: { type: 'null' },
+      exitCode: { type: 'null' },
+    });
+    expect(stepBranchByState.get('SKIPPED')?.properties).toMatchObject({
+      command: { type: 'null' },
+      skipReason: { type: 'string' },
+      exitCode: { type: 'null' },
+    });
+    expect(stepBranchByState.get('SUCCEEDED')?.properties).toMatchObject({
+      command: { type: 'array' },
+      skipReason: { type: 'null' },
+      exitCode: { type: 'integer' },
+    });
+    for (const state of ['CANCELLED', 'NOT_RUN'] as const) {
+      expect(stepBranchByState.get(state)?.properties).toMatchObject({
+        command: { type: 'array' },
+        skipReason: { type: 'null' },
+        exitCode: { type: 'null' },
+      });
+    }
+    expect(
+      stepBranchByState
+        .get('FAILED')
+        ?.properties?.['exitCode']?.anyOf?.map((branch) => branch.type),
+    ).toEqual(expect.arrayContaining(['integer', 'null']));
   });
 
   it('accepts representative succeeded, planned, failed, and cancelled result shapes', () => {
@@ -345,6 +462,49 @@ describe('resultJsonSchema', () => {
 
     for (const variant of variants) {
       expect(resultV1Schema.safeParse(variant).success).toBe(true);
+    }
+  });
+
+  it('accepts the correlated public fields for every result step state', () => {
+    for (const state of [
+      'PENDING',
+      'SKIPPED',
+      'SUCCEEDED',
+      'FAILED',
+      'CANCELLED',
+      'NOT_RUN',
+    ] as const) {
+      expect(resultV1Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
+    }
+  });
+
+  it('rejects contradictory command, skip reason, and exit code classes for every state', () => {
+    const contradictions = {
+      PENDING: [{ command: null }, { skipReason: 'not run' }, { exitCode: 0 }],
+      SKIPPED: [{ command: ['tool'] }, { skipReason: null }, { exitCode: 0 }],
+      SUCCEEDED: [{ command: null }, { skipReason: 'not run' }, { exitCode: null }],
+      FAILED: [{ command: null }, { skipReason: 'not run' }, { exitCode: 1.5 }],
+      CANCELLED: [{ command: null }, { skipReason: 'not run' }, { exitCode: 0 }],
+      NOT_RUN: [{ command: null }, { skipReason: 'not run' }, { exitCode: 0 }],
+    } as const;
+
+    for (const state of [
+      'PENDING',
+      'SKIPPED',
+      'SUCCEEDED',
+      'FAILED',
+      'CANCELLED',
+      'NOT_RUN',
+    ] as const) {
+      const base = resultWithSingleStepState(state);
+      for (const contradictoryFields of contradictions[state]) {
+        expect(
+          resultV1Schema.safeParse({
+            ...base,
+            steps: [{ ...base.steps[0]!, ...contradictoryFields }],
+          }).success,
+        ).toBe(false);
+      }
     }
   });
 

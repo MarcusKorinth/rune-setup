@@ -99,26 +99,66 @@ export interface ResultOutputLine {
 interface ResultStepBody {
   readonly id: string;
   readonly title: string;
-  readonly exitCode: number | null;
   readonly durationMs: number;
-  /** The argv as spawned, masked (§10); `null` for a step that never had a command. */
-  readonly command: readonly string[] | null;
-  readonly skipReason: string | null;
 }
 
-type ResultStepWithoutOutput = ResultStepBody & {
-  readonly state: 'PENDING' | 'SKIPPED' | 'SUCCEEDED' | 'CANCELLED' | 'NOT_RUN';
+type PendingResultStep = ResultStepBody & {
+  readonly state: 'PENDING';
+  readonly exitCode: null;
+  readonly command: readonly string[];
+  readonly skipReason: null;
+  readonly outputTail?: never;
+};
+
+type SkippedResultStep = ResultStepBody & {
+  readonly state: 'SKIPPED';
+  readonly exitCode: null;
+  readonly command: null;
+  readonly skipReason: string;
+  readonly outputTail?: never;
+};
+
+type SucceededResultStep = ResultStepBody & {
+  readonly state: 'SUCCEEDED';
+  readonly exitCode: number;
+  readonly command: readonly string[];
+  readonly skipReason: null;
   readonly outputTail?: never;
 };
 
 type FailedResultStep = ResultStepBody & {
   readonly state: 'FAILED';
+  readonly exitCode: number | null;
+  readonly command: readonly string[];
+  readonly skipReason: null;
   /** The last lines of a FAILED step's output, masked — CI triage from one file (§7). */
   readonly outputTail?: readonly ResultOutputLine[];
 };
 
+type CancelledResultStep = ResultStepBody & {
+  readonly state: 'CANCELLED';
+  readonly exitCode: null;
+  readonly command: readonly string[];
+  readonly skipReason: null;
+  readonly outputTail?: never;
+};
+
+type NotRunResultStep = ResultStepBody & {
+  readonly state: 'NOT_RUN';
+  readonly exitCode: null;
+  readonly command: readonly string[];
+  readonly skipReason: null;
+  readonly outputTail?: never;
+};
+
 /** A final or planned step representation; an actively RUNNING step is never publishable. */
-export type ResultStep = ResultStepWithoutOutput | FailedResultStep;
+export type ResultStep =
+  | PendingResultStep
+  | SkippedResultStep
+  | SucceededResultStep
+  | FailedResultStep
+  | CancelledResultStep
+  | NotRunResultStep;
 
 export interface ResultManifest {
   readonly path: string;

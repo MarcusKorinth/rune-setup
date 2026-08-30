@@ -66,26 +66,56 @@ const resultOutputLineSchema = z.strictObject({
   line: z.string(),
 });
 
-const resultStepShape = {
+const resultStepIdentity = {
   id: z.string(),
   title: z.string(),
-  exitCode: z.number().int().nullable(),
   durationMs: z.number().nonnegative(),
-  command: z.array(z.string()).nullable(),
-  skipReason: z.string().nullable(),
 };
 
 const resultStepSchema = z.discriminatedUnion('state', [
-  z.strictObject({ ...resultStepShape, state: z.literal('PENDING') }),
-  z.strictObject({ ...resultStepShape, state: z.literal('SKIPPED') }),
-  z.strictObject({ ...resultStepShape, state: z.literal('SUCCEEDED') }),
   z.strictObject({
-    ...resultStepShape,
+    ...resultStepIdentity,
+    state: z.literal('PENDING'),
+    exitCode: z.null(),
+    command: z.array(z.string()),
+    skipReason: z.null(),
+  }),
+  z.strictObject({
+    ...resultStepIdentity,
+    state: z.literal('SKIPPED'),
+    exitCode: z.null(),
+    command: z.null(),
+    skipReason: z.string(),
+  }),
+  z.strictObject({
+    ...resultStepIdentity,
+    state: z.literal('SUCCEEDED'),
+    exitCode: z.number().int(),
+    command: z.array(z.string()),
+    skipReason: z.null(),
+  }),
+  z.strictObject({
+    ...resultStepIdentity,
     state: z.literal('FAILED'),
+    exitCode: z.number().int().nullable(),
+    command: z.array(z.string()),
+    skipReason: z.null(),
     outputTail: z.array(resultOutputLineSchema).max(50).optional(),
   }),
-  z.strictObject({ ...resultStepShape, state: z.literal('CANCELLED') }),
-  z.strictObject({ ...resultStepShape, state: z.literal('NOT_RUN') }),
+  z.strictObject({
+    ...resultStepIdentity,
+    state: z.literal('CANCELLED'),
+    exitCode: z.null(),
+    command: z.array(z.string()),
+    skipReason: z.null(),
+  }),
+  z.strictObject({
+    ...resultStepIdentity,
+    state: z.literal('NOT_RUN'),
+    exitCode: z.null(),
+    command: z.array(z.string()),
+    skipReason: z.null(),
+  }),
 ]);
 
 const resultManifestSchema = z.strictObject({

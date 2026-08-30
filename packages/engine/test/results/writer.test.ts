@@ -84,6 +84,27 @@ function forgedCounterResult(id: string): RunResult {
   return { ...result(id), stepsExecuted: 99 } as RunResult;
 }
 
+function forgedContradictoryStepFieldsResult(id: string): RunResult {
+  return {
+    ...result(id),
+    stepsTotal: 1,
+    stepsExecuted: 1,
+    stepsSucceeded: 1,
+    nothingExecuted: false,
+    steps: [
+      {
+        id: 'successful-step',
+        title: 'Successful step',
+        state: 'SUCCEEDED',
+        exitCode: null,
+        durationMs: 1,
+        command: ['tool'],
+        skipReason: null,
+      },
+    ],
+  } as unknown as RunResult;
+}
+
 function forgedSucceededWithFailedStepResult(id: string): RunResult {
   return {
     ...result(id),
@@ -204,6 +225,7 @@ describe('writeResult', () => {
       for (const invalid of [
         forgedCounterResult('invalid-counters'),
         forgedDisabledInputProvenanceResult('invalid-provenance'),
+        forgedContradictoryStepFieldsResult('invalid-step-fields'),
       ]) {
         let caught: unknown;
         try {
