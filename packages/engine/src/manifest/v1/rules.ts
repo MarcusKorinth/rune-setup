@@ -459,15 +459,18 @@ export interface EnvironmentUse {
 }
 
 /**
- * The §4.3 warning: a `secret` interpolated into `args` — argv is visible in OS process
- * listings; `env:` is the recommended carrier. A warning, never an error: the author may
- * have no choice with a foreign tool.
+ * The §4.3 warning: a `secret` interpolated into process argv (`command` or `args`) — the
+ * command and its arguments can be visible in OS process listings; `env:` is the recommended
+ * carrier. A warning, never an error: the author may have no choice with a foreign tool.
  */
 export function secretArgsWarnings(manifest: ManifestV1): readonly string[] {
   const inputIds = Object.keys(manifest.inputs);
   const warnings: string[] = [];
+  const warnedByStep = new Map<number, Set<string>>();
   for (const field of interpolatedFields(manifest)) {
-    if (field.path[0] !== 'steps' || field.path.at(-2) !== 'args') {
+    const isCommand = field.path.at(-1) === 'command' && field.path.at(-2) !== 'env';
+    const isArgument = field.path.at(-2) === 'args';
+    if (field.path[0] !== 'steps' || (!isCommand && !isArgument)) {
       continue;
     }
     const scan = scanTemplate(field.text);
@@ -484,10 +487,18 @@ export function secretArgsWarnings(manifest: ManifestV1): readonly string[] {
         resolved.reference.kind === 'input' &&
         manifest.inputs[resolved.reference.id]?.type === 'secret'
       ) {
-        const step = manifest.steps[Number(field.path[1])];
+        const stepIndex = Number(field.path[1]);
+        const warnedSecrets = warnedByStep.get(stepIndex) ?? new Set<string>();
+        if (warnedSecrets.has(resolved.reference.id)) {
+          continue;
+        }
+        warnedSecrets.add(resolved.reference.id);
+        warnedByStep.set(stepIndex, warnedSecrets);
+        const step = manifest.steps[stepIndex];
         warnings.push(
           `step "${step?.id ?? '?'}" interpolates secret input "${resolved.reference.id}" ` +
-            `into args — argv is visible in OS process listings; env: is the recommended carrier`,
+            `into process argv (command/args) — the command and its arguments can be visible ` +
+            `in OS process listings; env: is the recommended carrier`,
         );
       }
     }

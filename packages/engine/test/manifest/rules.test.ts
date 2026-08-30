@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
-import { environmentName } from '../../src/manifest/v1/rules.js';
+import { environmentName, secretArgsWarnings } from '../../src/manifest/v1/rules.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
 
@@ -31,6 +31,28 @@ function codeOf(lines: readonly string[]): string {
   }
   throw new Error('expected the manifest to be rejected');
 }
+
+function secretWarningsOf(run: readonly string[]): readonly string[] {
+  const manifest = parseManifestText(
+    [
+      ...HEAD,
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: use',
+      '    run:',
+      ...run,
+      '',
+    ].join('\n'),
+    'installer.yaml',
+  );
+  return secretArgsWarnings(manifest);
+}
+
+const SECRET_ARGV_WARNING =
+  'step "use" interpolates secret input "token" into process argv (command/args) — ' +
+  'the command and its arguments can be visible in OS process listings; env: is the recommended carrier';
 
 describe('input rules', () => {
   it('rejects ids that cannot be written as ${...}', () => {
@@ -253,6 +275,52 @@ describe('step rules', () => {
         'installer.yaml',
       ),
     ).not.toThrow();
+  });
+});
+
+describe('secret process-argv warnings', () => {
+  it('warns when only command contains the secret', () => {
+    expect(secretWarningsOf(['      command: "${token}"'])).toEqual([SECRET_ARGV_WARNING]);
+  });
+
+  it('warns when only args contain the secret', () => {
+    expect(
+      secretWarningsOf(['      command: deploy', '      args: ["--token", "${token}"]']),
+    ).toEqual([SECRET_ARGV_WARNING]);
+  });
+
+  it('warns once per step and secret across command, repeated args and references', () => {
+    expect(
+      secretWarningsOf([
+        '      command: "deploy-${token}-${token}"',
+        '      args: ["${token}", "again-${token}"]',
+      ]),
+    ).toEqual([SECRET_ARGV_WARNING]);
+  });
+
+  it('does not warn for env or cwd, including an env key named command', () => {
+    expect(
+      secretWarningsOf([
+        '      command: deploy',
+        '      cwd: "${token}"',
+        '      env:',
+        '        command: "${token}"',
+        '        TOKEN: "${token}"',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('warns once when platform variants repeat the same step and secret', () => {
+    expect(
+      secretWarningsOf([
+        '      windows:',
+        '        command: "deploy-${token}"',
+        '        args: ["${token}"]',
+        '      linux:',
+        '        command: deploy',
+        '        args: ["${token}", "${token}"]',
+      ]),
+    ).toEqual([SECRET_ARGV_WARNING]);
   });
 });
 
