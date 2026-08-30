@@ -12,25 +12,28 @@ import type { StepState } from '../engine/state.js';
 export const RESULT_SCHEMA_VERSION = 1;
 
 /** The frontend mode that drove a run (§10). */
-export type RunMode = 'gui' | 'interactive' | 'non-interactive';
+export const RUN_MODES = ['gui', 'interactive', 'non-interactive'] as const;
+export type RunMode = (typeof RUN_MODES)[number];
 
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
  * is complete from version 1 on.
  */
-export type RunStatus =
-  | 'succeeded'
-  | 'planned'
-  | 'failed'
-  | 'cancelled'
-  | 'config_error'
-  | 'input_error'
-  | 'resolution_error'
-  | 'internal_error';
+export const RUN_STATUSES = [
+  'succeeded',
+  'planned',
+  'failed',
+  'cancelled',
+  'config_error',
+  'input_error',
+  'resolution_error',
+  'internal_error',
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /** The status ↔ exit-code table of §10; values agree with `exitCodeFor` in errors.ts. */
-export const EXIT_CODE_BY_STATUS: Readonly<Record<RunStatus, number>> = {
+export const EXIT_CODE_BY_STATUS = {
   succeeded: 0,
   planned: 0,
   failed: 1,
@@ -39,7 +42,21 @@ export const EXIT_CODE_BY_STATUS: Readonly<Record<RunStatus, number>> = {
   resolution_error: 5,
   cancelled: 6,
   internal_error: 70,
-};
+} as const satisfies Readonly<Record<RunStatus, number>>;
+
+type NonzeroRunStatus = Exclude<RunStatus, 'succeeded' | 'planned'>;
+
+/** The status/exit/dry-run combinations permitted by the version-1 result contract (§10). */
+export type RunOutcome =
+  | { readonly status: 'succeeded'; readonly exitCode: 0; readonly dryRun: false }
+  | { readonly status: 'planned'; readonly exitCode: 0; readonly dryRun: true }
+  | {
+      [Status in NonzeroRunStatus]: {
+        readonly status: Status;
+        readonly exitCode: (typeof EXIT_CODE_BY_STATUS)[Status];
+        readonly dryRun: boolean;
+      };
+    }[NonzeroRunStatus];
 
 export interface ResultInput {
   readonly id: string;
@@ -77,14 +94,11 @@ export interface ResultManifest {
   readonly schemaVersion: number | null;
 }
 
-export interface RunResult {
+interface RunResultBody {
   readonly resultSchemaVersion: typeof RESULT_SCHEMA_VERSION;
   /** One UUID per run — the same value every child saw as RUNE_RUN_ID (§8, §10). */
   readonly id: string;
-  readonly status: RunStatus;
-  readonly exitCode: number;
   readonly mode: RunMode;
-  readonly dryRun: boolean;
   readonly crossPlatformPreview: boolean;
   readonly platform: Platform;
   readonly locale: string;
@@ -106,3 +120,5 @@ export interface RunResult {
   readonly inputs: readonly ResultInput[];
   readonly steps: readonly ResultStep[];
 }
+
+export type RunResult = RunResultBody & RunOutcome;

@@ -174,7 +174,8 @@ function isProductField(name: string): name is ProductField {
 // ------------------------------------------------------------------- runtime values
 
 /** The platforms RUNE runs on. `macos` is reserved for a later schema version (§4.2). */
-export type Platform = 'windows' | 'linux';
+export const PLATFORMS = ['windows', 'linux'] as const;
+export type Platform = (typeof PLATFORMS)[number];
 
 /** The platform this process is on. */
 export function hostPlatform(): Platform {

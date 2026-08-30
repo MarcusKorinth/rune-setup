@@ -30,6 +30,7 @@ import {
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import { serializeResult } from '../../src/results/writer.js';
 import type { RunMode, RunResult } from '../../src/results/model.js';
+import { resultV1Schema } from '../../src/results/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
@@ -132,6 +133,7 @@ describe('a run that succeeds', () => {
       stepsSucceeded: 2,
       nothingExecuted: false,
     });
+    expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(events[0]?.kind).toBe('runStarted');
     expect(events.at(-1)?.kind).toBe('runFinished');
     expect(events.map((event) => event.kind)).toEqual([
@@ -496,6 +498,7 @@ describe('a run that fails', () => {
     });
 
     expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1, stepsNotRun: 1 });
+    expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(result.steps[0]?.state).toBe('FAILED');
     expect(result.steps[0]?.exitCode).toBe(3);
     expect(result.steps[1]?.state).toBe('NOT_RUN');
@@ -975,6 +978,7 @@ describe('cancellation and timeout', () => {
       stepsNotRun: 0,
       nothingExecuted: true,
     });
+    expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(events.map((event) => event.kind)).toEqual(['runStarted', 'runFinished']);
   });
 
@@ -1512,6 +1516,7 @@ describe('skipped steps and the dry run', () => {
     const result = describePlan({ plan });
 
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
+    expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(result.startedAt).toBe(result.finishedAt);
     expect(result.durationMs).toBe(0);
     expect(result.steps.every((step) => step.durationMs === 0)).toBe(true);

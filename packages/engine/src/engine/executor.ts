@@ -34,7 +34,7 @@ import {
   type ResultStep,
   type RunResult,
   type RunMode,
-  type RunStatus,
+  type RunOutcome,
 } from '../results/model.js';
 
 /** How many lines of a failed step's output the result file keeps (§7). */
@@ -265,20 +265,20 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const finishedAt = new Date();
   const durationMs = Math.max(0, performance.now() - runStartedAt);
+  const outcome: RunOutcome = fatalTerminationFailure
+    ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false }
+    : wasCancelled
+      ? { status: 'cancelled', exitCode: EXIT_CODE_BY_STATUS.cancelled, dryRun: false }
+      : failed
+        ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false }
+        : { status: 'succeeded', exitCode: EXIT_CODE_BY_STATUS.succeeded, dryRun: false };
   const result = assembleResult({
     runId,
     plan,
     mode,
     executionContext,
     steps,
-    status: fatalTerminationFailure
-      ? 'failed'
-      : wasCancelled
-        ? 'cancelled'
-        : failed
-          ? 'failed'
-          : 'succeeded',
-    dryRun: false,
+    outcome,
     startedAt,
     finishedAt,
     durationMs,
@@ -329,8 +329,7 @@ export function describePlan(options: {
     mode: options.mode,
     executionContext,
     steps,
-    status: 'planned',
-    dryRun: true,
+    outcome: { status: 'planned', exitCode: EXIT_CODE_BY_STATUS.planned, dryRun: true },
     startedAt: now,
     finishedAt: now,
     durationMs: 0,
@@ -343,8 +342,7 @@ function assembleResult(input: {
   readonly mode: RunMode;
   readonly executionContext: PlanExecutionContext;
   readonly steps: readonly ResultStep[];
-  readonly status: RunStatus;
-  readonly dryRun: boolean;
+  readonly outcome: RunOutcome;
   readonly startedAt: Date;
   readonly finishedAt: Date;
   readonly durationMs: number;
@@ -356,10 +354,8 @@ function assembleResult(input: {
   return deepFreeze({
     resultSchemaVersion: RESULT_SCHEMA_VERSION,
     id: input.runId,
-    status: input.status,
-    exitCode: EXIT_CODE_BY_STATUS[input.status],
+    ...input.outcome,
     mode: input.mode,
-    dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
     locale: input.plan.locale,

@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { EXIT_CODE_BY_STATUS, type RunStatus } from '../../src/results/model.js';
+import { EXIT_CODE_BY_STATUS, type RunResult, type RunStatus } from '../../src/results/model.js';
+
+type ResultBody = Omit<RunResult, 'status' | 'exitCode' | 'dryRun'>;
+type WithOutcome<Outcome> = ResultBody & Outcome;
+type Assert<Condition extends true> = Condition;
+type AssertFalse<Condition extends false> = Condition;
+type _AcceptSucceeded = Assert<
+  WithOutcome<{ status: 'succeeded'; exitCode: 0; dryRun: false }> extends RunResult ? true : false
+>;
+type _AcceptPlanned = Assert<
+  WithOutcome<{ status: 'planned'; exitCode: 0; dryRun: true }> extends RunResult ? true : false
+>;
+type _RejectMismatchedExitCode = AssertFalse<
+  WithOutcome<{ status: 'succeeded'; exitCode: 70; dryRun: false }> extends RunResult ? true : false
+>;
+type _RejectMismatchedDryRun = AssertFalse<
+  WithOutcome<{ status: 'planned'; exitCode: 0; dryRun: false }> extends RunResult ? true : false
+>;
 
 const expectedExitCodes = {
   succeeded: 0,
