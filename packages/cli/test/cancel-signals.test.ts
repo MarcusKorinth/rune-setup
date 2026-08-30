@@ -13,6 +13,8 @@ import type { CancelSignal, Interaction, SignalSource } from '../src/prompt.js';
 
 const READINESS_TIMEOUT_MS = 10_000;
 const TEST_TIMEOUT_MS = 20_000;
+const TERMINATION_SIGNAL: Exclude<CancelSignal, 'SIGINT'> =
+  process.platform === 'win32' ? 'SIGBREAK' : 'SIGTERM';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -97,8 +99,22 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-function listenerCounts(signals: TestSignalSource): readonly [number, number] {
-  return [signals.listenerCount('SIGINT'), signals.listenerCount('SIGTERM')];
+function listenerCounts(signals: TestSignalSource): readonly [number, number, number] {
+  return [
+    signals.listenerCount('SIGINT'),
+    signals.listenerCount('SIGTERM'),
+    signals.listenerCount('SIGBREAK'),
+  ];
+}
+
+function installedListenerCounts(
+  before: readonly [number, number, number],
+): readonly [number, number, number] {
+  return [
+    before[0] + 1,
+    before[1] + (TERMINATION_SIGNAL === 'SIGTERM' ? 1 : 0),
+    before[2] + (TERMINATION_SIGNAL === 'SIGBREAK' ? 1 : 0),
+  ];
 }
 
 function parsedResult(io: Capture): {
@@ -126,8 +142,10 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     const signals = new TestSignalSource();
     const unrelatedSigint = (): void => undefined;
     const unrelatedSigterm = (): void => undefined;
+    const unrelatedSigbreak = (): void => undefined;
     signals.on('SIGINT', unrelatedSigint);
     signals.on('SIGTERM', unrelatedSigterm);
+    signals.on('SIGBREAK', unrelatedSigbreak);
     const before = listenerCounts(signals);
     const forceExit = vi.fn<(code: number) => void>();
 
@@ -137,7 +155,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
       interaction(signals, forceExit),
     );
     await waitUntil(() => io.err.includes('  ready'));
-    expect(listenerCounts(signals)).toEqual([before[0] + 1, before[1] + 1]);
+    expect(listenerCounts(signals)).toEqual(installedListenerCounts(before));
 
     signals.emit('SIGINT');
     const code = await completion;
@@ -183,7 +201,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(listenerCounts(signals)).toEqual(before);
   });
 
-  it('routes repeated SIGTERM through cancellation without force-exiting', async () => {
+  it('routes repeated platform termination signals through cancellation without force-exiting', async () => {
     const { manifestPath } = fixture();
     const io = capture();
     const signals = new TestSignalSource();
@@ -197,8 +215,8 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     );
     await waitUntil(() => io.err.includes('  ready'));
 
-    signals.emit('SIGTERM');
-    signals.emit('SIGTERM');
+    signals.emit(TERMINATION_SIGNAL);
+    signals.emit(TERMINATION_SIGNAL);
     const code = await completion;
 
     expect(code).toBe(6);
@@ -212,7 +230,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(listenerCounts(signals)).toEqual(before);
   });
 
-  it('force-exits only on the second SIGINT after SIGTERM requested cancellation', async () => {
+  it('force-exits only on the second SIGINT after the termination signal requested cancellation', async () => {
     const { manifestPath } = fixture();
     const io = capture();
     const signals = new TestSignalSource();
@@ -226,7 +244,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     );
     await waitUntil(() => io.err.includes('  ready'));
 
-    signals.emit('SIGTERM');
+    signals.emit(TERMINATION_SIGNAL);
     signals.emit('SIGINT');
     expect(forceExit).not.toHaveBeenCalled();
     signals.emit('SIGINT');
@@ -238,7 +256,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(listenerCounts(signals)).toEqual(before);
   });
 
-  it('removes both listeners when session execution rejects', async () => {
+  it('removes all registered listeners when session execution rejects', async () => {
     const { manifestPath, directory } = fixture();
     const io = capture();
     const signals = new TestSignalSource();
@@ -258,13 +276,15 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(listenerCounts(signals)).toEqual(before);
   });
 
-  it('keeps both listeners through outcome rendering', async () => {
+  it('keeps the registered listeners through outcome rendering', async () => {
     const { manifestPath } = fixture('process.exit(0)');
     const signals = new TestSignalSource();
     const unrelatedSigint = (): void => undefined;
     const unrelatedSigterm = (): void => undefined;
+    const unrelatedSigbreak = (): void => undefined;
     signals.on('SIGINT', unrelatedSigint);
     signals.on('SIGTERM', unrelatedSigterm);
+    signals.on('SIGBREAK', unrelatedSigbreak);
     const before = listenerCounts(signals);
     const forceExit = vi.fn<(code: number) => void>();
     const out: string[] = [];
@@ -278,8 +298,8 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
         err.push(line);
         if (!signalEmitted && line === 'Setup completed successfully.') {
           signalEmitted = true;
-          expect(listenerCounts(signals)).toEqual([before[0] + 1, before[1] + 1]);
-          signals.emit('SIGTERM');
+          expect(listenerCounts(signals)).toEqual(installedListenerCounts(before));
+          signals.emit(TERMINATION_SIGNAL);
         }
       },
     };
@@ -299,7 +319,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(listenerCounts(signals)).toEqual(before);
   });
 
-  it('keeps both listeners through result delivery and removes them when delivery fails', async () => {
+  it('keeps the registered listeners through result delivery and removes them on failure', async () => {
     const { manifestPath } = fixture('process.exit(0)');
     const signals = new TestSignalSource();
     const before = listenerCounts(signals);
@@ -309,7 +329,7 @@ describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
     const io: CliIo = {
       stdout: () => {
         deliveryStarted = true;
-        expect(listenerCounts(signals)).toEqual([before[0] + 1, before[1] + 1]);
+        expect(listenerCounts(signals)).toEqual(installedListenerCounts(before));
         signals.emit('SIGINT');
         throw new Error('result sink failed');
       },

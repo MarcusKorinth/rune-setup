@@ -20,7 +20,7 @@ import type { InputState, InputType, ResultInput, Session, StringTable } from '@
 import type { CliIo } from './io.js';
 import { renderPlan } from './render.js';
 
-export type CancelSignal = 'SIGINT' | 'SIGTERM';
+export type CancelSignal = 'SIGINT' | 'SIGTERM' | 'SIGBREAK';
 
 /** Process-signal subset used while a session executes; injectable to keep tests isolated. */
 export interface SignalSource {

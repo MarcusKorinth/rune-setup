@@ -146,9 +146,9 @@ export async function runCommand(
 }
 
 /**
- * Installs the §7/§9.3 cancel flow: SIGTERM and the first Ctrl+C fire the same
- * CancelToken path (the interrupted step becomes CANCELLED and exits 6); a second Ctrl+C
- * force-quits. SIGTERM stays idempotent and never advances the Ctrl+C force-quit count.
+ * Installs the §7/§9.3 cancel flow: the first SIGINT and the platform termination
+ * signal (POSIX SIGTERM, Windows SIGBREAK) fire the same CancelToken path. Repeated
+ * termination signals stay idempotent; only a second SIGINT force-quits.
  */
 function installExecutionSignalHandlers(
   session: Session,
@@ -157,6 +157,7 @@ function installExecutionSignalHandlers(
   interaction: Interaction,
 ): () => void {
   const signalSource = interaction.signalSource ?? process;
+  const terminationSignal = process.platform === 'win32' ? 'SIGBREAK' : 'SIGTERM';
   let cancellationRequested = false;
   let sigintCount = 0;
 
@@ -176,16 +177,16 @@ function installExecutionSignalHandlers(
     }
     requestCancel();
   };
-  const onSigterm = (): void => {
+  const onTerminationSignal = (): void => {
     requestCancel();
   };
 
   signalSource.on('SIGINT', onSigint);
-  signalSource.on('SIGTERM', onSigterm);
+  signalSource.on(terminationSignal, onTerminationSignal);
 
   return () => {
     signalSource.removeListener('SIGINT', onSigint);
-    signalSource.removeListener('SIGTERM', onSigterm);
+    signalSource.removeListener(terminationSignal, onTerminationSignal);
   };
 }
 
