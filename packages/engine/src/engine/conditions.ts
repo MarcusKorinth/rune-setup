@@ -12,6 +12,7 @@
 import { ConditionError } from '../errors.js';
 import type { ValueType } from './context.js';
 import { scanReference, type TemplateReference } from './interpolate.js';
+import { secretValueIn, secretValuesEqual, type SecretString } from './secrets.js';
 
 /**
  * Guards against a pathological expression; a real condition is a line, not a page. Counted
@@ -75,7 +76,7 @@ export type TypeResolver = (
   | { readonly ok: false; readonly message: string };
 
 /** A value a condition can be evaluated against. */
-export type ConditionValue = boolean | number | string | readonly string[];
+export type ConditionValue = boolean | number | string | readonly string[] | SecretString;
 
 // ---------------------------------------------------------------------------- tokenizer
 
@@ -696,16 +697,19 @@ function evaluate(
     case 'or':
       return asBoolean(evaluate(node.left, lookup)) || asBoolean(evaluate(node.right, lookup));
     case 'equality': {
-      const equal = evaluate(node.left, lookup) === evaluate(node.right, lookup);
+      const left = evaluate(node.left, lookup);
+      const right = evaluate(node.right, lookup);
+      const equal = secretValuesEqual(left, right) ?? left === right;
       return node.negated ? !equal : equal;
     }
     case 'membership': {
-      const needle = asString(evaluate(node.needle, lookup));
+      const needle = evaluate(node.needle, lookup);
       const haystack = evaluate(node.haystack, lookup);
       if (!Array.isArray(haystack)) {
         throw new ConditionError('RUNE-312', '"in" needs a multiselect value on its right');
       }
-      const found = (haystack as readonly string[]).includes(needle);
+      const strings = haystack as readonly string[];
+      const found = secretValueIn(needle, strings) ?? strings.includes(asString(needle));
       return node.negated ? !found : found;
     }
   }

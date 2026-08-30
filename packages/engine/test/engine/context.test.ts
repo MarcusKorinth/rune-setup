@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   BUILT_IN_NAMES,
   BUILT_IN_VARIABLES,
+  createInputReferenceIndex,
   PRODUCT_FIELDS,
   resolveReference,
   typeOfInput,
@@ -11,9 +12,10 @@ import {
 import { INPUT_TYPES } from '../../src/manifest/v1/schema.js';
 
 const INPUTS = ['installDirectory', 'installDatabase'];
+const INPUT_INDEX = createInputReferenceIndex(INPUTS);
 
 function resolve(reference: string) {
-  return resolveReference(reference.split('.'), INPUTS);
+  return resolveReference(reference.split('.'), INPUT_INDEX);
 }
 
 function messageFor(reference: string): string {
@@ -86,7 +88,21 @@ describe('resolving a reference', () => {
   });
 
   it('resolves nothing when no inputs are visible', () => {
-    expect(resolveReference(['installDirectory'], []).ok).toBe(false);
+    expect(resolveReference(['installDirectory'], INPUT_INDEX, 0).ok).toBe(false);
+  });
+
+  it('resolves valid input membership through one ordinal lookup', () => {
+    const ordinalLookup = vi.spyOn(INPUT_INDEX.ordinals, 'get');
+
+    try {
+      expect(resolveReference(['installDatabase'], INPUT_INDEX, 2)).toEqual({
+        ok: true,
+        reference: { kind: 'input', id: 'installDatabase' },
+      });
+      expect(ordinalLookup).toHaveBeenCalledExactlyOnceWith('installDatabase');
+    } finally {
+      ordinalLookup.mockRestore();
+    }
   });
 });
 
@@ -100,7 +116,7 @@ describe('the built-in name list', () => {
     // A plain object as the reserved-namespace table would report an input legitimately
     // called `toString` as reserved, quoting a function body at the author.
     for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
-      expect(resolveReference([name], [name])).toEqual({
+      expect(resolveReference([name], createInputReferenceIndex([name]))).toEqual({
         ok: true,
         reference: { kind: 'input', id: name },
       });
@@ -108,7 +124,7 @@ describe('the built-in name list', () => {
   });
 
   it('suggests a name that differs only in case, which is the likeliest typo', () => {
-    expect(resolveReference(['installdirectory'], INPUTS)).toEqual({
+    expect(resolveReference(['installdirectory'], INPUT_INDEX)).toEqual({
       ok: false,
       message:
         '${installdirectory} is neither a declared input nor a built-in variable — did you mean ${installDirectory}?',

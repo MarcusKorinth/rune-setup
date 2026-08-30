@@ -1,8 +1,9 @@
 # Roadmap
 
-Current state: **repository bootstrap (Milestone 0) complete**. [architecture.md](architecture.md)
-is the binding architectural contract; only the package skeleton exists — engine and CLI
-functionality start with Milestone 1.
+Current state: **Milestone 1 (engine core and non-interactive execution) in progress**.
+[architecture.md](architecture.md) is the binding architectural contract; the engine's
+manifest, input and secret-handling foundations are implemented, while the Session facade and
+broader public engine surface/API expansion, CLI commands and GUI shell remain planned work.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
@@ -30,11 +31,11 @@ committed core milestone beyond the MVP.
 The complete pipeline behind `rune validate`, `rune schema` and
 `rune run --non-interactive` — the `@rune/engine` library plus the `rune` CLI binary:
 
-- manifest loader (`yaml` core schema, `uniqueKeys` duplicate-key detection,
-  SourceMap from node ranges) and zod v1 schema (`.strict()` objects, discriminated
-  unions) with located, understandable error messages
+- manifest loader (`yaml` core schema, `uniqueKeys` disabled, single-pass located
+  duplicate-key detection, SourceMap from node ranges) and zod v1 schema (`.strict()`
+  objects, discriminated unions) with located, understandable error messages
 - `rune schema [--output] [--result]` — manifest and result-file JSON Schema generated
-  from the zod schemas via `zod-to-json-schema` (editor autocompletion, no drift)
+  from the zod schemas via built-in `z.toJSONSchema()` (editor autocompletion, no drift)
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
