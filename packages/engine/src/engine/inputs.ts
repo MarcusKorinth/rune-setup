@@ -13,7 +13,6 @@
  */
 
 import {
-  formatIssues,
   InputError,
   InternalError,
   ManifestError,
@@ -90,7 +89,9 @@ export interface InputState {
 export interface ValuesDocument {
   readonly file: string;
   readonly values: ReadonlyMap<string, unknown>;
-  readonly sourceMap: SourceMap;
+  readonly sourceMap?: SourceMap;
+  /** Load and shape problems retained until declared secrets are available for redaction. */
+  readonly problems?: readonly RuneIssue[];
 }
 
 export interface ResolveInputsOptions {
@@ -156,6 +157,10 @@ function resolveInputsStaged(
   const valuesLayer = indexValuesLayer(options.values);
   const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
   const redactor = options.secrets.combinedWith(stagedSecrets);
+
+  if (valuesLayer.problems.length > 0) {
+    throw InputError.fromIssues('RUNE-202', valuesLayer.problems);
+  }
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -482,6 +487,7 @@ interface ValuesLayerIndex {
   /** Every entry per id in document order, retained for secret candidate staging. */
   readonly candidatesById: ReadonlyMap<string, readonly SuppliedValue[]>;
   readonly entries: readonly ValuesLayerEntry[];
+  readonly problems: readonly RuneIssue[];
 }
 
 /**
@@ -492,10 +498,12 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
   const byId = new Map<string, SuppliedValue>();
   const candidatesById = new Map<string, SuppliedValue[]>();
   const entries: ValuesLayerEntry[] = [];
+  const problems: RuneIssue[] = [];
 
   for (const document of documents ?? []) {
+    problems.push(...(document.problems ?? []));
     for (const [id, raw] of document.values) {
-      const location = document.sourceMap.best([id]) ?? startOfFile(document.file);
+      const location = document.sourceMap?.best([id]) ?? startOfFile(document.file);
       const supplied = {
         source: 'values',
         raw,
@@ -513,7 +521,7 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
     }
   }
 
-  return { byId, candidatesById, entries };
+  return { byId, candidatesById, entries, problems };
 }
 
 /** The value of the highest layer that supplied one, which is the value that wins (§5). */
@@ -819,7 +827,11 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     document = loadYamlFile(file, path);
   } catch (cause) {
     if (cause instanceof ManifestError) {
-      throw valuesFileLoadError(cause, file);
+      return {
+        file,
+        values: new Map(),
+        problems: valuesFileLoadProblems(cause, file),
+      };
     }
     throw cause;
   }
@@ -832,13 +844,18 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   }
 
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new InputError(
-      'RUNE-202',
-      `${escapeDiagnosticText(file)} must contain a mapping of input ids to values`,
-      {
-        location: document.sourceMap.best([]) ?? startOfFile(document.file),
-      },
-    );
+    return {
+      file: document.file,
+      values,
+      sourceMap: document.sourceMap,
+      problems: [
+        {
+          code: 'RUNE-202',
+          message: `${file} must contain a mapping of input ids to values`,
+          location: document.sourceMap.best([]) ?? startOfFile(document.file),
+        },
+      ],
+    };
   }
 
   for (const [key, value] of Object.entries(raw)) {
@@ -849,31 +866,28 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     } else {
       issues.push({
         code: 'RUNE-202',
-        message: `${escapeDiagnosticText(key)} ${problem}`,
+        message: `${key} ${problem}`,
         location,
       });
     }
   }
 
-  if (issues.length > 0) {
-    throw InputError.fromIssues('RUNE-202', issues);
-  }
-
-  return { file: document.file, values, sourceMap: document.sourceMap };
+  return {
+    file: document.file,
+    values,
+    sourceMap: document.sourceMap,
+    ...(issues.length > 0 ? { problems: issues } : {}),
+  };
 }
 
 /** Values files are runtime input, even though they share the manifest YAML loader. */
-function valuesFileLoadError(error: ManifestError, file: string): InputError {
+function valuesFileLoadProblems(error: ManifestError, file: string): readonly RuneIssue[] {
   const fallbackLocation = error.location ?? startOfFile(file);
-  const issues = error.issues.map((issue) => ({
+  return error.issues.map((issue) => ({
     code: 'RUNE-202' as const,
-    message: escapeDiagnosticText(valuesFileLoaderMessage(issue.message, file)),
+    message: valuesFileLoaderMessage(issue.message, file),
     location: issue.location ?? fallbackLocation,
   }));
-  return new InputError('RUNE-202', formatIssues(issues), {
-    issues,
-    location: fallbackLocation,
-  });
 }
 
 /**

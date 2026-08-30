@@ -1840,7 +1840,10 @@ describe('secrets', () => {
     );
     const document = valuesFromFile(`token: ${staged}\nnote: invalid\n`, displayName);
     const sourceMap = document.sourceMap;
-    const originalLocation = document.sourceMap.best(['note']);
+    if (sourceMap === undefined) {
+      throw new Error('expected the parsed value to have a source map');
+    }
+    const originalLocation = sourceMap.best(['note']);
     if (originalLocation === undefined) {
       throw new Error('expected the parsed value to have a source location');
     }
@@ -1862,7 +1865,7 @@ describe('secrets', () => {
     expect(rejection.issue.location).toBe(issue?.location);
     expect(document.file).toBe(displayName);
     expect(document.sourceMap).toBe(sourceMap);
-    expect(document.sourceMap.best(['note'])).toBe(originalLocation);
+    expect(sourceMap.best(['note'])).toBe(originalLocation);
     expect(originalLocation).toEqual({ file: displayName, line: 2, column: 1 });
     for (const sentinel of [active, staged]) {
       expect(JSON.stringify(resolution)).not.toContain(sentinel);
@@ -2751,6 +2754,8 @@ describe('secrets', () => {
 });
 
 describe('values files', () => {
+  const emptyManifest = manifestOf('inputs: {}');
+
   function file(contents: string | Uint8Array): string {
     const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
     const path = join(directory, 'values.yaml');
@@ -2759,15 +2764,16 @@ describe('values files', () => {
   }
 
   function loadError(contents: string | Uint8Array, displayName = 'values.yaml'): InputError {
-    try {
-      parseValuesFile(file(contents), displayName);
-    } catch (error) {
-      if (error instanceof InputError) {
-        return error;
-      }
-      throw error;
-    }
-    throw new Error('expected the values file to be rejected');
+    return documentError(parseValuesFile(file(contents), displayName));
+  }
+
+  function documentError(
+    document: ValuesDocument,
+    options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context' | 'values'> = {},
+    environment: Record<string, string> = {},
+    manifest: ManifestV1 = emptyManifest,
+  ): InputError {
+    return inputError(manifest, { ...options, values: [document] }, environment);
   }
 
   function publicErrorSurfaces(error: Error): readonly string[] {
@@ -2778,6 +2784,7 @@ describe('values files', () => {
       seen.add(current);
       surfaces.push(
         current.message,
+        current.stack ?? '',
         String(current),
         JSON.stringify(current) ?? '',
         inspect(current),
@@ -2788,6 +2795,25 @@ describe('values files', () => {
       current = current.cause;
     }
     return surfaces;
+  }
+
+  function existingRegistry(): SecretRegistry {
+    const secrets = new SecretRegistry();
+    secrets.register('existing-secret');
+    expect(secrets.mask('existing-secret')).toBe('***');
+    return secrets;
+  }
+
+  function expectRegistryUnchanged(secrets: SecretRegistry, candidates: readonly string[]): void {
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('existing-secret')).toBe('***');
+    for (const candidate of candidates) {
+      expect(secrets.mask(candidate)).toBe(candidate);
+    }
+  }
+
+  function secretManifest(): ManifestV1 {
+    return manifestOf('inputs:', '  license:', '    type: secret');
   }
 
   it('reads a flat mapping of ids to values', () => {
@@ -2809,11 +2835,135 @@ describe('values files', () => {
     },
   );
 
+  it('redacts a same-document secret from deferred shape diagnostics', () => {
+    const secret = 'LICENSE.txt';
+    const document = parseValuesFile(file(`license: ${secret}\n${secret}:\n`), secret);
+    const secrets = existingRegistry();
+
+    expect(document.values.get('license')).toBe(secret);
+    expect(document.problems).toHaveLength(1);
+    const error = documentError(document, { secrets }, {}, secretManifest());
+
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: '*** has no value — remove the key, or give it one',
+        location: { file: '***', line: 2, column: 1 },
+      },
+    ]);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(secret);
+    expectRegistryUnchanged(secrets, [secret]);
+  });
+
+  it('uses a secret candidate from another values document to redact an error', () => {
+    const secret = 'F052-CROSS-DOCUMENT-SECRET';
+    const candidate = parseValuesFile(file(`license: ${secret}\n`), 'candidate.yaml');
+    const broken = parseValuesFile(file(`${secret}:\n`), `${secret}.yaml`);
+    const secrets = existingRegistry();
+    const error = inputError(secretManifest(), {
+      values: [candidate, broken],
+      secrets,
+    });
+
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: '*** has no value — remove the key, or give it one',
+        location: { file: '***.yaml', line: 1, column: 1 },
+      },
+    ]);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(secret);
+    expectRegistryUnchanged(secrets, [secret]);
+  });
+
+  it('uses an environment secret to redact a deferred YAML syntax error', () => {
+    const secret = 'F052-ENVIRONMENT-LOAD-SECRET';
+    const document = parseValuesFile(file('target:\n\tvalue: x\n'), secret);
+    const secrets = existingRegistry();
+    const error = documentError(
+      document,
+      { secrets },
+      { RUNE_INPUT_LICENSE: secret },
+      secretManifest(),
+    );
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.location?.file).toBe('***');
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(secret);
+    expectRegistryUnchanged(secrets, [secret]);
+  });
+
+  it('uses an override secret to redact a deferred file-load error', () => {
+    const secret = 'F052-OVERRIDE-LOAD-SECRET';
+    const missing = join(mkdtempSync(join(tmpdir(), 'rune-values-')), 'missing.yaml');
+    const document = parseValuesFile(missing, secret);
+    const secrets = existingRegistry();
+    const error = documentError(
+      document,
+      { overrides: new Map([['license', secret]]), secrets },
+      {},
+      secretManifest(),
+    );
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.location?.file).toBe('***');
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(secret);
+    expectRegistryUnchanged(secrets, [secret]);
+  });
+
+  it('uses an answer secret to redact a deferred top-level shape error', () => {
+    const secret = 'F052-ANSWER-SHAPE-SECRET';
+    const document = parseValuesFile(file('- value\n'), secret);
+    const secrets = existingRegistry();
+    const error = documentError(
+      document,
+      { answers: new Map([['license', secret]]), secrets },
+      {},
+      secretManifest(),
+    );
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.location?.file).toBe('***');
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(secret);
+    expectRegistryUnchanged(secrets, [secret]);
+  });
+
+  it('retains multiple located problems while staging every readable secret candidate', () => {
+    const first = 'F052-FIRST-VALUES-SECRET';
+    const second = 'F052-SECOND-VALUES-SECRET';
+    const documents = [
+      parseValuesFile(file(`license: ${first}\n${second}:\n`), `${first}.yaml`),
+      parseValuesFile(file(`license: ${second}\n${first}:\n`), `${second}.yaml`),
+    ];
+    const secrets = existingRegistry();
+    const error = inputError(secretManifest(), { values: documents, secrets });
+
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: '*** has no value — remove the key, or give it one',
+        location: { file: '***.yaml', line: 2, column: 1 },
+      },
+      {
+        code: 'RUNE-202',
+        message: '*** has no value — remove the key, or give it one',
+        location: { file: '***.yaml', line: 2, column: 1 },
+      },
+    ]);
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    for (const secret of [first, second]) {
+      expect(surfaces).not.toContain(secret);
+    }
+    expectRegistryUnchanged(secrets, [first, second]);
+  });
+
   it.each(['null\n', '~\n'])('refuses an explicit top-level null value', (contents) => {
     const error = loadError(contents);
 
     expect(error.code).toBe('RUNE-202');
-    expect(error.message).toBe('values.yaml must contain a mapping of input ids to values');
+    expect(error.message).toBe(
+      'values.yaml:1:1: values.yaml must contain a mapping of input ids to values',
+    );
     expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
   });
 
@@ -2896,15 +3046,8 @@ describe('values files', () => {
 
   it('keeps the unreadable-file category and location without exposing the loader cause', () => {
     const missing = join(mkdtempSync(join(tmpdir(), 'rune-values-')), 'missing.yaml');
-    let thrown: unknown;
-    try {
-      parseValuesFile(missing, 'missing.yaml');
-    } catch (error) {
-      thrown = error;
-    }
+    const error = documentError(parseValuesFile(missing, 'missing.yaml'));
 
-    expect(thrown).toBeInstanceOf(InputError);
-    const error = thrown as InputError;
     expect(error.code).toBe('RUNE-202');
     expect(exitCodeFor(error)).toBe(4);
     expect(error.message).toContain('cannot be read');
@@ -2928,46 +3071,36 @@ describe('values files', () => {
   });
 
   it('refuses a nested section, because a values file has no sections', () => {
-    expect(() => parseValuesFile(file('database:\n  port: "5432"\n'))).toThrow(
+    expect(loadError('database:\n  port: "5432"\n').message).toMatch(
       /database is a mapping; a values file is one flat mapping/,
     );
   });
 
   it('asks for a number to be written in quotes, without repeating it', () => {
-    let thrown: unknown;
-    try {
-      parseValuesFile(file('port: 5432\n'));
-    } catch (error) {
-      thrown = error;
-    }
+    const error = loadError('port: 5432\n');
 
     // This runs before anything knows which input the key belongs to, so it cannot know that
     // the value it would be quoting is a secret — a numeric API key lands here (§10).
-    expect((thrown as InputError).message).toContain(
+    expect(error.message).toContain(
       'port is a number — write it in quotes so it means exactly what it says',
     );
-    expect((thrown as InputError).message).not.toContain('5432');
+    expect(error.message).not.toContain('5432');
   });
 
   it('refuses a key with no value at all', () => {
-    expect(() => parseValuesFile(file('target:\n'))).toThrow(/target has no value/);
+    expect(loadError('target:\n').message).toMatch(/target has no value/);
   });
 
   it('refuses a list with an entry that is not a string', () => {
-    expect(() => parseValuesFile(file('tools:\n  - git\n  - 7\n'))).toThrow(
+    expect(loadError('tools:\n  - git\n  - 7\n').message).toMatch(
       /tools is a list with an entry that is not a string/,
     );
   });
 
   it('locates each problem in the file it came from', () => {
-    let thrown: unknown;
-    try {
-      parseValuesFile(file('a: "ok"\nb:\n  nested: 1\n'), 'values.yaml');
-    } catch (error) {
-      thrown = error;
-    }
+    const error = loadError('a: "ok"\nb:\n  nested: 1\n');
 
-    expect((thrown as InputError).issues[0]?.location).toMatchObject({
+    expect(error.issues[0]?.location).toMatchObject({
       file: 'values.yaml',
       line: 2,
       column: 1,
