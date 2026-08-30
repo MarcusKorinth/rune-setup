@@ -56,24 +56,25 @@ const MANIFEST_WITHOUT_OPTIONAL_FALLBACKS = parseManifestText(
 
 describe('localizableKeys', () => {
   it('lists exactly every localizable path family declared by the manifest', () => {
-    expect([...localizableKeys(MANIFEST)]).toEqual([
-      'product.description',
-      'gui.windowTitle',
-      'inputs.environment.title',
-      'inputs.environment.description',
-      'inputs.environment.options.production.label',
-      'inputs.environment.options.dev.label',
-      'inputs.port.title',
-      'inputs.port.patternHint',
-      'steps.install.title',
-    ]);
+    expect(localizableKeys(MANIFEST)).toEqual(
+      new Set([
+        'product.description',
+        'gui.windowTitle',
+        'inputs.environment.title',
+        'inputs.environment.description',
+        'inputs.environment.options.production.label',
+        'inputs.environment.options.dev.label',
+        'inputs.port.title',
+        'inputs.port.patternHint',
+        'steps.install.title',
+      ]),
+    );
   });
 
   it('omits optional texts that the manifest does not declare', () => {
-    expect([...localizableKeys(MANIFEST_WITHOUT_OPTIONAL_FALLBACKS)]).toEqual([
-      'inputs.target.title',
-      'steps.install.title',
-    ]);
+    expect(localizableKeys(MANIFEST_WITHOUT_OPTIONAL_FALLBACKS)).toEqual(
+      new Set(['inputs.target.title', 'steps.install.title']),
+    );
   });
 });
 
