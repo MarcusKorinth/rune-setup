@@ -164,6 +164,19 @@ function normalize(result: RunResult): unknown {
   };
 }
 
+/** Locale changes only display data; run identity and timing differ between separate runs. */
+function normalizeResultForLocale(result: RunResult): unknown {
+  return {
+    ...result,
+    id: '<id>',
+    startedAt: '<t>',
+    finishedAt: '<t>',
+    durationMs: 0,
+    locale: '<locale>',
+    steps: result.steps.map((step) => ({ ...step, title: '<title>', durationMs: 0 })),
+  };
+}
+
 /** An event sequence with only the necessarily-differing parts stripped. */
 function normalizeEvents(events: readonly RunEvent[]): unknown[] {
   return events.map((event) => {
@@ -502,6 +515,9 @@ describe('mode parity', () => {
       [defaults.interactive, interactive],
       [defaults.gui, gui],
     ] as const) {
+      expect(normalizeResultForLocale(germanLeg.value)).toEqual(
+        normalizeResultForLocale(defaultLeg.value),
+      );
       expect(normalizePlanForLocale(planFrom(germanLeg.events))).toEqual(
         normalizePlanForLocale(planFrom(defaultLeg.events)),
       );
