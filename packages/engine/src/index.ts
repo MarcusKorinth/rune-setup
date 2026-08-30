@@ -98,7 +98,7 @@ export { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION } from './results/model.js';
 export type { ResultInput, ResultStep, RunMode, RunResult, RunStatus } from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';
 export { resultJsonSchema } from './results/schema.js';
-export { failureResult, statusForExitCode } from './results/failure.js';
+export { failureResult } from './results/failure.js';
 export type { FailureResultOptions } from './results/failure.js';
 export { createLogFileSink } from './logs/logFile.js';
 export type { LogFileSink } from './logs/logFile.js';
