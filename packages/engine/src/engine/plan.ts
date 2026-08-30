@@ -101,7 +101,7 @@ export interface PlanOptions {
   readonly context: RuntimeContext;
   /** Effective log path after CLI-over-manifest precedence and path anchoring. */
   readonly logFile?: string | undefined;
-  /** Localized titles land in the plan, so events and results show them (S6.3). */
+  /** Localized titles land in the plan, so events and results show them (§6.3). */
   readonly strings?: StringTable | undefined;
 }
 

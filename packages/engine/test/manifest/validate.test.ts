@@ -1,6 +1,6 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -20,7 +20,36 @@ describe('validateManifest', () => {
     const report = validateManifest(manifestFile('steps: []'));
 
     expect(report.manifest.product.name).toBe('Example');
+    expect(report.locales).toEqual([]);
     expect(report.environment).toEqual([]);
+  });
+
+  it('validates every locale overlay and reports its canonical locale', () => {
+    const file = manifestFile(
+      'steps:',
+      '  - id: install',
+      '    title: Install',
+      '    run:',
+      '      command: install',
+    );
+    const localesDir = join(dirname(file), 'locales');
+    mkdirSync(localesDir);
+    writeFileSync(join(localesDir, 'de.yaml'), 'steps.install.title: Installieren\n');
+
+    const report = validateManifest(file);
+
+    expect(report.locales).toEqual(['de']);
+  });
+
+  it('rejects a broken locale overlay even when no locale is selected', () => {
+    const file = manifestFile('steps: []');
+    const localesDir = join(dirname(file), 'locales');
+    mkdirSync(localesDir);
+    writeFileSync(join(localesDir, 'de.yaml'), 'unknown.key: Ungueltig\n');
+
+    expect(() => validateManifest(file)).toThrow(
+      /unknown\.key does not name a localizable text of this manifest/,
+    );
   });
 
   it('lists every environment variable the manifest reads, sorted, with its places', () => {

@@ -7,8 +7,9 @@
  * this table and never resolve text themselves.
  */
 
+import { InternalError } from '../errors.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
-import { CHROME_CATALOG, formatChrome } from './catalog.js';
+import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
 import type { LocaleOverlay } from './overlay.js';
 
 export interface StringTable {
@@ -17,16 +18,16 @@ export interface StringTable {
   /** The overlay file that served it — `de` may serve a selected `de-DE`. */
   readonly overlayLocale: string | undefined;
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
-  readonly entries: ReadonlyMap<string, string>;
+  readonly entries: Readonly<Record<string, string>>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
-  chrome(key: string, values?: Readonly<Record<string, string | number>>): string;
-  inputTitle(id: string): string;
-  inputDescription(id: string): string | undefined;
-  patternHint(id: string): string | undefined;
-  optionLabel(inputId: string, value: string): string;
-  stepTitle(id: string): string;
-  productDescription(): string | undefined;
-  windowTitle(): string | undefined;
+  readonly chrome: (key: ChromeKey, values?: Readonly<Record<string, string | number>>) => string;
+  readonly inputTitle: (id: string) => string;
+  readonly inputDescription: (id: string) => string | undefined;
+  readonly patternHint: (id: string) => string | undefined;
+  readonly optionLabel: (inputId: string, value: string) => string;
+  readonly stepTitle: (id: string) => string;
+  readonly productDescription: () => string | undefined;
+  readonly windowTitle: () => string | undefined;
 }
 
 export interface ResolveStringsOptions {
@@ -37,50 +38,6 @@ export interface ResolveStringsOptions {
   readonly overlay?: LocaleOverlay | undefined;
 }
 
-/** A runtime-readonly view: unlike `Object.freeze(new Map())`, it exposes no mutators. */
-class ReadonlyMapView<K, V> implements ReadonlyMap<K, V> {
-  readonly #source: ReadonlyMap<K, V>;
-
-  constructor(source: ReadonlyMap<K, V>) {
-    this.#source = source;
-    Object.freeze(this);
-  }
-
-  get size(): number {
-    return this.#source.size;
-  }
-
-  get(key: K): V | undefined {
-    return this.#source.get(key);
-  }
-
-  has(key: K): boolean {
-    return this.#source.has(key);
-  }
-
-  entries(): MapIterator<[K, V]> {
-    return this.#source.entries();
-  }
-
-  keys(): MapIterator<K> {
-    return this.#source.keys();
-  }
-
-  values(): MapIterator<V> {
-    return this.#source.values();
-  }
-
-  forEach(callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
-    for (const [key, value] of this.#source) {
-      callback.call(thisArg, value, key, this);
-    }
-  }
-
-  [Symbol.iterator](): MapIterator<[K, V]> {
-    return this.entries();
-  }
-}
-
 /** Builds the one string table of a session. */
 export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const { manifest, overlay } = options;
@@ -88,7 +45,7 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
 
   // Layer 1: the defaults — the manifest's own text, ids where nothing was written, and
   // the English chrome built-ins.
-  for (const [key, text] of CHROME_CATALOG) {
+  for (const [key, text] of Object.entries(CHROME_CATALOG)) {
     entries.set(key, text);
   }
   if (manifest.product.description !== undefined) {
@@ -116,18 +73,28 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
   }
 
   // Layer 2: the overlay, key by key — a partial overlay fills its gaps from layer 1.
-  for (const [key, text] of overlay?.entries ?? []) {
+  for (const [key, text] of Object.entries(overlay?.entries ?? {})) {
     entries.set(key, text);
   }
 
-  const get = (key: string): string | undefined => entries.get(key);
-  const readonlyEntries = new ReadonlyMapView(entries);
+  const snapshot: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(entries));
+  const get = (key: string): string | undefined =>
+    Object.hasOwn(snapshot, key) ? snapshot[key] : undefined;
 
   const table: StringTable = {
     locale: options.locale ?? overlay?.locale,
     overlayLocale: overlay?.locale,
-    entries: readonlyEntries,
-    chrome: (key, values) => formatChrome(get(key) ?? key, values),
+    entries: snapshot,
+    chrome: (key, values) => {
+      if (!Object.hasOwn(CHROME_CATALOG, key)) {
+        throw new InternalError(`unknown chrome string key "${key}"`);
+      }
+      const template = get(key);
+      if (template === undefined) {
+        throw new InternalError(`missing resolved chrome string for key "${key}"`);
+      }
+      return formatChrome(template, values);
+    },
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
     inputDescription: (id) => get(`inputs.${id}.description`),
     patternHint: (id) => get(`inputs.${id}.patternHint`),

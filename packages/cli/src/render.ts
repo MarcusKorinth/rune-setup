@@ -5,7 +5,7 @@
  */
 
 import { isSecretString, MASK } from '@rune/engine';
-import type { ExecutionPlan, RunEvent, RunResult, StringTable } from '@rune/engine';
+import type { ChromeKey, ExecutionPlan, RunEvent, RunResult, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
 
@@ -128,7 +128,7 @@ export function renderOutcome(
 }
 
 /** Chrome keys exist only for user-facing terminal statuses. Other statuses keep evidence raw. */
-function resultChromeKey(status: RunResult['status']): string | undefined {
+function resultChromeKey(status: RunResult['status']): ChromeKey | undefined {
   switch (status) {
     case 'succeeded':
       return 'rune.result.succeeded';

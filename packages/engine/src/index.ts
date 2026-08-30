@@ -105,7 +105,7 @@ export type { StepState } from './engine/state.js';
 export { SpawnRunner } from './runners/spawnRunner.js';
 export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 
-export { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION } from './results/model.js';
+export { RESULT_SCHEMA_VERSION } from './results/model.js';
 export type {
   ResultInput,
   ResultManifest,
@@ -116,22 +116,9 @@ export type {
 } from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';
 export { resultJsonSchema } from './results/schema.js';
-export { createLogFileSink } from './logs/logFile.js';
-export type { LogFileSink } from './logs/logFile.js';
 
-export { CHROME_CATALOG, formatChrome } from './i18n/catalog.js';
-export {
-  discoverOverlays,
-  LOCALES_DIRECTORY,
-  matchOverlay,
-  normalizeLocaleTag,
-  selectLocale,
-} from './i18n/locale.js';
-export type { DiscoveredOverlay, LocaleSelectionOptions } from './i18n/locale.js';
-export { loadOverlay, loadOverlayText, localizableKeys } from './i18n/overlay.js';
-export type { LocaleOverlay } from './i18n/overlay.js';
-export { resolveStrings } from './i18n/strings.js';
-export type { ResolveStringsOptions, StringTable } from './i18n/strings.js';
+export type { StringTable } from './i18n/strings.js';
+export type { ChromeKey } from './i18n/catalog.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 

@@ -71,6 +71,15 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).toContain('locales: none');
   });
 
+  it('reports every validated locale overlay', async () => {
+    const path = fixture(MANIFEST);
+    writeLocaleOverlay(path, ['rune.button.next: Weiter']);
+    const io = capture();
+
+    expect(await run(['validate', path], io)).toBe(0);
+    expect(io.out.join('\n')).toContain('locales: de');
+  });
+
   it('exits 3 for an invalid manifest', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const io = capture();

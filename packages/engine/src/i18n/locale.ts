@@ -5,29 +5,59 @@
  * exact tag first, then the language alone — `de-DE` falls back to `de`.
  */
 
-import { readdirSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { environmentValue } from '../environment.js';
+import { ManifestError, UsageError, messageOf } from '../errors.js';
 
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
 
-/**
- * Normalizes what a flag, an environment variable, or the OS reports to a BCP-47-style tag:
- * `de_DE.UTF-8` → `de-DE`, `EN` → `en`. The POSIX pseudo-locales mean "no preference".
- */
+function canonicalizeLocaleTag(tag: string): string | undefined {
+  try {
+    return Intl.getCanonicalLocales(tag)[0];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Normalizes a Unicode locale identifier, accepting underscores as locale separators. */
 export function normalizeLocaleTag(raw: string): string | undefined {
-  const bare = raw.split('.')[0]?.split('@')[0]?.replace(/_/g, '-').trim() ?? '';
-  if (bare === '' || /^(c|posix)$/i.test(bare)) {
+  const tag = raw.replace(/_/g, '-');
+  if (tag === '' || /^(c|posix)$/i.test(tag)) {
     return undefined;
   }
-  const [language, ...rest] = bare.split('-');
-  if (language === undefined || !/^[A-Za-z]{2,8}$/.test(language)) {
+
+  return canonicalizeLocaleTag(tag);
+}
+
+function normalizeOverlayLocaleClaim(raw: string): string | undefined {
+  return normalizeLocaleTag(raw);
+}
+
+function normalizeExplicitLocale(
+  raw: string,
+  source: '--locale' | 'RUNE_LOCALE',
+): string | undefined {
+  const value = raw.trim();
+  if (/^(c|posix)$/i.test(value)) {
     return undefined;
   }
-  const tail = rest.map((part) => (part.length === 2 ? part.toUpperCase() : part));
-  return [language.toLowerCase(), ...tail].join('-');
+
+  const tag = normalizeLocaleTag(value);
+  if (tag === undefined) {
+    throw new UsageError(
+      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
+    );
+  }
+  return tag;
+}
+
+function normalizeSystemLocale(raw: string): string | undefined {
+  // POSIX system locale names may add an encoding and modifier around the locale tag.
+  const bare = raw.split('.')[0]?.split('@')[0]?.trim() ?? '';
+  return normalizeLocaleTag(bare);
 }
 
 export interface LocaleSelectionOptions {
@@ -40,14 +70,18 @@ export interface LocaleSelectionOptions {
 
 /** The display locale for a session, or `undefined` for the built-in defaults (§6.3). */
 export function selectLocale(options: LocaleSelectionOptions): string | undefined {
-  for (const candidate of [options.flag, environmentValue(options.environment, 'RUNE_LOCALE')]) {
-    if (candidate !== undefined && candidate !== '') {
-      // An explicit choice terminates the chain: `--locale C` asks for the built-in
-      // defaults, never for whatever the next source would have said.
-      return normalizeLocaleTag(candidate);
-    }
+  if (options.flag !== undefined && options.flag !== '') {
+    // An explicit choice terminates the chain: `--locale C` asks for the built-in
+    // defaults, never for whatever the next source would have said.
+    return normalizeExplicitLocale(options.flag, '--locale');
   }
-  return options.systemLocale === undefined ? undefined : normalizeLocaleTag(options.systemLocale);
+  const environmentLocale = environmentValue(options.environment, 'RUNE_LOCALE');
+  if (environmentLocale !== undefined && environmentLocale !== '') {
+    return normalizeExplicitLocale(environmentLocale, 'RUNE_LOCALE');
+  }
+  return options.systemLocale === undefined
+    ? undefined
+    : normalizeSystemLocale(options.systemLocale);
 }
 
 export interface DiscoveredOverlay {
@@ -56,19 +90,122 @@ export interface DiscoveredOverlay {
   readonly path: string;
 }
 
-/** Lists the overlay files next to a manifest; no `locales/` directory is simply none. */
-export function discoverOverlays(manifestDir: string): readonly DiscoveredOverlay[] {
+interface OverlayFile {
+  readonly localeClaim: string;
+  readonly path: string;
+}
+
+function scanOverlayFiles(manifestDir: string): readonly OverlayFile[] {
   const directory = join(manifestDir, LOCALES_DIRECTORY);
   let names: string[];
   try {
     names = readdirSync(directory);
-  } catch {
-    return [];
+  } catch (cause) {
+    if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      try {
+        lstatSync(directory);
+      } catch (lstatCause) {
+        if (
+          lstatCause instanceof Error &&
+          (lstatCause as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
+          return [];
+        }
+      }
+    }
+    throw new ManifestError('RUNE-101', `${directory} cannot be read: ${messageOf(cause)}`, {
+      cause,
+    });
   }
+
   return names
-    .filter((name) => /\.ya?ml$/i.test(name))
+    .filter((name) => /\.yaml$/i.test(name))
     .sort()
-    .map((name) => ({ locale: name.replace(/\.ya?ml$/i, ''), path: join(directory, name) }));
+    .map((name) => ({
+      localeClaim: name.replace(/\.yaml$/i, ''),
+      path: join(directory, name),
+    }));
+}
+
+function duplicateClaim(first: DiscoveredOverlay, second: DiscoveredOverlay): ManifestError {
+  return new ManifestError(
+    'RUNE-104',
+    `locale overlay files "${first.path}" and "${second.path}" both claim locale "${second.locale}" (locale file names are normalized and matched case-insensitively)`,
+  );
+}
+
+/** Lists the overlay files next to a manifest; no `locales/` directory is simply none. */
+export function discoverOverlays(manifestDir: string): readonly DiscoveredOverlay[] {
+  const overlays = scanOverlayFiles(manifestDir).map(({ localeClaim, path }) => {
+    const locale = normalizeOverlayLocaleClaim(localeClaim);
+    if (locale === undefined) {
+      throw new ManifestError(
+        'RUNE-104',
+        `locale overlay file "${path}" does not name a valid locale`,
+      );
+    }
+    return { locale, path };
+  });
+
+  const claims = new Map<string, DiscoveredOverlay>();
+  for (const overlay of overlays) {
+    const claim = overlay.locale.toLowerCase();
+    const first = claims.get(claim);
+    if (first !== undefined) {
+      throw duplicateClaim(first, overlay);
+    }
+    claims.set(claim, overlay);
+  }
+
+  return overlays;
+}
+
+/** Discovers only the exact or language-fallback overlay needed by a run. */
+export function discoverSelectedOverlay(
+  manifestDir: string,
+  selectedLocale: string,
+): DiscoveredOverlay | undefined {
+  const files = scanOverlayFiles(manifestDir);
+  const selected = normalizeOverlayLocaleClaim(selectedLocale);
+  if (selected === undefined) {
+    return undefined;
+  }
+
+  const exactClaim = selected.toLowerCase();
+  const languageClaim = selected.split('-')[0]?.toLowerCase();
+  const exactMatches: DiscoveredOverlay[] = [];
+  const languageMatches: DiscoveredOverlay[] = [];
+
+  for (const file of files) {
+    const locale = normalizeOverlayLocaleClaim(file.localeClaim);
+    if (locale === undefined) {
+      continue;
+    }
+
+    const overlay = { locale, path: file.path };
+    const claim = locale.toLowerCase();
+    if (claim === exactClaim) {
+      exactMatches.push(overlay);
+    } else if (claim === languageClaim) {
+      languageMatches.push(overlay);
+    }
+  }
+
+  const firstExact = exactMatches[0];
+  const secondExact = exactMatches[1];
+  if (firstExact !== undefined && secondExact !== undefined) {
+    throw duplicateClaim(firstExact, secondExact);
+  }
+  if (firstExact !== undefined) {
+    return firstExact;
+  }
+
+  const firstLanguage = languageMatches[0];
+  const secondLanguage = languageMatches[1];
+  if (firstLanguage !== undefined && secondLanguage !== undefined) {
+    throw duplicateClaim(firstLanguage, secondLanguage);
+  }
+  return firstLanguage;
 }
 
 /**

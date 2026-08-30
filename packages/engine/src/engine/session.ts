@@ -20,7 +20,7 @@ import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { parseManifestWithMetadata, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
-import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
+import { discoverSelectedOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink } from '../logs/logFile.js';
@@ -158,7 +158,7 @@ export class Session {
     });
     let overlay: LocaleOverlay | undefined;
     if (locale !== undefined) {
-      const match = matchOverlay(locale, discoverOverlays(manifestDir));
+      const match = discoverSelectedOverlay(manifestDir, locale);
       overlay = match === undefined ? undefined : loadOverlay(match.path, match.locale, manifest);
     }
     const strings = resolveStrings({ manifest, locale, overlay });

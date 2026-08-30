@@ -1,6 +1,6 @@
 /** Process-signal policy for the CLI (docs/architecture.md §7). */
 
-import { EXIT_CODE_BY_STATUS, type CancelToken } from '@rune/engine';
+import { CancelledError, exitCodeFor, type CancelToken } from '@rune/engine';
 
 /** The two process signals the CLI main entry point handles cooperatively. */
 export const CLI_CANCELLATION_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
@@ -28,7 +28,7 @@ export function createSignalController(
       }
       if (!forced) {
         forced = true;
-        forceExit(EXIT_CODE_BY_STATUS.cancelled);
+        forceExit(exitCodeFor(new CancelledError()));
       }
     },
   };

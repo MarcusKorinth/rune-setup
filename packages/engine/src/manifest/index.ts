@@ -11,6 +11,8 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { ManifestError } from '../errors.js';
+import { discoverOverlays } from '../i18n/locale.js';
+import { loadOverlay } from '../i18n/overlay.js';
 import {
   loadYamlFile,
   loadYamlFileWithMetadata,
@@ -78,9 +80,11 @@ export function parseManifestText(
   return parseDocument(loadYamlText(text, file), file, options);
 }
 
-/** What `rune validate` reports: the manifest it accepted, and what that manifest reads. */
+/** What `rune validate` reports: the accepted manifest, overlays, and environment reads. */
 export interface ValidationReport {
   readonly manifest: Manifest;
+  /** Every valid locale overlay found beside the manifest, in deterministic order. */
+  readonly locales: readonly string[];
   /** Every environment variable the manifest reads, with the places that read it (§4.3). */
   readonly environment: readonly EnvironmentUse[];
 }
@@ -97,8 +101,14 @@ export function validateManifest(
 ): ValidationReport {
   const document = loadYamlFile(file);
   const manifest = parseDocument(document, file, { checkAssetFiles: true, ...options });
+  const manifestDir = options.manifestDir ?? dirname(resolve(file));
+  const overlays = discoverOverlays(manifestDir);
+  for (const overlay of overlays) {
+    loadOverlay(overlay.path, overlay.locale, manifest);
+  }
   return {
     manifest,
+    locales: Object.freeze(overlays.map((overlay) => overlay.locale)),
     environment: environmentReferences(manifest, {
       file: document.file,
       sourceMap: document.sourceMap,

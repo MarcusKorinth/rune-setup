@@ -52,7 +52,7 @@ RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framewo
 
 ```
 installer.yaml ──▶ manifest/loader ──▶ manifest/v1 schema + rules ──▶ Manifest (frozen)
-locales/<lang>.yaml ──▶ i18n/loader ──▶ Strings (locale chain resolved; engine-owned)
+locales/<lang>.yaml ──▶ i18n/locale ──▶ overlay ──▶ strings ──▶ StringTable (engine-owned)
                                                                         │
 --values / RUNE_INPUT_* / --set / answers ──▶ engine/inputs ──▶ ResolvedInputs (+provenance,
                                                                  input when: evaluated)
@@ -71,7 +71,7 @@ locales/<lang>.yaml ──▶ i18n/loader ──▶ Strings (locale chain resolv
 Engine, CLI, and GUI shell live in one repository and one language: `@rune/engine` (the library, `packages/engine`), `rune` (the CLI, `packages/cli`), and the Electron GUI shell (`packages/gui-shell`). Dependency directions (enforced by an import-boundary test, §14):
 
 - `@rune/engine` — `manifest`, `inputs`, `i18n`, `engine`, `runners`, `results`, `logs`, `errors` — never imports `cli` or `gui-shell`. It is a plain library: no CLI parsing, no Electron, no process-global side effects.
-- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `Strings`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `envReferences()` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
+- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `StringTable`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `envReferences()` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
 - `gui-shell/src/main` (Electron main process) imports `@rune/engine` the same way the CLI does and hosts it in-process; `gui-shell/src/preload` exposes the IPC bridge (§9.2) — a 1:1 projection of that same facade and event stream — through `contextBridge`; `gui-shell/src/renderer` never imports the engine (only the bridge's type declarations) and never reads the manifest, `locales/`, or values files itself. There is no GUI-only engine surface and no engine sidecar process: the engine package never depends on the shell, and core, CLI, and CI never see Electron.
 - Everything downstream of the `ExecutionPlan` is frontend-agnostic; dry-run is "build the plan, project it safely, render it, stop" — the projection is derived from the one canonical plan without interpolation or planning, so every non-sensitive value dry-run shows is what run would execute.
 
@@ -217,7 +217,7 @@ Absent `when:` ⇒ always eligible. On a step, a false condition plans the step 
 
 Every user-visible manifest text is localizable; the text written in the manifest is the default and the fallback. The **engine owns** locale loading and text resolution — one source of truth, so GUI and CLI display identical text; frontends only render resolved strings.
 
-**Localizable paths, exhaustively:** `product.description`, `inputs.<id>.title`, `inputs.<id>.description`, `inputs.<id>.patternHint`, `inputs.<id>.options.<value>.label`, `steps.<id>.title`, `gui.windowTitle`. Everything else is not display text and is **never localized**: input ids, option values, step ids, `command`, `args`, `env`, `cwd`, file paths, `product.name`/`product.version` (identity; appear verbatim in results and logs), and every machine contract (RUNE-xxx codes, result-file keys and enum values, log prefixes).
+**Localizable paths, exhaustively:** `product.description`, `inputs.<id>.title`, `inputs.<id>.description`, `inputs.<id>.patternHint`, `inputs.<id>.options.<value>.label`, `steps.<id>.title`, `gui.windowTitle`. The optional fallback-text paths `product.description`, `inputs.<id>.description`, `inputs.<id>.patternHint`, and `gui.windowTitle` exist only when the manifest declares that fallback text; input and step titles and option labels exist for every declared id or option value because they fall back to that id or value when the manifest omits display text. Everything else is not display text and is **never localized**: input ids, option values, step ids, `command`, `args`, `env`, `cwd`, file paths, `product.name`/`product.version` (identity; appear verbatim in results and logs), and every machine contract (RUNE-xxx codes, result-file keys and enum values, log prefixes).
 
 **Mechanism.** Optional overlay files `locales/<lang>.yaml` next to the manifest, loaded with the hardened loader (§4.3). Each overlay is a **flat mapping** of JSON-path-like keys to strings:
 
@@ -231,7 +231,9 @@ rune.button.next: Weiter
 
 RUNE's own UI strings ("chrome": wizard buttons such as Next/Back/Cancel/Install, page titles, prompt texts, the summary edit-loop menu, standard progress and result messages) ship as **built-in English defaults** inside RUNE (`packages/engine/src/i18n/`) and are overridable per locale from the same overlay files under the reserved **`rune.` prefix** (`rune.button.next`, `rune.prompt.proceed`, …). The built-in catalogue is the key authority; RUNE ships English built-ins only — every other language for chrome strings comes from the manifest author's overlays. Unknown keys — manifest paths that do not exist or `rune.` keys not in the catalogue — are located validation errors (§4.3).
 
-**Locale selection:** `--locale TAG` > `RUNE_LOCALE` environment variable > system locale. The system locale is normalized to a tag (`de_DE.UTF-8` → `de-DE`); if no `locales/de-DE.yaml` exists, the language-only overlay `locales/de.yaml` is tried. The selected locale is recorded in the result file.
+**Locale selection:** `--locale TAG` > `RUNE_LOCALE` environment variable > system locale. Explicit values and overlay file names must be Unicode locale identifiers supported by Node's `Intl`; underscores are accepted as locale separators. `C` and `POSIX` explicitly select the built-in defaults; a non-empty `--locale` or `RUNE_LOCALE` choice therefore terminates the chain even when it selects those defaults. The system locale additionally has POSIX encoding and modifier suffixes removed before normalization (`de_DE.UTF-8` → `de-DE`); if no `locales/de-DE.yaml` exists, the language-only overlay `locales/de.yaml` is tried. The selected locale is recorded in the result file.
+
+`StringTable.locale` is the selected tag (`de-DE`, or `undefined` for the built-in defaults); `StringTable.overlayLocale` is the matched overlay file tag (`de`, or `undefined` when none matched) and may therefore be the language fallback.
 
 **Fallback chain, per string:** requested locale overlay → the manifest's own text (for manifest strings) / the English built-in (for chrome strings). Fallback is per key, never per file: a partial overlay is valid and fills the gaps from the defaults.
 
@@ -493,8 +495,9 @@ packages/
 │       │   └── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
 │       ├── i18n/
 │       │   ├── catalog.ts         # built-in English chrome strings (`rune.*` keys) — the key authority
-│       │   ├── loader.ts          # locales/<lang>.yaml discovery + overlay key validation
-│       │   └── resolve.ts         # locale selection (--locale > RUNE_LOCALE > system), fallback chain, Strings
+│       │   ├── locale.ts           # locale selection, normalization, and overlay discovery/matching
+│       │   ├── overlay.ts          # hardened YAML loading and localizable-key validation
+│       │   └── strings.ts          # per-key fallback resolution into the engine-owned StringTable
 │       ├── engine/
 │       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
 │       │   ├── context.ts         # built-in variable table and reference resolution; later: platform detection, placeholders, run id

@@ -533,6 +533,17 @@ describe('strings and theme', () => {
     expect(session.describe().steps[0]?.title).toBe('Installieren');
   });
 
+  it('ignores malformed locale claims unrelated to the selected fallback', async () => {
+    const path = fixture(BASE, {
+      'locales/de.yaml': 'steps.install.title: Installieren\n',
+      'locales/de--DE.yaml': 'steps.install.title: Ungueltig\n',
+    });
+
+    const session = await Session.open(path, { locale: 'de-DE', environment: {} });
+
+    expect(session.getStrings().stepTitle('install')).toBe('Installieren');
+  });
+
   it('hands back the gui block with absolute paths, or nothing', async () => {
     const plain = await Session.open(fixture(BASE), { environment: {} });
     expect(plain.getThemeConfig()).toEqual({});
@@ -664,9 +675,9 @@ describe('facade immutability', () => {
     ).toThrow(TypeError);
 
     const strings = session.getStrings();
-    expect(() =>
-      (strings.entries as Map<string, string>).set('steps.install.title', 'Corrupted title'),
-    ).toThrow(TypeError);
+    expect(() => {
+      (strings.entries as Record<string, string>)['steps.install.title'] = 'Corrupted title';
+    }).toThrow(TypeError);
 
     expect(session.plan().steps[0]).toMatchObject({
       title: 'Trusted step',

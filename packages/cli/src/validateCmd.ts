@@ -4,9 +4,9 @@
  * requested machine-readable-ish output and goes to stdout (§10).
  */
 
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
-import { discoverOverlays, formatLocation, loadOverlay, validateManifest } from '@rune/engine';
+import { formatLocation, validateManifest } from '@rune/engine';
 
 import { parsePlatform } from './args.js';
 import type { CliIo } from './io.js';
@@ -20,24 +20,13 @@ export async function validateCommand(
   parsePlatform(flags.platform);
   const absolute = resolve(manifestPath);
   const report = validateManifest(absolute);
-  const { manifest } = report;
-
-  // `validate` checks ALL overlays, not just the selected locale's: an author wants to know
-  // about a broken translation before a user in that locale does (§6.3, §7 stage 1).
-  const overlays = discoverOverlays(dirname(absolute));
-  for (const overlay of overlays) {
-    loadOverlay(overlay.path, overlay.locale, manifest);
-  }
+  const { locales, manifest } = report;
 
   io.stdout(
     `${manifestPath} is valid (schemaVersion ${manifest.schemaVersion}, ` +
       `product ${manifest.product.name} ${manifest.product.version})`,
   );
-  io.stdout(
-    overlays.length === 0
-      ? 'locales: none'
-      : `locales: ${overlays.map((overlay) => overlay.locale).join(', ')}`,
-  );
+  io.stdout(locales.length === 0 ? 'locales: none' : `locales: ${locales.join(', ')}`);
 
   if (report.environment.length === 0) {
     io.stdout('environment variables read: none');
