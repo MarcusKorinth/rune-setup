@@ -457,6 +457,8 @@ Contents:
 - **per input** — `{id, value, source, secret, enabled, ignored?}`: secret values always `null`; `enabled: false` for disabled inputs, whose `value` is the type's empty value; `ignored: "input disabled"` present only when a value was supplied for a disabled input, with `source` naming the layer that supplied it (provenance makes precedence — and what was discarded — auditable after the fact)
 - **per step** — `{id, title, state, exitCode, durationMs, command, skipReason, outputTail?}`: `title` localized, `id` never; command arrays passed through the masker; `outputTail` present **only** for `FAILED` steps — a list of the last 50 `{stream, line}` entries, already masked (§7)
 
+Input ids must be unique within `inputs`, and step ids must be unique within `steps`; the same id may appear once in each list.
+
 Dry-run writes `"dryRun": true` with per-step `state` `PENDING` or `SKIPPED` (no step ever reaches a running state), enabling plan diffing between commits.
 
 ### Logging and secret masking

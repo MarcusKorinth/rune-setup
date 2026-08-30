@@ -84,6 +84,16 @@ function forgedCounterResult(id: string): RunResult {
   return { ...result(id), stepsExecuted: 99 } as RunResult;
 }
 
+function forgedDuplicateInputIdResult(id: string): RunResult {
+  return {
+    ...result(id),
+    inputs: [
+      { id: SECRET_SENTINEL, value: 'first', source: 'set', secret: false, enabled: true },
+      { id: SECRET_SENTINEL, value: 'second', source: 'set', secret: false, enabled: true },
+    ],
+  } as RunResult;
+}
+
 function forgedContradictoryStepFieldsResult(id: string): RunResult {
   return {
     ...result(id),
@@ -226,6 +236,7 @@ describe('writeResult', () => {
         forgedCounterResult('invalid-counters'),
         forgedDisabledInputProvenanceResult('invalid-provenance'),
         forgedContradictoryStepFieldsResult('invalid-step-fields'),
+        forgedDuplicateInputIdResult('duplicate-input-id'),
       ]) {
         let caught: unknown;
         try {

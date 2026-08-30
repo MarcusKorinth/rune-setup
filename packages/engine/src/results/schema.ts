@@ -214,6 +214,30 @@ const resultV1ShapeSchema = z.discriminatedUnion('status', [
 ]);
 
 export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+  const inputIds = new Set<string>();
+  for (const [index, input] of result.inputs.entries()) {
+    if (inputIds.has(input.id)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['inputs', index, 'id'],
+        message: 'input ids must be unique',
+      });
+    }
+    inputIds.add(input.id);
+  }
+
+  const stepIds = new Set<string>();
+  for (const [index, step] of result.steps.entries()) {
+    if (stepIds.has(step.id)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['steps', index, 'id'],
+        message: 'step ids must be unique',
+      });
+    }
+    stepIds.add(step.id);
+  }
+
   const count = (state: RunResult['steps'][number]['state']): number =>
     result.steps.filter((step) => step.state === state).length;
   const expectedCounters = {

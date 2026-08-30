@@ -567,6 +567,51 @@ describe('resultJsonSchema', () => {
     }
   });
 
+  it('rejects duplicate input ids at the later id path', () => {
+    const base = result();
+    const parsed = resultV1Schema.safeParse(
+      result({ inputs: [...base.inputs, { ...base.inputs[0]! }] }),
+    );
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['inputs', base.inputs.length, 'id'] }),
+      );
+    }
+  });
+
+  it('rejects duplicate step ids at the later id path', () => {
+    const base = result();
+    const parsed = resultV1Schema.safeParse(
+      result({
+        stepsTotal: 2,
+        stepsExecuted: 2,
+        stepsSucceeded: 2,
+        steps: [...base.steps, { ...base.steps[0]! }],
+      }),
+    );
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['steps', base.steps.length, 'id'] }),
+      );
+    }
+  });
+
+  it('allows an input id to match a step id', () => {
+    const base = result();
+
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          inputs: [{ ...base.inputs[0]!, id: base.steps[0]!.id }, ...base.inputs.slice(1)],
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
   it('covers every public status, mode, platform, input source, and step state', () => {
     for (const status of RUN_STATUSES) {
       expect(resultV1Schema.safeParse(resultForStatus(status)).success).toBe(true);
@@ -823,7 +868,7 @@ describe('resultJsonSchema', () => {
 
   it('allows a cancelled result to retain an earlier failure and a not-run step', () => {
     const failed = resultWithSingleStepState('FAILED').steps[0]!;
-    const notRun = resultWithSingleStepState('NOT_RUN').steps[0]!;
+    const notRun = { ...resultWithSingleStepState('NOT_RUN').steps[0]!, id: 'not-run-step' };
 
     expect(
       resultV1Schema.safeParse(
@@ -843,11 +888,11 @@ describe('resultJsonSchema', () => {
 
   it('allows terminal step states on session error results', () => {
     const steps = [
-      resultWithSingleStepState('SUCCEEDED').steps[0]!,
-      resultWithSingleStepState('FAILED').steps[0]!,
-      resultWithSingleStepState('CANCELLED').steps[0]!,
-      resultWithSingleStepState('SKIPPED').steps[0]!,
-      resultWithSingleStepState('NOT_RUN').steps[0]!,
+      { ...resultWithSingleStepState('SUCCEEDED').steps[0]!, id: 'succeeded-step' },
+      { ...resultWithSingleStepState('FAILED').steps[0]!, id: 'failed-step' },
+      { ...resultWithSingleStepState('CANCELLED').steps[0]!, id: 'cancelled-step' },
+      { ...resultWithSingleStepState('SKIPPED').steps[0]!, id: 'skipped-step' },
+      { ...resultWithSingleStepState('NOT_RUN').steps[0]!, id: 'not-run-step' },
     ];
     const base = result({
       stepsTotal: 5,
