@@ -597,6 +597,26 @@ describe('rune run --gui shell version handshake', () => {
     }
   });
 
+  it.runIf(process.platform === 'win32')(
+    'contains a taskkill spawn error while cancelling the version probe',
+    async () => {
+      const probe = waitingProbe(3131);
+      const taskkill = new EventEmitter();
+      spawnMock
+        .mockImplementationOnce(() => probe.child)
+        .mockImplementationOnce(() => taskkill as ReturnType<typeof spawn>);
+
+      const launch = launchGui('installer.yaml', {}, capture(), interaction);
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+      process.emit('SIGTERM');
+
+      expect(() => taskkill.emit('error', new Error('taskkill unavailable'))).not.toThrow();
+      probe.close('', null);
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+    },
+  );
+
   it('does not launch the workflow when cancellation wins after the probe closes', async () => {
     const probe = waitingProbe();
     const forceExit = vi.fn();
@@ -734,4 +754,27 @@ describe('rune run --gui shell version handshake', () => {
       await launch.catch(() => undefined);
     }
   });
+
+  it.runIf(process.platform === 'win32')(
+    'contains a taskkill spawn error while cancelling the running shell',
+    async () => {
+      const shell = waitingProcess(4242);
+      const taskkill = new EventEmitter();
+      spawnMock
+        .mockImplementationOnce(() =>
+          probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+        )
+        .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>)
+        .mockImplementationOnce(() => taskkill as ReturnType<typeof spawn>);
+
+      const launch = launchGui('installer.yaml', {}, capture(), interaction);
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+
+      process.emit('SIGTERM');
+
+      expect(() => taskkill.emit('error', new Error('taskkill unavailable'))).not.toThrow();
+      shell.emit('close', 6);
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+    },
+  );
 });

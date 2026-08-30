@@ -232,10 +232,12 @@ export async function launchGui(
     probeTerminationSent = true;
     if (process.platform === 'win32') {
       // The probe has no cooperative session; terminate its complete process tree.
-      spawn('taskkill', ['/PID', String(probeChild.pid), '/T', '/F'], {
+      const taskkill = spawn('taskkill', ['/PID', String(probeChild.pid), '/T', '/F'], {
         stdio: 'ignore',
         shell: false,
       });
+      // Cancellation is already in progress; a failed best-effort terminator must not crash us.
+      taskkill.once('error', () => undefined);
       return;
     }
     try {
@@ -248,7 +250,12 @@ export async function launchGui(
     if (child?.pid === undefined) return;
     if (process.platform === 'win32') {
       // A close request, not a kill: no /F (§9.4).
-      spawn('taskkill', ['/PID', String(child.pid)], { stdio: 'ignore', shell: false });
+      const taskkill = spawn('taskkill', ['/PID', String(child.pid)], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      // Cancellation is already in progress; a failed best-effort terminator must not crash us.
+      taskkill.once('error', () => undefined);
     } else {
       child.kill('SIGTERM');
     }
