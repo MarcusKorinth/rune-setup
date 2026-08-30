@@ -25,7 +25,7 @@ import type { RunMode, RunResult, RunStatus, StringTable } from '@rune/engine';
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
 import { Prompter, promptForInputs, summaryLoop, type Interaction } from './prompt.js';
-import { progressObserver, renderOutcome, renderPlan } from './render.js';
+import { progressObserver, renderOutcome, renderPlan, renderWarnings } from './render.js';
 
 export interface RunFlags {
   readonly nonInteractive?: boolean | undefined;
@@ -71,6 +71,7 @@ export async function runCommand(
     if (prompter !== undefined) {
       await promptForInputs(session, prompter);
       if (flags.dryRun !== true && (await summaryLoop(session, prompter, io)) === 'cancel') {
+        renderWarnings(session.warnings(), strings, io);
         throw new CancelledError(strings.chrome('rune.run.cancelledAtSummary'));
       }
       // The prompt phase is over; the input stream is released before anything executes.

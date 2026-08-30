@@ -84,6 +84,13 @@ export function progressObserver(strings: StringTable, io: CliIo): (event: RunEv
   };
 }
 
+/** The §5/§10 resolution warnings, on stderr. */
+export function renderWarnings(warnings: readonly string[], strings: StringTable, io: CliIo): void {
+  for (const warning of warnings) {
+    io.stderr(strings.chrome('rune.warning.message', { warning }));
+  }
+}
+
 /** The closing summary and the §10 warnings, on stderr. */
 export function renderOutcome(
   result: RunResult,
@@ -91,9 +98,7 @@ export function renderOutcome(
   strings: StringTable,
   io: CliIo,
 ): void {
-  for (const warning of warnings) {
-    io.stderr(strings.chrome('rune.warning.message', { warning }));
-  }
+  renderWarnings(warnings, strings, io);
   if (!result.dryRun && result.nothingExecuted) {
     io.stderr(
       strings.chrome('rune.warning.message', {

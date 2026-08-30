@@ -560,6 +560,67 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(written.inputs.map((input) => input.id)).toEqual(['installDatabase']);
   });
 
+  it.each([
+    { label: 'with a result', result: true },
+    { label: 'without a result', result: false },
+  ])('renders final resolution warnings once on summary cancel $label', async ({ result }) => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    default: false',
+      '  databasePort:',
+      '    type: text',
+      '    when: "${installDatabase}"',
+      'steps:',
+      '  - id: pending',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+    ]);
+    const io = capture();
+    const interaction = scripted(['c']);
+    const resultArgs = result ? ['--result', '-'] : [];
+
+    const code = await run(
+      ['run', path, '--set', 'databasePort=9999', ...resultArgs],
+      io,
+      interaction,
+    );
+
+    expect(code).toBe(6);
+    const diagnostics = io.err.join('\n');
+    expect(
+      diagnostics.match(
+        /databasePort was set from --set, but its condition is false — the value is ignored/g,
+      ) ?? [],
+    ).toHaveLength(1);
+    expect(diagnostics).toContain('cancelled at the summary');
+    expect(diagnostics).not.toContain('No step needed to run.');
+
+    if (result) {
+      const written = JSON.parse(io.out.join('\n')) as {
+        status: string;
+        exitCode: number;
+        inputs: readonly { id: string; enabled: boolean; ignored?: string }[];
+      };
+      expect(written).toMatchObject({ status: 'cancelled', exitCode: 6 });
+      expect(written.inputs).toContainEqual(
+        expect.objectContaining({
+          id: 'databasePort',
+          enabled: false,
+          ignored: 'input disabled',
+        }),
+      );
+    } else {
+      expect(io.out).toEqual([]);
+    }
+  });
+
   it('uses locale chrome for the interactive summary and summary cancellation', async () => {
     const path = fixture(MANIFEST);
     const resultPath = join(path, '..', 'result.json');
