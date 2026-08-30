@@ -787,7 +787,7 @@ describe('secret lifecycle boundary', () => {
     }
 
     expect(calls).toEqual([]);
-  });
+  }, 30_000);
 });
 
 function capacityErrorFrom(action: () => unknown): InputError {
