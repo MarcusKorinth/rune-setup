@@ -366,13 +366,28 @@ function redactIssue(issue: RuneIssue, secrets: SecretRegistry): RuneIssue {
   return {
     ...issue,
     message: secrets.mask(issue.message),
+    location: redactLocation(issue.location, secrets),
   };
 }
 
+/** Redacts a source name without changing or retaining the caller-owned location object. */
+function redactLocation(
+  location: Location | undefined,
+  secrets: SecretRegistry,
+): Location | undefined {
+  return location === undefined
+    ? undefined
+    : {
+        file: secrets.mask(location.file),
+        line: location.line,
+        column: location.column,
+      };
+}
+
 /**
- * Sanitizes a deliberate resolver error without changing its class, code, location, cause
- * chain, or exit-code identity. Errors are newly created during this resolution attempt, so
- * editing their reporting fields cannot mutate caller-owned state.
+ * Sanitizes a deliberate resolver error in place, preserving its class, code, cause chain,
+ * property descriptors, object identity, and exit-code identity. Reporting locations are
+ * replaced with redacted copies, so caller-owned location objects remain untouched.
  */
 function redactRuneError(error: RuneError, secrets: SecretRegistry): RuneError {
   redactError(error, secrets, new Set());
@@ -391,6 +406,10 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   }
 
   if (error instanceof RuneError) {
+    Object.defineProperty(error, 'location', {
+      ...Object.getOwnPropertyDescriptor(error, 'location'),
+      value: redactLocation(error.location, secrets),
+    });
     Object.defineProperty(error, 'issues', {
       ...Object.getOwnPropertyDescriptor(error, 'issues'),
       value: error.issues.map((issue) => redactIssue(issue, secrets)),

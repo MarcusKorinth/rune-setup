@@ -93,11 +93,11 @@ function values(file: string, entries: Record<string, unknown>): ValuesDocument 
 }
 
 /** A parsed values document with its real source locations. */
-function valuesFromFile(contents: string): ValuesDocument {
+function valuesFromFile(contents: string, displayName = 'v.yaml'): ValuesDocument {
   const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
   const path = join(directory, 'values.yaml');
   writeFileSync(path, contents);
-  return parseValuesFile(path, 'v.yaml');
+  return parseValuesFile(path, displayName);
 }
 
 function rejectionFor(resolution: Resolution, id: string): InputRejection {
@@ -1259,6 +1259,68 @@ describe('secrets', () => {
     expect(secrets.mask(after)).toBe(after);
   });
 
+  it('redacts active and staged secrets from every located input-error surface', () => {
+    const active = 'F040-ACTIVE-LOCATION-SECRET';
+    const staged = 'F040-STAGED-LOCATION-SECRET';
+    const displayName = `${active}-${staged}.yaml`;
+    const withLocatedInvalidValue = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const document = valuesFromFile(`token: ${staged}\nnote: invalid\n`, displayName);
+    const secrets = new SecretRegistry();
+    secrets.register(active);
+    const originalFromIssues = InputError.fromIssues;
+    let constructed: InputError | undefined;
+    let locationDescriptor: PropertyDescriptor | undefined;
+    let issuesDescriptor: PropertyDescriptor | undefined;
+    const fromIssues = vi.spyOn(InputError, 'fromIssues').mockImplementation((code, issues) => {
+      const error = originalFromIssues(code, issues);
+      constructed = error;
+      locationDescriptor = Object.getOwnPropertyDescriptor(error, 'location');
+      issuesDescriptor = Object.getOwnPropertyDescriptor(error, 'issues');
+      return error;
+    });
+    let thrown: unknown;
+    try {
+      resolve(withLocatedInvalidValue, { values: [document], secrets });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      fromIssues.mockRestore();
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error).toBe(constructed);
+    expect(error.name).toBe('InputError');
+    expect(error.code).toBe('RUNE-202');
+    expect(exitCodeFor(error)).toBe(4);
+    expect(error.location).toEqual({ file: '***-***.yaml', line: 2, column: 1 });
+    expect(error.issues[0]?.location).toEqual({ file: '***-***.yaml', line: 2, column: 1 });
+    expect({
+      ...Object.getOwnPropertyDescriptor(error, 'location'),
+      value: locationDescriptor?.value,
+    }).toEqual(locationDescriptor);
+    expect({
+      ...Object.getOwnPropertyDescriptor(error, 'issues'),
+      value: issuesDescriptor?.value,
+    }).toEqual(issuesDescriptor);
+    for (const sentinel of [active, staged]) {
+      expect(error.message).not.toContain(sentinel);
+      expect(error.stack).not.toContain(sentinel);
+      expect(JSON.stringify(error)).not.toContain(sentinel);
+      expect(inspect(error)).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask(active)).toBe('***');
+    expect(secrets.mask(staged)).toBe(staged);
+  });
+
   it('redacts collected problems, issue aliases and candidate snapshots', () => {
     const before = 'F030-COLLECT-BEFORE';
     const after = 'F030-COLLECT-AFTER';
@@ -1305,6 +1367,53 @@ describe('secrets', () => {
     expect(secrets.mask(existing)).toBe(existing);
     expect(secrets.mask(before)).toBe('***');
     expect(secrets.mask(after)).toBe('***');
+  });
+
+  it('redacts collected issue locations without mutating their values document', () => {
+    const active = 'F040-COLLECT-ACTIVE-SECRET';
+    const staged = 'F040-COLLECT-STAGED-SECRET';
+    const displayName = `${active}-${staged}.yaml`;
+    const withLocatedRejection = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const document = valuesFromFile(`token: ${staged}\nnote: invalid\n`, displayName);
+    const sourceMap = document.sourceMap;
+    const originalLocation = document.sourceMap.best(['note']);
+    if (originalLocation === undefined) {
+      throw new Error('expected the parsed value to have a source location');
+    }
+    Object.freeze(originalLocation);
+    const secrets = new SecretRegistry();
+    secrets.register(active);
+
+    const resolution = resolve(withLocatedRejection, {
+      values: [document],
+      invalidValues: 'collect',
+      secrets,
+    });
+    const issue = resolution.problems[0];
+    const rejection = rejectionFor(resolution, 'note');
+
+    expect(issue?.location).toEqual({ file: '***-***.yaml', line: 2, column: 1 });
+    expect(issue?.location).not.toBe(originalLocation);
+    expect(rejection.issue).toBe(issue);
+    expect(rejection.issue.location).toBe(issue?.location);
+    expect(document.file).toBe(displayName);
+    expect(document.sourceMap).toBe(sourceMap);
+    expect(document.sourceMap.best(['note'])).toBe(originalLocation);
+    expect(originalLocation).toEqual({ file: displayName, line: 2, column: 1 });
+    for (const sentinel of [active, staged]) {
+      expect(JSON.stringify(resolution)).not.toContain(sentinel);
+      expect(inspect(resolution)).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask(active)).toBe(active);
+    expect(secrets.mask(staged)).toBe('***');
   });
 
   it('leaves a prefilled registry unchanged when a later default cannot resolve', () => {
@@ -1354,6 +1463,68 @@ describe('secrets', () => {
     expect(exitCodeFor(error)).toBe(5);
     expect(error.cause).toBeInstanceOf(ResolutionError);
     expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('redacts a recursive RuneError cause location without replacing the cause', () => {
+    const sentinel = 'F040-RECURSIVE-LOCATION-SECRET';
+    const withLocatedCause = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  directory:',
+      '    type: directory',
+      '    default: "${env.TRIGGER}"',
+    );
+    const originalLocation = Object.freeze({
+      file: `existing-secret-${sentinel}.yaml`,
+      line: 7,
+      column: 11,
+    });
+    const cause = new ResolutionError('RUNE-301', `cannot resolve ${sentinel}`, {
+      location: originalLocation,
+    });
+    const causeLocationDescriptor = Object.getOwnPropertyDescriptor(cause, 'location');
+    const baseContext = contextFor(withLocatedCause);
+    const context: RuntimeContext = {
+      ...baseContext,
+      valueOf: () => {
+        throw cause;
+      },
+    };
+    const secrets = existingRegistry();
+    let thrown: unknown;
+    try {
+      resolveInputs({
+        manifest: withLocatedCause,
+        context,
+        overrides: new Map([['token', sentinel]]),
+        secrets,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    const error = thrown as ResolutionError;
+    expect(error.cause).toBe(cause);
+    expect(cause).toBeInstanceOf(ResolutionError);
+    expect(cause.name).toBe('ResolutionError');
+    expect(cause.code).toBe('RUNE-301');
+    expect(exitCodeFor(cause)).toBe(5);
+    expect(cause.location).toEqual({ file: '***-***.yaml', line: 7, column: 11 });
+    expect(cause.issues[0]?.location).toEqual({ file: '***-***.yaml', line: 7, column: 11 });
+    expect({
+      ...Object.getOwnPropertyDescriptor(cause, 'location'),
+      value: causeLocationDescriptor?.value,
+    }).toEqual(causeLocationDescriptor);
+    expect(originalLocation).toEqual({
+      file: `existing-secret-${sentinel}.yaml`,
+      line: 7,
+      column: 11,
+    });
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain('existing-secret');
     expectExistingRegistryUnchanged(secrets);
   });
 
