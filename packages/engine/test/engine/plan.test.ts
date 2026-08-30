@@ -12,7 +12,7 @@ import {
   type ExecutionPlan,
   type PlanOptions,
 } from '../../src/engine/plan.js';
-import { isSecretString, MASK } from '../../src/engine/secrets.js';
+import { isSecretString, MASK, secretValuesEqual } from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
@@ -565,6 +565,55 @@ describe('secrets in the plan', () => {
       'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
     ]);
     expect(plan.steps[0]?.state).toBe('PENDING');
+  });
+
+  it('keeps the warning policy for an unchanged absolute secret cwd', () => {
+    const root = hostPlatform() === 'windows' ? 'C:\\' : '/';
+    const { plan, resolution } = planFor(
+      [
+        'inputs:',
+        '  workingDirectory:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      cwd: "${workingDirectory}"',
+      ],
+      { platform: hostPlatform(), overrides: new Map([['workingDirectory', root]]) },
+    );
+
+    expect(resolution.warnings).toEqual([
+      'workingDirectory cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    const step = plan.steps[0];
+    expect(step?.state).toBe('PENDING');
+    expect(step?.state === 'PENDING' && secretValuesEqual(step.command.cwd, root)).toBe(true);
+  });
+
+  it('keeps the warning policy when a short relative secret cwd becomes maskable', () => {
+    const relative = 'abc';
+    const expected = resolvePath('/project', `.${sep}${relative}`);
+    const { plan, resolution } = planFor(
+      [
+        'inputs:',
+        '  workingDirectory:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      cwd: "${workingDirectory}"',
+      ],
+      { platform: hostPlatform(), overrides: new Map([['workingDirectory', relative]]) },
+    );
+
+    expect(resolution.warnings).toEqual([
+      'workingDirectory cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    const step = plan.steps[0];
+    expect(step?.state).toBe('PENDING');
+    expect(step?.state === 'PENDING' && secretValuesEqual(step.command.cwd, expected)).toBe(true);
   });
 
   it('keeps resolved and rendered secrets wrapped, so the plan serializes as ***', () => {

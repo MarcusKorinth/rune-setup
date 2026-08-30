@@ -85,12 +85,15 @@ function hasMinimumMaskableLength(value: string): boolean {
 function secretFromResolver(
   resolve: () => string,
   registry?: SecretRegistry,
-  requireCompleteRegistration = false,
+  requiresCompleteRegistration?: (resolved: string) => boolean,
 ): SecretString {
   const secret = Object.freeze(new OpaqueSecretString());
   SECRET_VALUES.set(secret, resolve);
-  if (registry !== undefined && !registry.register(resolve()) && requireCompleteRegistration) {
-    throw new InputError('RUNE-202', DERIVED_SECRET_MASKING_ERROR_MESSAGE);
+  if (registry !== undefined) {
+    const resolved = resolve();
+    if (!registry.register(resolved) && requiresCompleteRegistration?.(resolved) === true) {
+      throw new InputError('RUNE-202', DERIVED_SECRET_MASKING_ERROR_MESSAGE);
+    }
   }
   return secret;
 }
@@ -144,7 +147,7 @@ export function resolveSecretPathFrom(
   return secretFromResolver(
     () => resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
     registry,
-    true,
+    (resolved) => resolved !== resolveSecret(secret),
   );
 }
 
