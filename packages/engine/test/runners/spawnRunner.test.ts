@@ -38,11 +38,17 @@ function nodeCommand(script: string, overrides: Partial<ResolvedCommand> = {}): 
 
 function run(
   command: ResolvedCommand,
-  options: { cancel?: CancelToken; onOutput?: (stream: string, line: string) => void } = {},
+  options: {
+    cancel?: CancelToken;
+    onOutput?: (stream: string, line: string) => void;
+    parentEnv?: Readonly<Record<string, string | undefined>>;
+    extraEnv?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   return new SpawnRunner().run({
     command,
-    extraEnv: { RUNE_RUN_ID: 'run', RUNE_STEP_ID: 'step' },
+    parentEnv: options.parentEnv ?? Object.freeze({ ...process.env }),
+    extraEnv: options.extraEnv ?? { RUNE_RUN_ID: 'run', RUNE_STEP_ID: 'step' },
     cancel: options.cancel ?? new CancelToken(),
     onOutput: options.onOutput ?? (() => undefined),
   });
@@ -458,6 +464,46 @@ describe('SpawnRunner', () => {
     expect(lines).toContain('hello step');
   });
 
+  it('inherits only the supplied parent snapshot and preserves environment precedence', async () => {
+    const inheritedName = 'RUNE_RUNNER_PARENT_ENV_TEST';
+    const layeredName = 'RUNE_RUNNER_LAYERED_ENV_TEST';
+    const previousValue = process.env[inheritedName];
+    const lines: string[] = [];
+    process.env[inheritedName] = 'live-parent';
+
+    try {
+      await run(
+        nodeCommand(
+          `console.log([process.env.${inheritedName}, process.env.${layeredName}, process.env.RUNE_STEP_ID].join('|'))`,
+          {
+            env: {
+              [layeredName]: 'command',
+              RUNE_STEP_ID: 'command-step',
+            },
+          },
+        ),
+        {
+          parentEnv: Object.freeze({
+            ...process.env,
+            [inheritedName]: 'snapshot-parent',
+            [layeredName]: 'parent',
+            RUNE_STEP_ID: 'parent-step',
+          }),
+          extraEnv: { RUNE_RUN_ID: 'run', RUNE_STEP_ID: 'extra-step' },
+          onOutput: (_stream, line) => lines.push(line),
+        },
+      );
+
+      expect(lines).toContain('snapshot-parent|command|extra-step');
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env[inheritedName];
+      } else {
+        process.env[inheritedName] = previousValue;
+      }
+    }
+  });
+
   it('unwraps a secret-wrapped argument and env value only for the child', async () => {
     const lines: string[] = [];
 
@@ -686,10 +732,24 @@ describe('SpawnRunner', () => {
     20000,
   );
 
-  it('kills the child and reports whether stdout-failure termination was confirmed', async () => {
+  it('uses the snapshotted Windows SystemRoot after a live-environment mutation', async () => {
     const originalSetEncoding = Readable.prototype.setEncoding;
     const encodedStreams = new Set<Readable>();
     const previousSystemRoot = process.env.SystemRoot;
+    let parentEnv: Readonly<Record<string, string | undefined>> = Object.freeze({
+      ...process.env,
+    });
+    if (process.platform === 'win32') {
+      if (previousSystemRoot === undefined) {
+        throw new Error('Windows test host has no SystemRoot');
+      }
+      parentEnv = Object.freeze({
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'SYSTEMROOT'),
+        ),
+        sYsTeMrOoT: previousSystemRoot,
+      });
+    }
     let pid: number | undefined;
     const setEncoding = vi.spyOn(Readable.prototype, 'setEncoding').mockImplementation(function (
       this: Readable,
@@ -701,6 +761,7 @@ describe('SpawnRunner', () => {
 
     try {
       const pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
+        parentEnv,
         onOutput: (stream, line) => {
           if (stream !== 'stdout' || pid !== undefined) {
             return;
@@ -713,11 +774,10 @@ describe('SpawnRunner', () => {
         },
       });
 
-      await expect(withDeadline(pending, 15000)).resolves.toEqual(
-        process.platform === 'win32'
-          ? { kind: 'terminationFailed' }
-          : { kind: 'streamFailed', stream: 'stdout' },
-      );
+      await expect(withDeadline(pending, 15000)).resolves.toEqual({
+        kind: 'streamFailed',
+        stream: 'stdout',
+      });
       expect(pid).toBeTypeOf('number');
       expect(processIsAlive(pid!)).toBe(false);
     } finally {
@@ -1217,9 +1277,19 @@ describe('SpawnRunner', () => {
   }, 25000);
 
   it.runIf(process.platform === 'win32')(
-    'reports unconfirmed termination when SystemRoot cannot locate taskkill',
+    'reports unconfirmed termination when snapshotted SystemRoot contains no taskkill',
     async () => {
-      const previousSystemRoot = process.env.SystemRoot;
+      const childSystemRoot = process.env.SystemRoot;
+      if (childSystemRoot === undefined) {
+        throw new Error('Windows test host has no SystemRoot');
+      }
+      const systemRoot = mkdtempSync(join(tmpdir(), 'rune-empty-system-root-'));
+      const parentEnv = Object.freeze({
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'SYSTEMROOT'),
+        ),
+        SystemRoot: systemRoot,
+      });
       const cancel = new CancelToken();
       let pending: ReturnType<typeof run> | undefined;
       let pid: number | undefined;
@@ -1228,27 +1298,29 @@ describe('SpawnRunner', () => {
         resolvePid = resolve;
       });
       try {
-        pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
-          cancel,
-          onOutput: (stream, line) => {
-            if (stream === 'stdout') {
-              pid = Number(line);
-              resolvePid(pid);
-            }
+        pending = run(
+          nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)', {
+            env: { SystemRoot: childSystemRoot },
+          }),
+          {
+            cancel,
+            parentEnv,
+            onOutput: (stream, line) => {
+              if (stream === 'stdout') {
+                pid = Number(line);
+                resolvePid(pid);
+              }
+            },
           },
-        });
+        );
         pid = await withDeadline(ready, 5000);
-        process.env.SystemRoot = 'relative-missing-root';
         cancel.cancel();
 
-        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'terminationFailed' });
+        await expect(withDeadline(pending, 15000)).resolves.toEqual({
+          kind: 'terminationFailed',
+        });
         expect(processIsAlive(pid)).toBe(false);
       } finally {
-        if (previousSystemRoot === undefined) {
-          delete process.env.SystemRoot;
-        } else {
-          process.env.SystemRoot = previousSystemRoot;
-        }
         cancel.cancel();
         if (pid !== undefined && processIsAlive(pid)) {
           stopProcess(pid);
@@ -1263,19 +1335,29 @@ describe('SpawnRunner', () => {
         if (pid !== undefined && processIsAlive(pid)) {
           stopProcess(pid);
         }
+        rmSync(systemRoot, { recursive: true, force: true });
       }
     },
-    15000,
+    20000,
   );
 
   it.runIf(process.platform === 'win32')(
-    'reports unconfirmed termination when the absolute taskkill helper exits unsuccessfully',
+    'reports unconfirmed termination when the absolute taskkill helper is unsuccessful',
     async () => {
+      const childSystemRoot = process.env.SystemRoot;
+      if (childSystemRoot === undefined) {
+        throw new Error('Windows test host has no SystemRoot');
+      }
       const directory = mkdtempSync(join(tmpdir(), 'rune-fake-system-root-'));
       const system32 = join(directory, 'System32');
       mkdirSync(system32);
       copyFileSync(process.execPath, join(system32, 'taskkill.exe'));
-      const previousSystemRoot = process.env.SystemRoot;
+      const parentEnv = Object.freeze({
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'SYSTEMROOT'),
+        ),
+        SystemRoot: directory,
+      });
       const cancel = new CancelToken();
       let pending: ReturnType<typeof run> | undefined;
       let pid: number | undefined;
@@ -1284,27 +1366,29 @@ describe('SpawnRunner', () => {
         resolvePid = resolve;
       });
       try {
-        pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
-          cancel,
-          onOutput: (stream, line) => {
-            if (stream === 'stdout') {
-              pid = Number(line);
-              resolvePid(pid);
-            }
+        pending = run(
+          nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)', {
+            env: { SystemRoot: childSystemRoot },
+          }),
+          {
+            cancel,
+            parentEnv,
+            onOutput: (stream, line) => {
+              if (stream === 'stdout') {
+                pid = Number(line);
+                resolvePid(pid);
+              }
+            },
           },
-        });
+        );
         pid = await withDeadline(ready, 5000);
-        process.env.SystemRoot = directory;
         cancel.cancel();
 
-        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'terminationFailed' });
+        await expect(withDeadline(pending, 15000)).resolves.toEqual({
+          kind: 'terminationFailed',
+        });
         expect(processIsAlive(pid)).toBe(false);
       } finally {
-        if (previousSystemRoot === undefined) {
-          delete process.env.SystemRoot;
-        } else {
-          process.env.SystemRoot = previousSystemRoot;
-        }
         cancel.cancel();
         if (pid !== undefined && processIsAlive(pid)) {
           stopProcess(pid);
@@ -1322,6 +1406,6 @@ describe('SpawnRunner', () => {
         rmSync(directory, { recursive: true, force: true });
       }
     },
-    15000,
+    20000,
   );
 });

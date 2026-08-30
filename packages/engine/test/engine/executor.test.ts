@@ -128,6 +128,50 @@ describe('a run that succeeds', () => {
     expect(seen).toEqual(['first', 'second']);
   });
 
+  it('shares one frozen parent-environment snapshot across the complete run', async () => {
+    const { plan } = setup(TWO_STEPS);
+    const environmentName = 'RUNE_EXECUTOR_PARENT_ENV_SNAPSHOT_TEST';
+    const snapshotValue = 'captured-before-run-started';
+    const previousValue = process.env[environmentName];
+    const events: RunEvent[] = [];
+    const parentEnvironments: SpawnRequest['parentEnv'][] = [];
+    process.env[environmentName] = snapshotValue;
+
+    try {
+      const result = await executeRun({
+        plan,
+        observer: (event) => {
+          events.push(event);
+          if (event.kind === 'runStarted') {
+            process.env[environmentName] = 'changed-by-observer';
+          }
+        },
+        runner: stubRunner((request) => {
+          parentEnvironments.push(request.parentEnv);
+          expect(Object.isFrozen(request.parentEnv)).toBe(true);
+          expect(request.parentEnv[environmentName]).toBe(snapshotValue);
+          expect(() => {
+            (request.parentEnv as Record<string, string | undefined>)[environmentName] =
+              'changed-by-runner';
+          }).toThrow(TypeError);
+          process.env[environmentName] = `changed-between-steps-${parentEnvironments.length}`;
+          return { kind: 'exited', exitCode: 0 };
+        }),
+      });
+
+      expect(parentEnvironments).toHaveLength(2);
+      expect(parentEnvironments[1]).toBe(parentEnvironments[0]);
+      expect(process.env[environmentName]).toBe('changed-between-steps-2');
+      expect(JSON.stringify({ events, result })).not.toContain(snapshotValue);
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env[environmentName];
+      } else {
+        process.env[environmentName] = previousValue;
+      }
+    }
+  });
+
   it('freezes every event and the complete returned result graph', async () => {
     const { plan } = setup(FROZEN_RESULT_STEP);
     const events: RunEvent[] = [];

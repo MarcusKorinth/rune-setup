@@ -10,6 +10,8 @@ import type { CancelToken } from '../engine/cancel.js';
 
 export interface SpawnRequest {
   readonly command: ResolvedCommand;
+  /** One frozen parent-environment snapshot shared by every step in this run. */
+  readonly parentEnv: Readonly<Record<string, string | undefined>>;
   /** Reserved variables every child receives (§8). */
   readonly extraEnv: Readonly<Record<string, string>>;
   /**

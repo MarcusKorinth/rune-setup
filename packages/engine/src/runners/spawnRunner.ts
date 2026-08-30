@@ -114,7 +114,7 @@ export class SpawnRunner implements Runner {
           commandEnv[name] = reveal(value);
         }
         const env = mergeSpawnEnvironment(
-          process.env,
+          request.parentEnv,
           commandEnv,
           request.extraEnv,
           process.platform,
@@ -178,7 +178,7 @@ export class SpawnRunner implements Runner {
         terminationCause = cause;
         clearRunTimeout();
         terminationTask = (async () => {
-          const terminationConfirmed = await terminateTree(child);
+          const terminationConfirmed = await terminateTree(child, request.parentEnv);
           if (!childClosed) {
             await waitForCompletion(childClosePromise, CHILD_CLOSE_TIMEOUT_MS);
           }
@@ -249,7 +249,10 @@ async function classifyStartFailure(error: Error, cwd: string): Promise<StartFai
 }
 
 /** Terminates the platform process tree and resolves only after the kill operation is complete. */
-async function terminateTree(child: ChildProcess): Promise<boolean> {
+async function terminateTree(
+  child: ChildProcess,
+  parentEnv: Readonly<Record<string, string | undefined>>,
+): Promise<boolean> {
   const { pid } = child;
   if (pid === undefined) {
     return false;
@@ -257,7 +260,7 @@ async function terminateTree(child: ChildProcess): Promise<boolean> {
 
   let confirmed: boolean;
   if (process.platform === 'win32') {
-    confirmed = await runTaskkill(pid);
+    confirmed = await runTaskkill(pid, parentEnv);
   } else {
     confirmed = await terminateProcessGroup(pid);
   }
@@ -268,8 +271,11 @@ async function terminateTree(child: ChildProcess): Promise<boolean> {
 }
 
 /** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
-function runTaskkill(pid: number): Promise<boolean> {
-  const systemRoot = process.env.SystemRoot;
+function runTaskkill(
+  pid: number,
+  parentEnv: Readonly<Record<string, string | undefined>>,
+): Promise<boolean> {
+  const systemRoot = windowsEnvironmentValue(parentEnv, 'SystemRoot');
   if (systemRoot === undefined || systemRoot.length === 0 || !win32.isAbsolute(systemRoot)) {
     return Promise.resolve(false);
   }
@@ -280,6 +286,7 @@ function runTaskkill(pid: number): Promise<boolean> {
       win32.join(systemRoot, 'System32', 'taskkill.exe'),
       ['/PID', String(pid), '/T', '/F'],
       {
+        env: parentEnv,
         stdio: 'ignore',
         shell: false,
       },
@@ -289,6 +296,19 @@ function runTaskkill(pid: number): Promise<boolean> {
   }
 
   return waitForTaskkill(taskkill);
+}
+
+function windowsEnvironmentValue(
+  environment: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string | undefined {
+  const foldedName = name.toUpperCase();
+  for (const [candidate, value] of Object.entries(environment)) {
+    if (candidate.toUpperCase() === foldedName) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 /** @internal Waits for the Windows tree-kill helper without trusting it to terminate. */

@@ -73,6 +73,9 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   let wasCancelled = false;
   let fatalTerminationFailure = false;
 
+  const parentEnv: Readonly<Record<string, string | undefined>> = Object.freeze({
+    ...process.env,
+  });
   emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
   wasCancelled = cancel.isCancelled;
 
@@ -135,6 +138,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       outcome = await runner
         .run({
           command: step.command,
+          parentEnv,
           extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
           cancel,
           onOutput: (stream, rawLine) => {
