@@ -6,9 +6,22 @@
  * no engine object crosses at all.
  */
 
-import { MASK, isSecretString, type ExecutionPlan, type ResolvedCommand } from '@rune/engine';
+import { pathToFileURL } from 'node:url';
 
-import type { BridgePlan, BridgePlannedCommand, BridgePlannedStep } from '../preload/types.js';
+import {
+  MASK,
+  isSecretString,
+  type ExecutionPlan,
+  type ResolvedCommand,
+  type ThemeConfig,
+} from '@rune/engine';
+
+import type {
+  BridgePlan,
+  BridgePlannedCommand,
+  BridgePlannedStep,
+  BridgeTheme,
+} from '../preload/types.js';
 
 export function project<T>(value: T, mask: (text: string) => string = (text) => text): unknown {
   if (value === undefined) {
@@ -50,6 +63,18 @@ export function projectPlan(plan: ExecutionPlan, mask: (text: string) => string)
 
   // project() keeps the ordinary-string masking belt and proves the return is plain JSON data.
   return project(projected, mask) as BridgePlan;
+}
+
+/** Keeps the engine path-based while giving the sandboxed renderer canonical asset URLs. */
+export function projectTheme(theme: ThemeConfig): BridgeTheme {
+  const fileUrl = (path: string): string => pathToFileURL(path).href;
+  return {
+    ...(theme.accentColor === undefined ? {} : { accentColor: theme.accentColor }),
+    ...(theme.logo === undefined ? {} : { logo: fileUrl(theme.logo) }),
+    ...(theme.banner === undefined ? {} : { banner: fileUrl(theme.banner) }),
+    ...(theme.theme === undefined ? {} : { theme: fileUrl(theme.theme) }),
+    ...(theme.windowTitle === undefined ? {} : { windowTitle: theme.windowTitle }),
+  };
 }
 
 function projectCommand(command: ResolvedCommand): BridgePlannedCommand {

@@ -1,6 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +18,11 @@ import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/inde
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
   const path = join(dir, 'installer.yaml');
+  const assetDir = join(dir, 'theme assets #1');
+  mkdirSync(assetDir);
+  writeFileSync(join(assetDir, 'logo #1.png'), 'not-a-real-png');
+  writeFileSync(join(assetDir, 'banner #1.png'), 'not-a-real-png');
+  writeFileSync(join(assetDir, 'custom #1.css'), ':root {}');
   writeFileSync(
     path,
     [
@@ -27,6 +33,9 @@ function fixture(): string {
       '  description: "Description super-secret-value"',
       'gui:',
       '  windowTitle: "Window super-secret-value"',
+      '  logo: "theme assets #1/logo #1.png"',
+      '  banner: "theme assets #1/banner #1.png"',
+      '  theme: "theme assets #1/custom #1.css"',
       'inputs:',
       '  installDatabase:',
       '    type: boolean',
@@ -145,7 +154,8 @@ describe('the IPC bridge', () => {
   });
 
   it('masks every successful return through the common registration sink', async () => {
-    const session = await Session.open(fixture(), {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
@@ -156,12 +166,23 @@ describe('the IPC bridge', () => {
       product: { name: string };
     };
     const strings = (await bridge.call('rune:getStrings')) as Record<string, string>;
-    const theme = (await bridge.call('rune:getThemeConfig')) as { windowTitle: string };
+    const theme = (await bridge.call('rune:getThemeConfig')) as {
+      windowTitle: string;
+      logo: string;
+      banner: string;
+      theme: string;
+    };
+    const assetDir = join(dirname(manifestPath), 'theme assets #1');
 
     expect(opened.product.name).toBe('Example ***');
     expect(strings['product.description']).toBe('Description ***');
     expect(strings['gui.windowTitle']).toBe('Window ***');
     expect(theme.windowTitle).toBe('Window ***');
+    expect(theme.logo).toBe(pathToFileURL(join(assetDir, 'logo #1.png')).href);
+    expect(theme.banner).toBe(pathToFileURL(join(assetDir, 'banner #1.png')).href);
+    expect(theme.theme).toBe(pathToFileURL(join(assetDir, 'custom #1.css')).href);
+    expect(theme.logo).toContain('%20');
+    expect(theme.logo).toContain('%23');
     expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
   });
 

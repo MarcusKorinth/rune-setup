@@ -111,13 +111,13 @@ async function boot(): Promise<void> {
     document.head.append(accent);
   }
   if (theme.logo !== undefined) {
-    el.logo.src = `file://${theme.logo}`;
+    el.logo.src = theme.logo;
     el.logo.hidden = false;
   }
   if (theme.theme !== undefined) {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = `file://${theme.theme}`;
+    link.href = theme.theme;
     document.head.append(link);
   }
   if (theme.windowTitle !== undefined) {

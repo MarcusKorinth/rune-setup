@@ -5,4 +5,6 @@ product:
   description: Real Electron renderer smoke
 gui:
   accentColor: '#d946ef'
+  logo: 'logo #1.svg'
+  theme: 'custom #1.css'
 steps: []

@@ -101,8 +101,11 @@ export interface BridgeResult {
 
 export interface BridgeTheme {
   readonly accentColor?: string;
+  /** Canonical `file:` URL projected from the engine's absolute logo path. */
   readonly logo?: string;
+  /** Canonical `file:` URL projected from the engine's absolute banner path. */
   readonly banner?: string;
+  /** Canonical `file:` URL projected from the engine's absolute author-theme path. */
   readonly theme?: string;
   readonly windowTitle?: string;
 }

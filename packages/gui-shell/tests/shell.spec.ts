@@ -45,6 +45,8 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     await expect(page.locator('#product-name')).toHaveText('RUNE Shell Smoke');
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
+    await expect(page.locator('#logo')).toBeVisible();
+    await expect.poll(() => page.locator('#logo').evaluate((logo) => logo.naturalWidth)).toBe(2);
     await expect
       .poll(() =>
         page.evaluate(() =>
@@ -52,6 +54,15 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
         ),
       )
       .toBe('#d946ef');
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue('--rune-smoke-theme-loaded')
+            .trim(),
+        ),
+      )
+      .toBe('yes');
     console.log('[shell-smoke] Welcome rendered for RUNE Shell Smoke');
     expect(pageErrors).toEqual([]);
     expect(consoleErrors).toEqual([]);
