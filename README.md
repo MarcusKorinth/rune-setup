@@ -11,14 +11,15 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is in its **bootstrap phase**: the architectural contract is complete — see
-[docs/architecture.md](docs/architecture.md) — and the monorepo scaffold exists; engine and
-CLI functionality begin with Milestone 1. [docs/roadmap.md](docs/roadmap.md) tracks the MVP
-scope and what comes after.
+RUNE is in **Milestone 1 (engine core) in progress**: the architectural contract is complete —
+see [docs/architecture.md](docs/architecture.md) — and the engine's manifest, input and
+secret-handling foundations are implemented. The Session facade and broader public engine
+surface/API expansion, CLI commands and GUI shell remain on the roadmap.
+[docs/roadmap.md](docs/roadmap.md) tracks the MVP scope and what comes after.
 
-Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
-install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
-users of a packaged installer need nothing installed.
+Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS**; once
+published, install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`).
+End users of a packaged installer need nothing installed.
 
 ## The idea
 
