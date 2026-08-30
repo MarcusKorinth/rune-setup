@@ -77,11 +77,14 @@ export function createInputReferenceIndex(inputIds: readonly string[]): InputRef
  *
  * `visibleInputCount` is an ordinal boundary: valid input membership is constant-time while
  * the ordered ids remain available for deterministic suggestions on the invalid path.
+ * Callers that only classify references may turn suggestions off, avoiding candidate work
+ * that cannot affect their result.
  */
 export function resolveReference(
   segments: readonly string[],
   inputs: InputReferenceIndex,
   visibleInputCount = inputs.orderedIds.length,
+  includeSuggestion = true,
 ): ReferenceResolution {
   const [head, ...rest] = segments;
   if (head === undefined) {
@@ -142,11 +145,14 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'input', id: head } };
   }
 
-  const visibleInputIds =
-    visibleInputCount >= inputs.orderedIds.length
-      ? inputs.orderedIds
-      : inputs.orderedIds.slice(0, visibleInputCount);
-  const suggestion = suggest(head, [...visibleInputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  let suggestion: string | undefined;
+  if (includeSuggestion) {
+    const visibleInputIds =
+      visibleInputCount >= inputs.orderedIds.length
+        ? inputs.orderedIds
+        : inputs.orderedIds.slice(0, visibleInputCount);
+    suggestion = suggest(head, [...visibleInputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  }
   return {
     ok: false,
     message: `\${${segments.join('.')}} is neither a declared input nor a built-in variable${

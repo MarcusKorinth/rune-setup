@@ -6,7 +6,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
-import { environmentName } from '../../src/manifest/v1/rules.js';
+import { SourceMapBuilder } from '../../src/manifest/source.js';
+import { environmentName, environmentReferences } from '../../src/manifest/v1/rules.js';
+import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
 
@@ -247,6 +249,48 @@ describe('input rules', () => {
 
     expect(inputMembershipScans).toBe(0);
     expect(inputPrefixCopies).toBe(0);
+  });
+
+  it('audits unknown references without doing optional suggestion work', () => {
+    const inputCount = 64;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => [
+      `  auditInput${index.toString().padStart(3, '0')}:`,
+      '    type: text',
+    ]).flat();
+    const parsed = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        ...inputs,
+        'steps:',
+        '  - id: audit',
+        '    when: "true"',
+        '    run:',
+        '      command: x',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    ) as ManifestV1;
+    const manifest: ManifestV1 = {
+      ...parsed,
+      steps: parsed.steps.map((step) => ({
+        ...step,
+        when: "${env.CI} == 'true' && ${auditInputTypo} == 'x'",
+      })),
+    };
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+
+    try {
+      expect(
+        environmentReferences(manifest, {
+          file: 'installer.yaml',
+          sourceMap: new SourceMapBuilder().build(),
+        }).map((use) => use.name),
+      ).toEqual(['CI']);
+      expect(lowercase).not.toHaveBeenCalled();
+    } finally {
+      lowercase.mockRestore();
+    }
   });
 });
 

@@ -23,7 +23,9 @@ import {
 } from '../../engine/conditions.js';
 import {
   BUILT_IN_NAMES,
+  BUILT_IN_VARIABLES,
   createInputReferenceIndex,
+  PRODUCT_NAMESPACE,
   resolveReference,
   typeOfReference,
   type InputReferenceIndex,
@@ -326,6 +328,76 @@ interface ConditionField {
   readonly owner: string | undefined;
 }
 
+/** Optional typo hints may never make a bounded manifest require unbounded edit matrices. */
+const REFERENCE_SUGGESTION_WORK_BUDGET = 250_000;
+const REFERENCE_SUGGESTION_WORK_CAP = REFERENCE_SUGGESTION_WORK_BUDGET + 1;
+const BUILT_IN_SUGGESTION_WIDTH = [...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE].reduce(
+  (width, name) => saturatingSuggestionAdd(width, suggestionStringWidth(name)),
+  0,
+);
+
+/**
+ * One deterministic budget shared by every reference diagnostic in a semantic pass.
+ * Prefix widths are built only after the first unknown name, so valid manifests pay nothing.
+ */
+class ReferenceSuggestionBudget {
+  readonly #inputIds: readonly string[];
+  #inputPrefixWidths: readonly number[] | undefined;
+  #remaining = REFERENCE_SUGGESTION_WORK_BUDGET;
+
+  constructor(inputIds: readonly string[]) {
+    this.#inputIds = inputIds;
+  }
+
+  allow(name: string, visibleInputCount: number): boolean {
+    const visible = Math.max(0, Math.min(visibleInputCount, this.#inputIds.length));
+    const candidateWidth = saturatingSuggestionAdd(
+      this.#prefixWidths()[visible] ?? REFERENCE_SUGGESTION_WORK_CAP,
+      BUILT_IN_SUGGESTION_WIDTH,
+    );
+    const work = saturatingSuggestionProduct(suggestionStringWidth(name), candidateWidth);
+    if (work > this.#remaining) {
+      return false;
+    }
+    this.#remaining -= work;
+    return true;
+  }
+
+  #prefixWidths(): readonly number[] {
+    if (this.#inputPrefixWidths === undefined) {
+      const widths = [0];
+      for (const id of this.#inputIds) {
+        widths.push(saturatingSuggestionAdd(widths.at(-1)!, suggestionStringWidth(id)));
+      }
+      this.#inputPrefixWidths = widths;
+    }
+    return this.#inputPrefixWidths;
+  }
+}
+
+/**
+ * Conservative matrix work for `suggest()`: every lowercased candidate is treated as though
+ * it passes the length filter, and each matrix includes its initial row and column.
+ */
+function suggestionStringWidth(value: string): number {
+  return Math.min(value.toLowerCase().length + 1, REFERENCE_SUGGESTION_WORK_CAP);
+}
+
+function saturatingSuggestionAdd(left: number, right: number): number {
+  return left >= REFERENCE_SUGGESTION_WORK_CAP - right
+    ? REFERENCE_SUGGESTION_WORK_CAP
+    : left + right;
+}
+
+function saturatingSuggestionProduct(left: number, right: number): number {
+  if (left === 0 || right === 0) {
+    return 0;
+  }
+  return left > Math.floor(REFERENCE_SUGGESTION_WORK_CAP / right)
+    ? REFERENCE_SUGGESTION_WORK_CAP
+    : left * right;
+}
+
 function* conditionFields(
   manifest: ManifestV1,
   inputIndex: InputReferenceIndex,
@@ -361,6 +433,7 @@ function* conditionFields(
 function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
   const inputIds = Object.keys(manifest.inputs);
   const inputIndex = createInputReferenceIndex(inputIds);
+  const suggestionBudget = new ReferenceSuggestionBudget(inputIds);
 
   // What is wrong with a reference depends only on what was written and whether inputs are in
   // scope — never on the field it stands in. A manifest may repeat the same typo in thousands
@@ -380,7 +453,10 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
       }
       const key = `${String(field.mayReferenceInputs)}:${part.reference.text}`;
       if (!explained.has(key)) {
-        explained.set(key, referenceProblem(part.reference, inputIndex, field.mayReferenceInputs));
+        explained.set(
+          key,
+          referenceProblem(part.reference, inputIndex, field.mayReferenceInputs, suggestionBudget),
+        );
       }
       const problem = explained.get(key);
       if (problem !== undefined) {
@@ -389,6 +465,7 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
     }
   }
 
+  const conditionReferences = new Map<string, ReturnType<TypeResolver>>();
   for (const field of conditionFields(manifest, inputIndex)) {
     const parsed = parseCondition(field.text);
     if (!parsed.ok) {
@@ -396,7 +473,14 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
       continue;
     }
 
-    const resolver = typeResolver(manifest, inputIndex, field.visibleInputCount, field.owner);
+    const resolver = typeResolver(
+      manifest,
+      inputIndex,
+      field.visibleInputCount,
+      field.owner,
+      conditionReferences,
+      suggestionBudget,
+    );
     for (const problem of typeCheckCondition(parsed.ast, resolver)) {
       issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
     }
@@ -408,11 +492,17 @@ function referenceProblem(
   reference: TemplateReference,
   inputIndex: InputReferenceIndex,
   mayReferenceInputs: boolean,
+  suggestions: ReferenceSuggestionBudget,
 ): string | undefined {
+  const visibleInputCount = mayReferenceInputs ? inputIndex.orderedIds.length : 0;
+  const head = reference.segments[0] ?? '';
+  const includeSuggestion =
+    maySuggestReference(head, inputIndex) && suggestions.allow(head, visibleInputCount);
   const resolved = resolveReference(
     reference.segments,
     inputIndex,
-    mayReferenceInputs ? inputIndex.orderedIds.length : 0,
+    visibleInputCount,
+    includeSuggestion,
   );
 
   if (!resolved.ok) {
@@ -436,30 +526,56 @@ function typeResolver(
   inputIndex: InputReferenceIndex,
   visibleInputCount: number,
   owner: string | undefined,
+  cache: Map<string, ReturnType<TypeResolver>>,
+  suggestions: ReferenceSuggestionBudget,
 ): TypeResolver {
   return (reference: ConditionReference) => {
+    const cacheKey = JSON.stringify([reference.text, visibleInputCount, owner]);
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const head = reference.segments[0] ?? '';
     const ordinal = inputIndex.ordinals.get(head);
     if (ordinal !== undefined && ordinal >= visibleInputCount) {
-      return {
+      const result = {
         ok: false,
         message:
           head === owner
             ? `${reference.text} is this input's own value — a condition cannot depend on the input it decides about`
             : `${reference.text} is declared below this input — a condition may only use inputs written above it, so move "${head}" up`,
-      };
+      } as const;
+      cache.set(cacheKey, result);
+      return result;
     }
 
-    const resolved = resolveReference(reference.segments, inputIndex, visibleInputCount);
+    const includeSuggestion =
+      maySuggestReference(head, inputIndex) && suggestions.allow(head, visibleInputCount);
+    const resolved = resolveReference(
+      reference.segments,
+      inputIndex,
+      visibleInputCount,
+      includeSuggestion,
+    );
     if (!resolved.ok) {
+      cache.set(cacheKey, resolved);
       return resolved;
     }
 
     const type = typeOfReference(resolved.reference, (id) => manifest.inputs[id]?.type);
-    return type === undefined
-      ? { ok: false, message: `${reference.text} has no type` }
-      : { ok: true, type };
+    const result: ReturnType<TypeResolver> =
+      type === undefined
+        ? { ok: false, message: `${reference.text} has no type` }
+        : { ok: true, type };
+    cache.set(cacheKey, result);
+    return result;
   };
+}
+
+/** Only a truly unknown head reaches the optional typo-suggestion path. */
+function maySuggestReference(head: string, inputIndex: InputReferenceIndex): boolean {
+  return !inputIndex.ordinals.has(head) && !BUILT_IN_NAMES.includes(head);
 }
 
 /**
@@ -484,7 +600,7 @@ export function environmentReferences(
   const inputIndex = createInputReferenceIndex(inputIds);
 
   const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
-    const resolved = resolveReference(segments, inputIndex);
+    const resolved = resolveReference(segments, inputIndex, inputIds.length, false);
     if (!resolved.ok || resolved.reference.kind !== 'environment') {
       return;
     }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -204,6 +204,75 @@ describe('conditions', () => {
         withInputs('steps:', '  - id: a', '    when: "${nope}"', '    run:', '      command: x'),
       ),
     ).toEqual(['steps[0].when: ${nope} is neither a declared input nor a built-in variable']);
+  });
+
+  it('reuses one unknown-reference explanation across repeated step conditions', () => {
+    const inputCount = 64;
+    const stepCount = 100;
+    const inputs = [
+      '  cacheTarget:',
+      '    type: text',
+      ...Array.from({ length: inputCount - 1 }, (_unused, index) => [
+        `  cache${index.toString().padStart(3, '0')}:`,
+        '    type: text',
+      ]).flat(),
+    ];
+    const steps = Array.from({ length: stepCount }, (_unused, index) => [
+      `  - id: cached-${index}`,
+      '    when: "${cacheTargte} == \'x\'"',
+      '    run:',
+      '      command: x',
+    ]).flat();
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+    let messages: string[];
+    let inputCandidateReads = 0;
+
+    try {
+      messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);
+      inputCandidateReads = lowercase.mock.contexts.filter((value) =>
+        /^cache(?:Target|\d{3})$/.test(String(value)),
+      ).length;
+    } finally {
+      lowercase.mockRestore();
+    }
+
+    expect(messages).toHaveLength(stepCount);
+    expect(messages.every((message) => message.includes('did you mean ${cacheTarget}?'))).toBe(
+      true,
+    );
+    // One pass indexes candidate widths and one cache miss scans candidates for the hint.
+    expect(inputCandidateReads).toBe(inputCount * 2);
+  });
+
+  it('bounds unique-reference suggestion work without dropping any issue', () => {
+    const inputCount = 100;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => [
+      `  budget${index.toString().padStart(3, '0')}:`,
+      '    type: text',
+    ]).flat();
+    const steps = Array.from({ length: inputCount }, (_unused, index) => [
+      `  - id: budget-${index}`,
+      `    when: "\${budegt${index.toString().padStart(3, '0')}} == 'x'"`,
+      '    run:',
+      '      command: x',
+    ]).flat();
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+    let messages: string[];
+    let inputCandidateReads = 0;
+
+    try {
+      messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);
+      inputCandidateReads = lowercase.mock.contexts.filter((value) =>
+        /^budget\d{3}$/.test(String(value)),
+      ).length;
+    } finally {
+      lowercase.mockRestore();
+    }
+
+    expect(messages).toHaveLength(inputCount);
+    expect(messages.filter((message) => message.includes('did you mean')).length).toBe(24);
+    // One width-index pass plus 24 allowed candidate scans; denied hints copy and scan nothing.
+    expect(inputCandidateReads).toBe(inputCount * 25);
   });
 });
 
