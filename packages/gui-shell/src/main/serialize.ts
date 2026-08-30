@@ -76,8 +76,8 @@ export function projectEvent(event: RunEvent, mask: (text: string) => string): B
 }
 
 /** Keeps the engine path-based while giving the sandboxed renderer canonical asset URLs. */
-export function projectTheme(theme: ThemeConfig): BridgeTheme {
-  const fileUrl = (path: string): string => pathToFileURL(path).href;
+export function projectTheme(theme: ThemeConfig, mask: (text: string) => string): BridgeTheme {
+  const fileUrl = (path: string): string => pathToFileURL(mask(path)).href;
   return {
     ...(theme.accentColor === undefined ? {} : { accentColor: theme.accentColor }),
     ...(theme.logo === undefined ? {} : { logo: fileUrl(theme.logo) }),

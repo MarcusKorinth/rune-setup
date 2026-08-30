@@ -252,7 +252,7 @@ export function registerBridge(
   handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
   handle('rune:plan', () => projectPlan(session.plan(), mask));
   handle('rune:getStrings', () => Object.fromEntries(session.getStrings().entries));
-  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig()));
+  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig(), mask));
   handle('rune:warnings', () => session.warnings());
   handle('rune:cancel', () => {
     session.cancel();

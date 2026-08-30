@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -211,6 +211,42 @@ describe('the IPC bridge', () => {
     expect(theme.logo).toContain('%20');
     expect(theme.logo).toContain('%23');
     expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
+  });
+
+  it('masks theme asset paths before encoding them as file URLs', async () => {
+    const secret = 'theme assets #1';
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: secret },
+    });
+    const rawTheme = session.getThemeConfig();
+    const bridge = await bridgeOver(session);
+
+    const theme = (await bridge.call('rune:getThemeConfig')) as {
+      logo: string;
+      banner: string;
+      theme: string;
+    };
+    const pairs = [
+      [rawTheme.logo, theme.logo],
+      [rawTheme.banner, theme.banner],
+      [rawTheme.theme, theme.theme],
+    ] as const;
+
+    for (const [rawPath, url] of pairs) {
+      expect(rawPath).toBeDefined();
+      if (rawPath === undefined) {
+        throw new Error('the fixture theme asset path was absent');
+      }
+      expect(existsSync(rawPath)).toBe(true);
+      expect(rawPath).toContain(secret);
+      expect(url).toBe(pathToFileURL(session.mask(rawPath)).href);
+      expect(url).toContain('%20');
+      expect(url).toContain('%23');
+      expect(url).not.toContain(secret);
+      expect(decodeURIComponent(url)).not.toContain(secret);
+    }
   });
 
   it('preserves absent unanswered fields and disabled-input provenance', async () => {
