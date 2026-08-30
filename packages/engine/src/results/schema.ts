@@ -214,6 +214,14 @@ const resultV1ShapeSchema = z.discriminatedUnion('status', [
 ]);
 
 export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+  if (result.crossPlatformPreview && !result.dryRun) {
+    context.addIssue({
+      code: 'custom',
+      path: ['crossPlatformPreview'],
+      message: 'crossPlatformPreview requires dryRun',
+    });
+  }
+
   const inputIds = new Set<string>();
   for (const [index, input] of result.inputs.entries()) {
     if (inputIds.has(input.id)) {

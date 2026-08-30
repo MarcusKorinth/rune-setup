@@ -693,6 +693,35 @@ describe('resultJsonSchema', () => {
     ).toBe(false);
   });
 
+  it('requires cross-platform previews to be dry runs', () => {
+    const contradictory = resultV1Schema.safeParse(
+      result({ crossPlatformPreview: true, dryRun: false }),
+    );
+
+    expect(contradictory.success).toBe(false);
+    if (!contradictory.success) {
+      expect(contradictory.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['crossPlatformPreview'] }),
+      );
+    }
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          status: 'config_error',
+          exitCode: EXIT_CODE_BY_STATUS.config_error,
+          dryRun: true,
+          crossPlatformPreview: false,
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      resultV1Schema.safeParse({
+        ...resultWithSingleStepState('PENDING'),
+        crossPlatformPreview: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts nullable pre-validation metadata', () => {
     expect(
       resultV1Schema.safeParse(

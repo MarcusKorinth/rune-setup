@@ -84,6 +84,10 @@ function forgedCounterResult(id: string): RunResult {
   return { ...result(id), stepsExecuted: 99 } as RunResult;
 }
 
+function forgedCrossPlatformPreviewResult(id: string): RunResult {
+  return { ...result(id), crossPlatformPreview: true } as RunResult;
+}
+
 function forgedDuplicateInputIdResult(id: string): RunResult {
   return {
     ...result(id),
@@ -234,6 +238,7 @@ describe('writeResult', () => {
     try {
       for (const invalid of [
         forgedCounterResult('invalid-counters'),
+        forgedCrossPlatformPreviewResult('cross-platform-without-dry-run'),
         forgedDisabledInputProvenanceResult('invalid-provenance'),
         forgedContradictoryStepFieldsResult('invalid-step-fields'),
         forgedDuplicateInputIdResult('duplicate-input-id'),
