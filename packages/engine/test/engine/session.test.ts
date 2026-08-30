@@ -329,6 +329,56 @@ describe('answering inputs', () => {
     expect(session.pendingInputs()).toEqual([]);
   });
 
+  it('rejects undefined atomically without replacing seeded or answered state', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  target:',
+        '    type: text',
+        '    default: seeded',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${target}"]',
+      ]),
+      { environment: {} },
+    );
+    const rejectUndefined = (): void => {
+      let thrown: unknown;
+      try {
+        session.setValue('target', undefined);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toMatchObject({ code: 'RUNE-202' });
+      expect((thrown as Error).message).toMatch(
+        /target \(from the answer\).*undefined is not text/s,
+      );
+    };
+
+    const seededState = session.allInputs()[0];
+    const seededPlan = session.plan();
+    rejectUndefined();
+
+    expect(session.allInputs()[0]).toBe(seededState);
+    expect(session.allInputs()[0]).toMatchObject({ value: 'seeded', source: 'default' });
+    expect(session.plan()).toBe(seededPlan);
+
+    session.setValue('target', 'answered');
+    const answeredState = session.allInputs()[0];
+    const answeredPlan = session.plan();
+    rejectUndefined();
+
+    expect(session.allInputs()[0]).toBe(answeredState);
+    expect(session.allInputs()[0]).toMatchObject({ value: 'answered', source: 'answer' });
+    expect(session.plan()).toBe(answeredPlan);
+  });
+
   it('keeps a valid controller edit when it exposes an invalid lower-layer seed', async () => {
     const path = fixture([
       'schemaVersion: 1',
