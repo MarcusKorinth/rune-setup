@@ -77,6 +77,10 @@ steps:
         args: [scripts/install-database.sh, "${databasePort}"]
 ```
 
+Text `pattern` values are manifest-authored ECMAScript regular expressions. Values checked
+against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
+quantifiers such as `(a+)+`.
+
 The same manifest, three ways (the graphical shell is fetched once with
 `rune gui install`):
 
