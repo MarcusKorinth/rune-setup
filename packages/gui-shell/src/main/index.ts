@@ -19,6 +19,7 @@ import {
 import {
   CancelToken,
   CancelledError,
+  InternalError,
   RUNE_VERSION,
   RuneError,
   Session,
@@ -223,6 +224,7 @@ async function windowedRun(
   let outcome: RunResult | undefined;
   let fatalCode: number | undefined;
   let renderedDone = false;
+  let rendererGone = false;
   let sigtermRequested = false;
 
   registerBridge(session, {
@@ -232,6 +234,11 @@ async function windowedRun(
     },
     onExecuteEnd: (result) => {
       running = false;
+      if (rendererGone) {
+        // A renderer crash is a hard shell failure, not an ordinary cancelled outcome.
+        window.close();
+        return;
+      }
       outcome = result;
       deliver(result, invocation);
       if (closeRequested) {
@@ -242,6 +249,11 @@ async function windowedRun(
     onExecuteError: (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
+      if (rendererGone) {
+        // The renderer crash already owns the fatal classification and diagnostic.
+        window.close();
+        return;
+      }
       writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
       fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
       displayFatal(error, session);
@@ -251,6 +263,24 @@ async function windowedRun(
       renderedDone = true;
       window.close();
     },
+  });
+
+  window.webContents.on('render-process-gone', () => {
+    if (rendererGone) {
+      return;
+    }
+    rendererGone = true;
+    const error = new InternalError('the renderer process exited unexpectedly');
+    fatalCode = exitCodeFor(error);
+    writeSessionDiagnostic(session, describeWindowedFatal(error, session));
+    displayFatal(error, session);
+
+    if (running) {
+      // Let the engine settle its cooperative cancellation before closing the host window.
+      session.cancel();
+      return;
+    }
+    window.close();
   });
 
   window.on('close', (event) => {
@@ -287,7 +317,7 @@ async function windowedRun(
         try {
           await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
         } catch (error) {
-          if (!sigtermRequested) {
+          if (!sigtermRequested && !rendererGone) {
             throw error;
           }
         }

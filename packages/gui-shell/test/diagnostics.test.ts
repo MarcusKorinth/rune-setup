@@ -10,12 +10,38 @@ const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   duringLoad: undefined as (() => Promise<void>) | undefined,
   closeDuringLoad: false,
+  emitRendererGone: undefined as (() => void) | undefined,
+  onClosed: undefined as (() => void) | undefined,
+  closed: false,
 }));
 
 vi.mock('electron', () => {
-  class FakeBrowserWindow {
-    readonly webContents = { send: vi.fn() };
+  class FakeWebContents {
+    readonly send = vi.fn();
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+
+    on(event: string, listener: (...args: unknown[]) => void): void {
+      const listeners = this.#listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.#listeners.set(event, listeners);
+    }
+
+    emit(event: string, ...args: unknown[]): void {
+      for (const listener of this.#listeners.get(event) ?? []) {
+        listener(...args);
+      }
+    }
+  }
+
+  class FakeBrowserWindow {
+    readonly webContents = new FakeWebContents();
+    readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+
+    constructor() {
+      electronHarness.emitRendererGone = () => {
+        this.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+      };
+    }
 
     once(event: string, listener: (...args: unknown[]) => void): void {
       this.on(event, listener);
@@ -37,6 +63,8 @@ vi.mock('electron', () => {
         },
       });
       if (!prevented) {
+        electronHarness.closed = true;
+        electronHarness.onClosed?.();
         this.#emit('closed');
       }
     }
@@ -86,6 +114,9 @@ beforeEach(() => {
   electronHarness.handlers.clear();
   electronHarness.duringLoad = undefined;
   electronHarness.closeDuringLoad = false;
+  electronHarness.emitRendererGone = undefined;
+  electronHarness.onClosed = undefined;
+  electronHarness.closed = false;
 });
 
 describe('the GUI shell stderr diagnostics', () => {
@@ -289,6 +320,90 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(dialogText).toContain('blocked-***');
     expect(dialogText).not.toContain(secret);
   });
+
+  it('treats a renderer crash before Proceed as a hard failure without a result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-renderer-gone-before-run-'));
+    const manifestPath = manifest(['inputs:', '  token:', '    type: secret', 'steps: []'], dir);
+    const resultPath = join(dir, 'result.json');
+    const secret = 'renderer-gone-secret';
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      electronHarness.emitRendererGone?.();
+      electronHarness.emitRendererGone?.();
+    };
+
+    await main([manifestPath, '--set', `token=${secret}`, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      expect.stringContaining('RUNE-500 (exit 70): the renderer process exited unexpectedly'),
+    );
+    const diagnostics = stderr.mock.calls.flat().join('');
+    expect(diagnostics).toContain('RUNE-500 (exit 70)');
+    expect(diagnostics).not.toContain(secret);
+  });
+
+  it('awaits renderer-crash cancellation before closing and writes no result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-renderer-gone-during-run-'));
+    const manifestPath = manifest(
+      ['inputs: {}', 'steps:', '  - id: wait', '    run:', '      command: wait'],
+      dir,
+    );
+    const resultPath = join(dir, 'result.json');
+    const started = deferred<void>();
+    const cancelled = deferred<void>();
+    const settlement = deferred<{ readonly kind: 'cancelled' }>();
+    const order: string[] = [];
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      runner: {
+        run: async (request) => {
+          order.push('started');
+          started.resolve();
+          request.cancel.onCancel(() => {
+            order.push('cancelled');
+            cancelled.resolve();
+          });
+          return settlement.promise;
+        },
+      },
+    });
+    const cancel = vi.spyOn(session, 'cancel');
+    vi.spyOn(Session, 'open').mockResolvedValue(session);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.onClosed = () => order.push('closed');
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      const execution = Promise.resolve(execute());
+      await started.promise;
+
+      electronHarness.emitRendererGone?.();
+      await cancelled.promise;
+      expect(electronHarness.closed).toBe(false);
+      expect(existsSync(resultPath)).toBe(false);
+
+      order.push('settling');
+      settlement.resolve({ kind: 'cancelled' });
+      await execution;
+    };
+
+    await main([manifestPath, '--result', resultPath]);
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(order).toEqual(['started', 'cancelled', 'settling', 'closed']);
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+  });
 });
 
 function manifest(lines: readonly string[], directory?: string): string {
@@ -319,4 +434,15 @@ function invocation(manifestPath: string): ShellInvocation {
     logFile: undefined,
     nonInteractive: true,
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
