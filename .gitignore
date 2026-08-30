@@ -25,6 +25,10 @@
 !/LICENSE
 !/README.md
 
+# Review vault: retain only the open findings register
+!/.obsidian-vault/
+!/.obsidian-vault/open-findings.md
+
 # Source packages, tests, and docs
 !/docs/
 !/docs/**
