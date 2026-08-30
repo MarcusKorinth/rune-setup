@@ -173,7 +173,7 @@ describe('the Windows honesty rule', () => {
 });
 
 describe('localized titles', () => {
-  it('plans the localized step title, so events and results show it', () => {
+  it('changes only the planned title for an overlay; machine fields stay locale-invariant', () => {
     const manifest = parseManifestText(
       [
         ...HEAD,
@@ -181,7 +181,13 @@ describe('localized titles', () => {
         '  - id: install',
         '    title: Install',
         '    run:',
-        '      command: node',
+        '      command: scripts/install.js',
+        '      args: ["--mode", "guided"]',
+        '      cwd: work',
+        '      env:',
+        '        INSTALL_MODE: guided',
+        '      timeoutSeconds: 30',
+        '      successExitCodes: [0, 9]',
         '',
       ].join(String.fromCharCode(10)),
       'installer.yaml',
@@ -199,7 +205,13 @@ describe('localized titles', () => {
       'de',
       manifest,
     );
-    const plan = buildPlan({
+    const defaultPlan = buildPlan({
+      manifest,
+      manifestPath: 'installer.yaml',
+      resolution,
+      context,
+    });
+    const localizedPlan = buildPlan({
       manifest,
       manifestPath: 'installer.yaml',
       resolution,
@@ -207,7 +219,14 @@ describe('localized titles', () => {
       strings: resolveStrings({ manifest, overlay }),
     });
 
-    expect(plan.steps[0]?.title).toBe('Installieren');
+    const defaultStep = defaultPlan.steps[0];
+    const localizedStep = localizedPlan.steps[0];
+    if (defaultStep?.state !== 'PENDING' || localizedStep?.state !== 'PENDING') {
+      throw new Error('expected pending steps');
+    }
+
+    expect(defaultStep.title).toBe('Install');
+    expect(localizedStep).toEqual({ ...defaultStep, title: 'Installieren' });
   });
 });
 
