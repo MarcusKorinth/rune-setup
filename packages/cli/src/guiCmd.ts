@@ -219,11 +219,31 @@ export async function launchGui(
     argv.push('--log-file', flags.logFile);
   }
 
-  // The first Ctrl+C or SIGTERM forwards one cancel request to the shell (§9.4).
-  // Only a second Ctrl+C force-exits the CLI; repeated SIGTERM remains idempotent.
+  // The first Ctrl+C or SIGTERM cancels whichever GUI startup process is active (§9.4):
+  // terminate the probe, or forward one request to the workflow shell. Only a second
+  // Ctrl+C force-exits the CLI; repeated SIGTERM remains idempotent.
   let child: ReturnType<typeof spawn> | undefined;
+  let probeChild: ReturnType<typeof spawn> | undefined;
+  let probeTerminationSent = false;
   let cancelRequested = false;
   let receivedSigint = false;
+  const terminateProbe = (): void => {
+    if (probeTerminationSent || probeChild?.pid === undefined) return;
+    probeTerminationSent = true;
+    if (process.platform === 'win32') {
+      // The probe has no cooperative session; terminate its complete process tree.
+      spawn('taskkill', ['/PID', String(probeChild.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      return;
+    }
+    try {
+      process.kill(-probeChild.pid, 'SIGTERM');
+    } catch {
+      // The detached probe group already exited between the signal and this request.
+    }
+  };
   const forwardCancel = (): void => {
     if (child?.pid === undefined) return;
     if (process.platform === 'win32') {
@@ -236,7 +256,11 @@ export async function launchGui(
   const requestCancel = (): void => {
     if (cancelRequested) return;
     cancelRequested = true;
-    forwardCancel();
+    if (probeChild !== undefined) {
+      terminateProbe();
+    } else {
+      forwardCancel();
+    }
   };
   const onSigint = (): void => {
     if (receivedSigint) {
@@ -251,7 +275,22 @@ export async function launchGui(
   process.on('SIGTERM', onSigterm);
 
   try {
-    await verifyShellVersion(location);
+    try {
+      await verifyShellVersion(location, (probe) => {
+        probeChild = probe;
+        if (probe !== undefined && cancelRequested) {
+          terminateProbe();
+        }
+      });
+    } catch (cause) {
+      if (cancelRequested) {
+        throw new ExitWithCode(6);
+      }
+      throw cause;
+    }
+    if (cancelRequested) {
+      throw new ExitWithCode(6);
+    }
 
     const [command, args] = shellCommand(location, argv);
     const launchedChild = spawn(command, args, {
@@ -288,7 +327,10 @@ export async function launchGui(
   }
 }
 
-async function verifyShellVersion(location: ShellLocation): Promise<void> {
+async function verifyShellVersion(
+  location: ShellLocation,
+  onProbe: (child: ReturnType<typeof spawn> | undefined) => void,
+): Promise<void> {
   const [command, args] = shellCommand(location, [SHELL_VERSION_PROBE_FLAG]);
   const child = spawn(command, args, {
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -297,15 +339,29 @@ async function verifyShellVersion(location: ShellLocation): Promise<void> {
   });
   let stdout = '';
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
+  const onData = (chunk: string): void => {
     if (stdout.length <= 4096) {
       stdout += chunk;
     }
-  });
+  };
+  child.stdout.on('data', onData);
 
   const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
-    child.on('error', () => resolve({ code: null, failed: true }));
-    child.on('close', (code) => resolve({ code, failed: false }));
+    let settled = false;
+    const finish = (result: { code: number | null; failed: boolean }): void => {
+      if (settled) return;
+      settled = true;
+      child.stdout.removeListener('data', onData);
+      child.removeListener('error', onError);
+      child.removeListener('close', onClose);
+      onProbe(undefined);
+      resolve(result);
+    };
+    const onError = (): void => finish({ code: null, failed: true });
+    const onClose = (code: number | null): void => finish({ code, failed: false });
+    child.once('error', onError);
+    child.once('close', onClose);
+    onProbe(child);
   });
   const reinstall = 'run: rune gui install';
   if (outcome.failed || outcome.code !== 0 || stdout.length > 4096) {
