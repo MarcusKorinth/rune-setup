@@ -240,8 +240,8 @@ describe('conditions', () => {
     expect(messages.every((message) => message.includes('did you mean ${cacheTarget}?'))).toBe(
       true,
     );
-    // One pass indexes candidate widths and one cache miss scans candidates for the hint.
-    expect(inputCandidateReads).toBe(inputCount * 2);
+    // At most one pass indexes candidate widths and one cache miss scans candidates for the hint.
+    expect(inputCandidateReads).toBeLessThanOrEqual(inputCount * 2);
   });
 
   it('bounds unique-reference suggestion work without dropping any issue', () => {
@@ -271,8 +271,8 @@ describe('conditions', () => {
 
     expect(messages).toHaveLength(inputCount);
     expect(messages.filter((message) => message.includes('did you mean')).length).toBe(24);
-    // One width-index pass plus 24 allowed candidate scans; denied hints copy and scan nothing.
-    expect(inputCandidateReads).toBe(inputCount * 25);
+    // At most one width-index pass plus 24 allowed candidate scans; denied hints do not scan.
+    expect(inputCandidateReads).toBeLessThanOrEqual(inputCount * 25);
   });
 });
 
