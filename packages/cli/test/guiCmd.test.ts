@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -92,10 +93,28 @@ function probeProcess(output: string, code: number | null = 0): ReturnType<typeo
   return child as unknown as ReturnType<typeof spawn>;
 }
 
-function runProcess(code = 0): ReturnType<typeof spawn> {
+function runProcess(code: number | null = 0): ReturnType<typeof spawn> {
   const child = new EventEmitter();
   queueMicrotask(() => child.emit('close', code));
   return child as ReturnType<typeof spawn>;
+}
+
+function errorProcess(message: string): ReturnType<typeof spawn> {
+  const child = new EventEmitter();
+  queueMicrotask(() => child.emit('error', new Error(message)));
+  return child as ReturnType<typeof spawn>;
+}
+
+function waitingProcess(
+  pid: number,
+): EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> } {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.pid = pid;
+  child.kill = vi.fn();
+  return child;
 }
 
 function downloadedArchive(): string {
@@ -122,6 +141,13 @@ describe('rune gui install temporary archive', () => {
     expect(basename(dirname(archive))).toMatch(/^rune-shell-/u);
     expect(basename(archive)).toBe(archiveName);
     expect(existsSync(dirname(archive))).toBe(false);
+    expect(fetch).toHaveBeenCalledWith(
+      `https://github.com/MarcusKorinth/rune-setup/releases/download/v${RUNE_VERSION}/${archiveName}`,
+    );
+    expect(spawnMock).toHaveBeenCalledWith('tar', ['-xf', archive, '-C', expect.any(String)], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+      shell: false,
+    });
   });
 
   it('removes the private temporary directory when tar fails', async () => {
@@ -230,7 +256,7 @@ describe('rune gui install atomic cache promotion', () => {
 });
 
 describe('rune run --gui shell version handshake', () => {
-  it('launches the workflow only after the packaged shell reports the matching version', async () => {
+  it('launches a matching packaged shell with every run flag and safe spawn options', async () => {
     spawnMock
       .mockImplementationOnce(() =>
         probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }) + '\n'),
@@ -239,20 +265,47 @@ describe('rune run --gui shell version handshake', () => {
 
     await launchGui(
       'installer.yaml',
-      { set: ['name=value'], locale: 'de' },
+      {
+        set: ['name=value', 'environment=production'],
+        values: ['defaults.yaml', 'production.yaml'],
+        locale: 'de',
+        result: 'result.json',
+        logFile: 'run.log',
+      },
       capture(),
       interaction,
     );
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(join(testDirectory, shellBinary));
     expect(spawnMock.mock.calls[0]?.[1]).toEqual(['--rune-version-probe']);
+    expect(spawnMock.mock.calls[0]?.[2]).toEqual({
+      stdio: ['ignore', 'pipe', 'ignore'],
+      shell: false,
+    });
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(join(testDirectory, shellBinary));
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([
       'installer.yaml',
       '--set',
       'name=value',
+      '--set',
+      'environment=production',
+      '--values',
+      'defaults.yaml',
+      '--values',
+      'production.yaml',
       '--locale',
       'de',
+      '--result',
+      'result.json',
+      '--log-file',
+      'run.log',
     ]);
+    expect(spawnMock.mock.calls[1]?.[2]).toEqual({
+      stdio: ['ignore', 'ignore', 'inherit'],
+      shell: false,
+      detached: process.platform !== 'win32',
+    });
   });
 
   it('probes and launches a development-directory shell through its Electron', async () => {
@@ -266,7 +319,10 @@ describe('rune run --gui shell version handshake', () => {
 
     await launchGui('installer.yaml', {}, capture(), interaction);
 
+    const electron = createRequire(join(shellDirectory, 'package.json'))('electron') as string;
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, 'installer.yaml']);
   });
 
@@ -287,5 +343,103 @@ describe('rune run --gui shell version handshake', () => {
     expect(exitCodeFor(error as UsageError)).toBe(2);
     expect((error as UsageError).message).toContain('rune gui install');
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards the shell cancellation exit code after a successful probe', async () => {
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess(6));
+
+    await expect(launchGui('installer.yaml', {}, capture(), interaction)).rejects.toMatchObject({
+      code: 6,
+    });
+  });
+
+  it('maps an unknown shell exit code to the internal-error exit code', async () => {
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess(42));
+
+    await expect(launchGui('installer.yaml', {}, capture(), interaction)).rejects.toMatchObject({
+      code: 70,
+    });
+  });
+
+  it('maps signal termination of the shell to the internal-error exit code', async () => {
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess(null));
+
+    await expect(launchGui('installer.yaml', {}, capture(), interaction)).rejects.toMatchObject({
+      code: 70,
+    });
+  });
+
+  it('reports a shell spawn error and returns the internal-error exit code', async () => {
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => errorProcess('permission denied'));
+    const io = capture();
+
+    await expect(launchGui('installer.yaml', {}, io, interaction)).rejects.toMatchObject({
+      code: 70,
+    });
+
+    expect(io.stderr).toHaveBeenCalledWith('could not launch the GUI shell: permission denied');
+  });
+
+  it('forwards the first Ctrl+C, force-exits on the second, and removes its listener', async () => {
+    const shell = waitingProcess(4242);
+    const forceExit = vi.fn();
+    const signalListeners = process.listenerCount('SIGINT');
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>);
+
+    const launch = launchGui('installer.yaml', {}, capture(), {
+      ...interaction,
+      forceExit,
+    });
+    let shellClosed = false;
+    try {
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+
+      process.emit('SIGINT');
+      process.emit('SIGINT');
+
+      if (process.platform === 'win32') {
+        expect(shell.kill).not.toHaveBeenCalled();
+        expect(spawnMock.mock.calls[2]).toEqual([
+          'taskkill',
+          ['/PID', '4242'],
+          { stdio: 'ignore', shell: false },
+        ]);
+      } else {
+        expect(shell.kill).toHaveBeenCalledTimes(1);
+        expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
+      }
+      expect(forceExit).toHaveBeenCalledTimes(1);
+      expect(forceExit).toHaveBeenCalledWith(6);
+
+      shell.emit('close', 6);
+      shellClosed = true;
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+      expect(process.listenerCount('SIGINT')).toBe(signalListeners);
+    } finally {
+      if (!shellClosed) {
+        shell.emit('close', 6);
+      }
+      await launch.catch(() => undefined);
+    }
   });
 });
