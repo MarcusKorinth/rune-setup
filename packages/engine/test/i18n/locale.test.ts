@@ -14,11 +14,12 @@ import {
 } from '../../src/i18n/locale.js';
 
 describe('normalizeLocaleTag', () => {
-  it('canonicalizes BCP-47-style tags and accepts underscores as separators', () => {
+  it('canonicalizes Unicode locale identifiers and accepts underscores as separators', () => {
     expect(normalizeLocaleTag('de')).toBe('de');
     expect(normalizeLocaleTag('EN')).toBe('en');
     expect(normalizeLocaleTag('pt_br')).toBe('pt-BR');
     expect(normalizeLocaleTag('SR_latn_rs')).toBe('sr-Latn-RS');
+    expect(normalizeLocaleTag('en-x-pirate')).toBe('en-x-pirate');
   });
 
   it('rejects malformed tags without removing OS-specific suffixes', () => {
@@ -61,7 +62,7 @@ describe('selectLocale', () => {
     expect(selectLocale({ environment: {}, systemLocale: 'C.UTF-8' })).toBeUndefined();
   });
 
-  it.each(['de--DE', 'de.backup', '   '])(
+  it.each(['de--DE', 'de.backup', 'x-pirate', '   '])(
     'rejects invalid explicit flag locale %j without falling back',
     (flag) => {
       let thrown: unknown;
@@ -79,6 +80,7 @@ describe('selectLocale', () => {
       const error = thrown as UsageError;
       expect(error.code).toBe('RUNE-001');
       expect(error.message).toContain(`invalid locale ${JSON.stringify(flag)} from --locale`);
+      expect(error.message).toContain('Unicode locale identifier supported by Node Intl');
       expect(error.message).toContain('C/POSIX');
     },
   );
@@ -217,7 +219,7 @@ describe('overlay discovery and matching', () => {
     expect(error.message).toContain(invalidPath);
   });
 
-  it.each(['de.backup.yaml', 'de@backup.yaml', 'de-.yaml', 'de--DE.yaml'])(
+  it.each(['de.backup.yaml', 'de@backup.yaml', 'de-.yaml', 'de--DE.yaml', 'x-pirate.yaml'])(
     'rejects the complete invalid locale claim in %s',
     (fileName) => {
       const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));

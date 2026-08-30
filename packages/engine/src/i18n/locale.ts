@@ -21,7 +21,7 @@ function canonicalizeLocaleTag(tag: string): string | undefined {
   }
 }
 
-/** Normalizes a BCP-47-style tag, accepting underscores as locale separators. */
+/** Normalizes a Unicode locale identifier, accepting underscores as locale separators. */
 export function normalizeLocaleTag(raw: string): string | undefined {
   const tag = raw.replace(/_/g, '-');
   if (tag === '' || /^(c|posix)$/i.test(tag)) {
@@ -47,7 +47,7 @@ function normalizeExplicitLocale(
   const tag = normalizeLocaleTag(value);
   if (tag === undefined) {
     throw new UsageError(
-      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a BCP 47 locale tag such as "de-DE", or C/POSIX for the built-in defaults`,
+      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
     );
   }
   return tag;
