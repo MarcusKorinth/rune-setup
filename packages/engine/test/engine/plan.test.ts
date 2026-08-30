@@ -1,4 +1,6 @@
-import { resolve as resolvePath, sep } from 'node:path';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve as resolvePath, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -7,7 +9,7 @@ import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, PLAN_SCHEMA_VERSION, type ExecutionPlan } from '../../src/engine/plan.js';
 import { isSecretString, MASK } from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
-import { parseManifestText } from '../../src/manifest/index.js';
+import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
@@ -25,7 +27,9 @@ function planFor(
   resolution: Resolution;
   context: ReturnType<typeof createRuntimeContext>;
 } {
-  const manifest = parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml');
+  const manifest = parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml', {
+    manifestDir: '/project',
+  });
   const context = createRuntimeContext({
     manifestDir: '/project',
     product: manifest.product,
@@ -130,6 +134,7 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -167,6 +172,7 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -201,6 +207,7 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -234,6 +241,7 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -654,6 +662,77 @@ describe('the plan itself', () => {
 });
 
 describe('planning provenance', () => {
+  it('rejects an authentic context whose manifest directory is not bound to the manifest', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: unreachable',
+        '    run:',
+        '      command: "${env.NEVER_SET}"',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+      { manifestDir: '/real' },
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/wrong',
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
+
+    expect(() => buildPlan({ manifest, resolution, context })).toThrow(InternalError);
+    expect(() => buildPlan({ manifest, resolution, context })).toThrow(
+      /runtime context manifest directory does not belong to the manifest/,
+    );
+  });
+
+  it.each([
+    { name: 'Spoofed', version: '1.0.0' },
+    { name: 'Example', version: '9.9.9' },
+  ])('rejects an authentic context whose product is not bound to the manifest', (product) => {
+    const manifest = parseManifestText([...HEAD, 'steps: []', ''].join('\n'), 'installer.yaml', {
+      manifestDir: '/project',
+    });
+    const context = createRuntimeContext({
+      manifestDir: '/project',
+      product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context, environment: {} });
+
+    expect(() => buildPlan({ manifest, resolution, context })).toThrow(InternalError);
+    expect(() => buildPlan({ manifest, resolution, context })).toThrow(
+      /runtime context product does not belong to the manifest/,
+    );
+  });
+
+  it('accepts the effective manifest directory supplied to both parser entry points', () => {
+    const text = [...HEAD, 'steps: []', ''].join('\n');
+    const directory = mkdtempSync(join(tmpdir(), 'rune-plan-provenance-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    writeFileSync(manifestPath, text, 'utf8');
+    const manifests = [
+      parseManifestText(text, 'memory.yaml', { manifestDir: '/project' }),
+      parseManifest(manifestPath, { manifestDir: '/project' }),
+    ];
+
+    for (const manifest of manifests) {
+      const context = createRuntimeContext({
+        manifestDir: '/project',
+        product: manifest.product,
+        platform: 'linux',
+        environment: {},
+      });
+      const resolution = resolveInputs({ manifest, context, environment: {} });
+
+      expect(buildPlan({ manifest, resolution, context }).steps).toEqual([]);
+    }
+  });
+
   it('rejects a structural copy of a resolution', () => {
     const { manifest, resolution, context } = planFor(['steps: []']);
     const forged = { ...resolution };

@@ -36,6 +36,7 @@ function setup(
   const manifest = parseManifestText(
     [...HEAD, ...failFastLine, ...lines, ''].join('\n'),
     'installer.yaml',
+    { manifestDir: '/project' },
   );
   const context = createRuntimeContext({
     manifestDir: '/project',
@@ -1242,6 +1243,7 @@ describe('skipped steps and the dry run', () => {
     const manifest = parseManifestText(
       [...HEAD, 'steps:', '  - id: a', '    run:', '      command: a', ''].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
     const context = createRuntimeContext({
@@ -1298,6 +1300,7 @@ describe('skipped steps and the dry run', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -1578,6 +1581,7 @@ describe('the plan execution context', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',
@@ -1635,6 +1639,7 @@ describe('the plan execution context', () => {
         '',
       ].join('\n'),
       'installer.yaml',
+      { manifestDir: '/project' },
     );
     const context = createRuntimeContext({
       manifestDir: '/project',

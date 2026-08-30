@@ -111,7 +111,11 @@ export interface PlanOptions {
 /** Execution-only context. Deliberately not re-exported from the package entry point. */
 export interface PlanExecutionContext {
   readonly product: { readonly name: string; readonly version: string };
-  readonly manifest: ManifestDescriptor;
+  readonly manifest: {
+    readonly path: string;
+    readonly sha256: string;
+    readonly schemaVersion: number;
+  };
   readonly secrets: SecretMasker;
 }
 
@@ -138,6 +142,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   if (resolved.context !== trustedContext) {
     throw new InternalError('the input resolution belongs to a different runtime context');
   }
+  rejectUnboundContext(manifest, manifestDescriptor, trustedContext);
   rejectIncompleteResolution(resolved);
   const resolvedInputs = resolved.inputs.map(snapshotInput);
 
@@ -191,6 +196,25 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   return plan;
 }
 
+/** The built-ins used for planning must belong to the exact manifest being planned. */
+function rejectUnboundContext(
+  manifest: Manifest,
+  descriptor: ManifestDescriptor,
+  context: RuntimeContext,
+): void {
+  if (context.manifestDir !== descriptor.manifestDir) {
+    throw new InternalError(
+      'the runtime context manifest directory does not belong to the manifest',
+    );
+  }
+  if (
+    context.valueOf({ kind: 'product', field: 'name' }) !== manifest.product.name ||
+    context.valueOf({ kind: 'product', field: 'version' }) !== manifest.product.version
+  ) {
+    throw new InternalError('the runtime context product does not belong to the manifest');
+  }
+}
+
 function snapshotExecutionContext(
   manifest: ManifestV1,
   manifestDescriptor: ManifestDescriptor,
@@ -200,9 +224,14 @@ function snapshotExecutionContext(
     name: manifest.product.name,
     version: manifest.product.version,
   });
+  const manifestIdentity = Object.freeze({
+    path: manifestDescriptor.path,
+    sha256: manifestDescriptor.sha256,
+    schemaVersion: manifestDescriptor.schemaVersion,
+  });
   return Object.freeze({
     product,
-    manifest: manifestDescriptor,
+    manifest: manifestIdentity,
     secrets,
   });
 }

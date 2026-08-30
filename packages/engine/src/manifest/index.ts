@@ -25,6 +25,7 @@ export interface ManifestDescriptor {
   readonly path: string;
   readonly sha256: string;
   readonly schemaVersion: number;
+  readonly manifestDir: string;
 }
 
 const manifestDescriptors = new WeakMap<Manifest, ManifestDescriptor>();
@@ -126,8 +127,9 @@ function parseDocument(
   }
 
   const parser = selectParser(raw['schemaVersion'], document);
+  const manifestDir = options.manifestDir ?? dirname(resolve(file));
   const manifest = parser(document, {
-    manifestDir: options.manifestDir ?? dirname(resolve(file)),
+    manifestDir,
     checkAssetFiles: options.checkAssetFiles ?? false,
   });
   manifestDescriptors.set(
@@ -136,6 +138,7 @@ function parseDocument(
       path: document.file,
       sha256: document.sha256,
       schemaVersion: manifest.schemaVersion,
+      manifestDir,
     }),
   );
   return manifest;
