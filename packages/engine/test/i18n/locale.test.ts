@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { ManifestError, UsageError } from '../../src/errors.js';
 import {
   discoverOverlays,
+  discoverSelectedOverlay,
   matchOverlay,
   normalizeLocaleTag,
   selectLocale,
@@ -256,5 +257,112 @@ describe('overlay discovery and matching', () => {
     expect(error.code).toBe('RUNE-101');
     expect(error.message).toContain(localesPath);
     expect(error.message).toMatch(/ENOTDIR|not a directory/i);
+  });
+});
+
+describe('selected overlay discovery', () => {
+  it('uses the exact locale before the language fallback and returns no unrelated match', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'de.yaml'), 'rune.button.next: Weiter\n');
+    writeFileSync(join(localesPath, 'de_AT.yaml'), 'rune.button.next: Weiter\n');
+
+    expect(discoverSelectedOverlay(dir, 'de-AT')?.locale).toBe('de-AT');
+    expect(discoverSelectedOverlay(dir, 'de-DE')?.locale).toBe('de');
+    expect(discoverSelectedOverlay(dir, 'fr-FR')).toBeUndefined();
+  });
+
+  it('ignores malformed and duplicate claims for unrelated locales', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'de.yaml'), 'rune.button.next: Weiter\n');
+    writeFileSync(join(localesPath, 'de--DE.yaml'), 'rune.button.next: Invalid\n');
+    writeFileSync(join(localesPath, 'he.yaml'), 'rune.button.next: Next\n');
+    writeFileSync(join(localesPath, 'iw.yaml'), 'rune.button.next: Next\n');
+
+    expect(discoverSelectedOverlay(dir, 'de-DE')?.locale).toBe('de');
+  });
+
+  it('rejects duplicate canonical claims for the selected exact locale', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    const modernPath = join(localesPath, 'he.yaml');
+    const legacyPath = join(localesPath, 'iw.yaml');
+    mkdirSync(localesPath);
+    writeFileSync(modernPath, 'rune.button.next: Next\n');
+    writeFileSync(legacyPath, 'rune.button.next: Next\n');
+
+    expect(() => discoverSelectedOverlay(dir, 'he')).toThrowError(ManifestError);
+    try {
+      discoverSelectedOverlay(dir, 'he');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'RUNE-104' });
+      expect((error as Error).message).toContain(modernPath);
+      expect((error as Error).message).toContain(legacyPath);
+    }
+  });
+
+  it('rejects duplicate canonical claims for the active language fallback', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'he.yaml'), 'rune.button.next: Next\n');
+    writeFileSync(join(localesPath, 'iw.yaml'), 'rune.button.next: Next\n');
+
+    expect(() => discoverSelectedOverlay(dir, 'he-IL')).toThrowError(
+      expect.objectContaining({ code: 'RUNE-104' }),
+    );
+  });
+
+  it('uses a unique exact match despite an ambiguous language fallback', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    const exactPath = join(localesPath, 'he_IL.yaml');
+    mkdirSync(localesPath);
+    writeFileSync(exactPath, 'rune.button.next: Next\n');
+    writeFileSync(join(localesPath, 'he.yaml'), 'rune.button.next: Next\n');
+    writeFileSync(join(localesPath, 'iw.yaml'), 'rune.button.next: Next\n');
+
+    expect(discoverSelectedOverlay(dir, 'he-IL')).toEqual({ locale: 'he-IL', path: exactPath });
+  });
+
+  it('treats a missing locales directory as no selected overlay', () => {
+    expect(
+      discoverSelectedOverlay(mkdtempSync(join(tmpdir(), 'rune-i18n-')), 'de'),
+    ).toBeUndefined();
+  });
+
+  it('fails loudly when the selected scan encounters a dangling locales link', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    symlinkSync(
+      join(dir, 'missing-locales-target'),
+      localesPath,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    expect(() => discoverSelectedOverlay(dir, 'de')).toThrowError(
+      expect.objectContaining({ code: 'RUNE-101' }),
+    );
+  });
+
+  it('fails loudly when the selected scan encounters a non-directory locales path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    writeFileSync(join(dir, 'locales'), 'not a directory');
+
+    expect(() => discoverSelectedOverlay(dir, 'de')).toThrowError(
+      expect.objectContaining({ code: 'RUNE-101' }),
+    );
+  });
+
+  it('ignores yml files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'de.yml'), 'rune.button.next: Weiter\n');
+
+    expect(discoverSelectedOverlay(dir, 'de')).toBeUndefined();
   });
 });

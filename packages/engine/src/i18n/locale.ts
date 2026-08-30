@@ -89,8 +89,12 @@ export interface DiscoveredOverlay {
   readonly path: string;
 }
 
-/** Lists the overlay files next to a manifest; no `locales/` directory is simply none. */
-export function discoverOverlays(manifestDir: string): readonly DiscoveredOverlay[] {
+interface OverlayFile {
+  readonly localeClaim: string;
+  readonly path: string;
+}
+
+function scanOverlayFiles(manifestDir: string): readonly OverlayFile[] {
   const directory = join(manifestDir, LOCALES_DIRECTORY);
   let names: string[];
   try {
@@ -112,35 +116,95 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
       cause,
     });
   }
-  const overlays = names
+
+  return names
     .filter((name) => /\.yaml$/i.test(name))
     .sort()
-    .map((name) => {
-      const path = join(directory, name);
-      const locale = normalizeOverlayLocaleClaim(name.replace(/\.yaml$/i, ''));
-      if (locale === undefined) {
-        throw new ManifestError(
-          'RUNE-104',
-          `locale overlay file "${path}" does not name a valid locale`,
-        );
-      }
-      return { locale, path };
-    });
+    .map((name) => ({
+      localeClaim: name.replace(/\.yaml$/i, ''),
+      path: join(directory, name),
+    }));
+}
+
+function duplicateClaim(first: DiscoveredOverlay, second: DiscoveredOverlay): ManifestError {
+  return new ManifestError(
+    'RUNE-104',
+    `locale overlay files "${first.path}" and "${second.path}" both claim locale "${second.locale}" (locale file names are normalized and matched case-insensitively)`,
+  );
+}
+
+/** Lists the overlay files next to a manifest; no `locales/` directory is simply none. */
+export function discoverOverlays(manifestDir: string): readonly DiscoveredOverlay[] {
+  const overlays = scanOverlayFiles(manifestDir).map(({ localeClaim, path }) => {
+    const locale = normalizeOverlayLocaleClaim(localeClaim);
+    if (locale === undefined) {
+      throw new ManifestError(
+        'RUNE-104',
+        `locale overlay file "${path}" does not name a valid locale`,
+      );
+    }
+    return { locale, path };
+  });
 
   const claims = new Map<string, DiscoveredOverlay>();
   for (const overlay of overlays) {
     const claim = overlay.locale.toLowerCase();
     const first = claims.get(claim);
     if (first !== undefined) {
-      throw new ManifestError(
-        'RUNE-104',
-        `locale overlay files "${first.path}" and "${overlay.path}" both claim locale "${overlay.locale}" (locale file names are normalized and matched case-insensitively)`,
-      );
+      throw duplicateClaim(first, overlay);
     }
     claims.set(claim, overlay);
   }
 
   return overlays;
+}
+
+/** Discovers only the exact or language-fallback overlay needed by a run. */
+export function discoverSelectedOverlay(
+  manifestDir: string,
+  selectedLocale: string,
+): DiscoveredOverlay | undefined {
+  const files = scanOverlayFiles(manifestDir);
+  const selected = normalizeOverlayLocaleClaim(selectedLocale);
+  if (selected === undefined) {
+    return undefined;
+  }
+
+  const exactClaim = selected.toLowerCase();
+  const languageClaim = selected.split('-')[0]?.toLowerCase();
+  const exactMatches: DiscoveredOverlay[] = [];
+  const languageMatches: DiscoveredOverlay[] = [];
+
+  for (const file of files) {
+    const locale = normalizeOverlayLocaleClaim(file.localeClaim);
+    if (locale === undefined) {
+      continue;
+    }
+
+    const overlay = { locale, path: file.path };
+    const claim = locale.toLowerCase();
+    if (claim === exactClaim) {
+      exactMatches.push(overlay);
+    } else if (claim === languageClaim) {
+      languageMatches.push(overlay);
+    }
+  }
+
+  const firstExact = exactMatches[0];
+  const secondExact = exactMatches[1];
+  if (firstExact !== undefined && secondExact !== undefined) {
+    throw duplicateClaim(firstExact, secondExact);
+  }
+  if (firstExact !== undefined) {
+    return firstExact;
+  }
+
+  const firstLanguage = languageMatches[0];
+  const secondLanguage = languageMatches[1];
+  if (firstLanguage !== undefined && secondLanguage !== undefined) {
+    throw duplicateClaim(firstLanguage, secondLanguage);
+  }
+  return firstLanguage;
 }
 
 /**
