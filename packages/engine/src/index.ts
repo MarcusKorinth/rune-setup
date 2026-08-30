@@ -93,6 +93,7 @@ export type {
   ResultOutputLine,
   ResultStep,
   RunResult,
+  RunMode,
   RunStatus,
 } from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';

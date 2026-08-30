@@ -95,6 +95,7 @@ export interface ExecutionPlan {
   readonly manifestPath: string;
   readonly manifestSha256: string;
   readonly platform: RuntimeContext['platform'];
+  readonly locale: string;
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
   readonly resolvedInputs: readonly PlanInput[];
@@ -106,6 +107,7 @@ export interface PlanOptions {
   readonly manifest: Manifest;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
+  readonly locale: string;
 }
 
 /** Execution-only context. Deliberately not re-exported from the package entry point. */
@@ -132,7 +134,7 @@ export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
 
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
 export function buildPlan(options: PlanOptions): ExecutionPlan {
-  const { manifest, resolution, context } = options;
+  const { manifest, resolution, context, locale } = options;
   const manifestDescriptor = manifestDescriptorFor(manifest);
   const resolved = resolutionSnapshotFor(resolution);
   const trustedContext = runtimeContextFor(context);
@@ -181,6 +183,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     manifestPath: manifestDescriptor.path,
     manifestSha256: manifestDescriptor.sha256,
     platform: trustedContext.platform,
+    locale,
     preview: trustedContext.preview,
     resolvedInputs,
     executionOptions: {

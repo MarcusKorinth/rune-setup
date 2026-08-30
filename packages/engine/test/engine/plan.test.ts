@@ -6,13 +6,25 @@ import { describe, expect, it } from 'vitest';
 
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
-import { buildPlan, PLAN_SCHEMA_VERSION, type ExecutionPlan } from '../../src/engine/plan.js';
+import {
+  buildPlan as buildPlanWithLocale,
+  PLAN_SCHEMA_VERSION,
+  type ExecutionPlan,
+  type PlanOptions,
+} from '../../src/engine/plan.js';
 import { isSecretString, MASK } from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const TEST_LOCALE = 'en';
+
+function buildPlan(
+  options: Omit<PlanOptions, 'locale'> & { readonly locale?: string },
+): ExecutionPlan {
+  return buildPlanWithLocale({ ...options, locale: options.locale ?? TEST_LOCALE });
+}
 
 function planFor(
   lines: readonly string[],
@@ -43,7 +55,7 @@ function planFor(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, resolution, context }),
+    plan: buildPlan({ manifest, resolution, context, locale: TEST_LOCALE }),
     manifest,
     resolution,
     context,
@@ -551,6 +563,7 @@ describe('the plan itself', () => {
       'manifestPath',
       'manifestSha256',
       'platform',
+      'locale',
       'preview',
       'resolvedInputs',
       'executionOptions',
@@ -563,6 +576,7 @@ describe('the plan itself', () => {
       manifestPath: 'installer.yaml',
       manifestSha256: '35c8f84df4785677ec842f1adcead819c45a313b74121e196522375db90d6697',
       platform: hostPlatform(),
+      locale: TEST_LOCALE,
       preview: false,
       resolvedInputs: [],
       executionOptions: { failFast: true, logFile: undefined },

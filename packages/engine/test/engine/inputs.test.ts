@@ -634,7 +634,7 @@ describe('values a type refuses', () => {
 
       let planErrorThrown: unknown;
       try {
-        buildPlan({ manifest: withCollision, resolution, context });
+        buildPlan({ manifest: withCollision, resolution, context, locale: 'en' });
       } catch (error) {
         planErrorThrown = error;
       }

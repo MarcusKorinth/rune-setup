@@ -7,13 +7,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import {
-  describePlan,
-  executeRun,
+  describePlan as describePlanWithMode,
+  executeRun as executeRunWithMode,
   OUTPUT_TAIL_LINES,
   snapshotParentEnvironment,
+  type ExecuteOptions,
 } from '../../src/engine/executor.js';
 import { resolveInputs, resolveInputsWithRegistry } from '../../src/engine/inputs.js';
-import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
+import {
+  buildPlan as buildPlanWithLocale,
+  type ExecutionPlan,
+  type PlanOptions,
+} from '../../src/engine/plan.js';
 import { isSecretString, SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
@@ -24,8 +29,25 @@ import {
 } from '../../src/runners/spawnRunner.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import { serializeResult } from '../../src/results/writer.js';
+import type { RunMode, RunResult } from '../../src/results/model.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const TEST_LOCALE = 'en';
+const TEST_MODE: RunMode = 'non-interactive';
+
+function executeRun(options: Omit<ExecuteOptions, 'mode'>): Promise<RunResult> {
+  return executeRunWithMode({ ...options, mode: TEST_MODE });
+}
+
+function describePlan(options: { readonly plan: ExecutionPlan }): RunResult {
+  return describePlanWithMode({ ...options, mode: TEST_MODE });
+}
+
+function buildPlan(
+  options: Omit<PlanOptions, 'locale'> & { readonly locale?: string },
+): ExecutionPlan {
+  return buildPlanWithLocale({ ...options, locale: options.locale ?? TEST_LOCALE });
+}
 
 /** A runner whose behaviour per step is written into the test, so nothing real is spawned. */
 function stubRunner(
@@ -40,6 +62,7 @@ function setup(
     overrides?: ReadonlyMap<string, string>;
     failFast?: boolean;
     environment?: Readonly<Record<string, string | undefined>>;
+    locale?: string;
   } = {},
 ): { plan: ExecutionPlan } {
   const failFastLine = options.failFast === false ? ['execution:', '  failFast: false'] : [];
@@ -62,7 +85,7 @@ function setup(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, resolution, context }),
+    plan: buildPlan({ manifest, resolution, context, locale: options.locale ?? TEST_LOCALE }),
   };
 }
 
@@ -1495,6 +1518,19 @@ describe('skipped steps and the dry run', () => {
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
     expect(result.steps[0]?.command).toEqual(['a']);
   });
+
+  it.each<RunMode>(['gui', 'interactive', 'non-interactive'])(
+    'records the explicit %s mode and the plan locale in dry-run and execution results',
+    async (mode) => {
+      const { plan } = setup(['steps: []'], { locale: 'de-DE' });
+
+      const described = describePlanWithMode({ plan, mode });
+      const executed = await executeRunWithMode({ plan, mode });
+
+      expect(described).toMatchObject({ mode, locale: 'de-DE' });
+      expect(executed).toMatchObject({ mode, locale: 'de-DE' });
+    },
+  );
 
   it('returns a deeply frozen dry-run result', () => {
     const { plan } = setup([

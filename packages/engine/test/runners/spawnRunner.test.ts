@@ -580,6 +580,7 @@ describe('SpawnRunner', () => {
         manifest,
         resolution,
         context,
+        locale: 'en',
       });
 
       const step = plan.steps[0];

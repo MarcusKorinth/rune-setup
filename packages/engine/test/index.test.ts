@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
-import type { Resolution, ResolveInputsOptions, SecretString } from '../src/index.js';
+import type { Resolution, ResolveInputsOptions, RunMode, SecretString } from '../src/index.js';
 // @ts-expect-error low-level planning options are not package-root API
 import type { PlanOptions as ForbiddenPlanOptions } from '../src/index.js';
 // @ts-expect-error low-level execution options are not package-root API
@@ -69,6 +69,14 @@ function assertNoPublicRegistry(options: ResolveInputsOptions, resolution: Resol
 }
 
 void assertNoPublicRegistry;
+
+const PUBLIC_RUN_MODES = [
+  'gui',
+  'interactive',
+  'non-interactive',
+] as const satisfies readonly RunMode[];
+
+void PUBLIC_RUN_MODES;
 
 describe('@rune/engine public API', () => {
   it('exposes a semver version', () => {

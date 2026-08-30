@@ -11,6 +11,9 @@ import type { StepState } from '../engine/state.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 
+/** The frontend mode that drove a run (§10). */
+export type RunMode = 'gui' | 'interactive' | 'non-interactive';
+
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
@@ -80,9 +83,11 @@ export interface RunResult {
   readonly id: string;
   readonly status: RunStatus;
   readonly exitCode: number;
+  readonly mode: RunMode;
   readonly dryRun: boolean;
   readonly crossPlatformPreview: boolean;
   readonly platform: Platform;
+  readonly locale: string;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly durationMs: number;

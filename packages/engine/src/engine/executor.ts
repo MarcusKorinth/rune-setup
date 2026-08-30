@@ -33,6 +33,7 @@ import {
   type ResultOutputLine,
   type ResultStep,
   type RunResult,
+  type RunMode,
   type RunStatus,
 } from '../results/model.js';
 
@@ -41,6 +42,7 @@ export const OUTPUT_TAIL_LINES = 50;
 
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
+  readonly mode: RunMode;
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
@@ -65,7 +67,7 @@ export function snapshotParentEnvironment(
 
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
 export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
-  const { plan } = options;
+  const { plan, mode } = options;
   const executionContext = executionContextFor(plan);
   const { secrets } = executionContext;
   if (plan.preview) {
@@ -266,6 +268,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const result = assembleResult({
     runId,
     plan,
+    mode,
     executionContext,
     steps,
     status: fatalTerminationFailure
@@ -299,7 +302,10 @@ function startFailureDiagnostic(stepId: string, reason: StartFailureReason): str
 }
 
 /** The result of a dry-run: the plan described, nothing executed (§10, status `planned`). */
-export function describePlan(options: { readonly plan: ExecutionPlan }): RunResult {
+export function describePlan(options: {
+  readonly plan: ExecutionPlan;
+  readonly mode: RunMode;
+}): RunResult {
   const executionContext = executionContextFor(options.plan);
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
@@ -320,6 +326,7 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
   return assembleResult({
     runId: randomUUID(),
     plan: options.plan,
+    mode: options.mode,
     executionContext,
     steps,
     status: 'planned',
@@ -333,6 +340,7 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
 function assembleResult(input: {
   readonly runId: string;
   readonly plan: ExecutionPlan;
+  readonly mode: RunMode;
   readonly executionContext: PlanExecutionContext;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
@@ -350,9 +358,11 @@ function assembleResult(input: {
     id: input.runId,
     status: input.status,
     exitCode: EXIT_CODE_BY_STATUS[input.status],
+    mode: input.mode,
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
+    locale: input.plan.locale,
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
     durationMs: input.durationMs,
@@ -416,6 +426,7 @@ function planForObserver(plan: ExecutionPlan, secrets: SecretMasker): ExecutionP
     manifestPath: plan.manifestPath,
     manifestSha256: plan.manifestSha256,
     platform: plan.platform,
+    locale: plan.locale,
     preview: plan.preview,
     resolvedInputs: plan.resolvedInputs.map((input): PlanInput => ({
       id: input.id,
