@@ -56,7 +56,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const emit = (event: RunEvent): void => {
     try {
-      observer(event);
+      observer(Object.freeze(event));
     } catch {
       // A broken renderer must never corrupt a run (§9.1).
     }
@@ -245,7 +245,7 @@ function assembleResult(input: {
   const count = (state: StepState): number => steps.filter((step) => step.state === state).length;
   const executed = count('SUCCEEDED') + count('FAILED') + count('CANCELLED');
 
-  return {
+  return deepFreeze({
     resultSchemaVersion: RESULT_SCHEMA_VERSION,
     id: input.runId,
     status: input.status,
@@ -272,7 +272,7 @@ function assembleResult(input: {
     nothingExecuted: executed === 0,
     inputs: input.resolution.inputs.map(resultInput),
     steps,
-  };
+  });
 }
 
 function resultInput(state: InputState): ResultInput {
@@ -318,4 +318,15 @@ function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[]
   return step.command.argv.map((entry) =>
     entry instanceof SecretString ? MASK : secrets.mask(entry),
   );
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(entry);
+  }
+  return value;
 }

@@ -122,6 +122,83 @@ describe('a run that succeeds', () => {
 
     expect(seen).toEqual(['first', 'second']);
   });
+
+  it('freezes every event and prevents a broken observer from corrupting the result', async () => {
+    const { plan, resolution, secrets, product } = setup([
+      'inputs:',
+      '  features:',
+      '    type: multiselect',
+      '    options: [one, two]',
+      '    default: [one]',
+      'steps:',
+      '  - id: first',
+      '    run:',
+      '      command: a',
+    ]);
+    const events: RunEvent[] = [];
+    const mutations: boolean[] = [];
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      observer: (event) => {
+        events.push(event);
+        mutations.push(Reflect.set(event, 'kind', 'corrupted'));
+
+        if (event.kind === 'runStarted') {
+          mutations.push(Reflect.set(event.plan, 'preview', true));
+        } else if (event.kind === 'stepStarted') {
+          mutations.push(Reflect.set(event, 'stepId', 'corrupted'));
+        } else if (event.kind === 'stepOutput') {
+          mutations.push(Reflect.set(event, 'line', 'corrupted'));
+        } else if (event.kind === 'stepFinished') {
+          mutations.push(Reflect.set(event, 'state', 'FAILED'));
+        } else {
+          const firstInput = event.result.inputs[0]!;
+          const firstStep = event.result.steps[0]!;
+          mutations.push(
+            Reflect.set(event.result, 'status', 'failed'),
+            Reflect.set(event.result, 'exitCode', 70),
+            Reflect.set(event.result.product, 'name', 'corrupted'),
+            Reflect.set(firstInput, 'enabled', false),
+            Reflect.set(firstInput.value as readonly string[], 0, 'corrupted'),
+            Reflect.set(firstStep, 'state', 'FAILED'),
+            Reflect.set(firstStep.command!, 0, 'corrupted'),
+          );
+        }
+
+        throw new Error('broken observer');
+      },
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', 'hello');
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(events.every((event) => Object.isFrozen(event))).toBe(true);
+    expect(mutations.every((mutation) => mutation === false)).toBe(true);
+    expect(result).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    expect(result.product.name).toBe('Example');
+    expect(result.inputs[0]).toMatchObject({ id: 'features', value: ['one'], enabled: true });
+    expect(result.steps[0]).toMatchObject({ id: 'first', state: 'SUCCEEDED', command: ['a'] });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(result.inputs[0])).toBe(true);
+    expect(Object.isFrozen(result.inputs[0]?.value)).toBe(true);
+    expect(Object.isFrozen(result.steps)).toBe(true);
+    expect(Object.isFrozen(result.steps[0])).toBe(true);
+    expect(Object.isFrozen(result.steps[0]?.command)).toBe(true);
+  });
 });
 
 describe('a run that fails', () => {
@@ -180,6 +257,8 @@ describe('a run that fails', () => {
 
     expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stdout', line: 'the token is ***' }]);
     expect(result.steps[1]?.outputTail).toBeNull();
+    expect(Object.isFrozen(result.steps[0]?.outputTail)).toBe(true);
+    expect(Object.isFrozen(result.steps[0]?.outputTail?.[0])).toBe(true);
   });
 
   it('honours successExitCodes instead of assuming zero', async () => {
@@ -349,6 +428,12 @@ describe('skipped steps and the dry run', () => {
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
     expect(result.steps[0]?.command).toEqual(['a']);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.product)).toBe(true);
+    expect(Object.isFrozen(result.inputs)).toBe(true);
+    expect(Object.isFrozen(result.steps)).toBe(true);
+    expect(Object.isFrozen(result.steps[0])).toBe(true);
+    expect(Object.isFrozen(result.steps[0]?.command)).toBe(true);
   });
 
   it('refuses to execute a cross-platform preview plan', async () => {
