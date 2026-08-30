@@ -132,13 +132,13 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const states = new Map<string, InputState>();
   const order: string[] = [];
 
-  for (const [index, id] of ids.entries()) {
+  for (const id of ids) {
     const spec = manifest.inputs[id];
     if (spec === undefined) {
       continue;
     }
     const handler = inputTypes.get(spec.type);
-    const enabled = isEnabled(spec, id, ids.slice(0, index), states, context);
+    const enabled = isEnabled(spec, id, order, states, context);
     const supplied = highestLayer(id, spec, options, environment);
 
     if (!enabled) {
