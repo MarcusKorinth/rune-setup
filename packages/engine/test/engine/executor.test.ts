@@ -7,8 +7,10 @@ import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import { InternalError } from '../../src/errors.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import { parseManifestText } from '../../src/manifest/index.js';
+import { runResultSchema } from '../../src/results/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const HASH = 'a'.repeat(64);
@@ -294,23 +296,135 @@ describe('a run that fails', () => {
     expect(Object.isFrozen(result.steps[0]?.outputTail?.[0])).toBe(true);
   });
 
-  it('honours successExitCodes instead of assuming zero', async () => {
+  it.each([0, 1, -1])('accepts the finite integer success exit code %s', async (exitCode) => {
     const { plan, secrets, product } = setup([
       'steps:',
       '  - id: robocopy-style',
       '    run:',
       '      command: a',
-      '      successExitCodes: [0, 1]',
+      `      successExitCodes: [${exitCode}]`,
     ]);
 
     const result = await executeRun({
       plan,
       product,
       secrets,
-      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+      runner: stubRunner(() => ({ kind: 'exited', exitCode })),
     });
 
     expect(result.status).toBe('succeeded');
+  });
+
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+    ['a fraction', 1.5],
+  ])(
+    'rejects %s from the runner without exposing it, regardless of failFast',
+    async (_label, invalidExitCode) => {
+      for (const failFast of [true, false]) {
+        const { plan, secrets, product } = setup(TWO_STEPS, { failFast });
+        const events: RunEvent[] = [];
+        let runnerCalls = 0;
+
+        await expect(
+          executeRun({
+            plan,
+            product,
+            secrets,
+            observer: (event) => events.push(event),
+            runner: stubRunner(() => {
+              runnerCalls += 1;
+              return { kind: 'exited', exitCode: invalidExitCode };
+            }),
+          }),
+        ).rejects.toMatchObject({ code: 'RUNE-500', name: InternalError.name });
+
+        expect(runnerCalls).toBe(1);
+        expect(events.map((event) => event.kind)).toEqual([
+          'runStarted',
+          'stepStarted',
+          'stepFinished',
+          'stepFinished',
+          'runFinished',
+        ]);
+        expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+
+        const finished = events.filter((event) => event.kind === 'stepFinished');
+        expect(finished[0]).toMatchObject({ stepId: 'first', state: 'FAILED' });
+        expect(finished[0]?.exitCode).toBeUndefined();
+        expect(finished[1]).toMatchObject({ stepId: 'second', state: 'NOT_RUN' });
+
+        const terminal = events.at(-1);
+        expect(terminal?.kind).toBe('runFinished');
+        if (terminal?.kind !== 'runFinished') {
+          throw new Error('expected RunFinished');
+        }
+        expect(terminal.result).toMatchObject({
+          status: 'internal_error',
+          exitCode: 70,
+          stepsExecuted: 1,
+          stepsFailed: 1,
+          stepsNotRun: 1,
+        });
+        expect(terminal.result.steps[0]).toMatchObject({ state: 'FAILED', exitCode: null });
+        expect(terminal.result.steps[1]).toMatchObject({ state: 'NOT_RUN', exitCode: null });
+        expect(() => runResultSchema.parse(terminal.result)).not.toThrow();
+
+        const json = JSON.stringify(events);
+        const parsed = JSON.parse(json) as unknown;
+        expect(JSON.stringify(parsed)).toBe(json);
+        expect(json).not.toContain(String(invalidExitCode));
+      }
+    },
+  );
+
+  it('preserves planned skips while a fatal runner result stops pending steps', async () => {
+    const { plan, secrets, product } = setup([
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: fatal',
+      '    run:',
+      '      command: a',
+      '  - id: skipped',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: b',
+      '  - id: pending',
+      '    run:',
+      '      command: c',
+    ]);
+    const events: RunEvent[] = [];
+    let runnerCalls = 0;
+
+    await expect(
+      executeRun({
+        plan,
+        product,
+        secrets,
+        observer: (event) => events.push(event),
+        runner: stubRunner(() => {
+          runnerCalls += 1;
+          return { kind: 'exited', exitCode: Number.NaN };
+        }),
+      }),
+    ).rejects.toBeInstanceOf(InternalError);
+
+    expect(runnerCalls).toBe(1);
+    expect(
+      events
+        .filter((event) => event.kind === 'stepFinished')
+        .map((event) => [event.stepId, event.state]),
+    ).toEqual([
+      ['fatal', 'FAILED'],
+      ['skipped', 'SKIPPED'],
+      ['pending', 'NOT_RUN'],
+    ]);
+    expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
   });
 
   it('treats a command that cannot start as a failed step, not a crash', async () => {

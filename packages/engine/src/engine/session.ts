@@ -290,10 +290,10 @@ export class Session {
     let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
     let closeAttempted = false;
     let completed: RunResult | undefined;
+    let terminal: RunFinished | undefined;
     try {
       const logFile = plan.executionOptions.logFile;
       log = logFile === null ? undefined : await createLogFileSink(logFile);
-      let terminal: RunFinished | undefined;
       const observers: EngineObserver = (event) => {
         notifyObserver(log?.observer, event);
         if (event.kind === 'runFinished') {
@@ -333,14 +333,15 @@ export class Session {
       }
 
       const projected = this.#projectError(failure);
-      if (completed !== undefined) {
+      const terminalResult = completed ?? terminal?.result;
+      if (terminalResult !== undefined) {
         const runError =
           projected instanceof RuneError
             ? projected
             : new InternalError('an unexpected error escaped run finalization', {
                 cause: projected,
               });
-        const result = createCompletedRunFailureResult(runError, completed);
+        const result = createCompletedRunFailureResult(runError, terminalResult);
         notifyObserver(observer, Object.freeze({ kind: 'runFinished', result }));
         throw runError;
       }

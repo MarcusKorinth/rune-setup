@@ -103,6 +103,24 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const steps: ResultStep[] = [];
   let failed = false;
   let wasCancelled = false;
+  let fatalError: InternalError | undefined;
+
+  const finishRun = (status: RunStatus): RunResult => {
+    const finishedAt = new Date();
+    const result = assembleResult({
+      runId,
+      source: sourceFromPlan(plan, options.product, projectText),
+      mode: options.mode ?? 'non-interactive',
+      steps,
+      status,
+      dryRun: false,
+      startedAt,
+      finishedAt,
+    });
+
+    emit({ kind: 'runFinished', result });
+    return result;
+  };
 
   emit({ kind: 'runStarted', plan: projectPlanForSink(plan, secrets) });
 
@@ -119,7 +137,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       continue;
     }
 
-    const abort = cancel.cancelled || (failed && plan.executionOptions.failFast);
+    const abort =
+      fatalError !== undefined || cancel.cancelled || (failed && plan.executionOptions.failFast);
     if (abort) {
       steps.push(
         finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, projectText), null, projectText),
@@ -182,8 +201,15 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
     switch (outcome.kind) {
       case 'exited':
-        exitCode = outcome.exitCode;
-        state = step.command.successExitCodes.includes(outcome.exitCode) ? 'SUCCEEDED' : 'FAILED';
+        if (!Number.isFinite(outcome.exitCode) || !Number.isInteger(outcome.exitCode)) {
+          state = 'FAILED';
+          fatalError = new InternalError(
+            `runner returned an invalid exit code for step "${step.id}"`,
+          );
+        } else {
+          exitCode = outcome.exitCode;
+          state = step.command.successExitCodes.includes(outcome.exitCode) ? 'SUCCEEDED' : 'FAILED';
+        }
         break;
       case 'timedOut': {
         state = 'FAILED';
@@ -231,19 +257,18 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     });
   }
 
-  const finishedAt = new Date();
-  const result = assembleResult({
-    runId,
-    source: sourceFromPlan(plan, options.product, projectText),
-    mode: options.mode ?? 'non-interactive',
-    steps,
-    status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
-    dryRun: false,
-    startedAt,
-    finishedAt,
-  });
-
-  emit({ kind: 'runFinished', result });
+  const result = finishRun(
+    fatalError !== undefined
+      ? 'internal_error'
+      : wasCancelled || cancel.cancelled
+        ? 'cancelled'
+        : failed
+          ? 'failed'
+          : 'succeeded',
+  );
+  if (fatalError !== undefined) {
+    throw fatalError;
+  }
   return result;
 }
 

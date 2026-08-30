@@ -280,6 +280,45 @@ describe('planning and executing', () => {
     expect(log).toContain('run finished: succeeded (exit 0)');
   });
 
+  it('publishes a runner contract failure only after finalization, then rejects', async () => {
+    const path = fixture(BASE);
+    const logFile = join(path, '..', 'logs', 'run.log');
+    const session = await Session.open(path, {
+      environment: {},
+      logFile,
+      runner: { run: async () => ({ kind: 'exited', exitCode: Number.NaN }) },
+    });
+    const events: RunEvent[] = [];
+    let terminalSawFinalizedLog = false;
+
+    await expect(
+      session.execute((event) => {
+        events.push(event);
+        if (event.kind === 'runFinished') {
+          terminalSawFinalizedLog = readFileSync(logFile, 'utf8').includes(
+            'run finished: internal_error (exit 70)',
+          );
+        }
+      }),
+    ).rejects.toMatchObject({ code: 'RUNE-500', name: InternalError.name });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+    const terminal = events.at(-1);
+    expect(terminal?.kind === 'runFinished' && terminal.result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      stepsFailed: 1,
+    });
+    expect(terminalSawFinalizedLog).toBe(true);
+    expect(readFileSync(logFile, 'utf8')).toContain('run finished: internal_error (exit 70)');
+  });
+
   it('uses one safe plan projection while the runner receives the canonical clear values', async () => {
     const marker = 'shared-secret-marker';
     const mirror = `prefix-${marker}-suffix`;
