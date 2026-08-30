@@ -9,6 +9,7 @@
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { ExecutionError, InternalError } from '../errors.js';
+import type { InputValue } from '../inputs/base.js';
 import { MASK } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
@@ -16,7 +17,7 @@ import { inputTypes } from '../inputs/registry.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import type { Resolution } from './inputs.js';
+import type { Resolution, ValueSource } from './inputs.js';
 import type { StringTable } from '../i18n/strings.js';
 import { SecretString } from './secrets.js';
 
@@ -48,23 +49,53 @@ export type PlannedStep =
       readonly skipReason: string;
     };
 
+/** The execution-plan format is independent of manifest and result schema versions. */
+export const EXECUTION_PLAN_VERSION = 1;
+
+/**
+ * An input after the resolution stage has finished. The plan deliberately does not retain
+ * the manifest's InputSpec: only the immutable state that execution and rendering consume
+ * crosses the planning boundary.
+ */
+export interface ResolvedPlanInput {
+  readonly id: string;
+  readonly type: ManifestV1['inputs'][string]['type'];
+  readonly value: InputValue;
+  readonly enabled: boolean;
+  readonly source: ValueSource | null;
+  readonly ignored: ValueSource | null;
+}
+
+export interface ExecutionOptions {
+  readonly failFast: boolean;
+  /** The effective absolute path after CLI-over-manifest precedence, or null when disabled. */
+  readonly logFile: string | null;
+}
+
 export interface ExecutionPlan {
+  readonly executionPlanVersion: typeof EXECUTION_PLAN_VERSION;
   readonly manifestPath: string;
+  readonly manifestSha256: string;
+  readonly manifestSchemaVersion: ManifestV1['schemaVersion'];
   /** The session's selected display locale, or nothing for the built-in defaults (§6.3). */
-  readonly locale: string | undefined;
+  readonly locale: string | null;
   readonly platform: RuntimeContext['platform'];
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
-  readonly failFast: boolean;
-  readonly logFile: string | undefined;
+  readonly resolvedInputs: readonly ResolvedPlanInput[];
+  readonly executionOptions: ExecutionOptions;
   readonly steps: readonly PlannedStep[];
 }
 
 export interface PlanOptions {
   readonly manifest: ManifestV1;
   readonly manifestPath: string;
+  /** SHA-256 of the exact manifest bytes used to produce this plan. */
+  readonly manifestSha256: string;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
+  /** Effective log path after CLI-over-manifest precedence and path anchoring. */
+  readonly logFile?: string | undefined;
   /** Localized titles land in the plan, so events and results show them (S6.3). */
   readonly strings?: StringTable | undefined;
 }
@@ -103,13 +134,33 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     };
   });
 
+  const resolvedInputs = resolution.inputs.map((state): ResolvedPlanInput => {
+    if (state.value === undefined) {
+      throw new InternalError(`input "${state.id}" was not resolved before planning`);
+    }
+    return {
+      id: state.id,
+      type: state.spec.type,
+      value: Array.isArray(state.value) ? [...state.value] : state.value,
+      enabled: state.enabled,
+      source: state.source ?? null,
+      ignored: state.ignored ?? null,
+    };
+  });
+
   return deepFreeze({
+    executionPlanVersion: EXECUTION_PLAN_VERSION,
     manifestPath: options.manifestPath,
-    locale: options.strings?.locale,
+    manifestSha256: options.manifestSha256,
+    manifestSchemaVersion: manifest.schemaVersion,
+    locale: options.strings?.locale ?? null,
     platform: context.platform,
     preview: context.preview,
-    failFast: manifest.execution.failFast,
-    logFile: manifest.execution.logFile,
+    resolvedInputs,
+    executionOptions: {
+      failFast: manifest.execution.failFast,
+      logFile: options.logFile ?? null,
+    },
     steps,
   });
 }
@@ -221,7 +272,7 @@ function resolveCommand(
     cwd,
     env,
     timeoutSeconds: spec.timeoutSeconds,
-    successExitCodes: spec.successExitCodes,
+    successExitCodes: [...spec.successExitCodes],
   };
 }
 

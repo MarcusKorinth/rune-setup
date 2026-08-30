@@ -10,8 +10,7 @@ import { randomUUID } from 'node:crypto';
 
 import { InternalError } from '../errors.js';
 import { RUNE_VERSION } from '../version.js';
-import type { InputState, Resolution } from './inputs.js';
-import type { ExecutionPlan, PlannedStep } from './plan.js';
+import type { ExecutionPlan, PlannedStep, ResolvedPlanInput } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import type { SecretRegistry } from './secrets.js';
 import { MASK, SecretString } from './secrets.js';
@@ -34,13 +33,10 @@ export const OUTPUT_TAIL_LINES = 50;
 
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly secrets: SecretRegistry;
   /** The frontend driving this engine run; direct engine callers default to automation. */
   readonly mode?: RunMode;
-  readonly manifestSha256?: string | null;
-  readonly manifestSchemaVersion?: number | null;
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
@@ -87,7 +83,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       continue;
     }
 
-    const abort = cancel.cancelled || (failed && plan.failFast);
+    const abort = cancel.cancelled || (failed && plan.executionOptions.failFast);
     if (abort) {
       steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), null));
       emit({
@@ -194,11 +190,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const result = assembleResult({
     runId,
     plan,
-    resolution: options.resolution,
     product: options.product,
     mode: options.mode ?? 'non-interactive',
-    manifestSha256: options.manifestSha256 ?? null,
-    manifestSchemaVersion: options.manifestSchemaVersion ?? null,
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
     dryRun: false,
@@ -213,12 +206,9 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 /** The result of a dry-run: the plan described, nothing executed (§10, status `planned`). */
 export function describePlan(options: {
   readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly secrets: SecretRegistry;
   readonly mode?: RunMode;
-  readonly manifestSha256?: string | null;
-  readonly manifestSchemaVersion?: number | null;
 }): RunResult {
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
@@ -231,11 +221,8 @@ export function describePlan(options: {
   return assembleResult({
     runId: randomUUID(),
     plan: options.plan,
-    resolution: options.resolution,
     product: options.product,
     mode: options.mode ?? 'non-interactive',
-    manifestSha256: options.manifestSha256 ?? null,
-    manifestSchemaVersion: options.manifestSchemaVersion ?? null,
     steps,
     status: 'planned',
     dryRun: true,
@@ -247,11 +234,8 @@ export function describePlan(options: {
 function assembleResult(input: {
   readonly runId: string;
   readonly plan: ExecutionPlan;
-  readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly mode: RunMode;
-  readonly manifestSha256: string | null;
-  readonly manifestSchemaVersion: number | null;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
   readonly dryRun: boolean;
@@ -281,8 +265,8 @@ function assembleResult(input: {
     product: { name: input.product.name, version: input.product.version },
     manifest: {
       path: input.plan.manifestPath,
-      sha256: input.manifestSha256,
-      schemaVersion: input.manifestSchemaVersion,
+      sha256: input.plan.manifestSha256,
+      schemaVersion: input.plan.manifestSchemaVersion,
     },
     stepsTotal: steps.length,
     stepsExecuted: executed,
@@ -292,13 +276,13 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.resolution.inputs.map(resultInput),
+    inputs: input.plan.resolvedInputs.map(resultInput),
     steps,
   });
 }
 
-function resultInput(state: InputState): ResultInput {
-  const handler = state.spec.type === 'secret';
+function resultInput(state: ResolvedPlanInput): ResultInput {
+  const handler = state.type === 'secret';
   const value = state.value;
 
   return {
@@ -309,7 +293,7 @@ function resultInput(state: InputState): ResultInput {
     source: state.source ?? state.ignored ?? null,
     secret: handler,
     enabled: state.enabled,
-    ignored: state.ignored === undefined ? null : 'input disabled',
+    ignored: state.ignored === null ? null : 'input disabled',
   };
 }
 

@@ -42,31 +42,30 @@ async function producerResults(): Promise<{
   });
   const secrets = new SecretRegistry();
   const resolution = resolveInputs({ manifest, context, environment: {}, secrets });
-  const plan = buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context });
-  const identity = { manifestSha256: HASH, manifestSchemaVersion: 1 } as const;
+  const plan = buildPlan({
+    manifest,
+    manifestPath: 'installer.yaml',
+    manifestSha256: HASH,
+    resolution,
+    context,
+  });
 
   const live = await executeRun({
     plan,
-    resolution,
     product: manifest.product,
     secrets,
-    ...identity,
     runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
   });
   const failed = await executeRun({
     plan,
-    resolution,
     product: manifest.product,
     secrets,
-    ...identity,
     runner: { run: async () => ({ kind: 'exited', exitCode: 1 }) },
   });
   const planned = describePlan({
     plan,
-    resolution,
     product: manifest.product,
     secrets,
-    ...identity,
   });
 
   return {

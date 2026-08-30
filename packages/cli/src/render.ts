@@ -1,31 +1,71 @@
 /**
  * Shared rendering (docs/architecture.md §9.3): the dry-run plan, run progress, and the
  * result summary — one renderer, so dry-run, the interactive summary, and logs tell one
- * story. Everything rendered here arrives already masked from the engine.
+ * story. Plan values keep their SecretString wrappers until this rendering sink masks them.
  */
 
-import type { RunEvent, RunResult } from '@rune/engine';
+import { isSecretString, MASK } from '@rune/engine';
+import type { ExecutionPlan, RunEvent, RunResult } from '@rune/engine';
 
 import type { CliIo } from './io.js';
 
-/** Renders a `planned` result — the dry-run output (§10: requested output, stdout). */
-export function renderPlan(result: RunResult, io: CliIo): void {
-  const preview = result.crossPlatformPreview ? ', cross-platform preview' : '';
+/** Renders the immutable plan itself — the dry-run output (§10: requested output, stdout). */
+export function renderPlan(
+  plan: ExecutionPlan,
+  product: { readonly name: string; readonly version: string },
+  io: CliIo,
+): void {
+  const preview = plan.preview ? ', cross-platform preview' : '';
   io.stdout(
-    `Plan for ${result.product.name} ${result.product.version} ` +
-      `(${result.manifest.path}, platform ${result.platform}${preview})`,
+    `Execution plan v${plan.executionPlanVersion} for ${product.name} ${product.version} ` +
+      `(${plan.manifestPath}, sha256 ${plan.manifestSha256}, platform ${plan.platform}${preview})`,
   );
-  result.steps.forEach((step, index) => {
+  io.stdout(
+    `Execution options: failFast=${String(plan.executionOptions.failFast)}, ` +
+      `logFile=${maskedJson(plan.executionOptions.logFile)}`,
+  );
+  io.stdout('Resolved inputs:');
+  for (const input of plan.resolvedInputs) {
+    io.stdout(
+      `  ${input.id}: value=${maskedJson(input.value)}, type=${input.type}, ` +
+        `enabled=${String(input.enabled)}, source=${input.source ?? 'none'}, ` +
+        `ignored=${input.ignored ?? 'none'}`,
+    );
+  }
+  io.stdout('Steps:');
+  plan.steps.forEach((step, index) => {
     const number = `${index + 1}.`.padEnd(3);
     if (step.state === 'SKIPPED') {
-      io.stdout(`  ${number} ${step.title} — SKIPPED (${step.skipReason ?? ''})`);
+      io.stdout(`  ${number} ${step.title} — SKIPPED (${step.skipReason})`);
       return;
     }
     io.stdout(`  ${number} ${step.title}`);
-    if (step.command !== null) {
-      io.stdout(`       ${step.command.join(' ')}`);
-    }
+    io.stdout(`       argv: ${maskedJson(step.command.argv)}`);
+    io.stdout(`       cwd: ${maskedJson(step.command.cwd)}`);
+    io.stdout(`       env: ${maskedJson(step.command.env)}`);
+    io.stdout(`       timeoutSeconds: ${maskedJson(step.command.timeoutSeconds)}`);
+    io.stdout(`       successExitCodes: ${maskedJson(step.command.successExitCodes)}`);
   });
+}
+
+/** JSON quoting keeps argv boundaries visible; wrappers are masked without being revealed. */
+function maskedJson(value: unknown): string {
+  return JSON.stringify(maskedValue(value));
+}
+
+function maskedValue(value: unknown): unknown {
+  if (isSecretString(value)) {
+    return MASK;
+  }
+  if (Array.isArray(value)) {
+    return value.map(maskedValue);
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, maskedValue(entry)]),
+    );
+  }
+  return value;
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */

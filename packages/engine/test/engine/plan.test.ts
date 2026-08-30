@@ -10,6 +10,7 @@ import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const HASH = 'a'.repeat(64);
 
 function planFor(
   lines: readonly string[],
@@ -33,7 +34,13 @@ function planFor(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, manifestPath: 'installer.yaml', resolution, context }),
+    plan: buildPlan({
+      manifest,
+      manifestPath: 'installer.yaml',
+      manifestSha256: HASH,
+      resolution,
+      context,
+    }),
     manifest,
     resolution,
   };
@@ -202,6 +209,7 @@ describe('localized titles', () => {
     const plan = buildPlan({
       manifest,
       manifestPath: 'installer.yaml',
+      manifestSha256: HASH,
       resolution,
       context,
       strings: resolveStrings({ manifest, overlay }),
@@ -249,10 +257,72 @@ describe('the plan itself', () => {
     expect(Object.isFrozen(plan)).toBe(true);
     expect(Object.isFrozen(plan.steps[0])).toBe(true);
     expect(plan).toMatchObject({
+      executionPlanVersion: 1,
       manifestPath: 'installer.yaml',
+      manifestSha256: HASH,
+      manifestSchemaVersion: 1,
       platform: hostPlatform(),
       preview: false,
-      failFast: true,
+      executionOptions: { failFast: true, logFile: null },
     });
+    expect(Object.isFrozen(plan.resolvedInputs)).toBe(true);
+    expect(Object.isFrozen(plan.executionOptions)).toBe(true);
+  });
+
+  it('owns deeply frozen resolved inputs, options, and command data', () => {
+    const { plan, resolution } = planFor(
+      [
+        'inputs:',
+        '  features:',
+        '    type: multiselect',
+        '    options: [one, two]',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  disabled:',
+        '    type: text',
+        '    when: "${enabled}"',
+        'steps:',
+        '  - id: a',
+        '    run:',
+        '      command: node',
+        '      env:',
+        '        MODE: safe',
+        '      successExitCodes: [0, 7]',
+      ],
+      {
+        overrides: new Map([
+          ['features', '["one"]'],
+          ['disabled', 'discarded'],
+        ]),
+      },
+    );
+
+    expect(plan.resolvedInputs).toMatchObject([
+      { id: 'features', value: ['one'], enabled: true, source: 'set', ignored: null },
+      { id: 'enabled', value: false, enabled: true, source: 'default', ignored: null },
+      { id: 'disabled', value: '', enabled: false, source: null, ignored: 'set' },
+    ]);
+
+    const callerValue = resolution.byId.get('features')?.value as string[];
+    callerValue.push('two');
+    expect(plan.resolvedInputs[0]?.value).toEqual(['one']);
+
+    expect(() => (plan.resolvedInputs as ResolvedPlanInputMutation[]).pop()).toThrow(TypeError);
+    expect(() => (plan.resolvedInputs[0]?.value as string[]).push('two')).toThrow(TypeError);
+    expect(() => {
+      (plan.executionOptions as { failFast: boolean }).failFast = false;
+    }).toThrow(TypeError);
+
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    expect(() => {
+      (step.command.env as Record<string, string>).MODE = 'corrupted';
+    }).toThrow(TypeError);
+    expect(() => (step.command.successExitCodes as number[]).push(9)).toThrow(TypeError);
   });
 });
+
+type ResolvedPlanInputMutation = ExecutionPlan['resolvedInputs'][number];

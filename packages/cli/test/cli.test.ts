@@ -98,18 +98,72 @@ describe('rune run', () => {
     expect(io.err.join('\n')).toContain('hello');
   });
 
-  it('renders the plan under --dry-run and executes nothing', async () => {
-    const path = fixture(MANIFEST);
+  it('renders the complete, unambiguous plan under --dry-run without leaking secrets', async () => {
+    const secret = 'super-secret-value';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  includeExtra:',
+      '    type: boolean',
+      '    default: false',
+      '  ignoredInput:',
+      '    type: text',
+      '    when: "${includeExtra}"',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: preview',
+      '    run:',
+      '      command: node',
+      '      args:',
+      '        - two words',
+      `        - 'quote"inside'`,
+      '        - "--token=${token}"',
+      '      cwd: "work/${token}"',
+      '      env:',
+      '        PUBLIC: visible value',
+      '        PRIVATE: "prefix-${token}-suffix"',
+      '      timeoutSeconds: 12',
+      '      successExitCodes: [0, 7]',
+      '  - id: skipped',
+      '    when: "${includeExtra}"',
+      '    run:',
+      '      command: never-runs',
+    ]);
     const io = capture();
 
     const code = await run(
-      ['run', path, '--dry-run', '--non-interactive', '--set', 'greeting=hi'],
+      [
+        'run',
+        path,
+        '--dry-run',
+        '--non-interactive',
+        '--set',
+        `token=${secret}`,
+        '--set',
+        'ignoredInput=discarded',
+      ],
       io,
     );
 
     expect(code).toBe(0);
-    expect(io.out[0]).toContain('Plan for Example 1.0.0');
-    expect(io.out.join('\n')).toContain('node -e');
+    const rendered = io.out.join('\n');
+    expect(io.out[0]).toContain('Execution plan v1 for Example 1.0.0');
+    expect(rendered).toContain('Execution options: failFast=true, logFile=null');
+    expect(rendered).toContain(
+      'ignoredInput: value="", type=text, enabled=false, source=none, ignored=set',
+    );
+    expect(rendered).toContain('token: value="***", type=secret, enabled=true, source=set');
+    expect(rendered).toContain('argv: ["node","two words","quote\\"inside","***"]');
+    expect(rendered).toContain('cwd: "***"');
+    expect(rendered).toContain('env: {"PUBLIC":"visible value","PRIVATE":"***"}');
+    expect(rendered).toContain('timeoutSeconds: 12');
+    expect(rendered).toContain('successExitCodes: [0,7]');
+    expect(rendered).toContain('SKIPPED (condition false: ${includeExtra})');
+    expect(rendered).not.toContain(secret);
   });
 
   it('exits 4 listing every missing input, and still writes the result file', async () => {
@@ -199,6 +253,8 @@ describe('result files for failed outcomes', () => {
     const result = JSON.parse(io.out.join('\n')) as Record<string, unknown>;
     expect(result['status']).toBe('planned');
     expect(result['dryRun']).toBe(true);
+    expect(io.out).toHaveLength(1);
+    expect(io.out[0]).not.toContain('Execution plan');
   });
 });
 

@@ -93,6 +93,7 @@ export class Session {
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
   #resolution: Resolution;
+  #plan: ExecutionPlan | undefined;
   #activeExecution: ActiveExecution | undefined;
 
   private constructor(fields: {
@@ -123,6 +124,7 @@ export class Session {
     this.#resolution = freezeResolution(fields.resolution);
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
+    this.#plan = undefined;
     // Public readonly fields and facade methods must be readonly in JavaScript too. Private
     // slots remain mutable, so answers, resolution, execution, and cancellation still work.
     Object.freeze(this);
@@ -233,6 +235,7 @@ export class Session {
       throw error;
     }
     this.#resolution = after;
+    this.#plan = undefined;
 
     const changes: InputStateChanged[] = [];
     for (const state of after.inputs) {
@@ -252,25 +255,28 @@ export class Session {
         missing.map((id) => this.#missingIssue(id)),
       );
     }
-    return buildPlan({
+    if (this.#plan !== undefined) {
+      return this.#plan;
+    }
+    this.#plan = buildPlan({
       manifest: this.manifest,
       manifestPath: this.manifestPath,
+      manifestSha256: this.manifestSha256,
       resolution: this.#resolution,
       context: this.#context,
+      logFile: this.#logFile,
       strings: this.#strings,
     });
+    return this.#plan;
   }
 
   /** The dry-run result: the plan described, nothing executed (§10, status `planned`). */
   describe(): RunResult {
     return describePlan({
       plan: this.plan(),
-      resolution: this.#resolution,
       product: this.manifest.product,
       secrets: this.#secrets,
       mode: this.mode,
-      manifestSha256: this.manifestSha256,
-      manifestSchemaVersion: this.manifest.schemaVersion,
     });
   }
 
@@ -284,19 +290,17 @@ export class Session {
     this.#activeExecution = activeExecution;
     let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
     try {
-      log = this.#logFile === undefined ? undefined : await createLogFileSink(this.#logFile);
+      const logFile = plan.executionOptions.logFile;
+      log = logFile === null ? undefined : await createLogFileSink(logFile);
       const observers: EngineObserver = (event) => {
         log?.observer(event);
         observer?.(event);
       };
       return await executeRun({
         plan,
-        resolution: this.#resolution,
         product: this.manifest.product,
         secrets: this.#secrets,
         mode: this.mode,
-        manifestSha256: this.manifestSha256,
-        manifestSchemaVersion: this.manifest.schemaVersion,
         observer: observers,
         cancel: activeExecution.cancel,
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),

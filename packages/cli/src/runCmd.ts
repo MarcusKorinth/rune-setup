@@ -52,12 +52,13 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
       ...(platform === undefined ? {} : { platform }),
     });
 
+    const plan = flags.dryRun === true ? session.plan() : undefined;
     const result =
       flags.dryRun === true ? session.describe() : await session.execute(progressObserver(io));
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
-    if (flags.dryRun === true && flags.result !== '-') {
-      renderPlan(result, io);
+    if (plan !== undefined && flags.result !== '-') {
+      renderPlan(plan, session.manifest.product, io);
     }
     renderOutcome(result, session.warnings(), io);
     if (flags.result !== undefined) {

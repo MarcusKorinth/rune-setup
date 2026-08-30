@@ -129,13 +129,33 @@ describe('planning and executing', () => {
     writeFileSync(path, bytes);
     const expectedSha256 = createHash('sha256').update(bytes).digest('hex');
     const session = await Session.open(path, { environment: {}, runner: okRunner });
+    const plan = session.plan();
 
     const expectedIdentity = {
       mode: 'non-interactive',
       manifest: { path, sha256: expectedSha256, schemaVersion: 1 },
     };
+    expect(plan).toMatchObject({
+      executionPlanVersion: 1,
+      manifestPath: path,
+      manifestSha256: expectedSha256,
+      manifestSchemaVersion: 1,
+    });
+    expect(session.plan()).toBe(plan);
     expect(session.describe()).toMatchObject(expectedIdentity);
     await expect(session.execute()).resolves.toMatchObject(expectedIdentity);
+  });
+
+  it('plans the effective log path after manifest anchoring and flag precedence', async () => {
+    const path = fixture([...BASE, 'execution:', '  logFile: logs/manifest.log']);
+    const manifestLog = await Session.open(path, { environment: {} });
+    expect(manifestLog.plan().executionOptions.logFile).toBe(
+      join(path, '..', 'logs', 'manifest.log'),
+    );
+
+    const flagPath = join(path, '..', 'logs', 'flag.log');
+    const flagLog = await Session.open(path, { environment: {}, logFile: flagPath });
+    expect(flagLog.plan().executionOptions.logFile).toBe(flagPath);
   });
 
   it('preserves an explicit frontend mode in dry-run and live results', async () => {
