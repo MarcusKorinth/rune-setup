@@ -127,6 +127,14 @@ describe('SpawnRunner', { timeout: SPAWN_RUNNER_TEST_TIMEOUT_MS }, () => {
     expect(outcome.kind).toBe('failedToStart');
   });
 
+  it('resolves a synchronous spawn error as failed to start', async () => {
+    await expect(
+      run(nodeCommand('', { argv: [process.execPath, 'invalid\0argument'] })),
+    ).resolves.toMatchObject({
+      kind: 'failedToStart',
+    });
+  });
+
   it('kills a process that exceeds its timeout', async () => {
     const outcome = await run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }));
 

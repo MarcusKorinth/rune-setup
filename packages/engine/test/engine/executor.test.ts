@@ -216,6 +216,44 @@ describe('a run that fails', () => {
     expect(result.status).toBe('failed');
     expect(result.steps[0]?.outputTail?.[0]?.line).toContain('could not be started');
   });
+
+  it('masks a secret when spawn throws synchronously and finishes the run normally', async () => {
+    const secret = 'sync-spawn-secret';
+    const { plan, resolution, secrets, product } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: invalid-argument',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        '      args: ["${token}\\0"]',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      resolution,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+    });
+
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+    expect(result.steps[0]).toMatchObject({ state: 'FAILED', exitCode: null });
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    expect(JSON.stringify({ events, result })).not.toContain(secret);
+    expect(result.steps[0]?.outputTail?.[0]?.line).toContain('***');
+  });
 });
 
 describe('cancellation and timeout', () => {

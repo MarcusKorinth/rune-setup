@@ -7,7 +7,7 @@
  * fails.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import { SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from './base.js';
@@ -20,6 +20,12 @@ function reveal(value: string | SecretString): string {
   return value instanceof SecretString ? value.reveal() : value;
 }
 
+function spawnFailureMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message !== ''
+    ? cause.message
+    : 'unknown process-start failure';
+}
+
 export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
     return new Promise((resolve) => {
@@ -30,14 +36,20 @@ export class SpawnRunner implements Runner {
         env[name] = reveal(value);
       }
 
-      const child = spawn(reveal(executable ?? ''), args.map(reveal), {
-        cwd: reveal(command.cwd),
-        env: { ...env, ...request.extraEnv },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        // Its own process group on POSIX, so the kill path can address the whole tree.
-        detached: process.platform !== 'win32',
-      });
+      let child: ChildProcess;
+      try {
+        child = spawn(reveal(executable ?? ''), args.map(reveal), {
+          cwd: reveal(command.cwd),
+          env: { ...env, ...request.extraEnv },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: false,
+          // Its own process group on POSIX, so the kill path can address the whole tree.
+          detached: process.platform !== 'win32',
+        });
+      } catch (cause: unknown) {
+        resolve({ kind: 'failedToStart', message: spawnFailureMessage(cause) });
+        return;
+      }
 
       let settled = false;
       let terminationCause: 'timedOut' | 'cancelled' | undefined;
