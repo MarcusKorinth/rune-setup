@@ -436,7 +436,7 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 | `config_error` | 3 | manifest invalid (RUNE-1xx) |
 | `input_error` | 4 | missing/invalid input, unknown `--set`/values key (RUNE-2xx) |
 | `resolution_error` | 5 | interpolation or condition error (RUNE-3xx) |
-| `cancelled` | 6 | user/system abort (RUNE-601) — during execution (interrupted step `CANCELLED`, rest `NOT_RUN`) or before it (CLI edit-loop `Cancel`, GUI window closed or Cancel before Proceed: all steps `NOT_RUN` if a plan exists, zero counters otherwise) |
+| `cancelled` | 6 | user/system abort (RUNE-601) — during execution (interrupted step `CANCELLED`, rest `NOT_RUN`) or before it (CLI edit-loop `Cancel`, GUI window closed or Cancel before Proceed: plan-time `SKIPPED` steps remain `SKIPPED`, pending steps become `NOT_RUN`, and counters are zero without a plan) |
 | `internal_error` | 70 | RUNE bug (RUNE-500) |
 
 Contents:

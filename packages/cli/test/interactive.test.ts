@@ -386,10 +386,29 @@ describe('the interactive run', () => {
   });
 
   it('cancels from the summary with exit 6 and a cancelled result', async () => {
-    const path = fixture(MANIFEST);
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: conditional',
+      '    when: "${installDatabase}"',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+      '  - id: pending',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+    ]);
     const resultPath = join(path, '..', 'result.json');
     const io = capture();
-    const interaction = scripted(['hello', 'super-secret-value', 'c']);
+    const interaction = scripted(['c']);
 
     const code = await run(['run', path, '--result', resultPath], io, interaction);
 
@@ -397,18 +416,26 @@ describe('the interactive run', () => {
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as {
       status: string;
       mode: string;
+      dryRun: boolean;
       stepsTotal: number;
+      stepsExecuted: number;
+      stepsSkipped: number;
       stepsNotRun: number;
+      nothingExecuted: boolean;
       steps: readonly { state: string }[];
       inputs: readonly { id: string }[];
     };
     expect(written.status).toBe('cancelled');
     expect(written.mode).toBe('interactive');
-    // A plan existed at the summary, so the result reports it: all steps NOT_RUN (§10).
-    expect(written.stepsTotal).toBe(1);
+    expect(written.dryRun).toBe(false);
+    // On summary cancellation, plan-time SKIPPED steps remain terminal and pending steps become NOT_RUN (§10).
+    expect(written.stepsTotal).toBe(2);
+    expect(written.stepsExecuted).toBe(0);
+    expect(written.stepsSkipped).toBe(1);
     expect(written.stepsNotRun).toBe(1);
-    expect(written.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
-    expect(written.inputs.map((input) => input.id)).toEqual(['greeting', 'token']);
+    expect(written.nothingExecuted).toBe(true);
+    expect(written.steps.map((step) => step.state)).toEqual(['SKIPPED', 'NOT_RUN']);
+    expect(written.inputs.map((input) => input.id)).toEqual(['installDatabase']);
   });
 
   it('uses locale chrome for the interactive summary and summary cancellation', async () => {
