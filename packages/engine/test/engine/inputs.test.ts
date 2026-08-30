@@ -1230,6 +1230,40 @@ describe('secrets', () => {
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
 
+  it.each([
+    {
+      layer: '--set',
+      options: { overrides: new Map([['token', 'F045-SET-WINNER']]) },
+      source: 'set',
+      winner: 'F045-SET-WINNER',
+    },
+    {
+      layer: 'answer',
+      options: { answers: new Map([['token', 'F045-ANSWER-WINNER']]) },
+      source: 'answer',
+      winner: 'F045-ANSWER-WINNER',
+    },
+  ] as const)(
+    'keeps the $layer winner and inherited environment secret in the masking snapshot',
+    ({ options, source, winner }) => {
+      const inherited = 'F045-INHERITED-ENVIRONMENT';
+      const secrets = new SecretRegistry();
+      const resolution = resolve(
+        manifest,
+        { ...options, secrets },
+        { RUNE_INPUT_TOKEN: inherited },
+      );
+      const state = resolution.byId.get('token');
+
+      expect(state?.source).toBe(source);
+      expect(state?.value).toBeInstanceOf(SecretString);
+      expect((state?.value as SecretString).reveal()).toBe(winner);
+      expect(resolution.warnings).toEqual([]);
+      expect(secrets.size).toBe(2);
+      expect(secrets.mask(`${winner}/${inherited}`)).toBe('***/***');
+    },
+  );
+
   it('does not warn when an optional secret is absent', () => {
     const optional = manifestOf('inputs:', '  token:', '    type: secret', '    required: false');
     const secrets = new SecretRegistry();
@@ -1684,6 +1718,55 @@ describe('secrets', () => {
     expect(collectedSecrets.mask(sentinel)).toBe('***');
   });
 
+  it('uses an overridden environment secret to redact thrown and collected diagnostics atomically', () => {
+    const inherited = 'F045-LOWER-ENVIRONMENT-SECRET';
+    const winner = 'F045-HIGHER-SET-SECRET';
+    const withInvalidLaterInput = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const supplied = new Map([
+      ['token', winner],
+      ['note', `${inherited}/${winner}`],
+    ]);
+    const environment = { RUNE_INPUT_TOKEN: inherited };
+    const thrownSecrets = existingRegistry();
+    const error = inputError(
+      withInvalidLaterInput,
+      {
+        overrides: supplied,
+        secrets: thrownSecrets,
+      },
+      environment,
+    );
+
+    expect(error.issues[0]?.message).toContain('"***/***" does not match x+');
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(inherited);
+    expect(publicErrorSurfaces(error).join('\n')).not.toContain(winner);
+    expect(thrownSecrets.size).toBe(1);
+    expect(thrownSecrets.mask(inherited)).toBe(inherited);
+    expect(thrownSecrets.mask(winner)).toBe(winner);
+
+    const collectedSecrets = new SecretRegistry();
+    const resolution = resolve(
+      withInvalidLaterInput,
+      { overrides: supplied, invalidValues: 'collect', secrets: collectedSecrets },
+      environment,
+    );
+    const token = resolution.byId.get('token');
+
+    expect(token?.source).toBe('set');
+    expect((token?.value as SecretString).reveal()).toBe(winner);
+    expect(rejectionFor(resolution, 'note').candidate).toBe('***/***');
+    expect(resolution.problems[0]?.message).toContain('"***/***" does not match x+');
+    expect(collectedSecrets.size).toBe(2);
+    expect(collectedSecrets.mask(`${inherited}/${winner}`)).toBe('***/***');
+  });
+
   it.each([
     {
       layer: 'values',
@@ -1861,6 +1944,75 @@ describe('secrets', () => {
     expect(resolution.warnings).toEqual([
       'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
     ]);
+  });
+
+  it.each([
+    { name: 'short', inherited: 'ab', maskablePart: undefined },
+    { name: 'empty', inherited: '', maskablePart: undefined },
+    {
+      name: 'partly maskable multiline',
+      inherited: 'F045-MASKABLE-LINE\nabc',
+      maskablePart: 'F045-MASKABLE-LINE',
+    },
+  ])(
+    'warns exactly once for a $name overridden environment secret',
+    ({ inherited, maskablePart }) => {
+      const winner = 'F045-RELIABLE-WINNER';
+      const secrets = new SecretRegistry();
+      const resolution = resolve(
+        manifest,
+        { overrides: new Map([['token', winner]]), secrets },
+        { RUNE_INPUT_TOKEN: inherited },
+      );
+      const reliabilityWarnings = resolution.warnings.filter((warning) =>
+        warning.includes('cannot be masked reliably'),
+      );
+
+      expect(resolution.byId.get('token')?.source).toBe('set');
+      expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+      expect(reliabilityWarnings).toHaveLength(1);
+      expect(resolution.warnings).toEqual([
+        'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+      ]);
+      expect(secrets.mask(winner)).toBe('***');
+      if (maskablePart !== undefined) {
+        expect(secrets.mask(maskablePart)).toBe('***');
+      }
+    },
+  );
+
+  it('retains the overridden environment warning when other invalid values are collected', () => {
+    const withRejectedInput = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const winner = 'F045-COLLECT-WINNER';
+    const secrets = new SecretRegistry();
+    const resolution = resolve(
+      withRejectedInput,
+      {
+        overrides: new Map([
+          ['token', winner],
+          ['note', 'invalid'],
+        ]),
+        invalidValues: 'collect',
+        secrets,
+      },
+      { RUNE_INPUT_TOKEN: 'abc' },
+    );
+
+    expect(resolution.problems).toHaveLength(1);
+    expect(resolution.warnings).toHaveLength(1);
+    expect(
+      resolution.warnings.filter((warning) => warning.includes('cannot be masked reliably')),
+    ).toHaveLength(1);
+    expect(resolution.byId.get('token')?.source).toBe('set');
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+    expect(secrets.mask(winner)).toBe('***');
   });
 
   it('warns when a multiline secret contains a content line too short to mask', () => {

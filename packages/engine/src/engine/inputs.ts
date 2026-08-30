@@ -213,6 +213,10 @@ function resolveInputsStaged(
       continue;
     }
 
+    if (handler.secret) {
+      warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
+    }
+
     const coerced = coerce(supplied, spec, id, context);
     if (!coerced.ok) {
       const issue: RuneIssue = {
@@ -232,10 +236,6 @@ function resolveInputsStaged(
       });
       order.push(id);
       continue;
-    }
-
-    if (handler.secret) {
-      warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
     }
 
     states.set(id, {
@@ -293,15 +293,16 @@ function resolveInputsStaged(
 
 interface StagedSecret {
   readonly supplied: SuppliedValue;
-  /** Undefined means the raw candidate could not be read safely as authentic secret text. */
+  /** Undefined means no raw candidate could be read safely as authentic secret text. */
   readonly maskable: boolean | undefined;
 }
 
 /**
- * Registers every safely readable winning layer-2–5 secret before resolution can diagnose
- * anything. The registry remains staged until success, but it can already redact an error
- * raised by an earlier-declared input. Disabled values stay registered because their
- * environment variables remain inherited by child processes (§10).
+ * Registers every safely readable winning layer-2–5 secret, plus its layer-3 environment
+ * value even when a higher layer wins, before resolution can diagnose anything. The registry
+ * remains staged until success, but it can already redact an error raised by an
+ * earlier-declared input. Environment values stay registered because child processes inherit
+ * them even when input precedence discards them (§10).
  */
 function stageSuppliedSecrets(
   options: ResolveInputsOptions,
@@ -321,10 +322,30 @@ function stageSuppliedSecrets(
       continue;
     }
 
-    const text = authenticSecretText(supplied.raw);
+    const inheritedEnvironment =
+      supplied.source === 'environment'
+        ? supplied
+        : supplied.source === 'set' || supplied.source === 'answer'
+          ? environmentLayer(id, options)
+          : undefined;
+    let maskable: boolean | undefined;
+    const candidates =
+      inheritedEnvironment === supplied ? [supplied] : [inheritedEnvironment, supplied];
+    for (const candidate of candidates) {
+      if (candidate === undefined) {
+        continue;
+      }
+      const text = authenticSecretText(candidate.raw);
+      if (text === undefined) {
+        continue;
+      }
+      const candidateMaskable = stagedSecrets.register(text);
+      maskable = maskable === undefined ? candidateMaskable : maskable && candidateMaskable;
+    }
+
     suppliedSecrets.set(id, {
       supplied,
-      maskable: text === undefined ? undefined : stagedSecrets.register(text),
+      maskable,
     });
   }
 
@@ -468,15 +489,9 @@ function highestLayer(
     return { source: 'set', raw: override, location: undefined, origin: `--set ${id}=…` };
   }
 
-  const variable = environmentName(id);
-  const fromEnvironment = options.context.environmentValue(variable);
+  const fromEnvironment = environmentLayer(id, options);
   if (fromEnvironment !== undefined) {
-    return {
-      source: 'environment',
-      raw: fromEnvironment,
-      location: undefined,
-      origin: `the environment variable ${variable}`,
-    };
+    return fromEnvironment;
   }
 
   // Later files override earlier ones, so the last one that mentions the input wins.
@@ -505,6 +520,19 @@ function highestLayer(
   }
 
   return undefined;
+}
+
+function environmentLayer(id: string, options: ResolveInputsOptions): SuppliedValue | undefined {
+  const variable = environmentName(id);
+  const raw = options.context.environmentValue(variable);
+  return raw === undefined
+    ? undefined
+    : {
+        source: 'environment',
+        raw,
+        location: undefined,
+        origin: `the environment variable ${variable}`,
+      };
 }
 
 type CoercionOutcome =
