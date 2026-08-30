@@ -300,9 +300,7 @@ describe('the IPC bridge', () => {
     ).resolves.toBeUndefined();
 
     expect(writeStderr).toHaveBeenCalledTimes(1);
-    expect(writeStderr).toHaveBeenCalledWith(
-      'internal shell error: renderer assets unavailable\n',
-    );
+    expect(writeStderr).toHaveBeenCalledWith('internal shell error: renderer assets unavailable\n');
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(70);
     expect(electron.windows).toHaveLength(1);
