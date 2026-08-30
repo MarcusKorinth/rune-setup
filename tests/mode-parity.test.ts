@@ -7,7 +7,13 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { run } from '@rune/cli';
 import type { CliIo } from '@rune/cli';
-import { Session, type InputStateChanged, type RunEvent, type RunResult } from '@rune/engine';
+import {
+  Session,
+  writeResult,
+  type InputStateChanged,
+  type RunEvent,
+  type RunResult,
+} from '@rune/engine';
 
 // Three real frontend runs spawn processes and can exceed the unit-test default under CI load.
 const INTEGRATION_TIMEOUT_MS = 30_000;
@@ -286,12 +292,58 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
     mode: 'gui',
     ...(locale === undefined ? {} : { locale }),
   });
-  session.allInputs();
+
+  // `rune.open` creates the Session in Electron main; boot then obtains the resolved strings,
+  // input state, completeness state, and presentation-only theme through the bridge.
+  const strings = session.getStrings();
+  const configureTitle = strings.stepTitle('configure');
+  expect(configureTitle).toBe(strings.entries.get('steps.configure.title'));
+  expect(session.allInputs().map(({ id, enabled, source }) => ({ id, enabled, source }))).toEqual([
+    { id: 'installDatabase', enabled: true, source: 'default' },
+    { id: 'databasePort', enabled: false, source: undefined },
+    { id: 'environment', enabled: true, source: undefined },
+    { id: 'token', enabled: true, source: undefined },
+  ]);
+  expect(session.pendingInputs().map((input) => input.id)).toEqual(['environment', 'token']);
+  expect(session.getThemeConfig()).toEqual({});
+
+  // The renderer refreshes both projections after each `rune.setValue`; the refreshed pending
+  // list and enabled state are what controls its Next button and disabled field treatment.
+  const refreshes: Array<{ readonly databasePortEnabled: boolean; readonly pending: string[] }> =
+    [];
   for (const [id, value] of answerEntries()) {
     session.setValue(id, value);
+    const databasePort = session.allInputs().find((input) => input.id === 'databasePort');
+    expect(databasePort).toBeDefined();
+    refreshes.push({
+      databasePortEnabled: databasePort?.enabled ?? false,
+      pending: session.pendingInputs().map((input) => input.id),
+    });
   }
-  session.describe();
-  return session.execute();
+  expect(refreshes).toEqual([
+    { databasePortEnabled: false, pending: ['token'] },
+    { databasePortEnabled: false, pending: [] },
+    { databasePortEnabled: true, pending: ['databasePort'] },
+    { databasePortEnabled: true, pending: [] },
+  ]);
+
+  // `rune.plan` maps to Session.describe() in Electron main; it is the masked summary the
+  // renderer presents before starting execution.
+  const described = session.describe();
+  expect(described.status).toBe('planned');
+  expect(described.steps.map((step) => step.state)).toEqual(['PENDING', 'SKIPPED']);
+  expect(described.steps[0]?.title).toBe(configureTitle);
+
+  const result = await session.execute();
+  expect(session.warnings()).toEqual([]);
+
+  // Electron main delivers GUI results through the engine's atomic writer. Read that file back
+  // so the parity assertion uses the same persisted result representation as the other legs.
+  const resultPath = join(manifest, '..', 'result-gui.json');
+  writeResult(result, resultPath);
+  const persisted = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
+  expect(persisted).toEqual(result);
+  return persisted;
 }
 
 interface ThreeWayRun {
@@ -358,15 +410,21 @@ describe('mode parity', () => {
     expect(gui.changes).toEqual(interactive.changes);
   });
 
-  slowIt('resolves identical localized titles through every leg', async () => {
+  slowIt('localizes display text without changing machine contracts in any leg', async () => {
     const manifest = fixture();
+    // The explicit English locale is the built-in default text with no overlay, made stable
+    // even on a host whose system locale is German.
+    const defaults = await threeWayRun(manifest, 'en');
     const { nonInteractive, interactive, gui } = await threeWayRun(manifest, 'de');
 
     for (const leg of [nonInteractive, interactive, gui]) {
       expect(leg.value.steps[0]?.title).toBe('Konfigurieren');
     }
+    for (const leg of [defaults.nonInteractive, defaults.interactive, defaults.gui]) {
+      expect(leg.value.steps[0]?.title).toBe('Configure');
+    }
     // Locale resolution changes display text only; IDs and command arrays stay exact across
-    // all three real legs (§6.3, §14).
+    // all three real legs and between the default and `de` locales (§6.3, §14).
     expect(interactive.value.steps.map((step) => step.id)).toEqual(
       nonInteractive.value.steps.map((step) => step.id),
     );
@@ -379,6 +437,21 @@ describe('mode parity', () => {
     expect(gui.value.steps.map((step) => step.command)).toEqual(
       nonInteractive.value.steps.map((step) => step.command),
     );
+    for (const leg of [
+      defaults.nonInteractive,
+      defaults.interactive,
+      defaults.gui,
+      nonInteractive,
+      interactive,
+      gui,
+    ]) {
+      expect(leg.value.steps.map((step) => step.id)).toEqual(
+        defaults.nonInteractive.value.steps.map((step) => step.id),
+      );
+      expect(leg.value.steps.map((step) => step.command)).toEqual(
+        defaults.nonInteractive.value.steps.map((step) => step.command),
+      );
+    }
   });
 
   slowIt('isolates ambient RUNE values while preserving them after a three-way run', async () => {
