@@ -190,6 +190,19 @@ describe('SecretRegistry', () => {
     expect(registry.mask('abcdefghiJKLM')).toBe(MASK);
   });
 
+  it.each([
+    ['right', '***0', `visible:base${'0'.repeat(100_000)}`],
+    ['left', '0***', `${'0'.repeat(100_000)}base:visible`],
+  ])('fails closed for a long %s-directed replacement cascade', (_direction, cascade, text) => {
+    const registry = new SecretRegistry();
+    registry.register('base');
+    registry.register(cascade);
+
+    // Full convergence would retain the visible text; MASK proves budget exhaustion masks
+    // the whole input rather than returning a potentially revealing intermediate value.
+    expect(registry.mask(text)).toBe(MASK);
+  });
+
   it('orders matches by text position rather than registration order', () => {
     const registry = new SecretRegistry();
     registry.register('aaaa');

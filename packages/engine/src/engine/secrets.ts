@@ -10,6 +10,10 @@
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
 
+// Ordinary replacement collisions settle in a handful of passes. Keeping a small fixed
+// budget leaves ample room for those chains while bounding pathological full-text rescans.
+const MAX_MASKING_PASSES = 16;
+
 /**
  * Below this length a secret is not registered for masking: masking "1" would black out
  * every digit in every log line, which hides far more than it protects (§10).
@@ -317,15 +321,18 @@ export class SecretRegistry {
     }
 
     let masked = text;
-    while (true) {
+    for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
       const next = maskOnce(masked, this.#ordered);
       if (next === masked) {
         return masked;
       }
 
-      // A registered secret is at least four UTF-16 code units, while MASK has three, so
-      // every successful pass strictly shortens the text and the iteration must terminate.
       masked = next;
     }
+
+    // Returning an intermediate value could expose part of a collision chain. MASK itself
+    // is shorter than every registrable secret, so masking the whole input is safely stable;
+    // the extra masking is limited to this pathological budget-exhaustion path.
+    return MASK;
   }
 }
