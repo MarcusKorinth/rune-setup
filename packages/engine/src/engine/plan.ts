@@ -22,8 +22,10 @@ import {
   composeSecretString,
   isSecretString,
   MASK,
+  registryFromSecretMasker,
   resolveSecretPathFrom,
   secretMatches,
+  type SecretRegistry,
   type SecretString,
 } from './secrets.js';
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
@@ -147,6 +149,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   rejectUnboundContext(manifest, manifestDescriptor, trustedContext);
   rejectIncompleteResolution(resolved);
   const resolvedInputs = resolved.inputs.map(snapshotInput);
+  const planSecrets = registryFromSecretMasker(resolved.secrets);
 
   const steps = manifest.steps.map((step): PlannedStep => {
     const title = step.title ?? step.id;
@@ -174,7 +177,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
       id: step.id,
       title,
       state: 'PENDING',
-      command: resolveCommand(command, step.id, resolved, trustedContext),
+      command: resolveCommand(command, step.id, resolved, trustedContext, planSecrets),
     };
   });
 
@@ -194,7 +197,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   });
   executionContexts.set(
     plan,
-    snapshotExecutionContext(manifest, manifestDescriptor, resolved.secrets),
+    snapshotExecutionContext(manifest, manifestDescriptor, planSecrets.snapshot()),
   );
   return plan;
 }
@@ -331,6 +334,7 @@ function resolveCommand(
   stepId: string,
   resolution: ResolutionSnapshot,
   context: RuntimeContext,
+  secrets: SecretRegistry,
 ): ResolvedCommand {
   const render = (template: string): string | SecretString => {
     const scan = scanTemplate(template);
@@ -363,7 +367,7 @@ function resolveCommand(
     const parts = scan.parts.map((part) =>
       part.kind === 'literal' ? part.text : resolve(part.reference),
     );
-    return parts.some(isSecretString) ? composeSecretString(parts) : parts.join('');
+    return parts.some(isSecretString) ? composeSecretString(parts, secrets) : parts.join('');
   };
 
   const manifestDir = context.manifestDir;
@@ -379,7 +383,7 @@ function resolveCommand(
     throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
   }
 
-  const command = anchorCommandValue(renderedCommand, manifestDir, context.platform);
+  const command = anchorCommandValue(renderedCommand, manifestDir, context.platform, secrets);
   const commandShown = isSecretString(command) ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
@@ -396,7 +400,7 @@ function resolveCommand(
   const cwd =
     spec.cwd === undefined
       ? context.manifestDir
-      : anchorPathValue(render(spec.cwd), manifestDir, context.platform);
+      : anchorPathValue(render(spec.cwd), manifestDir, context.platform, secrets);
 
   const env: Record<string, string | SecretString> = {};
   for (const [name, value] of Object.entries(spec.env)) {
@@ -416,10 +420,11 @@ function anchorCommandValue(
   value: string | SecretString,
   manifestDir: string,
   platform: RuntimeContext['platform'],
+  secrets: SecretRegistry,
 ): string | SecretString {
   if (isSecretString(value)) {
     return secretMatches(value, /[\\/]/)
-      ? resolveSecretPathFrom(value, manifestDir, platform)
+      ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
       : value;
   }
   return anchorCommand(value, manifestDir, platform);
@@ -429,9 +434,10 @@ function anchorPathValue(
   value: string | SecretString,
   manifestDir: string,
   platform: RuntimeContext['platform'],
+  secrets: SecretRegistry,
 ): string | SecretString {
   return isSecretString(value)
-    ? resolveSecretPathFrom(value, manifestDir, platform)
+    ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
     : anchorPath(value, manifestDir, platform);
 }
 

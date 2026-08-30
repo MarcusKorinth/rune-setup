@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -20,7 +20,7 @@ import {
   type ExecutionPlan,
   type PlanOptions,
 } from '../../src/engine/plan.js';
-import { isSecretString, SecretRegistry } from '../../src/engine/secrets.js';
+import { isSecretString, MASK, SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
@@ -640,6 +640,158 @@ describe('a run that fails', () => {
       expect(serializedSinks).not.toContain(secondSecretHalf);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('masks a normalized secret cwd emitted by the default runner in every sink', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-secret-cwd-'));
+    const effectiveCwd = join(directory, 'effective-secret-cwd');
+    const secretCwd = `discarded-segment${sep}..${sep}effective-secret-cwd`;
+    mkdirSync(effectiveCwd);
+
+    try {
+      const childScript = 'process.stdout.write(process.cwd() + "\\n"); process.exitCode = 9;';
+      const manifest = parseManifestText(
+        [
+          ...HEAD,
+          'inputs:',
+          '  workingDirectory:',
+          '    type: secret',
+          'steps:',
+          '  - id: normalized-cwd',
+          '    run:',
+          `      command: ${JSON.stringify(process.execPath)}`,
+          '      args:',
+          '        - -e',
+          `        - ${JSON.stringify(childScript)}`,
+          '      cwd: "${workingDirectory}"',
+          '',
+        ].join('\n'),
+        join(directory, 'installer.yaml'),
+      );
+      const context = createRuntimeContext({
+        manifestDir: directory,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({
+        manifest,
+        context,
+        overrides: new Map([['workingDirectory', secretCwd]]),
+      });
+      const plan = buildPlan({ manifest, resolution, context });
+      const events: RunEvent[] = [];
+
+      const result = await executeRun({
+        plan,
+        observer: (event) => events.push(event),
+      });
+
+      expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
+        {
+          kind: 'stepOutput',
+          stepId: 'normalized-cwd',
+          stream: 'stdout',
+          line: MASK,
+        },
+        {
+          kind: 'stepOutput',
+          stepId: 'normalized-cwd',
+          stream: 'stderr',
+          line: 'RUNE-401 step "normalized-cwd" exited with code 9; expected one of [0]',
+        },
+      ]);
+      expect(result.steps[0]?.outputTail).toEqual([
+        { stream: 'stdout', line: MASK },
+        {
+          stream: 'stderr',
+          line: 'RUNE-401 step "normalized-cwd" exited with code 9; expected one of [0]',
+        },
+      ]);
+
+      for (const serialized of [
+        JSON.stringify(events),
+        JSON.stringify(result),
+        serializeResult(result),
+      ]) {
+        expect(serialized).not.toContain(effectiveCwd);
+        expect(serialized).not.toContain(secretCwd);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('masks a normalized secret command path emitted by the default runner', async () => {
+    const manifestDir = dirname(process.execPath);
+    const secretCommand = `discarded-segment${sep}..${sep}${basename(process.execPath)}`;
+    const childScript = 'process.stdout.write(process.execPath + "\\n"); process.exitCode = 9;';
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  executable:',
+        '    type: secret',
+        'steps:',
+        '  - id: normalized-command',
+        '    run:',
+        '      command: "${executable}"',
+        '      args:',
+        '        - -e',
+        `        - ${JSON.stringify(childScript)}`,
+        '',
+      ].join('\n'),
+      join(manifestDir, 'installer.yaml'),
+    );
+    const context = createRuntimeContext({
+      manifestDir,
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      overrides: new Map([['executable', secretCommand]]),
+    });
+    const plan = buildPlan({ manifest, resolution, context });
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+    });
+
+    expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
+      {
+        kind: 'stepOutput',
+        stepId: 'normalized-command',
+        stream: 'stdout',
+        line: MASK,
+      },
+      {
+        kind: 'stepOutput',
+        stepId: 'normalized-command',
+        stream: 'stderr',
+        line: 'RUNE-401 step "normalized-command" exited with code 9; expected one of [0]',
+      },
+    ]);
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stdout', line: MASK },
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "normalized-command" exited with code 9; expected one of [0]',
+      },
+    ]);
+
+    for (const serialized of [
+      JSON.stringify(events),
+      JSON.stringify(result),
+      serializeResult(result),
+    ]) {
+      expect(serialized).not.toContain(process.execPath);
+      expect(serialized).not.toContain(secretCommand);
     }
   });
 

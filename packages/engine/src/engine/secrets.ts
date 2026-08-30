@@ -29,6 +29,9 @@ export interface SecretMasker {
   mask(text: string): string;
 }
 
+/** Private registry contents retained for authentic immutable masker snapshots. */
+const SECRET_MASKER_VALUES = new WeakMap<SecretMasker, readonly string[]>();
+
 /**
  * Maximum UTF-16 code units across the unique maskable parts in one registry snapshot.
  * This bounds the matcher to at most this many non-root trie nodes.
@@ -78,9 +81,10 @@ function hasMinimumMaskableLength(value: string): boolean {
   return false;
 }
 
-function secretFromResolver(resolve: () => string): SecretString {
+function secretFromResolver(resolve: () => string, registry?: SecretRegistry): SecretString {
   const secret = Object.freeze(new OpaqueSecretString());
   SECRET_VALUES.set(secret, resolve);
+  registry?.register(resolve());
   return secret;
 }
 
@@ -111,10 +115,14 @@ export function createSecretString(value: string): SecretString {
 }
 
 /** Joins public and opaque pieces without exposing the resulting text. */
-export function composeSecretString(parts: readonly (string | SecretString)[]): SecretString {
+export function composeSecretString(
+  parts: readonly (string | SecretString)[],
+  registry?: SecretRegistry,
+): SecretString {
   const snapshot = Object.freeze([...parts]);
-  return secretFromResolver(() =>
-    snapshot.map((part) => (isSecretString(part) ? resolveSecret(part) : part)).join(''),
+  return secretFromResolver(
+    () => snapshot.map((part) => (isSecretString(part) ? resolveSecret(part) : part)).join(''),
+    registry,
   );
 }
 
@@ -123,10 +131,12 @@ export function resolveSecretPathFrom(
   secret: SecretString,
   basePath: string,
   platform: Platform,
+  registry?: SecretRegistry,
 ): SecretString {
   const baseSnapshot = basePath;
-  return secretFromResolver(() =>
-    resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
+  return secretFromResolver(
+    () => resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
+    registry,
   );
 }
 
@@ -459,10 +469,12 @@ export class SecretRegistry {
   /** Captures the current secret set as an immutable mask-only capability. */
   snapshot(): SecretMasker {
     const matcher = this.#matcher();
-    return Object.freeze({
+    const snapshot = Object.freeze({
       mask: (text: string): string =>
         matcher === undefined ? text : maskWithMatcher(text, matcher),
     });
+    SECRET_MASKER_VALUES.set(snapshot, Object.freeze([...this.#values]));
+    return snapshot;
   }
 
   /** Replaces every registered secret in `text` with the mask. */
@@ -484,6 +496,20 @@ export class SecretRegistry {
       ),
     ));
   }
+}
+
+/** Creates a mutable plan-local registry from an authentic immutable masker snapshot. */
+export function registryFromSecretMasker(masker: SecretMasker): SecretRegistry {
+  const values = SECRET_MASKER_VALUES.get(masker);
+  if (values === undefined) {
+    throw new TypeError('the secret masker was not created by SecretRegistry.snapshot');
+  }
+
+  const registry = new SecretRegistry();
+  for (const value of values) {
+    registry.register(value);
+  }
+  return registry;
 }
 
 /** Shared overlap-safe implementation for mutable registries and immutable snapshots. */
