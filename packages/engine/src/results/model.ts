@@ -8,7 +8,7 @@
 import type { ValueSource } from '../engine/inputs.js';
 import type { StepState } from '../engine/state.js';
 
-export const RESULT_SCHEMA_VERSION = 1;
+export const RESULT_SCHEMA_VERSION = 2;
 
 /** Which frontend drove the run (§10). All three share one engine path — this only records it. */
 export type RunMode = 'gui' | 'interactive' | 'non-interactive';
@@ -16,7 +16,7 @@ export type RunMode = 'gui' | 'interactive' | 'non-interactive';
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
- * is complete from version 1 on.
+ * is complete for version 2.
  */
 export type RunStatus =
   | 'succeeded'

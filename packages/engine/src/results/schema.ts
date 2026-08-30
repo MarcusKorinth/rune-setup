@@ -10,7 +10,7 @@ import { z } from 'zod';
 
 import { STEP_STATES } from '../engine/state.js';
 import { VALUE_SOURCES } from '../engine/inputs.js';
-import type { RunResult } from './model.js';
+import { RESULT_SCHEMA_VERSION, type RunResult } from './model.js';
 
 const outputLineSchema = z.strictObject({
   stream: z.string(),
@@ -38,7 +38,7 @@ const resultStepSchema = z.strictObject({
 });
 
 export const runResultSchema = z.strictObject({
-  resultSchemaVersion: z.literal(1),
+  resultSchemaVersion: z.literal(RESULT_SCHEMA_VERSION),
   id: z.string(),
   status: z.enum([
     'succeeded',
@@ -81,7 +81,7 @@ type Mirrored = z.infer<typeof runResultSchema>;
 const pin = (value: Mirrored): RunResult => value;
 void pin;
 
-/** The JSON Schema of `resultSchemaVersion: 1`, generated at call time like `rune schema`. */
+/** The JSON Schema of `resultSchemaVersion: 2`, generated at call time like `rune schema`. */
 export function resultJsonSchema(): Record<string, unknown> {
   return z.toJSONSchema(runResultSchema) as Record<string, unknown>;
 }

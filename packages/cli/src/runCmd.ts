@@ -11,6 +11,7 @@ import {
   CHROME_CATALOG,
   CancelledError,
   EXIT_CODE_BY_STATUS,
+  RESULT_SCHEMA_VERSION,
   exitCodeFor,
   RUNE_VERSION,
   RuneError,
@@ -238,7 +239,7 @@ function failureShell(options: {
   const platform =
     flags.platform === 'windows' || flags.platform === 'linux' ? flags.platform : host;
   return {
-    resultSchemaVersion: 1,
+    resultSchemaVersion: RESULT_SCHEMA_VERSION,
     id: randomUUID(),
     status: statusForExit(code),
     exitCode: code,

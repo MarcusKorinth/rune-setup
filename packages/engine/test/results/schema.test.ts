@@ -5,7 +5,12 @@ import { describeCancelled, describePlan, executeRun } from '../../src/engine/ex
 import { resolveInputs } from '../../src/engine/inputs.js';
 import { buildPlan } from '../../src/engine/plan.js';
 import { SecretRegistry } from '../../src/engine/secrets.js';
-import type { RunMode, RunResult, RunStatus } from '../../src/results/model.js';
+import {
+  RESULT_SCHEMA_VERSION,
+  type RunMode,
+  type RunResult,
+  type RunStatus,
+} from '../../src/results/model.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import { resultJsonSchema, runResultSchema } from '../../src/results/schema.js';
 import type { Runner } from '../../src/runners/base.js';
@@ -120,6 +125,8 @@ describe('the result schema', () => {
   it.each(resultCases)('accepts $name after a JSON round-trip', async (scenario) => {
     const result = await scenario.create(setup());
 
+    expect(result.resultSchemaVersion).toBe(2);
+    expect(result.resultSchemaVersion).toBe(RESULT_SCHEMA_VERSION);
     expect(result.mode).toBe(scenario.mode);
     expect(result.status).toBe(scenario.status);
     expect(result.dryRun).toBe(scenario.dryRun);
@@ -128,14 +135,27 @@ describe('the result schema', () => {
     expect(() => runResultSchema.parse(JSON.parse(JSON.stringify(result)))).not.toThrow();
   });
 
+  it('rejects results without mode and legacy v1 results', async () => {
+    const result = await executeRun({ ...setup(), runner: okRunner });
+    const withoutMode = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+    delete withoutMode['mode'];
+    expect(runResultSchema.safeParse(withoutMode).success).toBe(false);
+
+    const legacyV1 = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+    legacyV1['resultSchemaVersion'] = 1;
+    expect(runResultSchema.safeParse(legacyV1).success).toBe(false);
+  });
+
   it('emits a JSON Schema document', () => {
     const schema = resultJsonSchema();
     expect(schema['type']).toBe('object');
     expect(JSON.stringify(schema)).toContain('resultSchemaVersion');
 
     const properties = schema['properties'] as Readonly<
-      Record<string, { readonly enum?: readonly unknown[] }>
+      Record<string, { readonly const?: unknown; readonly enum?: readonly unknown[] }>
     >;
+    expect(properties['resultSchemaVersion']?.const).toBe(2);
+    expect(schema['required']).toContain('mode');
     expect(properties['mode']?.enum).toEqual(['gui', 'interactive', 'non-interactive']);
     expect(properties['status']?.enum).toEqual([
       'succeeded',

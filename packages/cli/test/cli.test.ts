@@ -51,7 +51,12 @@ describe('rune schema', () => {
   it('prints the result schema with --result', async () => {
     const io = capture();
     expect(await run(['schema', '--result'], io)).toBe(0);
-    expect(io.out.join('\n')).toContain('resultSchemaVersion');
+    const schema = JSON.parse(io.out.join('\n')) as {
+      readonly properties: Readonly<Record<string, { readonly const?: unknown }>>;
+      readonly required: readonly string[];
+    };
+    expect(schema.properties['resultSchemaVersion']?.const).toBe(2);
+    expect(schema.required).toContain('mode');
   });
 });
 
@@ -116,7 +121,9 @@ describe('rune run', () => {
 
     expect(code).toBe(0);
     const result = JSON.parse(io.out.join('\n')) as Record<string, unknown>;
+    expect(result['resultSchemaVersion']).toBe(2);
     expect(result['status']).toBe('succeeded');
+    expect(result['mode']).toBe('non-interactive');
     expect(io.err.join('\n')).toContain('hello');
   });
 
@@ -288,7 +295,9 @@ describe('rune run', () => {
     expect(code).toBe(4);
     expect(io.err.join('\n')).toContain('--set greeting=');
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written['resultSchemaVersion']).toBe(2);
     expect(written['status']).toBe('input_error');
+    expect(written['mode']).toBe('non-interactive');
   });
 
   it('exits 1 when a step fails', async () => {
@@ -331,8 +340,10 @@ describe('result files for failed outcomes', () => {
 
     expect(await run(['run', path, '--non-interactive', '--result', resultPath], io)).toBe(3);
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written['resultSchemaVersion']).toBe(2);
     expect(written['status']).toBe('config_error');
     expect(written['exitCode']).toBe(3);
+    expect(written['mode']).toBe('non-interactive');
     expect(io.err.join('\n')).toContain(`result written to ${resultPath}`);
   });
 
