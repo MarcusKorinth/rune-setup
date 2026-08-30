@@ -1,6 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, parse as parsePath, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  join,
+  parse as parsePath,
+  resolve as resolvePath,
+  sep,
+} from 'node:path';
 import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -243,6 +250,64 @@ describe('a run that succeeds', () => {
       } else {
         process.env[environmentName] = previousValue;
       }
+    }
+  });
+
+  it('keeps manifest-relative execution stable when RunStarted changes cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rune-executor-manifest-anchor-'));
+    const callerA = join(root, 'caller-a');
+    const callerB = join(root, 'caller-b');
+    const expectedManifestDir = join(callerA, 'manifest-root');
+    const previousCwd = process.cwd();
+    mkdirSync(callerA);
+    mkdirSync(callerB);
+
+    try {
+      process.chdir(callerA);
+      const manifest = parseManifestText(
+        [
+          ...HEAD,
+          'steps:',
+          '  - id: anchored',
+          '    run:',
+          '      command: scripts/tool',
+          '      args: ["${manifestDir}"]',
+          '',
+        ].join('\n'),
+        'installer.yaml',
+        { manifestDir: 'manifest-root' },
+      );
+      const context = createRuntimeContext({
+        manifestDir: expectedManifestDir,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({ manifest, context });
+      const plan = buildPlan({ manifest, resolution, context });
+
+      const result = await executeRun({
+        plan,
+        observer: (event) => {
+          if (event.kind === 'runStarted') {
+            process.chdir(callerB);
+          }
+        },
+        runner: stubRunner((request) => {
+          expect(request.command.argv).toEqual([
+            resolvePath(expectedManifestDir, 'scripts', 'tool'),
+            expectedManifestDir,
+          ]);
+          expect(request.command.cwd).toBe(expectedManifestDir);
+          return { kind: 'exited', exitCode: 0 };
+        }),
+      });
+
+      expect(result.status).toBe('succeeded');
+      expect(process.cwd()).toBe(callerB);
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

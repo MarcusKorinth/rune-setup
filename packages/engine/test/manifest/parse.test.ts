@@ -1,7 +1,15 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { formatIssues, type ManifestError } from '../../src/errors.js';
-import { parseManifestText, SUPPORTED_SCHEMA_VERSIONS } from '../../src/manifest/index.js';
+import {
+  manifestDescriptorFor,
+  parseManifestText,
+  SUPPORTED_SCHEMA_VERSIONS,
+} from '../../src/manifest/index.js';
 import { isCommandSpec, optionLabel, optionValue } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
@@ -184,6 +192,33 @@ describe('parseManifestText', () => {
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.product)).toBe(true);
     expect(Object.isFrozen(manifest.steps)).toBe(true);
+  });
+
+  it('binds a relative manifest directory to the parse-time working directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'rune-relative-manifest-dir-'));
+    const callerA = join(root, 'caller-a');
+    const callerB = join(root, 'caller-b');
+    const manifestDir = join(callerA, 'manifest-root');
+    const previousCwd = process.cwd();
+    mkdirSync(join(manifestDir, 'assets'), { recursive: true });
+    mkdirSync(callerB);
+    writeFileSync(join(manifestDir, 'assets', 'logo.png'), '', 'utf8');
+
+    try {
+      process.chdir(callerA);
+      const manifest = parseManifestText(
+        [...HEAD, 'gui:', '  logo: assets/logo.png', 'steps: []', ''].join('\n'),
+        'installer.yaml',
+        { checkAssetFiles: true, manifestDir: 'manifest-root' },
+      );
+
+      process.chdir(callerB);
+
+      expect(manifestDescriptorFor(manifest).manifestDir).toBe(resolve(manifestDir));
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, sep } from 'node:path';
 
@@ -1274,6 +1274,53 @@ describe('the plan itself', () => {
 });
 
 describe('planning provenance', () => {
+  it('keeps a relative manifest override anchored when cwd changes before planning', () => {
+    const root = mkdtempSync(join(tmpdir(), 'rune-plan-manifest-anchor-'));
+    const callerA = join(root, 'caller-a');
+    const callerB = join(root, 'caller-b');
+    const expectedManifestDir = join(callerA, 'manifest-root');
+    const previousCwd = process.cwd();
+    mkdirSync(callerA);
+    mkdirSync(callerB);
+
+    try {
+      process.chdir(callerA);
+      const manifest = parseManifestText(
+        [
+          ...HEAD,
+          'steps:',
+          '  - id: anchored',
+          '    run:',
+          '      command: scripts/tool',
+          '      args: ["${manifestDir}"]',
+          '',
+        ].join('\n'),
+        'installer.yaml',
+        { manifestDir: 'manifest-root' },
+      );
+
+      process.chdir(callerB);
+      const context = createRuntimeContext({
+        manifestDir: expectedManifestDir,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({ manifest, context });
+      const plan = buildPlan({ manifest, resolution, context });
+      const step = plan.steps[0];
+
+      expect(step?.state).toBe('PENDING');
+      expect(step?.state === 'PENDING' && step.command).toMatchObject({
+        argv: [join(expectedManifestDir, 'scripts', 'tool'), expectedManifestDir],
+        cwd: expectedManifestDir,
+      });
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects an authentic context whose manifest directory is not bound to the manifest', () => {
     const manifest = parseManifestText(
       [

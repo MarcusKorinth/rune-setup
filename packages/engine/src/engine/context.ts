@@ -7,6 +7,7 @@
  */
 
 import { homedir, tmpdir } from 'node:os';
+import { isAbsolute } from 'node:path';
 
 import { InternalError, PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
@@ -261,6 +262,9 @@ export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
 }
 
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
+  if (!isAbsolute(options.manifestDir)) {
+    throw new InternalError('the runtime context manifest directory must be absolute');
+  }
   const host = hostPlatform();
   const platform =
     options.platform === undefined ? host : validatePreviewPlatform(options.platform);

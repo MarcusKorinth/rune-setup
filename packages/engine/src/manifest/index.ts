@@ -6,7 +6,7 @@
  * upgrade hint instead of a wall of schema errors.
  */
 
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { z } from 'zod';
 
@@ -127,7 +127,12 @@ function parseDocument(
   }
 
   const parser = selectParser(raw['schemaVersion'], document);
-  const manifestDir = options.manifestDir ?? dirname(resolve(file));
+  const manifestDir =
+    options.manifestDir === undefined
+      ? dirname(resolve(file))
+      : isAbsolute(options.manifestDir)
+        ? options.manifestDir
+        : resolve(options.manifestDir);
   const manifest = parser(document, {
     manifestDir,
     checkAssetFiles: options.checkAssetFiles ?? false,

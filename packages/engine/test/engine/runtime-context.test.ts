@@ -1,4 +1,5 @@
 import { homedir, tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -46,6 +47,31 @@ describe('the values behind the built-in names', () => {
   it('answers for the product', () => {
     expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Example');
     expect(context.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
+  });
+
+  it('rejects a relative manifest directory instead of rebinding it to the current cwd', () => {
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(InternalError);
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(/runtime context manifest directory must be absolute/);
+  });
+
+  it('keeps an absolute manifest directory unchanged', () => {
+    const manifestDir = resolve('absolute-project');
+    const runtime = createRuntimeContext({ manifestDir, product, environment: {} });
+
+    expect(runtime.manifestDir).toBe(manifestDir);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
   });
 
   it('reads any environment variable, because there is no allowlist', () => {
