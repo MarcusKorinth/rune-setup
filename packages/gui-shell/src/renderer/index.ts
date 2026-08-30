@@ -405,6 +405,11 @@ async function submit(id: string, raw: unknown): Promise<void> {
 async function refreshInputs(): Promise<void> {
   state.inputs = await window.rune.allInputs();
   state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
+  for (const input of state.inputs) {
+    if (!input.enabled) {
+      state.invalid.delete(input.id);
+    }
+  }
 }
 
 function messageOf(error: unknown): string {

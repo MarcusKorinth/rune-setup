@@ -1,0 +1,16 @@
+schemaVersion: 1
+product:
+  name: Conditional input smoke
+  version: 1.0.0
+inputs:
+  enableDetails:
+    type: boolean
+    title: Enable details
+    default: true
+  details:
+    type: text
+    title: Details
+    pattern: '[A-Z]+'
+    patternHint: Use uppercase letters
+    when: '${enableDetails}'
+steps: []

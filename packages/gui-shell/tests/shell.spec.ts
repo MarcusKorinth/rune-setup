@@ -6,6 +6,12 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixturePath = join(packageDirectory, 'tests', 'fixtures', 'smoke.yaml');
+const conditionalFixturePath = join(
+  packageDirectory,
+  'tests',
+  'fixtures',
+  'conditional-input.yaml',
+);
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
@@ -130,6 +136,37 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('clears an invalid field when its condition disables it', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, conditionalFixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    const controller = page.locator('.field[data-id="enableDetails"] input');
+    const dependent = page.locator('.field[data-id="details"] input');
+
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await next.click();
+    await expect(controller).toBeChecked();
+    await dependent.fill('invalid');
+    await dependent.dispatchEvent('change');
+    await expect(page.locator('.field[data-id="details"]')).toHaveClass(/invalid/);
+    await expect(next).toBeDisabled();
+
+    await controller.uncheck();
+    await expect(page.locator('.field[data-id="details"]')).toHaveClass(/disabled/);
+    await expect(page.locator('.field[data-id="details"]')).not.toHaveClass(/invalid/);
+    await expect(next).toBeEnabled();
   } finally {
     await application?.close();
   }
