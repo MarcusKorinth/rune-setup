@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, sep } from 'node:path';
 
@@ -713,23 +713,27 @@ describe('planning provenance', () => {
   it('accepts the effective manifest directory supplied to both parser entry points', () => {
     const text = [...HEAD, 'steps: []', ''].join('\n');
     const directory = mkdtempSync(join(tmpdir(), 'rune-plan-provenance-'));
-    const manifestPath = join(directory, 'installer.yaml');
-    writeFileSync(manifestPath, text, 'utf8');
-    const manifests = [
-      parseManifestText(text, 'memory.yaml', { manifestDir: '/project' }),
-      parseManifest(manifestPath, { manifestDir: '/project' }),
-    ];
+    try {
+      const manifestPath = join(directory, 'installer.yaml');
+      writeFileSync(manifestPath, text, 'utf8');
+      const manifests = [
+        parseManifestText(text, 'memory.yaml', { manifestDir: '/project' }),
+        parseManifest(manifestPath, { manifestDir: '/project' }),
+      ];
 
-    for (const manifest of manifests) {
-      const context = createRuntimeContext({
-        manifestDir: '/project',
-        product: manifest.product,
-        platform: 'linux',
-        environment: {},
-      });
-      const resolution = resolveInputs({ manifest, context, environment: {} });
+      for (const manifest of manifests) {
+        const context = createRuntimeContext({
+          manifestDir: '/project',
+          product: manifest.product,
+          platform: 'linux',
+          environment: {},
+        });
+        const resolution = resolveInputs({ manifest, context, environment: {} });
 
-      expect(buildPlan({ manifest, resolution, context }).steps).toEqual([]);
+        expect(buildPlan({ manifest, resolution, context }).steps).toEqual([]);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

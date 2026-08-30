@@ -526,80 +526,88 @@ describe('SpawnRunner', () => {
 
   it('reveals a composed plan only at spawn and preserves anchored bytes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-secret-plan-'));
-    const manifest = parseManifestText(
-      [
-        'schemaVersion: 1',
-        'product:',
-        '  name: Example',
-        '  version: "1.0.0"',
-        'inputs:',
-        '  runtime:',
-        '    type: secret',
-        '  work:',
-        '    type: secret',
-        '  token:',
-        '    type: secret',
-        'steps:',
-        '  - id: opaque',
-        '    when: "${token} == \'opaque-${env.SHOULD_NOT_BE_RESCANNED}\'"',
-        '    run:',
-        '      command: "${runtime}"',
-        '      args:',
-        '        - -e',
-        '        - "console.log(process.cwd(), process.argv[1], process.env.TOKEN)"',
-        '        - "arg-${token}"',
-        '      cwd: "${work}"',
-        '      env:',
-        '        TOKEN: "env-${token}"',
-        '',
-      ].join('\n'),
-      join(directory, 'installer.yaml'),
-    );
-    const context = createRuntimeContext({
-      manifestDir: directory,
-      product: manifest.product,
-      platform: hostPlatform(),
-      environment: {},
-    });
-    const resolution = resolveInputs({
-      manifest,
-      context,
-      environment: {},
-      overrides: new Map([
-        ['runtime', process.execPath],
-        ['work', '.'],
-        ['token', 'opaque-${env.SHOULD_NOT_BE_RESCANNED}'],
-      ]),
-    });
-    const plan = buildPlan({
-      manifest,
-      resolution,
-      context,
-    });
+    try {
+      const manifest = parseManifestText(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  runtime:',
+          '    type: secret',
+          '  work:',
+          '    type: secret',
+          '  token:',
+          '    type: secret',
+          'steps:',
+          '  - id: opaque',
+          '    when: "${token} == \'opaque-${env.SHOULD_NOT_BE_RESCANNED}\'"',
+          '    run:',
+          '      command: "${runtime}"',
+          '      args:',
+          '        - -e',
+          '        - "console.log(process.cwd(), process.argv[1], process.env.TOKEN)"',
+          '        - "arg-${token}"',
+          '      cwd: "${work}"',
+          '      env:',
+          '        TOKEN: "env-${token}"',
+          '',
+        ].join('\n'),
+        join(directory, 'installer.yaml'),
+      );
+      const context = createRuntimeContext({
+        manifestDir: directory,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({
+        manifest,
+        context,
+        environment: {},
+        overrides: new Map([
+          ['runtime', process.execPath],
+          ['work', '.'],
+          ['token', 'opaque-${env.SHOULD_NOT_BE_RESCANNED}'],
+        ]),
+      });
+      const plan = buildPlan({
+        manifest,
+        resolution,
+        context,
+      });
 
-    const step = plan.steps[0];
-    if (step?.state !== 'PENDING') {
-      throw new Error('expected a pending step');
+      const step = plan.steps[0];
+      if (step?.state !== 'PENDING') {
+        throw new Error('expected a pending step');
+      }
+      const lines: string[] = [];
+      await expect(
+        run(step.command, { onOutput: (_stream, line) => lines.push(line) }),
+      ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+
+      expect(lines).toContain(
+        `${directory} arg-opaque-\${env.SHOULD_NOT_BE_RESCANNED} env-opaque-\${env.SHOULD_NOT_BE_RESCANNED}`,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
-    const lines: string[] = [];
-    await expect(
-      run(step.command, { onOutput: (_stream, line) => lines.push(line) }),
-    ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
-
-    expect(lines).toContain(
-      `${directory} arg-opaque-\${env.SHOULD_NOT_BE_RESCANNED} env-opaque-\${env.SHOULD_NOT_BE_RESCANNED}`,
-    );
   });
 
   it('runs in the working directory the plan chose', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-cwd-'));
-    const lines: string[] = [];
+    try {
+      const lines: string[] = [];
 
-    await run(nodeCommand('console.log(process.cwd())', { cwd: directory }), {
-      onOutput: (_stream, line) => lines.push(line),
-    });
+      await run(nodeCommand('console.log(process.cwd())', { cwd: directory }), {
+        onOutput: (_stream, line) => lines.push(line),
+      });
 
-    expect(lines.join('\n')).toContain(directory.slice(-10));
+      expect(lines.join('\n')).toContain(directory.slice(-10));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('reports a command that does not exist as failed to start, not as a crash', async () => {
@@ -627,24 +635,32 @@ describe('SpawnRunner', () => {
 
   it('reports a missing working directory as failed to start, not as a crash', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'rune-missing-cwd-'));
-    const outcome = await run(nodeCommand('', { cwd: join(parent, 'missing') }));
+    try {
+      const outcome = await run(nodeCommand('', { cwd: join(parent, 'missing') }));
 
-    expect(outcome).toEqual({
-      kind: 'failedToStart',
-      reason: 'invalidCwd',
-    });
+      expect(outcome).toEqual({
+        kind: 'failedToStart',
+        reason: 'invalidCwd',
+      });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   it('gives an invalid cwd precedence when the command is also missing', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'rune-both-missing-'));
-    const outcome = await run(
-      nodeCommand('', {
-        argv: ['rune-definitely-not-installed-anywhere'],
-        cwd: join(parent, 'missing'),
-      }),
-    );
+    try {
+      const outcome = await run(
+        nodeCommand('', {
+          argv: ['rune-definitely-not-installed-anywhere'],
+          cwd: join(parent, 'missing'),
+        }),
+      );
 
-    expect(outcome).toEqual({ kind: 'failedToStart', reason: 'invalidCwd' });
+      expect(outcome).toEqual({ kind: 'failedToStart', reason: 'invalidCwd' });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   it('reports a working-directory file as invalid', async () => {

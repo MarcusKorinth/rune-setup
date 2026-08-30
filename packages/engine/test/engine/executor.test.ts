@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -438,74 +438,78 @@ describe('a run that fails', () => {
 
   it('omits an oversized default-runner line before masking can split its secret', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-bounded-output-'));
-    const firstSecretHalf = 'recognizable-left-half-1234';
-    const secondSecretHalf = 'recognizable-right-half-5678';
-    const secret = firstSecretHalf + secondSecretHalf;
-    const childScript =
-      'const token = process.env.TOKEN ?? "";' +
-      `process.stdout.write("x".repeat(${MAX_OUTPUT_LINE_BYTES - firstSecretHalf.length}) + ` +
-      'token + "\\n");' +
-      'process.stdout.write("follow " + token + "\\n");' +
-      'process.exitCode = 9;';
-    const manifest = parseManifestText(
-      [
-        ...HEAD,
-        'inputs:',
-        '  token:',
-        '    type: secret',
-        'steps:',
-        '  - id: bounded',
-        '    run:',
-        `      command: ${JSON.stringify(process.execPath)}`,
-        '      args:',
-        '        - -e',
-        `        - ${JSON.stringify(childScript)}`,
-        '      env:',
-        '        TOKEN: "${token}"',
-        '',
-      ].join('\n'),
-      join(directory, 'installer.yaml'),
-    );
-    const context = createRuntimeContext({
-      manifestDir: directory,
-      product: manifest.product,
-      platform: hostPlatform(),
-      environment: {},
-    });
-    const resolution = resolveInputs({
-      manifest,
-      context,
-      environment: {},
-      overrides: new Map([['token', secret]]),
-    });
-    const plan = buildPlan({ manifest, resolution, context });
-    const events: RunEvent[] = [];
+    try {
+      const firstSecretHalf = 'recognizable-left-half-1234';
+      const secondSecretHalf = 'recognizable-right-half-5678';
+      const secret = firstSecretHalf + secondSecretHalf;
+      const childScript =
+        'const token = process.env.TOKEN ?? "";' +
+        `process.stdout.write("x".repeat(${MAX_OUTPUT_LINE_BYTES - firstSecretHalf.length}) + ` +
+        'token + "\\n");' +
+        'process.stdout.write("follow " + token + "\\n");' +
+        'process.exitCode = 9;';
+      const manifest = parseManifestText(
+        [
+          ...HEAD,
+          'inputs:',
+          '  token:',
+          '    type: secret',
+          'steps:',
+          '  - id: bounded',
+          '    run:',
+          `      command: ${JSON.stringify(process.execPath)}`,
+          '      args:',
+          '        - -e',
+          `        - ${JSON.stringify(childScript)}`,
+          '      env:',
+          '        TOKEN: "${token}"',
+          '',
+        ].join('\n'),
+        join(directory, 'installer.yaml'),
+      );
+      const context = createRuntimeContext({
+        manifestDir: directory,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({
+        manifest,
+        context,
+        environment: {},
+        overrides: new Map([['token', secret]]),
+      });
+      const plan = buildPlan({ manifest, resolution, context });
+      const events: RunEvent[] = [];
 
-    const result = await executeRun({
-      plan,
-      observer: (event) => events.push(event),
-    });
+      const result = await executeRun({
+        plan,
+        observer: (event) => events.push(event),
+      });
 
-    const outputEvents = events.filter((event) => event.kind === 'stepOutput');
-    expect(outputEvents.map((event) => event.line)).toEqual([
-      OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
-      'follow ***',
-      'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
-    ]);
-    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
-    expect(result.steps[0]?.outputTail).toEqual([
-      { stream: 'stdout', line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER },
-      { stream: 'stdout', line: 'follow ***' },
-      {
-        stream: 'stderr',
-        line: 'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
-      },
-    ]);
+      const outputEvents = events.filter((event) => event.kind === 'stepOutput');
+      expect(outputEvents.map((event) => event.line)).toEqual([
+        OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+        'follow ***',
+        'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
+      ]);
+      expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+      expect(result.steps[0]?.outputTail).toEqual([
+        { stream: 'stdout', line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER },
+        { stream: 'stdout', line: 'follow ***' },
+        {
+          stream: 'stderr',
+          line: 'RUNE-401 step "bounded" exited with code 9; expected one of [0]',
+        },
+      ]);
 
-    const serializedSinks = JSON.stringify({ events, result, tail: result.steps[0]?.outputTail });
-    expect(serializedSinks).not.toContain(secret);
-    expect(serializedSinks).not.toContain(firstSecretHalf);
-    expect(serializedSinks).not.toContain(secondSecretHalf);
+      const serializedSinks = JSON.stringify({ events, result, tail: result.steps[0]?.outputTail });
+      expect(serializedSinks).not.toContain(secret);
+      expect(serializedSinks).not.toContain(firstSecretHalf);
+      expect(serializedSinks).not.toContain(secondSecretHalf);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('honours successExitCodes instead of assuming zero', async () => {
@@ -1539,34 +1543,38 @@ describe('skipped steps and the dry run', () => {
 
   it('serializes the manifest identity bound before the source file changes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-result-identity-'));
-    const manifestPath = join(directory, 'installer.yaml');
-    writeFileSync(manifestPath, [...HEAD, 'steps: []', ''].join('\n'));
-    const manifest = parseManifest(manifestPath);
-    const context = createRuntimeContext({
-      manifestDir: directory,
-      product: manifest.product,
-      platform: hostPlatform(),
-      environment: {},
-    });
-    const resolution = resolveInputs({ manifest, context, environment: {} });
-    const plan = buildPlan({ manifest, resolution, context });
+    try {
+      const manifestPath = join(directory, 'installer.yaml');
+      writeFileSync(manifestPath, [...HEAD, 'steps: []', ''].join('\n'));
+      const manifest = parseManifest(manifestPath);
+      const context = createRuntimeContext({
+        manifestDir: directory,
+        product: manifest.product,
+        platform: hostPlatform(),
+        environment: {},
+      });
+      const resolution = resolveInputs({ manifest, context, environment: {} });
+      const plan = buildPlan({ manifest, resolution, context });
 
-    writeFileSync(manifestPath, 'changed bytes');
+      writeFileSync(manifestPath, 'changed bytes');
 
-    const described = describePlan({ plan });
-    const executed = await executeRun({ plan });
-    const expectedManifest = {
-      path: manifestPath,
-      sha256: 'a743ebaa08d1272d09f6052fb0327eeb5bf69d75138922d5261e765166bcf8ff',
-      schemaVersion: 1,
-    };
+      const described = describePlan({ plan });
+      const executed = await executeRun({ plan });
+      const expectedManifest = {
+        path: manifestPath,
+        sha256: 'a743ebaa08d1272d09f6052fb0327eeb5bf69d75138922d5261e765166bcf8ff',
+        schemaVersion: 1,
+      };
 
-    for (const result of [described, executed]) {
-      expect(result.manifest).toEqual(expectedManifest);
-      expect(result).not.toHaveProperty('manifestPath');
-      expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
-      expect(serializeResult(result)).toContain('"manifest": {');
-      expect(serializeResult(result)).not.toContain('"manifestPath"');
+      for (const result of [described, executed]) {
+        expect(result.manifest).toEqual(expectedManifest);
+        expect(result).not.toHaveProperty('manifestPath');
+        expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
+        expect(serializeResult(result)).toContain('"manifest": {');
+        expect(serializeResult(result)).not.toContain('"manifestPath"');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
