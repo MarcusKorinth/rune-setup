@@ -33,12 +33,61 @@ const _checkResultInputCorrelation = (): void => {
     secret: false,
     enabled: true,
   };
+  const disabledWithoutValue: ResultInput = {
+    id: 'disabledWithoutValue',
+    value: '',
+    source: null,
+    secret: false,
+    enabled: false,
+  };
+  const disabledWithIgnoredValue: ResultInput = {
+    id: 'disabledWithIgnoredValue',
+    value: '',
+    source: 'values',
+    secret: false,
+    enabled: false,
+    ignored: 'input disabled',
+  };
   // @ts-expect-error secret result inputs must never contain plaintext
   const plaintextSecret: ResultInput = { ...secret, value: 'plaintext' };
   // @ts-expect-error non-secret result inputs must always contain a value
   const nullNonSecret: ResultInput = { ...nonSecret, value: null };
+  const enabledIgnored = {
+    id: 'enabledIgnored',
+    value: 'visible',
+    source: 'set',
+    secret: false,
+    enabled: true,
+    ignored: 'input disabled',
+  } as const;
+  // @ts-expect-error enabled inputs cannot record discarded input provenance
+  const invalidEnabledIgnored: ResultInput = enabledIgnored;
+  const disabledWithSource = {
+    id: 'disabledWithSource',
+    value: '',
+    source: 'set',
+    secret: false,
+    enabled: false,
+  } as const;
+  // @ts-expect-error disabled inputs without a discarded value have no source
+  const invalidDisabledWithSource: ResultInput = disabledWithSource;
+  const ignoredDefault = {
+    id: 'ignoredDefault',
+    value: '',
+    source: 'default',
+    secret: false,
+    enabled: false,
+    ignored: 'input disabled',
+  } as const;
+  // @ts-expect-error a discarded disabled input cannot claim a manifest default
+  const invalidIgnoredDefault: ResultInput = ignoredDefault;
+  void disabledWithoutValue;
+  void disabledWithIgnoredValue;
   void plaintextSecret;
   void nullNonSecret;
+  void invalidEnabledIgnored;
+  void invalidDisabledWithSource;
+  void invalidIgnoredDefault;
 };
 
 const _checkResultStepCorrelation = (): void => {
@@ -325,6 +374,34 @@ describe('resultJsonSchema', () => {
     for (const invalid of [
       { ...input, secret: true, value: 'plaintext' },
       { ...input, secret: false, value: null },
+    ]) {
+      expect(resultV1Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
+    }
+  });
+
+  it('enforces disabled-input provenance correlations', () => {
+    const base = result();
+    const input = { id: 'input', secret: false, value: '' } as const;
+
+    for (const valid of [
+      { ...input, enabled: true, source: null },
+      ...VALUE_SOURCES.map((source) => ({ ...input, enabled: true, source })),
+      { ...input, enabled: false, source: null },
+      ...(['values', 'environment', 'set', 'answer'] as const).map((source) => ({
+        ...input,
+        enabled: false,
+        source,
+        ignored: 'input disabled' as const,
+      })),
+    ]) {
+      expect(resultV1Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
+    }
+
+    for (const invalid of [
+      { ...input, enabled: true, source: 'set', ignored: 'input disabled' },
+      { ...input, enabled: false, source: 'set' },
+      { ...input, enabled: false, source: null, ignored: 'input disabled' },
+      { ...input, enabled: false, source: 'default', ignored: 'input disabled' },
     ]) {
       expect(resultV1Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
     }

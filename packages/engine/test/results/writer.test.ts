@@ -64,6 +64,22 @@ function forgedPlaintextSecretResult(id: string): RunResult {
   } as unknown as RunResult;
 }
 
+function forgedDisabledInputProvenanceResult(id: string): RunResult {
+  return {
+    ...result(id),
+    inputs: [
+      {
+        id: 'disabled',
+        value: '',
+        source: 'default',
+        secret: false,
+        enabled: false,
+        ignored: 'input disabled',
+      },
+    ],
+  } as unknown as RunResult;
+}
+
 function forgedCounterResult(id: string): RunResult {
   return { ...result(id), stepsExecuted: 99 } as RunResult;
 }
@@ -128,6 +144,7 @@ describe('writeResult', () => {
     for (const invalid of [
       forgedSucceededWithFailedStepResult('succeeded-with-failure'),
       forgedFailedWithoutFailedStepResult('failed-without-failure'),
+      forgedDisabledInputProvenanceResult('disabled-default'),
     ]) {
       let caught: unknown;
       try {
@@ -184,16 +201,21 @@ describe('writeResult', () => {
     const destination = join(destinationDirectory, 'result.json');
 
     try {
-      let caught: unknown;
-      try {
-        await writeResult(forgedCounterResult('invalid-counters'), destination);
-      } catch (error) {
-        caught = error;
-      }
+      for (const invalid of [
+        forgedCounterResult('invalid-counters'),
+        forgedDisabledInputProvenanceResult('invalid-provenance'),
+      ]) {
+        let caught: unknown;
+        try {
+          await writeResult(invalid, destination);
+        } catch (error) {
+          caught = error;
+        }
 
-      expectGenericResultError(caught);
-      expect(existsSync(destinationDirectory)).toBe(false);
-      expect(existsSync(destination)).toBe(false);
+        expectGenericResultError(caught);
+        expect(existsSync(destinationDirectory)).toBe(false);
+        expect(existsSync(destination)).toBe(false);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

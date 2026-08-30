@@ -57,16 +57,31 @@ export type RunOutcome =
       };
     }[NonzeroRunStatus];
 
+type ResultInputProvenance =
+  | {
+      readonly enabled: true;
+      readonly source: ValueSource | null;
+      readonly ignored?: never;
+    }
+  | {
+      readonly enabled: false;
+      readonly source: null;
+      readonly ignored?: never;
+    }
+  | {
+      readonly enabled: false;
+      readonly source: Exclude<ValueSource, 'default'>;
+      /** A layer 2–5 value was discarded because the input is disabled (§10). */
+      readonly ignored: 'input disabled';
+    };
+
 interface ResultInputBody {
   readonly id: string;
-  readonly source: ValueSource | null;
-  readonly enabled: boolean;
-  /** Present only when a supplied value was discarded because the input is disabled (§10). */
-  readonly ignored?: 'input disabled';
 }
 
 /** Secret inputs never carry their value across the result-file sink (§10). */
 export type ResultInput = ResultInputBody &
+  ResultInputProvenance &
   (
     | { readonly secret: true; readonly value: null }
     | {

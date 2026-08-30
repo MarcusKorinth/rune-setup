@@ -392,13 +392,34 @@ function assembleResult(input: {
 
 function resultInput(state: PlanInput, secrets: SecretMasker): ResultInput {
   const value = state.value;
+  if (state.enabled) {
+    const common = { id: state.id, source: state.source ?? null, enabled: true as const };
+    return state.secret || isSecretString(value)
+      ? { ...common, value: null, secret: true }
+      : { ...common, value: maskInputValue(value, secrets), secret: false };
+  }
+
+  if (state.ignored === undefined) {
+    const common = {
+      id: state.id,
+      source: null,
+      enabled: false as const,
+    };
+    return state.secret || isSecretString(value)
+      ? { ...common, value: null, secret: true }
+      : { ...common, value: maskInputValue(value, secrets), secret: false };
+  }
+
+  if (state.ignored === 'default') {
+    throw new InternalError('invalid disabled input provenance');
+  }
+
+  // A disabled input's discarded layer is its audit provenance (§5, §10).
   const common = {
     id: state.id,
-    // A disabled input's discarded value keeps its provenance: the layer that supplied it
-    // lives in `ignored`, and the result records it as the source (§5, §10).
-    source: state.source ?? state.ignored ?? null,
-    enabled: state.enabled,
-    ...(state.ignored === undefined ? {} : { ignored: 'input disabled' as const }),
+    source: state.ignored,
+    enabled: false as const,
+    ignored: 'input disabled' as const,
   };
   return state.secret || isSecretString(value)
     ? { ...common, value: null, secret: true }

@@ -8,25 +8,58 @@ import { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION, RUN_MODES, type RunResult }
 
 const nonnegativeInteger = z.number().int().nonnegative();
 
-const resultInputShape = {
+const resultInputIdentity = {
   id: z.string(),
-  source: z.enum(VALUE_SOURCES).nullable(),
-  enabled: z.boolean(),
-  ignored: z.literal('input disabled').optional(),
 };
 
-const resultInputSchema = z.discriminatedUnion('secret', [
+const resultInputValueSchemas = [
   z.strictObject({
-    ...resultInputShape,
+    ...resultInputIdentity,
+    source: z.enum(VALUE_SOURCES).nullable(),
+    enabled: z.literal(true),
     secret: z.literal(true),
     value: z.null(),
   }),
   z.strictObject({
-    ...resultInputShape,
+    ...resultInputIdentity,
+    source: z.enum(VALUE_SOURCES).nullable(),
+    enabled: z.literal(true),
     secret: z.literal(false),
     value: z.union([z.string(), z.boolean(), z.array(z.string())]),
   }),
-]);
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.null(),
+    enabled: z.literal(false),
+    secret: z.literal(true),
+    value: z.null(),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.null(),
+    enabled: z.literal(false),
+    secret: z.literal(false),
+    value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(['values', 'environment', 'set', 'answer']),
+    enabled: z.literal(false),
+    ignored: z.literal('input disabled'),
+    secret: z.literal(true),
+    value: z.null(),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(['values', 'environment', 'set', 'answer']),
+    enabled: z.literal(false),
+    ignored: z.literal('input disabled'),
+    secret: z.literal(false),
+    value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  }),
+] as const;
+
+const resultInputSchema = z.union(resultInputValueSchemas);
 
 const resultOutputLineSchema = z.strictObject({
   stream: z.enum(['stdout', 'stderr']),

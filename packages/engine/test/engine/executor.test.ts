@@ -2402,6 +2402,7 @@ describe('the result run block', () => {
     expect(Object.hasOwn(input('disabledWithoutValue'), 'ignored')).toBe(false);
     expect(Object.hasOwn(input('disabledWithValue'), 'ignored')).toBe(true);
     expect(input('disabledWithValue')).toMatchObject({ ignored: 'input disabled', source: 'set' });
+    expect(input('disabledWithoutValue')).toMatchObject({ enabled: false, source: null });
   });
 
   it('serializes outputTail only for failed steps', async () => {
