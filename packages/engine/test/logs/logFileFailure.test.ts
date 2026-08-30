@@ -24,6 +24,9 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { createLogFileSink } from '../../src/logs/logFile.js';
+import { Session } from '../../src/engine/session.js';
+import type { RunEvent } from '../../src/engine/events.js';
+import { runResultSchema } from '../../src/results/schema.js';
 
 function openedWritable(path: string, options: WritableOptions): fs.WriteStream {
   const fd = fs.openSync(path, 'a');
@@ -67,6 +70,9 @@ describe('log-file sink failures', () => {
     const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     mockedFs.streamFactory = (target) =>
       openedWritable(target, {
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
         final(callback) {
           callback(new Error('close failed'));
         },
@@ -74,5 +80,76 @@ describe('log-file sink failures', () => {
     const sink = await createLogFileSink(path);
 
     await expect(sink.close()).rejects.toMatchObject({ code: 'RUNE-500' });
+  });
+
+  it('publishes one failure terminal with the actual topology after a late close failure', async () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), 'rune-log-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const logPath = join(directory, 'run.log');
+    fs.writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    mockedFs.streamFactory = (target) =>
+      openedWritable(target, {
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+        final(callback) {
+          callback(new Error('close failed'));
+        },
+      });
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      logFile: logPath,
+      runner: {
+        run: async (request) => {
+          request.onOutput('stdout', 'installed');
+          return { kind: 'exited', exitCode: 0 };
+        },
+      },
+    });
+    const events: RunEvent[] = [];
+
+    await expect(session.execute((event) => events.push(event))).rejects.toMatchObject({
+      code: 'RUNE-500',
+    });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    const terminals = events.filter((event) => event.kind === 'runFinished');
+    expect(terminals).toHaveLength(1);
+    const result = terminals[0]?.result;
+    expect(result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      stepsTotal: 1,
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsFailed: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+      steps: [{ id: 'install', state: 'SUCCEEDED', command: ['node'] }],
+    });
+    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(terminals.some((event) => event.result.status === 'succeeded')).toBe(false);
   });
 });

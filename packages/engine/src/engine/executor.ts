@@ -349,6 +349,21 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   });
 }
 
+/**
+ * Reclassifies an otherwise completed run when an engine-owned sink fails during
+ * finalization. The executor's actual topology and timing remain authoritative; only the
+ * run-level outcome changes.
+ */
+export function createCompletedRunFailureResult(error: RuneError, completed: RunResult): RunResult {
+  const status = failureStatus(error);
+
+  return deepFreeze({
+    ...completed,
+    status,
+    exitCode: EXIT_CODE_BY_STATUS[status],
+  });
+}
+
 interface ResultSource {
   readonly product: { readonly name: string; readonly version: string };
   readonly manifest: {

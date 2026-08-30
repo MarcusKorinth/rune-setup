@@ -33,8 +33,8 @@ import {
   type Platform,
   type RuntimeContext,
 } from './context.js';
-import { describePlan, executeRun } from './executor.js';
-import type { EngineObserver } from './events.js';
+import { createCompletedRunFailureResult, describePlan, executeRun } from './executor.js';
+import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
   parseValuesFile,
   resolveInputs,
@@ -283,38 +283,72 @@ export class Session {
     if (this.#activeExecution !== undefined) {
       throw new InternalError('a session cannot have more than one active execution');
     }
+
+    const plan = this.#executionPlan();
+    const activeExecution = { cancel: cancel ?? new CancelToken() };
+    this.#activeExecution = activeExecution;
+    let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
+    let closeAttempted = false;
+    let completed: RunResult | undefined;
     try {
-      const plan = this.#executionPlan();
-      const activeExecution = { cancel: cancel ?? new CancelToken() };
-      this.#activeExecution = activeExecution;
-      let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
-      try {
-        const logFile = plan.executionOptions.logFile;
-        log = logFile === null ? undefined : await createLogFileSink(logFile);
-        const observers: EngineObserver = (event) => {
-          log?.observer(event);
-          observer?.(event);
-        };
-        return await executeRun({
-          plan,
-          product: this.manifest.product,
-          secrets: this.#secrets,
-          mode: this.mode,
-          observer: observers,
-          cancel: activeExecution.cancel,
-          ...(this.#runner === undefined ? {} : { runner: this.#runner }),
-        });
-      } finally {
+      const logFile = plan.executionOptions.logFile;
+      log = logFile === null ? undefined : await createLogFileSink(logFile);
+      let terminal: RunFinished | undefined;
+      const observers: EngineObserver = (event) => {
+        notifyObserver(log?.observer, event);
+        if (event.kind === 'runFinished') {
+          terminal = event;
+        } else {
+          notifyObserver(observer, event);
+        }
+      };
+      completed = await executeRun({
+        plan,
+        product: this.manifest.product,
+        secrets: this.#secrets,
+        mode: this.mode,
+        observer: observers,
+        cancel: activeExecution.cancel,
+        ...(this.#runner === undefined ? {} : { runner: this.#runner }),
+      });
+      if (terminal === undefined || terminal.result !== completed) {
+        throw new InternalError('the executor completed without its matching RunFinished event');
+      }
+
+      // The log sees the executor's terminal candidate so its write participates in close().
+      // The frontend sees no terminal event until that engine-owned sink has finalized.
+      closeAttempted = true;
+      await log?.close();
+      notifyObserver(observer, terminal);
+      return completed;
+    } catch (error) {
+      let failure = error;
+      if (log !== undefined && !closeAttempted) {
+        closeAttempted = true;
         try {
-          await log?.close();
-        } finally {
-          if (this.#activeExecution === activeExecution) {
-            this.#activeExecution = undefined;
-          }
+          await log.close();
+        } catch (closeError) {
+          failure = closeError;
         }
       }
-    } catch (error) {
-      throw this.#projectError(error);
+
+      const projected = this.#projectError(failure);
+      if (completed !== undefined) {
+        const runError =
+          projected instanceof RuneError
+            ? projected
+            : new InternalError('an unexpected error escaped run finalization', {
+                cause: projected,
+              });
+        const result = createCompletedRunFailureResult(runError, completed);
+        notifyObserver(observer, Object.freeze({ kind: 'runFinished', result }));
+        throw runError;
+      }
+      throw projected;
+    } finally {
+      if (this.#activeExecution === activeExecution) {
+        this.#activeExecution = undefined;
+      }
     }
   }
 
@@ -435,6 +469,15 @@ function freezeResolution(resolution: Resolution): Resolution {
 
 function freezeInputValue(value: InputValue | undefined): InputValue | undefined {
   return Array.isArray(value) ? Object.freeze([...value]) : value;
+}
+
+/** Observer failures are isolated per sink and can never change execution or finalization. */
+function notifyObserver(observer: EngineObserver | undefined, event: RunEvent): void {
+  try {
+    observer?.(event);
+  } catch {
+    // A broken renderer or sink must never corrupt a run (§9.1).
+  }
 }
 
 /** What the operating system reports as its display locale. */

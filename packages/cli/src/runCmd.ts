@@ -9,7 +9,6 @@
 import {
   CancelledError,
   createFailureResult,
-  exitCodeFor,
   InternalError,
   RuneError,
   Session,
@@ -43,6 +42,7 @@ export async function runCommand(
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let plan: ExecutionPlan | undefined;
+  let executionFailureResult: RunResult | undefined;
   let deliveryStarted = false;
   try {
     if (flags.platform !== undefined && flags.dryRun !== true) {
@@ -63,10 +63,21 @@ export async function runCommand(
     if (flags.dryRun === true && control.cancel?.cancelled === true) {
       throw new CancelledError();
     }
+    const progress = progressObserver(io);
     const result =
       flags.dryRun === true
         ? session.describe()
-        : await session.execute(progressObserver(io), control.cancel);
+        : await session.execute((event) => {
+            // Session publishes a post-execution sink failure as the sole terminal event
+            // before rejecting. Capture first so a broken renderer cannot hide the result.
+            if (event.kind === 'runFinished') {
+              executionFailureResult = event.result;
+            }
+            progress(event);
+          }, control.cancel);
+    // A returned execution owns its normal result path. The captured terminal result is
+    // retained only while execute() is in flight, for a finalization failure that rejects.
+    executionFailureResult = undefined;
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
@@ -97,22 +108,23 @@ export async function runCommand(
           ? error
           : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
       io.stderr(failure.message);
-      const code = exitCodeFor(failure);
-      const result = createFailureResult({
-        error: failure,
-        manifestPath,
-        dryRun: flags.dryRun === true,
-        mode: 'non-interactive',
-        ...(platform === undefined ? {} : { platform }),
-        ...(session === undefined ? {} : { session }),
-        ...(plan === undefined ? {} : { plan }),
-      });
+      const result =
+        executionFailureResult ??
+        createFailureResult({
+          error: failure,
+          manifestPath,
+          dryRun: flags.dryRun === true,
+          mode: 'non-interactive',
+          ...(platform === undefined ? {} : { platform }),
+          ...(session === undefined ? {} : { session }),
+          ...(plan === undefined ? {} : { plan }),
+        });
       renderOutcome(result, session?.warnings() ?? [], io);
       if (flags.result !== undefined) {
         deliveryStarted = true;
         deliverResult(result, flags.result, io);
       }
-      throw new ExitWithCode(code);
+      throw new ExitWithCode(result.exitCode);
     }
     throw error;
   }

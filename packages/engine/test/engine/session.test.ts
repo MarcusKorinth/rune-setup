@@ -272,6 +272,9 @@ describe('planning and executing', () => {
     expect(result.steps[0]?.state).toBe('SUCCEEDED');
     expect(events[0]?.kind).toBe('runStarted');
     expect(events.at(-1)?.kind).toBe('runFinished');
+    const terminal = events.filter((event) => event.kind === 'runFinished');
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]?.kind === 'runFinished' && terminal[0].result).toBe(result);
     const log = readFileSync(logFile, 'utf8');
     expect(log).toContain('[install] SUCCEEDED');
     expect(log).toContain('run finished: succeeded (exit 0)');
