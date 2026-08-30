@@ -254,6 +254,7 @@ describe('conditional inputs', () => {
     '    type: text',
     '    when: "${installDatabase}"',
     '    default: "5432"',
+    '    pattern: "[0-9]{2,5}"',
   );
 
   it('resolves an input whose condition holds', () => {
@@ -283,6 +284,25 @@ describe('conditional inputs', () => {
       overrides: new Map([
         ['installDatabase', 'false'],
         ['databasePort', '9999'],
+      ]),
+    });
+
+    expect(resolution.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      ignored: 'set',
+    });
+    expect(resolution.warnings).toEqual([
+      'databasePort was set from --set, but its condition is false — the value is ignored',
+    ]);
+  });
+
+  it('continues to ignore an invalid --set value for a disabled input', () => {
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['installDatabase', 'false'],
+        ['databasePort', 'not-a-port'],
       ]),
     });
 

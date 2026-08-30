@@ -169,6 +169,80 @@ describe('answering inputs', () => {
     expect(() => session.setValue('nope', 'x')).toThrow(/names no input/);
   });
 
+  it.each([
+    ['choice', 'rejected'],
+    ['port', 'not-a-port'],
+  ])('rejects an invalid disabled %s answer without changing anything', async (id, value) => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  choice:',
+        '    type: select',
+        '    options: [accepted]',
+        '    when: "${enabled}"',
+        '  port:',
+        '    type: text',
+        '    pattern: "[0-9]{2,5}"',
+        '    when: "${enabled}"',
+        'steps: []',
+      ]),
+      { environment: {} },
+    );
+    const before = session.allInputs();
+
+    expect(() => session.setValue(id, value)).toThrow(InputError);
+    expect(session.allInputs()).toBe(before);
+    expect(session.allInputs().find((input) => input.id === id)).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      ignored: undefined,
+    });
+  });
+
+  it('keeps a valid disabled answer until its controller enables the input', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  choice:',
+        '    type: select',
+        '    options: [accepted]',
+        '    when: "${enabled}"',
+        'steps: []',
+      ]),
+      { environment: {} },
+    );
+
+    expect(session.setValue('choice', 'accepted')).toEqual([]);
+    expect(session.allInputs().find((input) => input.id === 'choice')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
+      ignored: 'answer',
+    });
+    expect(session.setValue('enabled', true)).toEqual([{ inputId: 'choice', enabled: true }]);
+    expect(session.allInputs().find((input) => input.id === 'choice')).toMatchObject({
+      enabled: true,
+      value: 'accepted',
+      source: 'answer',
+      ignored: undefined,
+    });
+  });
+
   it('keeps an accepted answer through a later rejected edit', async () => {
     const session = await Session.open(fixture(BASE), { environment: {} });
     session.setValue('installDatabase', true);

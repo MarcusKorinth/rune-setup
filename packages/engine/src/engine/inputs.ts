@@ -123,6 +123,16 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     const supplied = highestLayer(id, spec, options, environment);
 
     if (!enabled) {
+      // A layer-5 answer is accepted through Session.setValue, which promises the frontend
+      // that every concrete answer passed the type registry. Keep the disabled semantics
+      // below, but reject an invalid answer now instead of letting it surface on activation.
+      // Lower layers remain deliberately ignored while disabled (§5).
+      if (supplied?.source === 'answer') {
+        const coerced = coerce(supplied, spec, id, context);
+        if (!coerced.ok) {
+          issues.push({ code: 'RUNE-202', message: coerced.message, location: supplied.location });
+        }
+      }
       // A manifest default is not something anybody *supplied* for this run: it is what the
       // author wrote for the case where the input is used at all. Only a value from layers
       // 2–5 is worth a warning, and only that is recorded as discarded (§5, §10).
