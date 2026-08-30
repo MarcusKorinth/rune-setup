@@ -1,4 +1,7 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +22,7 @@ const requiredBooleanFixturePath = join(
   'required-boolean.yaml',
 );
 const invalidSeedFixturePath = join(packageDirectory, 'tests', 'fixtures', 'invalid-seed.yaml');
+const executionFixturePath = join(packageDirectory, 'tests', 'fixtures', 'execution.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
@@ -35,6 +39,50 @@ interface SummaryTestControl {
 interface InputRaceTestControl {
   submissionCount(): number;
   rejectSubmission(index: number): void;
+}
+
+interface SmokeRunResult {
+  readonly exitCode: number;
+  readonly mode: string;
+  readonly status: string;
+  readonly steps: readonly { readonly id: string; readonly state: string }[];
+}
+
+async function readSmokeResult(path: string): Promise<SmokeRunResult> {
+  return JSON.parse(await readFile(path, 'utf8')) as SmokeRunResult;
+}
+
+async function runHeadlessShell(resultPath: string): Promise<{
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly stdout: string;
+}> {
+  const child = spawn(
+    electronExecutable,
+    [launcherPath, executionFixturePath, '--non-interactive', '--result', resultPath],
+    { cwd: packageDirectory, windowsHide: true },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (signal !== null) {
+        reject(new Error(`headless Electron smoke ended from ${signal}`));
+        return;
+      }
+      resolve(code ?? 70);
+    });
+  });
+  return { exitCode, stderr, stdout };
 }
 
 test('launches the real Node 22 shell and renders Welcome', async () => {
@@ -94,6 +142,63 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     expect(consoleErrors).toEqual([]);
   } finally {
     await application?.close();
+  }
+});
+
+test('runs the real windowed shell through Result and exits successfully', async () => {
+  const resultDirectory = await mkdtemp(join(tmpdir(), 'rune-windowed-smoke-'));
+  const resultPath = join(resultDirectory, 'result.json');
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, executionFixturePath, '--result', resultPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await next.click();
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
+    await expect(next).toHaveText('Install');
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
+
+    const result = await readSmokeResult(resultPath);
+    expect(result).toMatchObject({ exitCode: 0, mode: 'gui', status: 'succeeded' });
+    expect(result.steps).toMatchObject([{ id: 'execution-smoke', state: 'SUCCEEDED' }]);
+
+    const exited = new Promise<number | null>((resolve) => {
+      application?.process().once('exit', resolve);
+    });
+    await next.click();
+    expect(await exited).toBe(0);
+    application = undefined;
+  } finally {
+    if (application !== undefined) {
+      await application.close().catch(() => undefined);
+    }
+    await rm(resultDirectory, { force: true, recursive: true });
+  }
+});
+
+test('runs the real non-interactive shell and writes a successful result', async () => {
+  const resultDirectory = await mkdtemp(join(tmpdir(), 'rune-headless-smoke-'));
+  const resultPath = join(resultDirectory, 'result.json');
+
+  try {
+    const run = await runHeadlessShell(resultPath);
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr).toContain('running 1 steps');
+
+    const result = await readSmokeResult(resultPath);
+    expect(result).toMatchObject({ exitCode: 0, mode: 'non-interactive', status: 'succeeded' });
+    expect(result.steps).toMatchObject([{ id: 'execution-smoke', state: 'SUCCEEDED' }]);
+  } finally {
+    await rm(resultDirectory, { force: true, recursive: true });
   }
 });
 
