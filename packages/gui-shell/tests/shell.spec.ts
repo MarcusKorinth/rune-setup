@@ -141,7 +141,7 @@ test('keeps Install disabled for the current summary plan only', async () => {
   }
 });
 
-test('clears an invalid field when its condition disables it', async () => {
+test('disables conditional controls natively across input pages', async () => {
   let application: ElectronApplication | undefined;
 
   try {
@@ -166,7 +166,19 @@ test('clears an invalid field when its condition disables it', async () => {
     await controller.uncheck();
     await expect(page.locator('.field[data-id="details"]')).toHaveClass(/disabled/);
     await expect(page.locator('.field[data-id="details"]')).not.toHaveClass(/invalid/);
+    await expect(controller).toBeEnabled();
+    // The generic input path renders text, secret, file, and directory controls.
+    await expect(page.locator('.field[data-id="details"] input')).toBeDisabled();
+    await expect(page.locator('.field[data-id="secretDetails"] input')).toBeDisabled();
+    await expect(page.locator('.field[data-id="booleanDetails"] input')).toBeDisabled();
+    await expect(page.locator('.field[data-id="selectDetails"] select')).toBeDisabled();
     await expect(next).toBeEnabled();
+
+    await next.click();
+    await expect(page.locator('.field[data-id="multiselectDetails"] input').nth(0)).toBeDisabled();
+    await expect(page.locator('.field[data-id="multiselectDetails"] input').nth(1)).toBeDisabled();
+    await expect(page.locator('.field[data-id="fileDetails"] input')).toBeDisabled();
+    await expect(page.locator('.field[data-id="directoryDetails"] input')).toBeDisabled();
   } finally {
     await application?.close();
   }

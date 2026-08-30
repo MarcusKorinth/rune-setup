@@ -318,6 +318,7 @@ function renderControl(input: BridgeInput): HTMLElement {
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
   box.value = spec.type === 'secret' ? '' : typeof input.value === 'string' ? input.value : '';
+  box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
   });
@@ -329,6 +330,7 @@ function checkbox(input: BridgeInput): HTMLElement {
   const box = document.createElement('input');
   box.type = 'checkbox';
   box.checked = input.value === true;
+  box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.checked);
   });
@@ -338,6 +340,7 @@ function checkbox(input: BridgeInput): HTMLElement {
 
 function selectBox(input: BridgeInput): HTMLElement {
   const select = document.createElement('select');
+  select.disabled = !input.enabled;
   // Until the engine has a value, the display must not pretend one: a hidden placeholder
   // keeps the first option from looking chosen while nothing is set.
   if (state.pending.has(input.id)) {
@@ -373,6 +376,7 @@ function multiselect(input: BridgeInput): HTMLElement {
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = chosen.has(value);
+    box.disabled = !input.enabled;
     box.addEventListener('change', () => {
       if (box.checked) {
         chosen.add(value);
