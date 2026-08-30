@@ -475,12 +475,12 @@ function anchorCommandValue(
   platform: RuntimeContext['platform'],
   secrets: SecretRegistry,
 ): string | SecretString {
-  if (isSecretString(value)) {
-    return secretMatches(value, /[\\/]/)
-      ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
-      : value;
+  if (!commandLooksLikeTargetPath(value, platform)) {
+    return value;
   }
-  return anchorCommand(value, manifestDir, platform);
+  return isSecretString(value)
+    ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
+    : anchorPath(value, manifestDir, platform);
 }
 
 function anchorPathValue(
@@ -494,17 +494,12 @@ function anchorPathValue(
     : anchorPath(value, manifestDir, platform);
 }
 
-/**
- * A command that is written as a path resolves against the manifest's directory, never the
- * caller's cwd (invariant 13); a bare name is left for the PATH lookup at spawn.
- */
-function anchorCommand(
-  command: string,
-  manifestDir: string,
+function commandLooksLikeTargetPath(
+  value: string | SecretString,
   platform: RuntimeContext['platform'],
-): string {
-  const looksLikePath = command.includes('/') || command.includes('\\');
-  return looksLikePath ? anchorPath(command, manifestDir, platform) : command;
+): boolean {
+  const pathSeparator = platform === 'windows' ? /[\\/]/ : /\//;
+  return isSecretString(value) ? secretMatches(value, pathSeparator) : pathSeparator.test(value);
 }
 
 function anchorPath(

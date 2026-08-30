@@ -484,7 +484,7 @@ describe('interpolation into the command', () => {
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
   });
 
-  it('anchors Windows-looking values for a Linux target from the manifest directory', () => {
+  it('keeps a Windows-looking command bare but anchors cwd for a Linux target', () => {
     const command = 'C:\\tools\\install.exe';
     const cwd = '\\\\server\\share\\work';
     const { plan } = planFor(
@@ -499,13 +499,40 @@ describe('interpolation into the command', () => {
     );
 
     const step = plan.steps[0];
-    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
-      resolvePath('/project', `.${sep}${command}`),
-    );
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(
       resolvePath('/project', `.${sep}${cwd}`),
     );
   });
+
+  it.each([
+    ['linux', 'tool\\name', 'tool\\name'],
+    ['linux', 'tool/name', resolvePath('/project', 'tool', 'name')],
+    ['windows', 'tool\\name', resolvePath('/project', 'tool', 'name')],
+    ['windows', 'tool/name', resolvePath('/project', 'tool', 'name')],
+  ] as const)(
+    'uses %s target separators to classify the opaque command %s',
+    (platform, command, expected) => {
+      const { plan } = planFor(
+        [
+          'inputs:',
+          '  command:',
+          '    type: secret',
+          'steps:',
+          '  - id: install',
+          '    run:',
+          '      command: "${command}"',
+        ],
+        { platform, overrides: new Map([['command', command]]) },
+      );
+
+      const step = plan.steps[0];
+      expect(step?.state === 'PENDING' && isSecretString(step.command.argv[0])).toBe(true);
+      expect(step?.state === 'PENDING' && secretValuesEqual(step.command.argv[0], expected)).toBe(
+        true,
+      );
+    },
+  );
 });
 
 describe('the Windows honesty rule', () => {
