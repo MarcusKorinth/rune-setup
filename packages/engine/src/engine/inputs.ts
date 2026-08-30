@@ -285,11 +285,16 @@ export function resolveInputsWithRegistry(
     order.push(id);
   }
 
-  if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
+  // Every input has now had a chance to register its secret. Project diagnostics through one
+  // final immutable masker before they can reach either an exception or a frontend snapshot.
+  const secretMasker = secrets.snapshot();
+  const maskedIssues = issues.map((issue) => maskIssue(issue, secretMasker));
+
+  if (maskedIssues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
     // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
     // the values (§7).
-    const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+    const onlyUnknownKeys = maskedIssues.every((issue) => issue.code === 'RUNE-203');
+    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', maskedIssues);
   }
 
   const inputs = Object.freeze(
@@ -304,7 +309,7 @@ export function resolveInputsWithRegistry(
     inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
   );
   const frozenWarnings = Object.freeze([...warnings]);
-  const frozenProblems = Object.freeze(issues.map(freezeIssue));
+  const frozenProblems = Object.freeze(maskedIssues.map(freezeIssue));
   const resolution: Resolution = Object.freeze({
     inputs,
     byId: publicById,
@@ -319,7 +324,7 @@ export function resolveInputsWithRegistry(
       context,
       inputs,
       byId: canonicalById,
-      secrets: secrets.snapshot(),
+      secrets: secretMasker,
       missing,
       warnings: frozenWarnings,
       problems: frozenProblems,
@@ -336,6 +341,10 @@ function snapshotInputState(state: InputState): InputState {
 function freezeIssue(issue: RuneIssue): RuneIssue {
   const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
   return Object.freeze({ ...issue, location });
+}
+
+function maskIssue(issue: RuneIssue, secrets: SecretMasker): RuneIssue {
+  return { ...issue, message: secrets.mask(issue.message) };
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */

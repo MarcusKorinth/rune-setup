@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
+import { buildPlan } from '../../src/engine/plan.js';
 import {
   parseValuesFile,
   resolveInputs,
@@ -475,6 +476,22 @@ describe('values a type refuses', () => {
     '    type: multiselect',
     '    options: [git, docker]',
   );
+  const collisionManifest = (inputLines: readonly string[]): ManifestV1 =>
+    parseManifestText(
+      [...HEAD, 'inputs:', ...inputLines, 'steps: []', ''].join('\n'),
+      'installer.yaml',
+      { manifestDir: '/project' },
+    );
+  const collisionCases = [
+    [
+      'before',
+      ['  token:', '    type: secret', '  mirror:', '    type: text', '    pattern: never'],
+    ],
+    [
+      'after',
+      ['  mirror:', '    type: text', '    pattern: never', '  token:', '    type: secret'],
+    ],
+  ] as const;
 
   it('names the input, where the value came from, and what is wrong with it', () => {
     expect(
@@ -520,6 +537,56 @@ describe('values a type refuses', () => {
     expect(message).toBe('token (from v.yaml): the value is not text');
     expect(message).not.toContain('12345');
   });
+
+  it.each(collisionCases)(
+    'masks a registered secret in diagnostics when the secret input is %s the invalid input',
+    (_position, inputLines) => {
+      const secret = 'super-secret-value';
+      const withCollision = collisionManifest(inputLines);
+      const overrides = new Map([
+        ['token', secret],
+        ['mirror', secret],
+      ]);
+      let thrown: unknown;
+
+      try {
+        resolve(withCollision, { overrides });
+      } catch (error) {
+        thrown = error;
+      }
+
+      const inputError = thrown as InputError;
+      expect(inputError.message).toContain('***');
+      expect(inputError.message).not.toContain(secret);
+      expect(inputError.issues).toHaveLength(1);
+      expect(inputError.issues[0]?.message).toContain('***');
+      expect(JSON.stringify(inputError.issues)).not.toContain(secret);
+
+      const context = contextFor(withCollision);
+      const resolution = resolveInputs({
+        manifest: withCollision,
+        context,
+        environment: {},
+        overrides,
+        invalidValues: 'collect',
+      });
+
+      expect(resolution.problems).toHaveLength(1);
+      expect(resolution.problems[0]?.message).toContain('***');
+      expect(JSON.stringify(resolution.problems)).not.toContain(secret);
+
+      let planErrorThrown: unknown;
+      try {
+        buildPlan({ manifest: withCollision, resolution, context });
+      } catch (error) {
+        planErrorThrown = error;
+      }
+      const planInputError = planErrorThrown as InputError;
+      expect(planInputError.message).toContain('***');
+      expect(planInputError.message).not.toContain(secret);
+      expect(JSON.stringify(planInputError.issues)).not.toContain(secret);
+    },
+  );
 });
 
 describe('keys that name no input', () => {
