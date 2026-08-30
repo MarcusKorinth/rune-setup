@@ -202,8 +202,6 @@ export async function launchGui(
     );
   }
 
-  await verifyShellVersion(location);
-
   const argv: string[] = [manifestPath];
   for (const pair of flags.set ?? []) {
     argv.push('--set', pair);
@@ -221,32 +219,24 @@ export async function launchGui(
     argv.push('--log-file', flags.logFile);
   }
 
-  const [command, args] = shellCommand(location, argv);
-
-  const child = spawn(command, args, {
-    stdio: ['ignore', 'ignore', 'inherit'],
-    shell: false,
-    // Its own process group on POSIX: a terminal Ctrl+C must reach only the CLI, which
-    // forwards a deliberate SIGTERM — a raw SIGINT would kill the shell past its cancel
-    // path (§9.4). Same reason the engine's runner detaches its children.
-    detached: process.platform !== 'win32',
-  });
-
   // The first Ctrl+C or SIGTERM forwards one cancel request to the shell (§9.4).
   // Only a second Ctrl+C force-exits the CLI; repeated SIGTERM remains idempotent.
+  let child: ReturnType<typeof spawn> | undefined;
   let cancelRequested = false;
   let receivedSigint = false;
+  const forwardCancel = (): void => {
+    if (child?.pid === undefined) return;
+    if (process.platform === 'win32') {
+      // A close request, not a kill: no /F (§9.4).
+      spawn('taskkill', ['/PID', String(child.pid)], { stdio: 'ignore', shell: false });
+    } else {
+      child.kill('SIGTERM');
+    }
+  };
   const requestCancel = (): void => {
     if (cancelRequested) return;
     cancelRequested = true;
-    if (child.pid !== undefined) {
-      if (process.platform === 'win32') {
-        // A close request, not a kill: no /F (§9.4).
-        spawn('taskkill', ['/PID', String(child.pid)], { stdio: 'ignore', shell: false });
-      } else {
-        child.kill('SIGTERM');
-      }
-    }
+    forwardCancel();
   };
   const onSigint = (): void => {
     if (receivedSigint) {
@@ -260,22 +250,41 @@ export async function launchGui(
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
 
-  const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
-    child.on('error', (cause) => {
-      io.stderr(`could not launch the GUI shell: ${cause.message}`);
-      resolve({ code: null, failed: true });
+  try {
+    await verifyShellVersion(location);
+
+    const [command, args] = shellCommand(location, argv);
+    const launchedChild = spawn(command, args, {
+      stdio: ['ignore', 'ignore', 'inherit'],
+      shell: false,
+      // Its own process group on POSIX: a terminal Ctrl+C must reach only the CLI, which
+      // forwards a deliberate SIGTERM — a raw SIGINT would kill the shell past its cancel
+      // path (§9.4). Same reason the engine's runner detaches its children.
+      detached: process.platform !== 'win32',
     });
-    child.on('close', (code) => resolve({ code, failed: false }));
-  }).finally(() => {
+    child = launchedChild;
+
+    if (cancelRequested) {
+      forwardCancel();
+    }
+
+    const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
+      launchedChild.on('error', (cause) => {
+        io.stderr(`could not launch the GUI shell: ${cause.message}`);
+        resolve({ code: null, failed: true });
+      });
+      launchedChild.on('close', (code) => resolve({ code, failed: false }));
+    });
+
+    // Signal death or an unknown (e.g. Chromium crash) code is an internal error (§9.4).
+    const exit =
+      !outcome.failed && outcome.code !== null && FORWARDABLE.has(outcome.code) ? outcome.code : 70;
+    if (exit !== 0) {
+      throw new ExitWithCode(exit);
+    }
+  } finally {
     process.removeListener('SIGINT', onSigint);
     process.removeListener('SIGTERM', onSigterm);
-  });
-
-  // Signal death or an unknown (e.g. Chromium crash) code is an internal error (§9.4).
-  const exit =
-    !outcome.failed && outcome.code !== null && FORWARDABLE.has(outcome.code) ? outcome.code : 70;
-  if (exit !== 0) {
-    throw new ExitWithCode(exit);
   }
 }
 
@@ -284,6 +293,7 @@ async function verifyShellVersion(location: ShellLocation): Promise<void> {
   const child = spawn(command, args, {
     stdio: ['ignore', 'pipe', 'ignore'],
     shell: false,
+    detached: process.platform !== 'win32',
   });
   let stdout = '';
   child.stdout.setEncoding('utf8');

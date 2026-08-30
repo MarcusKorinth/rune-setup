@@ -100,6 +100,28 @@ function probeProcess(output: string, code: number | null = 0): ReturnType<typeo
   return child as unknown as ReturnType<typeof spawn>;
 }
 
+function waitingProbe(): {
+  readonly child: ReturnType<typeof spawn>;
+  readonly close: (output: string, code?: number | null) => void;
+} {
+  const child = new EventEmitter() as EventEmitter & { stdout: PassThrough };
+  child.stdout = new PassThrough();
+  return {
+    child: child as unknown as ReturnType<typeof spawn>,
+    close: (output, code = 0) => {
+      child.stdout.end(output);
+      child.emit('close', code);
+    },
+  };
+}
+
+function probeErrorProcess(message: string): ReturnType<typeof spawn> {
+  const child = new EventEmitter() as EventEmitter & { stdout: PassThrough };
+  child.stdout = new PassThrough();
+  queueMicrotask(() => child.emit('error', new Error(message)));
+  return child as unknown as ReturnType<typeof spawn>;
+}
+
 function runProcess(code: number | null = 0): ReturnType<typeof spawn> {
   const child = new EventEmitter();
   queueMicrotask(() => child.emit('close', code));
@@ -313,6 +335,7 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[0]?.[2]).toEqual({
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: false,
+      detached: process.platform !== 'win32',
     });
     expect(spawnMock.mock.calls[1]?.[0]).toBe(join(testDirectory, shellBinary));
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([
@@ -447,6 +470,120 @@ describe('rune run --gui shell version handshake', () => {
     });
 
     expect(io.stderr).toHaveBeenCalledWith('could not launch the GUI shell: permission denied');
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+  });
+
+  it('buffers an early Ctrl+C until the workflow shell starts and only force-exits on the second', async () => {
+    const probe = waitingProbe();
+    const shell = waitingProcess(4242);
+    const forceExit = vi.fn();
+    spawnMock
+      .mockImplementationOnce(() => probe.child)
+      .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>);
+
+    const launch = launchGui('installer.yaml', {}, capture(), {
+      ...interaction,
+      forceExit,
+    });
+    let shellClosed = false;
+    try {
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+      process.emit('SIGINT');
+      expect(forceExit).not.toHaveBeenCalled();
+      expect(shell.kill).not.toHaveBeenCalled();
+
+      probe.close(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }));
+      await vi.waitFor(() =>
+        expect(spawnMock).toHaveBeenCalledTimes(process.platform === 'win32' ? 3 : 2),
+      );
+
+      if (process.platform === 'win32') {
+        expect(spawnMock.mock.calls[2]).toEqual([
+          'taskkill',
+          ['/PID', '4242'],
+          { stdio: 'ignore', shell: false },
+        ]);
+      } else {
+        expect(shell.kill).toHaveBeenCalledTimes(1);
+        expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
+      }
+      expect(forceExit).not.toHaveBeenCalled();
+
+      process.emit('SIGINT');
+      expect(forceExit).toHaveBeenCalledTimes(1);
+      expect(forceExit).toHaveBeenCalledWith(6);
+
+      shell.emit('close', 6);
+      shellClosed = true;
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+    } finally {
+      if (!shellClosed) {
+        shell.emit('close', 6);
+      }
+      await launch.catch(() => undefined);
+    }
+  });
+
+  it('buffers repeated early SIGTERM as one workflow-shell cancel request', async () => {
+    const probe = waitingProbe();
+    const shell = waitingProcess(4242);
+    const forceExit = vi.fn();
+    spawnMock
+      .mockImplementationOnce(() => probe.child)
+      .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>);
+
+    const launch = launchGui('installer.yaml', {}, capture(), {
+      ...interaction,
+      forceExit,
+    });
+    let shellClosed = false;
+    try {
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+
+      process.emit('SIGTERM');
+      process.emit('SIGTERM');
+      probe.close(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }));
+      await vi.waitFor(() =>
+        expect(spawnMock).toHaveBeenCalledTimes(process.platform === 'win32' ? 3 : 2),
+      );
+
+      process.emit('SIGTERM');
+      if (process.platform === 'win32') {
+        expect(spawnMock.mock.calls[2]).toEqual([
+          'taskkill',
+          ['/PID', '4242'],
+          { stdio: 'ignore', shell: false },
+        ]);
+        expect(spawnMock).toHaveBeenCalledTimes(3);
+      } else {
+        expect(shell.kill).toHaveBeenCalledTimes(1);
+        expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(spawnMock).toHaveBeenCalledTimes(2);
+      }
+      expect(forceExit).not.toHaveBeenCalled();
+
+      shell.emit('close', 6);
+      shellClosed = true;
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+    } finally {
+      if (!shellClosed) {
+        shell.emit('close', 6);
+      }
+      await launch.catch(() => undefined);
+    }
+  });
+
+  it('removes its signal listeners when the version probe errors', async () => {
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
+    spawnMock.mockImplementationOnce(() => probeErrorProcess('permission denied'));
+
+    await expect(launchGui('installer.yaml', {}, capture(), interaction)).rejects.toBeInstanceOf(
+      UsageError,
+    );
+
     expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });
