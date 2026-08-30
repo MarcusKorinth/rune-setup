@@ -970,8 +970,10 @@ function valuesFileLoaderMessage(message: string, file: string): string {
   if (message.startsWith(`${file} cannot be read:`)) {
     return `${file} cannot be read`;
   }
+  if (message.startsWith('duplicate key "')) {
+    return 'a mapping key is defined more than once';
+  }
   if (
-    message.startsWith('duplicate key "') ||
     message === 'a mapping key must be a plain scalar' ||
     message === 'a mapping key must not be empty' ||
     message === '__proto__ is not allowed as a key'

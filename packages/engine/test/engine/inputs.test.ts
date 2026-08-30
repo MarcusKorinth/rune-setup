@@ -3070,6 +3070,8 @@ describe('values files', () => {
   const emptyManifest = manifestOf('inputs: {}');
   const controlledSecret = 'F057 "quoted" \\ path\n\r\u001b\u0085\u2028\u2029';
   const controlledSecretYaml = '"F057 \\"quoted\\" \\\\ path\\n\\r\\u001b\\u0085\\u2028\\u2029"';
+  const duplicateKeySecret = 'F058 "quoted" \\ path\n\r\u001b\u0085\u2028\u2029';
+  const duplicateKeySecretYaml = '"F058 \\"quoted\\" \\\\ path\\n\\r\\u001b\\u0085\\u2028\\u2029"';
 
   function file(contents: string | Uint8Array): string {
     const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
@@ -3367,18 +3369,64 @@ describe('values files', () => {
     ]);
   });
 
-  it('classifies every duplicate-key issue as invalid values input', () => {
+  it('classifies a duplicate key without retaining document content or a loader cause', () => {
     const error = loadError('target: first\ntarget: second\n');
 
     expect(error.code).toBe('RUNE-202');
-    expect(error.issues).toMatchObject([
+    expect(error.message).toBe('values.yaml:2:1: a mapping key is defined more than once');
+    expect(error.issues).toEqual([
       {
         code: 'RUNE-202',
-        message: expect.stringContaining('duplicate key "target"'),
+        message: 'a mapping key is defined more than once',
         location: { file: 'values.yaml', line: 2, column: 1 },
       },
     ]);
+    expect(error.cause).toBeUndefined();
   });
+
+  it.each([
+    {
+      name: 'plain',
+      secret: 'F058-PLAIN-DUPLICATE-SECRET',
+      yaml: 'F058-PLAIN-DUPLICATE-SECRET',
+      fragments: ['F058', 'PLAIN', 'DUPLICATE', 'SECRET'],
+    },
+    {
+      name: 'quoted, escaped and controlled',
+      secret: duplicateKeySecret,
+      yaml: duplicateKeySecretYaml,
+      fragments: ['F058', 'quoted', 'path'],
+    },
+  ])(
+    'does not expose a same-document declared secret used as a $name duplicate key',
+    ({ secret, yaml, fragments }) => {
+      const document = parseValuesFile(
+        file(`license: ${yaml}\n${yaml}: first\n${yaml}: second\n`),
+        'values.yaml',
+      );
+      const secrets = existingRegistry();
+      const error = documentError(document, { secrets }, {}, secretManifest());
+
+      expect(document.values.size).toBe(0);
+      expect(error.code).toBe('RUNE-202');
+      expect(error.message).toBe('values.yaml:3:1: a mapping key is defined more than once');
+      expect(error.issues).toEqual([
+        {
+          code: 'RUNE-202',
+          message: 'a mapping key is defined more than once',
+          location: { file: 'values.yaml', line: 3, column: 1 },
+        },
+      ]);
+      expect(error.cause).toBeUndefined();
+
+      const surfaces = publicErrorSurfaces(error).join('\n');
+      expect(surfaces).not.toContain(secret);
+      for (const fragment of fragments) {
+        expect(surfaces).not.toContain(fragment);
+      }
+      expectRegistryUnchanged(secrets, [secret]);
+    },
+  );
 
   it('redacts unknown YAML tag names from every public error surface', () => {
     const sentinel = 'F015_UNKNOWN_TAG_SECRET';
