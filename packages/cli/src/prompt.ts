@@ -60,6 +60,7 @@ export class Prompter {
   readonly #output: MutedOutput;
   #rl: Interface | undefined;
   #reject: ((error: Error) => void) | undefined;
+  #inputEnded = false;
 
   constructor(interaction: Interaction) {
     this.#interaction = interaction;
@@ -68,6 +69,9 @@ export class Prompter {
 
   /** Asks one question; `muted` suppresses the echo while a secret is typed. */
   ask(question: string, muted = false): Promise<string> {
+    if (this.#inputEnded) {
+      return Promise.reject(new CancelledError('input ended before every question was answered'));
+    }
     const rl = this.#interface();
     const promise = new Promise<string>((resolve, reject) => {
       this.#reject = reject;
@@ -109,6 +113,7 @@ export class Prompter {
         this.#reject?.(new CancelledError());
       });
       this.#rl.on('close', () => {
+        this.#inputEnded = true;
         this.#output.muted = false;
         this.#reject?.(new CancelledError('input ended before every question was answered'));
       });

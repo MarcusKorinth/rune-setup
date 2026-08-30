@@ -48,6 +48,34 @@ function scripted(answers: readonly string[]): Interaction & { transcript: () =>
   };
 }
 
+/** A scripted TTY whose input reaches EOF together with its final available answer. */
+function scriptedThenEof(answers: readonly string[]): Interaction & { transcript: () => string } {
+  const input = new PassThrough();
+  const queue = [...answers];
+  const written: string[] = [];
+  return {
+    input,
+    isTTY: true,
+    write: (text) => {
+      written.push(text);
+      if (text.endsWith(': ')) {
+        setImmediate(() => {
+          const next = queue.shift();
+          if (next !== undefined) {
+            if (queue.length === 0) {
+              input.end(`${next}\n`);
+            } else {
+              input.write(`${next}\n`);
+            }
+          }
+        });
+      }
+    },
+    forceExit: () => undefined,
+    transcript: () => written.join(''),
+  };
+}
+
 function fixture(lines: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-interactive-'));
   const path = join(dir, 'installer.yaml');
@@ -73,6 +101,63 @@ const MANIFEST = [
 ];
 
 describe('the interactive run', () => {
+  it('keeps EOF terminal after an accepted answer', async () => {
+    const interaction = scriptedThenEof(['first']);
+    const prompter = new Prompter(interaction);
+
+    try {
+      await expect(prompter.ask('First: ')).resolves.toBe('first');
+      await expect(prompter.ask('Second: ')).rejects.toMatchObject({
+        code: 'RUNE-601',
+        message: 'input ended before every question was answered',
+      });
+    } finally {
+      prompter.close();
+    }
+  });
+
+  it('cancels with a result when EOF follows an early answer', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const interaction = scriptedThenEof(['hello']);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(6);
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      exitCode: number;
+      mode: string;
+    };
+    expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, mode: 'interactive' });
+    expect(io.err.join('\n')).toContain('input ended before every question was answered');
+    expect(io.err.join('\n')).not.toContain('internal error');
+  });
+
+  it('cancels the planned run when EOF arrives before the summary action', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const secret = 'summary-eof-secret';
+    const interaction = scriptedThenEof(['hello', secret]);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(6);
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      exitCode: number;
+      steps: readonly { state: string }[];
+      inputs: readonly { id: string; value: unknown }[];
+    };
+    expect(result.status).toBe('cancelled');
+    expect(result.exitCode).toBe(6);
+    expect(result.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
+    expect(result.inputs.find((input) => input.id === 'token')?.value).toBeNull();
+    expect(interaction.transcript()).not.toContain(secret);
+    expect(io.out.join('\n')).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain('internal error');
+  });
+
   it('does not restore a secret answer through history navigation', async () => {
     const secret = 'history-sensitive-marker';
     const interaction = scripted([secret, '\u001B[A']);
