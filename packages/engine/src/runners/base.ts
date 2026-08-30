@@ -25,6 +25,7 @@ export type StartFailureReason = 'commandNotFound' | 'invalidCwd' | 'shellRequir
 
 export type SpawnOutcome =
   | { readonly kind: 'exited'; readonly exitCode: number }
+  | { readonly kind: 'signalled' }
   | { readonly kind: 'timedOut' }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'streamFailed'; readonly stream: 'stdout' | 'stderr' }

@@ -449,6 +449,36 @@ describe('a run that fails', () => {
     expect(result.status).toBe('succeeded');
   });
 
+  it('fails and masks a signalled process without applying successExitCodes or inventing an exit code', async () => {
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: signal-crash',
+        '    run:',
+        '      command: a',
+        '      successExitCodes: [1]',
+      ],
+      { overrides: new Map([['token', 'signal-crash']]) },
+    );
+
+    const result = await executeRun({
+      plan,
+      runner: stubRunner(() => ({ kind: 'signalled' })),
+    });
+
+    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1 });
+    expect(result.steps[0]).toMatchObject({ state: 'FAILED', exitCode: null });
+    expect(result.steps[0]?.outputTail).toEqual([
+      {
+        stream: 'stderr',
+        line: 'RUNE-401 step "***" terminated by a signal',
+      },
+    ]);
+  });
+
   it('reports an exact non-success exit diagnostic with the configured success codes', async () => {
     const { plan } = setup([
       'steps:',

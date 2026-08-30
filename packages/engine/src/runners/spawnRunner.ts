@@ -114,18 +114,16 @@ export class SpawnRunner implements Runner {
       let timeout: NodeJS.Timeout | undefined;
       let unsubscribeCancel = (): void => undefined;
       let childDone = false;
-      let closeCode: number | null = null;
       let resolveChildDone = (): void => undefined;
       const childDonePromise = new Promise<void>((resolveDone) => {
         resolveChildDone = resolveDone;
       });
 
-      const completeChild = (code: number | null = null): void => {
+      const completeChild = (): void => {
         if (childDone) {
           return;
         }
         childDone = true;
-        closeCode = code;
         resolveChildDone();
       };
 
@@ -189,9 +187,11 @@ export class SpawnRunner implements Runner {
       );
 
       child.once('close', (code) => {
-        completeChild(code);
+        completeChild();
         if (!startupFailureClaimed && terminationCause === undefined) {
-          settle({ kind: 'exited', exitCode: closeCode ?? 1 });
+          settle(
+            typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
+          );
         }
       });
 

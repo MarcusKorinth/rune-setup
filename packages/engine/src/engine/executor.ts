@@ -177,6 +177,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         }
         break;
       }
+      case 'signalled': {
+        state = 'FAILED';
+        diagnostic = `RUNE-401 step "${step.id}" terminated by a signal`;
+        break;
+      }
       case 'timedOut': {
         state = 'FAILED';
         diagnostic = `RUNE-402 step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;

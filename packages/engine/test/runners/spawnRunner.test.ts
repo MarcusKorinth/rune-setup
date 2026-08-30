@@ -580,6 +580,41 @@ describe('SpawnRunner', () => {
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
   }, 15000);
 
+  // Windows has no POSIX wait status; Node reports this termination as exit code 1.
+  it.skipIf(process.platform === 'win32')(
+    'reports external signal termination without inventing an exit code',
+    async () => {
+      const cancel = new CancelToken();
+      let pid: number | undefined;
+      let resolvePid = (_pid: number): void => undefined;
+      const childPid = new Promise<number>((resolve) => {
+        resolvePid = resolve;
+      });
+      const pending = run(nodeCommand('console.log(process.pid); setInterval(() => {}, 1000)'), {
+        cancel,
+        onOutput: (stream, line) => {
+          if (stream === 'stdout') {
+            resolvePid(Number(line));
+          }
+        },
+      });
+
+      try {
+        pid = await withDeadline(childPid, 5000);
+        process.kill(pid, 'SIGTERM');
+
+        await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'signalled' });
+      } finally {
+        cancel.cancel();
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
+        await withDeadline(pending, 15000);
+      }
+    },
+    20000,
+  );
+
   it('kills the child and settles after a stdout read failure', async () => {
     const originalSetEncoding = Readable.prototype.setEncoding;
     const encodedStreams = new Set<Readable>();
