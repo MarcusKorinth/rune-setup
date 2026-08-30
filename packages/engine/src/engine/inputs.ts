@@ -21,6 +21,7 @@ import {
   RuneError,
   type RuneIssue,
 } from '../errors.js';
+import { escapeDiagnosticText, formatDiagnostic, quotedDiagnostic } from '../diagnostics.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
 import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
@@ -153,11 +154,12 @@ function resolveInputsStaged(
   const ids = Object.keys(manifest.inputs);
   const valuesLayer = indexValuesLayer(options.values);
   const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
+  const redactor = options.secrets.combinedWith(stagedSecrets);
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
 
-  checkUnknownKeys(options, ids, valuesLayer.entries, issues);
+  checkUnknownKeys(options, ids, valuesLayer.entries, issues, redactor);
 
   const states = new Map<string, InputState>();
   const order: string[] = [];
@@ -218,7 +220,7 @@ function resolveInputsStaged(
       warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
     }
 
-    const coerced = coerce(supplied, spec, id, context);
+    const coerced = coerce(supplied, spec, id, context, redactor);
     if (!coerced.ok) {
       const issue: RuneIssue = {
         code: 'RUNE-202',
@@ -259,7 +261,6 @@ function resolveInputsStaged(
     throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
   }
 
-  const redactor = options.secrets.combinedWith(stagedSecrets);
   const redactedIssues = issues.map((issue) => redactIssue(issue, redactor));
   const issueReplacements = new Map(issues.map((issue, index) => [issue, redactedIssues[index]!]));
   for (const [id, state] of states) {
@@ -285,7 +286,7 @@ function resolveInputsStaged(
     inputs,
     byId: states,
     missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-    warnings: warnings.map((warning) => redactor.mask(warning)),
+    warnings: warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
     problems: redactedIssues,
   };
   options.secrets.replaceWith(stagedSecrets);
@@ -397,7 +398,7 @@ function redactCandidate(
 function redactIssue(issue: RuneIssue, secrets: SecretRegistry): RuneIssue {
   return {
     ...issue,
-    message: secrets.mask(issue.message),
+    message: escapeDiagnosticText(secrets.mask(issue.message)),
     location: redactLocation(issue.location, secrets),
   };
 }
@@ -432,9 +433,17 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   }
   seen.add(error);
 
-  error.message = secrets.mask(error.message);
-  if (error.stack !== undefined) {
-    error.stack = secrets.mask(error.stack);
+  const rawMessage = error.message;
+  const rawStack = error.stack;
+  const maskedMessage = secrets.mask(rawMessage);
+  error.message = escapeDiagnosticText(maskedMessage);
+  if (rawStack !== undefined) {
+    const maskedStack = secrets.mask(rawStack);
+    const maskedHeader = secrets.mask(`${error.name}: ${rawMessage}`);
+    const safeHeader = escapeDiagnosticText(maskedHeader);
+    error.stack = maskedStack.startsWith(maskedHeader)
+      ? safeHeader + maskedStack.slice(maskedHeader.length)
+      : escapeDiagnosticText(maskedStack);
   }
 
   if (error instanceof RuneError) {
@@ -453,7 +462,7 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   } else if (typeof error.cause === 'string') {
     Object.defineProperty(error, 'cause', {
       ...Object.getOwnPropertyDescriptor(error, 'cause'),
-      value: secrets.mask(error.cause),
+      value: escapeDiagnosticText(secrets.mask(error.cause)),
     });
   }
 }
@@ -612,6 +621,7 @@ function coerce(
   spec: InputSpec,
   id: string,
   context: RuntimeContext,
+  secrets: SecretRegistry,
 ): CoercionOutcome {
   const handler = inputTypes.get(spec.type);
   let raw = supplied.raw;
@@ -628,13 +638,19 @@ function coerce(
 
   // The type names the value and says what is wrong with it; resolution adds which input it
   // belongs to and where the value came from, which is what a reader needs to go and fix it.
-  return result.ok
-    ? result
-    : {
-        ok: false,
-        message: `${id} (from ${supplied.origin}): ${result.message}`,
-        candidate: rejectedCandidate(raw, handler.secret),
-      };
+  if (result.ok) {
+    return result;
+  }
+
+  const reason =
+    result.diagnosticParts === undefined
+      ? escapeDiagnosticText(secrets.mask(result.message))
+      : formatDiagnostic(result.diagnosticParts, (part) => secrets.mask(part));
+  return {
+    ok: false,
+    message: escapeDiagnosticText(secrets.mask(`${id} (from ${supplied.origin}): ${reason}`)),
+    candidate: rejectedCandidate(raw, handler.secret),
+  };
 }
 
 /** Retains only values that are safe for a frontend to prefill after validation failed. */
@@ -737,6 +753,7 @@ function checkUnknownKeys(
   ids: readonly string[],
   values: readonly ValuesLayerEntry[],
   issues: RuneIssue[],
+  secrets: SecretRegistry,
 ): void {
   const knownIds = new Set(ids);
   const candidateWidth = suggestionCandidateWidth(ids);
@@ -751,11 +768,17 @@ function checkUnknownKeys(
     if (work <= remainingSuggestionWork) {
       remainingSuggestionWork -= work;
     }
+    const parts = [
+      quotedDiagnostic(key),
+      ' is not an input of this manifest',
+      ...(suggestion === undefined ? [] : [' — did you mean ', quotedDiagnostic(suggestion), '?']),
+      ' (set from ',
+      origin,
+      ')',
+    ];
     issues.push({
       code: 'RUNE-203',
-      message: `"${key}" is not an input of this manifest${
-        suggestion === undefined ? '' : ` — did you mean "${suggestion}"?`
-      } (set from ${origin})`,
+      message: formatDiagnostic(parts, (part) => secrets.mask(part)),
       location,
     });
   };
@@ -823,9 +846,13 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   }
 
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new InputError('RUNE-202', `${file} must contain a mapping of input ids to values`, {
-      location: document.sourceMap.best([]) ?? startOfFile(document.file),
-    });
+    throw new InputError(
+      'RUNE-202',
+      `${escapeDiagnosticText(file)} must contain a mapping of input ids to values`,
+      {
+        location: document.sourceMap.best([]) ?? startOfFile(document.file),
+      },
+    );
   }
 
   for (const [key, value] of Object.entries(raw)) {
@@ -834,7 +861,11 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     if (problem === undefined) {
       values.set(key, value);
     } else {
-      issues.push({ code: 'RUNE-202', message: `${key} ${problem}`, location });
+      issues.push({
+        code: 'RUNE-202',
+        message: `${escapeDiagnosticText(key)} ${problem}`,
+        location,
+      });
     }
   }
 
@@ -850,7 +881,7 @@ function valuesFileLoadError(error: ManifestError, file: string): InputError {
   const fallbackLocation = error.location ?? startOfFile(file);
   const issues = error.issues.map((issue) => ({
     code: 'RUNE-202' as const,
-    message: valuesFileLoaderMessage(issue.message, file),
+    message: escapeDiagnosticText(valuesFileLoaderMessage(issue.message, file)),
     location: issue.location ?? fallbackLocation,
   }));
   return new InputError('RUNE-202', formatIssues(issues), {

@@ -8,6 +8,7 @@
  */
 
 import { MASK, normalizeSecretString, SecretString } from '../engine/secrets.js';
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
 import {
@@ -26,14 +27,22 @@ function ok(value: InputValue): Coercion {
   return { ok: true, value };
 }
 
-function fail(message: string): Coercion {
-  return { ok: false, message };
+function fail(...diagnosticParts: readonly DiagnosticPart[]): Coercion {
+  const failure = {
+    ok: false,
+    message: formatDiagnostic(diagnosticParts),
+  } as const;
+  Object.defineProperty(failure, 'diagnosticParts', {
+    value: Object.freeze([...diagnosticParts]),
+  });
+  return failure;
 }
 
 /** Names a value that is not text, for a message that says what was written. */
-function describe(value: unknown): string {
+function describe(value: unknown): DiagnosticPart {
   switch (typeof value) {
     case 'string':
+      return quotedDiagnostic(value);
     case 'number':
     case 'boolean':
       return JSON.stringify(value) ?? 'unknown';
@@ -61,12 +70,15 @@ function optionValues(spec: InputSpec): readonly string[] {
   return 'options' in spec ? spec.options.map(optionValue) : [];
 }
 
-function listOptions(spec: InputSpec): string {
+function listOptions(spec: InputSpec): readonly DiagnosticPart[] {
   return listOptionValues(optionValues(spec));
 }
 
-function listOptionValues(values: readonly string[]): string {
-  return values.map((value) => `"${value}"`).join(', ');
+function listOptionValues(values: readonly string[]): readonly DiagnosticPart[] {
+  return values.flatMap((value, index) => [
+    ...(index === 0 ? [] : [', ']),
+    quotedDiagnostic(value),
+  ]);
 }
 
 /** Free text, optionally constrained by a pattern the manifest author wrote. */
@@ -88,9 +100,9 @@ function checkPattern(text: string, spec: InputSpec): Coercion {
   if (!new RegExp(`^(?:${pattern.source})$`, pattern.flags).test(text)) {
     const hint =
       'patternHint' in spec && spec.patternHint !== undefined ? spec.patternHint : undefined;
-    return fail(
-      hint === undefined ? `"${text}" does not match ${spec.pattern}` : `"${text}": ${hint}`,
-    );
+    return hint === undefined
+      ? fail(quotedDiagnostic(text), ' does not match ', spec.pattern)
+      : fail(quotedDiagnostic(text), ': ', hint);
   }
   return ok(text);
 }
@@ -102,7 +114,7 @@ const text: InputTypeHandler = {
   isAbsent: (value) => value === '',
   fromString: (value, spec) => checkPattern(value, spec),
   fromNative: (value, spec) =>
-    typeof value === 'string' ? checkPattern(value, spec) : fail(`${describe(value)} is not text`),
+    typeof value === 'string' ? checkPattern(value, spec) : fail(describe(value), ' is not text'),
   render: (value) => String(value),
   compare: (value) => String(value),
 };
@@ -145,10 +157,13 @@ const boolean: InputTypeHandler = {
     if ((FALSE_WORDS as readonly string[]).includes(written)) {
       return ok(false);
     }
-    return fail(`"${value}" is not one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(', ')}`);
+    return fail(
+      quotedDiagnostic(value),
+      ` is not one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(', ')}`,
+    );
   },
   fromNative: (value) =>
-    typeof value === 'boolean' ? ok(value) : fail(`${describe(value)} is not true or false`),
+    typeof value === 'boolean' ? ok(value) : fail(describe(value), ' is not true or false'),
   render: (value) => (value === true ? 'true' : 'false'),
   compare: (value) => value === true,
 };
@@ -161,11 +176,16 @@ const select: InputTypeHandler = {
   fromString: (value, spec) =>
     optionValues(spec).includes(value)
       ? ok(value)
-      : fail(`"${value}" is not one of the option values (${listOptions(spec)})`),
+      : fail(
+          quotedDiagnostic(value),
+          ' is not one of the option values (',
+          ...listOptions(spec),
+          ')',
+        ),
   fromNative: (value, spec) =>
     typeof value === 'string'
       ? select.fromString(value, spec)
-      : fail(`${describe(value)} is not text`),
+      : fail(describe(value), ' is not text'),
   render: (value) => String(value),
   compare: (value) => String(value),
 };
@@ -184,7 +204,8 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
       parsed = JSON.parse(value);
     } catch (cause) {
       return fail(
-        `starts with "[" and is therefore read as a JSON array, but it is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+        'starts with "[" and is therefore read as a JSON array, but it is not valid JSON: ',
+        cause instanceof Error ? cause.message : String(cause),
       );
     }
     if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
@@ -206,9 +227,12 @@ function membership(entries: readonly string[], spec: InputSpec): Coercion {
   if (unknown.length === 0) {
     return ok(Object.freeze([...entries]));
   }
-  const named = unknown.map((entry) => `"${entry}"`).join(', ');
+  const named = listOptionValues(unknown);
   return fail(
-    `${named} ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (${listOptionValues(values)})`,
+    ...named,
+    ` ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (`,
+    ...listOptionValues(values),
+    ')',
   );
 }
 
@@ -224,7 +248,7 @@ const multiselect: InputTypeHandler = {
     }
     const entries = nativeStringArraySnapshot(value);
     if (entries === undefined) {
-      return fail(`${describe(value)} is not a list of option values`);
+      return fail(describe(value), ' is not a list of option values');
     }
     return membership(entries, spec);
   },
@@ -244,7 +268,7 @@ function pathType(name: 'file' | 'directory'): InputTypeHandler {
     isAbsent: (value) => value === '',
     fromString: (value) => ok(value),
     fromNative: (value) =>
-      typeof value === 'string' ? ok(value) : fail(`${describe(value)} is not a path`),
+      typeof value === 'string' ? ok(value) : fail(describe(value), ' is not a path'),
     render: (value) => String(value),
     compare: (value) => String(value),
   };

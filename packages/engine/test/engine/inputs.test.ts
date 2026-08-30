@@ -22,6 +22,35 @@ import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const DIAGNOSTIC_CONTROLS = '\n\r\u001b\u0007\u0085\u2028\u2029';
+const VISIBLE_DIAGNOSTIC_ESCAPES = [
+  '\\n',
+  '\\r',
+  '\\u001b',
+  '\\u0007',
+  '\\u0085',
+  '\\u2028',
+  '\\u2029',
+] as const;
+
+function expectSafeDiagnostic(message: string): void {
+  expect(hasRawDiagnosticControl(message)).toBe(false);
+  for (const visible of VISIBLE_DIAGNOSTIC_ESCAPES) {
+    expect(message).toContain(visible);
+  }
+}
+
+function hasRawDiagnosticControl(message: string): boolean {
+  return [...message].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
 
 function manifestOf(...lines: readonly string[]): ManifestV1 {
   return parseManifestText([...HEAD, ...lines, 'steps: []', ''].join('\n'), 'installer.yaml');
@@ -747,6 +776,33 @@ describe('keys that name no input', () => {
     ).toEqual([
       '"installDirectroy" is not an input of this manifest — did you mean "installDirectory"? (set from --set)',
     ]);
+  });
+
+  it('quotes unknown ids and escapes controls in ids, origins, and locations', () => {
+    const key = `targ${DIAGNOSTIC_CONTROLS}et"\\key`;
+    const origin = `values${DIAGNOSTIC_CONTROLS}"\\file.yaml`;
+    const error = inputError(manifestOf(...SIMPLE), {
+      values: [values(origin, { [key]: 'x' })],
+    });
+    const issue = error.issues[0];
+
+    expect(issue).toBeDefined();
+    expectSafeDiagnostic(issue!.message);
+    expectSafeDiagnostic(error.message);
+    expect(issue!.message).toContain('\\"\\\\key" is not an input');
+    expect(issue!.message).toContain('(set from values\\n\\r');
+    expect(error.location?.file).toBe(origin);
+  });
+
+  it('retains an ordinary suggestion while safely quoting its controlled unknown id', () => {
+    const error = inputError(manifestOf(...SIMPLE), {
+      overrides: new Map([['targe\n', 'x']]),
+    });
+
+    expect(error.issues[0]?.message).toBe(
+      '"targe\\n" is not an input of this manifest — did you mean "target"? (set from --set)',
+    );
+    expect(hasRawDiagnosticControl(error.issues[0]?.message ?? '')).toBe(false);
   });
 
   it('reports every large batch key while bounding optional suggestion work', () => {
@@ -1797,6 +1853,67 @@ describe('secrets', () => {
     expectExistingRegistryUnchanged(secrets);
   });
 
+  it('escapes injected stack headers recursively while retaining real frame separators', () => {
+    const secret = 'pass\nword';
+    const injectedMessage =
+      `cannot resolve ${secret}${DIAGNOSTIC_CONTROLS}` + '\n    at forged (attacker.js:1:1)';
+    const withInjectedCause = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  directory:',
+      '    type: directory',
+      '    default: "${env.TRIGGER}"',
+    );
+    const cause = new ResolutionError('RUNE-301', injectedMessage);
+    const baseContext = contextFor(withInjectedCause);
+    const context: RuntimeContext = {
+      ...baseContext,
+      valueOf: () => {
+        throw cause;
+      },
+    };
+    let thrown: unknown;
+    try {
+      resolveInputs({
+        manifest: withInjectedCause,
+        context,
+        overrides: new Map([['token', secret]]),
+        secrets: new SecretRegistry(),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    const error = thrown as ResolutionError;
+    expect(error.cause).toBe(cause);
+
+    for (const current of [error, cause]) {
+      expect(current.message).not.toContain('pass');
+      expect(current.message).not.toContain('word');
+      expectSafeDiagnostic(current.message);
+
+      const stack = current.stack;
+      expect(stack).toBeDefined();
+      const [header, ...frames] = stack!.split('\n');
+      expect(header).not.toContain('pass');
+      expect(header).not.toContain('word');
+      expect(header).toContain('***');
+      for (const visible of VISIBLE_DIAGNOSTIC_ESCAPES) {
+        expect(header).toContain(visible);
+      }
+      expect(stack).not.toContain('\n    at forged');
+      expect(frames.some((frame) => frame.startsWith('    at '))).toBe(true);
+      expect(stack).not.toContain('\r');
+      expect(stack).not.toContain('\u001b');
+      expect(stack).not.toContain('\u0007');
+      expect(stack).not.toContain('\u0085');
+      expect(stack).not.toContain('\u2028');
+      expect(stack).not.toContain('\u2029');
+    }
+  });
+
   it('redacts a later-declared secret from an earlier resolution error atomically', () => {
     const sentinel = 'F038_LATER_DECLARED_SECRET';
     const withUnresolvedEarlyDefault = manifestOf(
@@ -1869,6 +1986,34 @@ describe('secrets', () => {
     expect(rejection.issue).toBe(resolution.problems[0]);
     expect(inspect(resolution)).not.toContain(sentinel);
     expect(collectedSecrets.mask(sentinel)).toBe('***');
+  });
+
+  it('masks a control-bearing secret before a non-secret diagnostic is escaped', () => {
+    const secret = 'pass\nword"\u001bmore';
+    const withInvalidLaterInput = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const resolution = resolve(withInvalidLaterInput, {
+      overrides: new Map([
+        ['token', secret],
+        ['note', secret],
+      ]),
+      invalidValues: 'collect',
+    });
+    const rejection = rejectionFor(resolution, 'note');
+
+    expect(rejection.issue.message).toBe('note (from --set note=…): "***" does not match x+');
+    expect(rejection.candidate).toBe('***');
+    expect(JSON.stringify(resolution.problems)).not.toContain('pass');
+    expect(JSON.stringify(resolution.problems)).not.toContain('word');
+    expect(rejection.issue.message).not.toContain('\\n');
+    expect(rejection.issue.message).not.toContain('\\u001b');
+    expect(hasRawDiagnosticControl(rejection.issue.message)).toBe(false);
   });
 
   it('uses an overridden environment secret to redact thrown and collected diagnostics atomically', () => {

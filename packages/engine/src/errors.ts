@@ -5,6 +5,7 @@
  */
 
 import { formatLocation, type Location } from './manifest/source.js';
+import { escapeDiagnosticText } from './diagnostics.js';
 
 export type { Location };
 
@@ -52,7 +53,9 @@ export interface RuneErrorOptions {
 export function formatIssues(issues: readonly RuneIssue[]): string {
   return issues
     .map((issue) =>
-      issue.location ? `${formatLocation(issue.location)}: ${issue.message}` : issue.message,
+      issue.location
+        ? `${escapeDiagnosticText(formatLocation(issue.location))}: ${escapeDiagnosticText(issue.message)}`
+        : escapeDiagnosticText(issue.message),
     )
     .join('\n');
 }

@@ -22,6 +22,36 @@ function from(type: InputType, text: string, extra?: Record<string, unknown>): u
   return result.ok ? result.value : result.message;
 }
 
+const DIAGNOSTIC_CONTROLS = '\n\r\u001b\u0007\u0085\u2028\u2029';
+const VISIBLE_DIAGNOSTIC_ESCAPES = [
+  '\\n',
+  '\\r',
+  '\\u001b',
+  '\\u0007',
+  '\\u0085',
+  '\\u2028',
+  '\\u2029',
+] as const;
+
+function expectSafeDiagnostic(message: string): void {
+  expect(hasRawDiagnosticControl(message)).toBe(false);
+  for (const visible of VISIBLE_DIAGNOSTIC_ESCAPES) {
+    expect(message).toContain(visible);
+  }
+}
+
+function hasRawDiagnosticControl(message: string): boolean {
+  return [...message].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
+
 describe('the registry', () => {
   it('has a handler for every type the manifest schema accepts', () => {
     expect([...inputTypes.names()].sort()).toEqual([...INPUT_TYPES].sort());
@@ -204,6 +234,20 @@ describe('text', () => {
     );
   });
 
+  it('quotes values and escapes controls in patterns and hints on one physical line', () => {
+    const value = `rejected${DIAGNOSTIC_CONTROLS}"\\value`;
+    const patternMessage = String(
+      from('text', value, { pattern: `accepted${DIAGNOSTIC_CONTROLS}` }),
+    );
+    const hintMessage = String(
+      from('text', value, { pattern: 'accepted', patternHint: `hint${DIAGNOSTIC_CONTROLS}` }),
+    );
+
+    expectSafeDiagnostic(patternMessage);
+    expectSafeDiagnostic(hintMessage);
+    expect(patternMessage).toContain('\\"\\\\value" does not match accepted');
+  });
+
   it('refuses an over-long value before the pattern runs, without echoing it', () => {
     const long = 'a'.repeat(MAX_PATTERN_INPUT_BYTES + 1);
     const message = from('text', long, { pattern: '(a+)+$' });
@@ -362,6 +406,38 @@ describe('select', () => {
 
   it('is empty when nothing set it', () => {
     expect(handler('select').empty(spec('select', options))).toBe('');
+  });
+});
+
+describe('safe coercion diagnostics', () => {
+  it('escapes controls in boolean, select, membership, and option-value rendering', () => {
+    const rejected = `rejected${DIAGNOSTIC_CONTROLS}"\\value`;
+    const option = `option${DIAGNOSTIC_CONTROLS}"\\value`;
+    const messages = [
+      String(from('boolean', rejected)),
+      String(from('select', rejected, { options: [option] })),
+      String(from('multiselect', rejected, { options: [option] })),
+    ];
+
+    for (const message of messages) {
+      expectSafeDiagnostic(message);
+      expect(message).toContain('\\"\\\\value"');
+    }
+  });
+
+  it('escapes controls supplied by the JSON parser reason', () => {
+    const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
+      throw new SyntaxError(`parser${DIAGNOSTIC_CONTROLS}reason`);
+    });
+
+    try {
+      const message = String(from('multiselect', '[', { options: ['git'] }));
+
+      expectSafeDiagnostic(message);
+      expect(message).toContain('not valid JSON: parser\\n\\r');
+    } finally {
+      parse.mockRestore();
+    }
   });
 });
 

@@ -7,6 +7,7 @@
  */
 
 import type { SecretString } from '../engine/secrets.js';
+import type { DiagnosticPart } from '../diagnostics.js';
 import type { InputSpec, InputType } from '../manifest/v1/schema.js';
 
 /** A resolved input value. A `secret` carries its text inside a {@link SecretString}. */
@@ -14,7 +15,12 @@ export type InputValue = string | boolean | readonly string[] | SecretString;
 
 export type Coercion =
   | { readonly ok: true; readonly value: InputValue }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      /** Raw fragments retained so the resolver can mask before presenting them. */
+      readonly diagnosticParts?: readonly DiagnosticPart[];
+    };
 
 export interface InputTypeHandler {
   readonly name: InputType;
