@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { run } from '@rune/cli';
 import type { CliIo } from '@rune/cli';
-import { Session, type RunEvent, type RunResult } from '@rune/engine';
+import { Session, type InputStateChanged, type RunEvent, type RunResult } from '@rune/engine';
 
 /**
  * The mode-parity contract suite (docs/architecture.md §14): one fixture through the
@@ -17,12 +17,21 @@ import { Session, type RunEvent, type RunResult } from '@rune/engine';
  * between legs: run ids, timestamps, durations, the mode field, and per-input provenance.
  */
 
-const ANSWERS: Record<string, string | boolean> = {
+const ANSWERS = {
   installDatabase: true,
   databasePort: '5432',
   environment: 'production',
   token: 'super-secret-value',
-};
+} as const satisfies Record<string, string | boolean>;
+
+// The interactive flow starts with the pending values, then enables databasePort from the
+// summary edit loop. The GUI client follows that same facade-call sequence.
+const ANSWER_ORDER = [
+  'environment',
+  'token',
+  'installDatabase',
+  'databasePort',
+] as const satisfies readonly (keyof typeof ANSWERS)[];
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-parity-'));
@@ -108,17 +117,72 @@ function silentIo(): CliIo & { out: string[] } {
   return { out, stdout: (line) => out.push(line), stderr: () => undefined };
 }
 
-async function nonInteractiveLeg(manifest: string): Promise<RunResult> {
+interface CapturedLeg<T> {
+  readonly value: T;
+  readonly events: readonly RunEvent[];
+  readonly changes: readonly (readonly InputStateChanged[])[];
+}
+
+/**
+ * Observes the actual sessions opened by a driver without replacing its engine path. The
+ * execute wrapper sees the synchronous engine stream before forwarding it to the driver's
+ * own observer, including the real RunStarted.plan. Every spy is restored before return.
+ */
+async function captureDriver<T>(drive: () => Promise<T>): Promise<CapturedLeg<T>> {
+  const events: RunEvent[] = [];
+  const changes: InputStateChanged[][] = [];
+  const restoreSessionSpies: Array<() => void> = [];
+  const originalOpen = Session.open;
+  const openSpy = vi.spyOn(Session, 'open').mockImplementation(async (...args) => {
+    const session = await originalOpen(...args);
+    const originalExecute = session.execute.bind(session);
+    const originalSetValue = session.setValue.bind(session);
+    const executeSpy = vi.spyOn(session, 'execute').mockImplementation(async (observer, cancel) =>
+      originalExecute((event) => {
+        events.push(event);
+        observer?.(event);
+      }, cancel),
+    );
+    const setValueSpy = vi.spyOn(session, 'setValue').mockImplementation((id, raw) => {
+      const changed = originalSetValue(id, raw);
+      changes.push([...changed]);
+      return changed;
+    });
+    restoreSessionSpies.push(
+      () => executeSpy.mockRestore(),
+      () => setValueSpy.mockRestore(),
+    );
+    return session;
+  });
+
+  try {
+    return { value: await drive(), events, changes };
+  } finally {
+    for (const restore of restoreSessionSpies) {
+      restore();
+    }
+    openSpy.mockRestore();
+  }
+}
+
+function answerEntries(): readonly (readonly [string, string | boolean])[] {
+  return ANSWER_ORDER.map((id) => [id, ANSWERS[id]]);
+}
+
+async function nonInteractiveLeg(manifest: string, locale?: string): Promise<RunResult> {
   const io = silentIo();
   const argv = ['run', manifest, '--non-interactive', '--result', '-'];
-  for (const [id, value] of Object.entries(ANSWERS)) {
+  if (locale !== undefined) {
+    argv.push('--locale', locale);
+  }
+  for (const [id, value] of answerEntries()) {
     argv.push('--set', `${id}=${String(value)}`);
   }
   expect(await run(argv, io)).toBe(0);
   return JSON.parse(io.out.join('\n')) as RunResult;
 }
 
-async function interactiveLeg(manifest: string): Promise<RunResult> {
+async function interactiveLeg(manifest: string, locale?: string): Promise<RunResult> {
   const io = silentIo();
   const resultPath = join(manifest, '..', 'result-interactive.json');
   const input = new PassThrough();
@@ -148,99 +212,96 @@ async function interactiveLeg(manifest: string): Promise<RunResult> {
     },
     forceExit: (): void => undefined,
   };
-  expect(await run(['run', manifest, '--result', resultPath], io, interaction)).toBe(0);
+  const argv = ['run', manifest, '--result', resultPath];
+  if (locale !== undefined) {
+    argv.push('--locale', locale);
+  }
+  expect(await run(argv, io, interaction)).toBe(0);
   return JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
 }
 
 /** Exactly the call sequence the Electron main process makes over the facade (§9.2). */
-async function guiLeg(
-  manifest: string,
-): Promise<{ result: RunResult; events: RunEvent[]; changes: unknown[] }> {
-  const session = await Session.open(manifest, { environment: {}, mode: 'gui' });
+async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
+  const session = await Session.open(manifest, {
+    environment: {},
+    mode: 'gui',
+    ...(locale === undefined ? {} : { locale }),
+  });
   session.allInputs();
-  const changes: unknown[] = [];
-  for (const [id, value] of Object.entries(ANSWERS)) {
-    changes.push(...session.setValue(id, value));
+  for (const [id, value] of answerEntries()) {
+    session.setValue(id, value);
   }
   session.describe();
-  const events: RunEvent[] = [];
-  const result = await session.execute((event) => events.push(event));
-  return { result, events, changes };
+  return session.execute();
+}
+
+function planFrom(events: readonly RunEvent[]) {
+  const started = events.find((event) => event.kind === 'runStarted');
+  expect(started).toBeDefined();
+  if (started?.kind !== 'runStarted') {
+    throw new Error('the engine did not emit runStarted');
+  }
+  return started.plan;
 }
 
 describe('mode parity', () => {
   it('produces one result across non-interactive, interactive, and the GUI leg', async () => {
     const manifest = fixture();
 
-    const nonInteractive = await nonInteractiveLeg(manifest);
-    const interactive = await interactiveLeg(manifest);
-    const gui = await guiLeg(manifest);
+    // --set exercises layer 4 in the non-interactive driver; the other two legs provide
+    // the same values through layer 5. The three actual drivers must agree on the result,
+    // frozen plan, and complete engine event stream (§14).
+    const nonInteractive = await captureDriver(() => nonInteractiveLeg(manifest));
+    const interactive = await captureDriver(() => interactiveLeg(manifest));
+    const gui = await captureDriver(() => guiLeg(manifest));
 
-    expect(nonInteractive.mode).toBe('non-interactive');
-    expect(interactive.mode).toBe('interactive');
-    expect(gui.result.mode).toBe('gui');
-    expect(normalize(interactive)).toEqual(normalize(nonInteractive));
-    expect(normalize(gui.result)).toEqual(normalize(nonInteractive));
-    expect(nonInteractive.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SKIPPED']);
-    expect(JSON.stringify(nonInteractive)).not.toContain('super-secret-value');
+    expect(nonInteractive.value.mode).toBe('non-interactive');
+    expect(interactive.value.mode).toBe('interactive');
+    expect(gui.value.mode).toBe('gui');
+    expect(normalize(interactive.value)).toEqual(normalize(nonInteractive.value));
+    expect(normalize(gui.value)).toEqual(normalize(nonInteractive.value));
+    expect(nonInteractive.value.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SKIPPED']);
+    expect(JSON.stringify(nonInteractive.value)).not.toContain('super-secret-value');
 
-    // The InputStateChanged list where a value flips a when: (§9.1, §14).
-    expect(gui.changes).toContainEqual({ inputId: 'databasePort', enabled: true });
-  });
-
-  it('plans and emits identically however the values arrived', async () => {
-    // Two facade legs over ONE manifest: layers 4 (overrides) versus 5 (answers). The
-    // plan JSON and the event sequence must be byte-identical — how a value arrived may
-    // never change what runs (§14).
-    const manifest = fixture();
-    const overrides = Object.fromEntries(
-      Object.entries(ANSWERS).map(([id, value]) => [id, String(value)]),
+    expect(JSON.stringify(planFrom(interactive.events))).toBe(
+      JSON.stringify(planFrom(nonInteractive.events)),
     );
-    const bySet = await Session.open(manifest, { environment: {}, overrides, mode: 'gui' });
-    const byAnswer = await Session.open(manifest, { environment: {}, mode: 'gui' });
-    for (const [id, value] of Object.entries(ANSWERS)) {
-      byAnswer.setValue(id, value);
-    }
+    expect(JSON.stringify(planFrom(gui.events))).toBe(
+      JSON.stringify(planFrom(nonInteractive.events)),
+    );
+    expect(normalizeEvents(interactive.events)).toEqual(normalizeEvents(nonInteractive.events));
+    expect(normalizeEvents(gui.events)).toEqual(normalizeEvents(nonInteractive.events));
+    expect(nonInteractive.events.map((event) => event.kind)).toContain('stepOutput');
 
-    expect(JSON.stringify(bySet.plan())).toBe(JSON.stringify(byAnswer.plan()));
-
-    const eventsBySet: RunEvent[] = [];
-    const eventsByAnswer: RunEvent[] = [];
-    await bySet.execute((event) => eventsBySet.push(event));
-    await byAnswer.execute((event) => eventsByAnswer.push(event));
-    expect(normalizeEvents(eventsByAnswer)).toEqual(normalizeEvents(eventsBySet));
-    expect(eventsBySet.map((event) => event.kind)).toContain('stepOutput');
+    // InputStateChanged exists only for the layer-5 legs. The scripted summary edit and
+    // facade client both enable databasePort through the real Session.setValue return.
+    expect(nonInteractive.changes).toEqual([]);
+    expect(interactive.changes).toEqual([[], [], [{ inputId: 'databasePort', enabled: true }], []]);
+    expect(gui.changes).toEqual(interactive.changes);
   });
 
   it('resolves identical localized titles through every leg', async () => {
     const manifest = fixture();
-    const session = await Session.open(manifest, { environment: {}, locale: 'de', mode: 'gui' });
-    for (const [id, value] of Object.entries(ANSWERS)) {
-      session.setValue(id, value);
-    }
-    const gui = session.describe();
+    const nonInteractive = await captureDriver(() => nonInteractiveLeg(manifest, 'de'));
+    const interactive = await captureDriver(() => interactiveLeg(manifest, 'de'));
+    const gui = await captureDriver(() => guiLeg(manifest, 'de'));
 
-    const io = silentIo();
-    const argv = [
-      'run',
-      manifest,
-      '--non-interactive',
-      '--dry-run',
-      '--locale',
-      'de',
-      '--result',
-      '-',
-    ];
-    for (const [id, value] of Object.entries(ANSWERS)) {
-      argv.push('--set', `${id}=${String(value)}`);
+    for (const leg of [nonInteractive, interactive, gui]) {
+      expect(leg.value.steps[0]?.title).toBe('Konfigurieren');
     }
-    expect(await run(argv, io)).toBe(0);
-    const cli = JSON.parse(io.out.join('\n')) as RunResult;
-
-    expect(gui.steps[0]?.title).toBe('Konfigurieren');
-    expect(cli.steps[0]?.title).toBe('Konfigurieren');
-    // Ids and commands never localize (§6.3): byte-identical across locales and legs.
-    expect(cli.steps.map((step) => step.id)).toEqual(gui.steps.map((step) => step.id));
-    expect(cli.steps[0]?.command).toEqual(gui.steps[0]?.command);
+    // Locale resolution changes display text only; IDs and command arrays stay exact across
+    // all three real legs (§6.3, §14).
+    expect(interactive.value.steps.map((step) => step.id)).toEqual(
+      nonInteractive.value.steps.map((step) => step.id),
+    );
+    expect(gui.value.steps.map((step) => step.id)).toEqual(
+      nonInteractive.value.steps.map((step) => step.id),
+    );
+    expect(interactive.value.steps.map((step) => step.command)).toEqual(
+      nonInteractive.value.steps.map((step) => step.command),
+    );
+    expect(gui.value.steps.map((step) => step.command)).toEqual(
+      nonInteractive.value.steps.map((step) => step.command),
+    );
   });
 });
