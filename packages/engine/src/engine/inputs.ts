@@ -137,26 +137,34 @@ export interface Resolution {
  * to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
-  const stagedSecrets = new SecretRegistry();
+  const attempt: ResolutionAttempt = { stagedSecrets: new SecretRegistry() };
   try {
-    return resolveInputsStaged(options, stagedSecrets);
+    return resolveInputsStaged(options, attempt);
   } catch (cause) {
     if (cause instanceof RuneError) {
-      throw redactRuneError(cause, options.secrets.combinedWith(stagedSecrets));
+      const redactor = attempt.redactor ?? options.secrets.combinedWith(attempt.stagedSecrets);
+      throw redactRuneError(cause, redactor);
     }
     throw cause;
   }
 }
 
+interface ResolutionAttempt {
+  readonly stagedSecrets: SecretRegistry;
+  redactor?: SecretRegistry;
+}
+
 function resolveInputsStaged(
   options: ResolveInputsOptions,
-  stagedSecrets: SecretRegistry,
+  attempt: ResolutionAttempt,
 ): Resolution {
   const { manifest, context } = options;
+  const { stagedSecrets } = attempt;
   const ids = Object.keys(manifest.inputs);
   const valuesLayer = indexValuesLayer(options.values);
   const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
   const redactor = options.secrets.combinedWith(stagedSecrets);
+  attempt.redactor = redactor;
 
   if (valuesLayer.problems.length > 0) {
     throw InputError.fromIssues('RUNE-202', valuesLayer.problems);

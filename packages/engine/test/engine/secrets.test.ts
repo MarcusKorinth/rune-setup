@@ -568,6 +568,64 @@ describe('SecretRegistry', () => {
     }
   });
 
+  it('shares a lazily built matcher across equivalent unions and replacements', () => {
+    const source = new SecretRegistry();
+    source.register('shared-snapshot-secret');
+    const combined = new SecretRegistry().combinedWith(source);
+    const replacement = new SecretRegistry();
+    replacement.register('shared-snapshot-secret');
+    const transitionWrite = vi.spyOn(Map.prototype, 'set');
+    const measuredMask = (target: SecretRegistry, text: string): readonly [string, number] => {
+      const before = transitionWrite.mock.calls.length;
+      const result = target.mask(text);
+      return [result, transitionWrite.mock.calls.length - before];
+    };
+
+    try {
+      const [combinedResult, initialWrites] = measuredMask(combined, 'shared-snapshot-secret');
+      expect(combinedResult).toBe(MASK);
+      expect(initialWrites).toBeGreaterThan(0);
+
+      const [sourceResult, sourceWrites] = measuredMask(source, 'shared-snapshot-secret');
+      expect(sourceResult).toBe(MASK);
+      expect(sourceWrites).toBe(0);
+
+      replacement.replaceWith(source);
+      const [replacementResult, replacementWrites] = measuredMask(
+        replacement,
+        'shared-snapshot-secret',
+      );
+      expect(replacementResult).toBe(MASK);
+      expect(replacementWrites).toBe(0);
+    } finally {
+      transitionWrite.mockRestore();
+    }
+  });
+
+  it('detaches a shared matcher cache before a later set mutation', () => {
+    const source = new SecretRegistry();
+    source.register('original-shared-secret');
+    const combined = new SecretRegistry().combinedWith(source);
+    expect(combined.mask('original-shared-secret')).toBe(MASK);
+    const transitionWrite = vi.spyOn(Map.prototype, 'set');
+    const writes = (): number => transitionWrite.mock.calls.length;
+
+    try {
+      source.register('later-source-secret');
+      const beforeRebuild = writes();
+      expect(source.mask('original-shared-secret/later-source-secret')).toBe('***/***');
+      expect(writes()).toBeGreaterThan(beforeRebuild);
+
+      const beforeCombinedMask = writes();
+      expect(combined.mask('original-shared-secret/later-source-secret')).toBe(
+        '***/later-source-secret',
+      );
+      expect(writes()).toBe(beforeCombinedMask);
+    } finally {
+      transitionWrite.mockRestore();
+    }
+  });
+
   it('matches an obvious reference across deterministic overlap and collision cases', () => {
     const cases: { readonly patterns: readonly string[]; readonly texts: readonly string[] }[] = [
       {

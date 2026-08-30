@@ -1679,6 +1679,101 @@ describe('secrets', () => {
     expect(secrets.size).toBe(0);
   });
 
+  it('publishes the matcher primed while redacting a successful warning', () => {
+    const secret = 'F055-PUBLISHED-PRIMED-SECRET';
+    const secrets = new SecretRegistry();
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    const registeredSorts = (): number =>
+      sort.mock.contexts.filter(
+        (value): value is string[] =>
+          Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((item) => typeof item === 'string'),
+      ).length;
+
+    try {
+      const resolution = resolve(disabledSecret, {
+        overrides: new Map([['token', secret]]),
+        secrets,
+      });
+      const sortsAfterResolve = registeredSorts();
+
+      expect(resolution.warnings).toEqual([
+        'token was set from --set, but its condition is false — the value is ignored',
+      ]);
+      expect(sortsAfterResolve).toBe(1);
+      expect(secrets.mask(secret)).toBe('***');
+      expect(registeredSorts()).toBe(sortsAfterResolve);
+    } finally {
+      sort.mockRestore();
+    }
+  });
+
+  it('reuses a primed union matcher while redacting a late recursive failure', () => {
+    const active = 'F055-ACTIVE-CACHE-SECRET';
+    const staged = 'F055-STAGED-CACHE-SECRET';
+    const withLateCause = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+      '  directory:',
+      '    type: directory',
+      '    default: "${env.TRIGGER}"',
+    );
+    const cause = new ResolutionError('RUNE-301', `cannot resolve ${active}/${staged}`);
+    const baseContext = contextFor(withLateCause);
+    const context: RuntimeContext = {
+      ...baseContext,
+      valueOf: () => {
+        throw cause;
+      },
+    };
+    const secrets = new SecretRegistry();
+    secrets.register(active);
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    const registeredSorts = (): number =>
+      sort.mock.contexts.filter(
+        (value): value is string[] =>
+          Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((item) => typeof item === 'string'),
+      ).length;
+    let thrown: unknown;
+    let matcherSorts = 0;
+
+    try {
+      resolveInputs({
+        manifest: withLateCause,
+        context,
+        overrides: new Map([
+          ['token', staged],
+          ['note', `${active}/${staged}`],
+        ]),
+        secrets,
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      matcherSorts = registeredSorts();
+      sort.mockRestore();
+    }
+
+    expect(thrown).toBeInstanceOf(ResolutionError);
+    const error = thrown as ResolutionError;
+    expect(error.code).toBe('RUNE-301');
+    expect(error.cause).toBe(cause);
+    expect(matcherSorts).toBe(1);
+    for (const sentinel of [active, staged]) {
+      expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask(active)).toBe('***');
+    expect(secrets.mask(staged)).toBe(staged);
+  });
+
   it('leaves a prefilled registry unchanged when an unknown key rejects resolution', () => {
     const secrets = existingRegistry();
     const error = inputError(manifest, {

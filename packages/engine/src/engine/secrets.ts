@@ -284,6 +284,11 @@ function createMatcherNode(): MatcherNode {
   return { transitions: new Map(), failure: 0, longestMatchLength: 0 };
 }
 
+/** Shared only by registries whose independent value sets describe the same snapshot. */
+interface MatcherCache {
+  matcher?: SecretMatcher;
+}
+
 /**
  * The secrets a run knows about, and the one function that removes them from text.
  *
@@ -293,8 +298,7 @@ function createMatcherNode(): MatcherNode {
 export class SecretRegistry {
   readonly #values = new Set<string>();
   #registeredCodeUnits = 0;
-  /** Immutable matcher for the current value-set snapshot. */
-  #matcher: SecretMatcher | undefined;
+  #matcherCache: MatcherCache = {};
 
   /**
    * Registers every maskable part of a secret. Returns false when any content line is too
@@ -330,11 +334,11 @@ export class SecretRegistry {
     }
 
     if (additions.size > 0) {
+      this.#matcherCache = {};
       for (const part of additions) {
         this.#values.add(part);
       }
       this.#registeredCodeUnits += addedCodeUnits;
-      this.#matcher = undefined;
     }
 
     const contentLines = lines.filter((line) => line.trim() !== '');
@@ -383,9 +387,9 @@ export class SecretRegistry {
     }
     combined.#registeredCodeUnits = this.#registeredCodeUnits + addedCodeUnits;
     if (combined.#values.size === this.#values.size) {
-      combined.#matcher = this.#matcher;
+      combined.#matcherCache = this.#matcherCache;
     } else if (combined.#values.size === source.#values.size) {
-      combined.#matcher = source.#matcher;
+      combined.#matcherCache = source.#matcherCache;
     }
     return combined;
   }
@@ -393,6 +397,7 @@ export class SecretRegistry {
   /** Replaces this registry with the completed secret set of one successful resolution. */
   replaceWith(source: SecretRegistry): void {
     if (setsEqual(this.#values, source.#values)) {
+      this.#matcherCache = source.#matcherCache;
       return;
     }
 
@@ -403,9 +408,7 @@ export class SecretRegistry {
       this.#values.add(value);
     }
     this.#registeredCodeUnits = source.#registeredCodeUnits;
-    // The matcher is immutable, so sharing this snapshot remains safe when either registry
-    // later changes its own set and invalidates its reference.
-    this.#matcher = source.#matcher;
+    this.#matcherCache = source.#matcherCache;
   }
 
   /** Replaces every registered secret in `text` with the mask. */
@@ -416,7 +419,7 @@ export class SecretRegistry {
 
     // Stable ordering makes the cached snapshot deterministic even though matching behavior
     // itself is independent of registration order.
-    const matcher = (this.#matcher ??= new SecretMatcher(
+    const matcher = (this.#matcherCache.matcher ??= new SecretMatcher(
       [...this.#values].sort(
         (left, right) => right.length - left.length || (left < right ? -1 : left === right ? 0 : 1),
       ),
