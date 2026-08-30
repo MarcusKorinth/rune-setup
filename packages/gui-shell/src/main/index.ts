@@ -40,6 +40,31 @@ export const BRIDGE_CHANNELS = [
 
 export const EVENT_CHANNEL = 'rune:event';
 
+export interface SigtermSource {
+  on(signal: 'SIGTERM', listener: () => void): void;
+  off(signal: 'SIGTERM', listener: () => void): void;
+}
+
+/** Keeps a process signal listener scoped to exactly one asynchronous shell run. */
+export async function withSigtermHandler<T>(
+  action: () => void,
+  run: () => Promise<T>,
+  source: SigtermSource = process,
+): Promise<T> {
+  const listener = (): void => action();
+  source.on('SIGTERM', listener);
+  try {
+    return await run();
+  } finally {
+    source.off('SIGTERM', listener);
+  }
+}
+
+/** SIGTERM in windowed mode enters the ordinary close-window state machine. */
+export function closeWindowOnSigterm(window: Pick<BrowserWindow, 'close'>): () => void {
+  return () => window.close();
+}
+
 async function main(): Promise<void> {
   const invocation = parseShellArgv(process.argv.slice(app.isPackaged ? 1 : 2));
 
@@ -75,7 +100,19 @@ async function openSession(invocation: ShellInvocation): Promise<Session> {
   });
 }
 
-async function headlessRun(session: Session, invocation: ShellInvocation): Promise<number> {
+export function headlessRun(
+  session: Session,
+  invocation: ShellInvocation,
+  signals: SigtermSource = process,
+): Promise<number> {
+  return withSigtermHandler(
+    () => session.cancel(),
+    () => executeHeadless(session, invocation),
+    signals,
+  );
+}
+
+async function executeHeadless(session: Session, invocation: ShellInvocation): Promise<number> {
   try {
     const result = await session.execute();
     for (const warning of session.warnings()) {
@@ -141,15 +178,6 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
     },
   });
 
-  // SIGTERM is the §9.4 cancel request from `rune run --gui`: during a run it fires the
-  // CancelToken; before one it is the close-window path.
-  process.on('SIGTERM', () => {
-    if (running) {
-      session.cancel();
-    } else {
-      window.close();
-    }
-  });
   window.on('close', (event) => {
     if (running) {
       event.preventDefault();
@@ -165,9 +193,12 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
       }
     }
   });
+  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
 
-  await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-  await new Promise<void>((resolve) => window.on('closed', () => resolve()));
+  await withSigtermHandler(closeWindowOnSigterm(window), async () => {
+    await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+    await closed;
+  });
 
   if (fatalCode !== undefined) {
     return fatalCode;
