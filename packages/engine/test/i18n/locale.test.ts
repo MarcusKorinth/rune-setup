@@ -63,6 +63,17 @@ describe('overlay discovery and matching', () => {
     expect(matchOverlay('fr', overlays)).toBeUndefined();
   });
 
+  it('normalizes locale file names before matching them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    mkdirSync(join(dir, 'locales'));
+    writeFileSync(join(dir, 'locales', 'de_DE.yaml'), 'steps.install.title: Installieren\n');
+
+    const overlays = discoverOverlays(dir);
+    expect(overlays).toHaveLength(1);
+    expect(overlays[0]?.locale).toBe('de-DE');
+    expect(matchOverlay('de-DE', overlays)?.locale).toBe('de-DE');
+  });
+
   it('treats a missing locales directory as no overlays', () => {
     expect(discoverOverlays(mkdtempSync(join(tmpdir(), 'rune-i18n-')))).toEqual([]);
   });
@@ -70,8 +81,8 @@ describe('overlay discovery and matching', () => {
   it('rejects multiple files that claim the same locale', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
     const localesPath = join(dir, 'locales');
-    const yamlPath = join(localesPath, 'de.yaml');
-    const ymlPath = join(localesPath, 'de.yml');
+    const yamlPath = join(localesPath, 'de-DE.yaml');
+    const ymlPath = join(localesPath, 'de_DE.yml');
     mkdirSync(localesPath);
     writeFileSync(yamlPath, 'rune.button.next: Weiter\n');
     writeFileSync(ymlPath, 'rune.button.next: Vorwaerts\n');
@@ -88,7 +99,27 @@ describe('overlay discovery and matching', () => {
     expect(error.code).toBe('RUNE-104');
     expect(error.message).toContain(yamlPath);
     expect(error.message).toContain(ymlPath);
-    expect(error.message).toContain('locale "de"');
+    expect(error.message).toContain('locale "de-DE"');
+  });
+
+  it('rejects a locale file name that cannot be normalized', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    const invalidPath = join(localesPath, 'POSIX.yaml');
+    mkdirSync(localesPath);
+    writeFileSync(invalidPath, 'rune.button.next: Weiter\n');
+
+    let thrown: unknown;
+    try {
+      discoverOverlays(dir);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-104');
+    expect(error.message).toContain(invalidPath);
   });
 
   it('fails loudly when locales is not a directory', () => {

@@ -73,7 +73,17 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
   const overlays = names
     .filter((name) => /\.ya?ml$/i.test(name))
     .sort()
-    .map((name) => ({ locale: name.replace(/\.ya?ml$/i, ''), path: join(directory, name) }));
+    .map((name) => {
+      const path = join(directory, name);
+      const locale = normalizeLocaleTag(name.replace(/\.ya?ml$/i, ''));
+      if (locale === undefined) {
+        throw new ManifestError(
+          'RUNE-104',
+          `locale overlay file "${path}" does not name a valid locale`,
+        );
+      }
+      return { locale, path };
+    });
 
   const claims = new Map<string, DiscoveredOverlay>();
   for (const overlay of overlays) {
@@ -82,7 +92,7 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
     if (first !== undefined) {
       throw new ManifestError(
         'RUNE-104',
-        `locale overlay files "${first.path}" and "${overlay.path}" both claim locale "${claim}" (locale file names are matched case-insensitively)`,
+        `locale overlay files "${first.path}" and "${overlay.path}" both claim locale "${overlay.locale}" (locale file names are normalized and matched case-insensitively)`,
       );
     }
     claims.set(claim, overlay);
