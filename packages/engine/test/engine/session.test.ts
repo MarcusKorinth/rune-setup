@@ -127,6 +127,61 @@ describe('opening a session', () => {
     ).rejects.toMatchObject({ code: 'RUNE-202' });
   });
 
+  it('uses the locale-resolved hint for a non-interactive invalid seed', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    pattern: "[0-9]{2,5}"',
+        '    patternHint: use two to five digits',
+        'steps: []',
+      ],
+      { 'locales/de.yaml': 'inputs.port.patternHint: Zwei bis fünf Ziffern verwenden\n' },
+    );
+    let thrown: unknown;
+
+    try {
+      await Session.open(path, {
+        environment: {},
+        locale: 'de',
+        mode: 'non-interactive',
+        overrides: { port: 'eighty' },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'RUNE-202' });
+    expect((thrown as Error).message).toContain('Zwei bis fünf Ziffern verwenden');
+    expect((thrown as Error).message).not.toContain('use two to five digits');
+  });
+
+  it('keeps a concrete pattern diagnostic when no hint was declared', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    pattern: "[0-9]{2,5}"',
+        'steps: []',
+      ]),
+      { environment: {}, mode: 'gui', overrides: { port: 'eighty' } },
+    );
+
+    expect(session.allInputs()[0]?.invalid?.issue.message).toContain(
+      '"eighty" does not match [0-9]{2,5}',
+    );
+  });
+
   it('projects typed non-secret candidates as immutable bridge-safe data', async () => {
     const path = fixture(
       [
@@ -368,6 +423,42 @@ describe('answering inputs', () => {
     );
     expect(session.allInputs()[0]).toMatchObject({ value: '1234', source: 'answer' });
     expect(session.getStrings().patternHint('port')).toBe('use two to five digits');
+  });
+
+  it('uses the effective hint in lower-layer GUI state and layer-5 rejection', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    pattern: "[0-9]{2,5}"',
+        '    patternHint: use two to five digits',
+        'steps: []',
+      ],
+      { 'locales/de.yaml': 'inputs.port.patternHint: Zwei bis fünf Ziffern verwenden\n' },
+    );
+    const session = await Session.open(path, {
+      environment: {},
+      locale: 'de',
+      mode: 'gui',
+      overrides: { port: 'eighty' },
+    });
+
+    const lowerLayerIssue = session.allInputs()[0]?.invalid?.issue.message;
+    expect(lowerLayerIssue).toContain('Zwei bis fünf Ziffern verwenden');
+    expect(lowerLayerIssue).not.toContain('use two to five digits');
+    let thrown: unknown;
+    try {
+      session.setValue('port', 'still-invalid');
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error).message).toContain('Zwei bis fünf Ziffern verwenden');
+    expect((thrown as Error).message).not.toContain('use two to five digits');
   });
 });
 

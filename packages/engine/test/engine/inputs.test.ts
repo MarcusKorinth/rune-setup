@@ -399,6 +399,25 @@ describe('values a type refuses', () => {
     );
   });
 
+  it('accepts an effective pattern hint without changing the direct manifest fallback', () => {
+    const hinted = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    pattern: "[0-9]{2,5}"',
+      '    patternHint: use two to five digits',
+    );
+    const supplied = { overrides: new Map([['port', 'eighty']]) };
+
+    expect(problems(hinted, supplied)[0]).toContain('use two to five digits');
+    expect(
+      problems(hinted, {
+        ...supplied,
+        resolvePatternHint: () => 'zwei bis fünf Ziffern verwenden',
+      })[0],
+    ).toContain('zwei bis fünf Ziffern verwenden');
+  });
+
   it('collects every bad value instead of stopping at the first', () => {
     expect(
       problems(manifest, {

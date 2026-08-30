@@ -133,7 +133,42 @@ describe('the interactive run', () => {
     const code = await run(['run', path], io, interaction);
 
     expect(code).toBe(0);
-    expect(interaction.transcript()).toContain('lower-case letters only');
+    expect(interaction.transcript().split('lower-case letters only')).toHaveLength(2);
+  });
+
+  it('shows the locale-resolved pattern hint exactly once', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      '    patternHint: lower-case letters only',
+      'steps:',
+      '  - id: a',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+    ]);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      'inputs.name.patternHint: Nur Kleinbuchstaben verwenden\n',
+      'utf8',
+    );
+    const io = capture();
+    const interaction = scripted(['BAD1', 'good', 'p']);
+
+    const code = await run(['run', path, '--locale', 'de'], io, interaction);
+
+    expect(code).toBe(0);
+    const transcript = interaction.transcript();
+    expect(transcript.split('Nur Kleinbuchstaben verwenden')).toHaveLength(2);
+    expect(transcript).not.toContain('lower-case letters only');
   });
 
   it('displays option labels while accepting only select and multiselect values', async () => {

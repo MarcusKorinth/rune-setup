@@ -81,6 +81,8 @@ export interface ResolveInputsOptions {
   readonly answers?: ReadonlyMap<string, unknown>;
   /** Registers secrets for masking as they resolve — before any step can launch (§10). */
   readonly secrets?: SecretRegistry;
+  /** Resolves a text input's display hint; Session supplies its locale-resolved string table. */
+  readonly resolvePatternHint?: (id: string) => string | undefined;
   /**
    * What to do with a lower-layer value the registry rejected. `throw` is what a pipeline
    * needs: nothing runs and the process exits. A frontend that can ask again takes `collect`,
@@ -185,7 +187,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       continue;
     }
 
-    const coerced = coerce(supplied, spec, id, context);
+    const coerced = coerce(supplied, spec, id, context, options.resolvePatternHint);
     if (!coerced.ok) {
       const issue: RuneIssue = {
         code: 'RUNE-202',
@@ -365,6 +367,7 @@ function coerce(
   spec: InputSpec,
   id: string,
   context: RuntimeContext,
+  resolvePatternHint: ((id: string) => string | undefined) | undefined,
 ): CoercionOutcome {
   const handler = inputTypes.get(spec.type);
   let raw = supplied.raw;
@@ -376,8 +379,17 @@ function coerce(
     raw = renderDefault(raw, id, context);
   }
 
+  // Session resolution substitutes the effective locale-overlay-or-manifest hint before the
+  // type handler creates its diagnostic. Direct registry/resolver users retain the manifest
+  // fallback by omitting the resolver.
+  const effectiveSpec: InputSpec =
+    spec.type === 'text' && resolvePatternHint !== undefined
+      ? { ...spec, patternHint: resolvePatternHint(id) }
+      : spec;
   const result =
-    typeof raw === 'string' ? handler.fromString(raw, spec) : handler.fromNative(raw, spec);
+    typeof raw === 'string'
+      ? handler.fromString(raw, effectiveSpec)
+      : handler.fromNative(raw, effectiveSpec);
 
   // The type names the value and says what is wrong with it; resolution adds which input it
   // belongs to and where the value came from, which is what a reader needs to go and fix it.

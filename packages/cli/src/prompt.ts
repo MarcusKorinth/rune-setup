@@ -119,7 +119,7 @@ export class Prompter {
 
 /**
  * Prompts for every pending input, in declaration order, until nothing is missing. A
- * rejected value re-prompts with the message and the input's `patternHint` (§9.3).
+ * rejected value re-prompts with the engine-owned diagnostic (§9.3).
  */
 export async function promptForInputs(session: Session, prompter: Prompter): Promise<void> {
   const strings = session.getStrings();
@@ -208,10 +208,6 @@ async function askUntilAccepted(
         throw error;
       }
       prompter.say(error.message);
-      const hint = strings.patternHint(state.id);
-      if (hint !== undefined) {
-        prompter.say(hint);
-      }
     }
   }
 }

@@ -167,6 +167,7 @@ export class Session {
         environment,
         overrides,
         secrets,
+        resolvePatternHint: strings.patternHint,
         invalidValues: mode === 'non-interactive' ? 'throw' : 'collect',
       }),
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
@@ -345,6 +346,7 @@ export class Session {
       overrides: this.#overrides,
       answers: this.#answers,
       secrets: this.#secrets,
+      resolvePatternHint: this.#strings.patternHint,
       invalidValues: this.#mode === 'non-interactive' ? 'throw' : 'collect',
     });
   }
