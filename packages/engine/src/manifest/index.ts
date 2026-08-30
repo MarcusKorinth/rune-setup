@@ -11,7 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { ManifestError } from '../errors.js';
-import { discoverOverlays } from '../i18n/locale.js';
+import { discoverOverlays, selectLocale } from '../i18n/locale.js';
 import { loadOverlay } from '../i18n/overlay.js';
 import {
   loadYamlFile,
@@ -38,6 +38,11 @@ export interface ParseManifestOptions {
   readonly checkAssetFiles?: boolean;
   /** Directory relative paths resolve against; defaults to the manifest's own directory. */
   readonly manifestDir?: string;
+}
+
+export interface ValidateManifestOptions extends ParseManifestOptions {
+  /** An explicit `--locale` value to validate through the engine-owned selection path. */
+  readonly locale?: string | undefined;
 }
 
 interface ParseContext {
@@ -97,10 +102,11 @@ export interface ValidationReport {
  */
 export function validateManifest(
   file: string,
-  options: ParseManifestOptions = {},
+  options: ValidateManifestOptions = {},
 ): ValidationReport {
   const document = loadYamlFile(file);
   const manifest = parseDocument(document, file, { checkAssetFiles: true, ...options });
+  selectLocale({ flag: options.locale, environment: {} });
   const manifestDir = options.manifestDir ?? dirname(resolve(file));
   const overlays = discoverOverlays(manifestDir);
   for (const overlay of overlays) {

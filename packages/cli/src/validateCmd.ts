@@ -19,7 +19,7 @@ export async function validateCommand(
   // Validation is fully static, but a bogus value must fail the same way run fails it.
   parsePlatform(flags.platform);
   const absolute = resolve(manifestPath);
-  const report = validateManifest(absolute);
+  const report = validateManifest(absolute, { locale: flags.locale });
   const { locales, manifest } = report;
 
   io.stdout(

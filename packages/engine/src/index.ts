@@ -41,7 +41,12 @@ export {
   SUPPORTED_SCHEMA_VERSIONS,
   validateManifest,
 } from './manifest/index.js';
-export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
+export type {
+  Manifest,
+  ParseManifestOptions,
+  ValidateManifestOptions,
+  ValidationReport,
+} from './manifest/index.js';
 
 export {
   BUILT_IN_NAMES,

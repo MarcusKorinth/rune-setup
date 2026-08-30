@@ -24,6 +24,28 @@ describe('validateManifest', () => {
     expect(report.environment).toEqual([]);
   });
 
+  it('rejects an invalid explicit locale after accepting the manifest', () => {
+    expect(() =>
+      validateManifest(manifestFile('steps: []'), { locale: 'definitely_invalid' }),
+    ).toThrow(/invalid locale "definitely_invalid" from --locale/);
+  });
+
+  it.each(['de-DE', 'de_DE', 'C', 'POSIX'])('accepts explicit locale %s', (locale) => {
+    expect(() => validateManifest(manifestFile('steps: []'), { locale })).not.toThrow();
+  });
+
+  it('treats an empty explicit locale like an omitted locale', () => {
+    expect(() => validateManifest(manifestFile('steps: []'), { locale: '' })).not.toThrow();
+  });
+
+  it('reports manifest errors before an invalid explicit locale', () => {
+    expect(() =>
+      validateManifest(manifestFile('product: invalid', 'steps: []'), {
+        locale: 'definitely_invalid',
+      }),
+    ).toThrow(/duplicate key "product"/);
+  });
+
   it('validates every locale overlay and reports its canonical locale', () => {
     const file = manifestFile(
       'steps:',

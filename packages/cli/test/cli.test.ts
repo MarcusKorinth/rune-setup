@@ -86,6 +86,24 @@ describe('rune validate', () => {
     expect(await run(['validate', path], io)).toBe(3);
     expect(io.err.join('\n')).toContain('product');
   });
+
+  it('exits 2 for an invalid explicit locale without reporting success', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', 'definitely_invalid'], io)).toBe(2);
+    expect(io.err.join('\n')).toContain('invalid locale "definitely_invalid" from --locale');
+    expect(io.out.join('\n')).not.toContain('is valid');
+  });
+
+  it.each(['de-DE', 'de_DE', 'C', 'POSIX'])('accepts explicit locale %s', async (locale) => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', locale], io)).toBe(0);
+    expect(io.out[0]).toContain('is valid');
+    expect(io.err).toEqual([]);
+  });
 });
 
 describe('rune run', () => {
