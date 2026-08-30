@@ -9,6 +9,7 @@ import {
   RUN_MODES,
   RUN_STATUSES,
   type ResultInput,
+  type ResultStep,
   type RunResult,
 } from '../../src/results/model.js';
 import { resultV1Schema } from '../../src/results/schema.js';
@@ -40,10 +41,39 @@ const _checkResultInputCorrelation = (): void => {
   void nullNonSecret;
 };
 
+const _checkResultStepCorrelation = (): void => {
+  const body = {
+    id: 'step',
+    title: 'Step',
+    exitCode: null,
+    durationMs: 0,
+    command: null,
+    skipReason: null,
+  } as const;
+  const valid: readonly ResultStep[] = [
+    { ...body, state: 'PENDING' },
+    { ...body, state: 'SKIPPED' },
+    { ...body, state: 'SUCCEEDED' },
+    { ...body, state: 'FAILED' },
+    { ...body, state: 'FAILED', outputTail: [{ stream: 'stderr', line: 'failure' }] },
+    { ...body, state: 'CANCELLED' },
+    { ...body, state: 'NOT_RUN' },
+  ];
+  // @ts-expect-error RUNNING is an internal lifecycle state, never a result step state
+  const running: ResultStep = { ...body, state: 'RUNNING' };
+  // @ts-expect-error outputTail is exclusive to FAILED result steps
+  const succeededWithOutput: ResultStep = { ...body, state: 'SUCCEEDED', outputTail: [] };
+  void valid;
+  void running;
+  void succeededWithOutput;
+};
+
 interface SchemaNode {
   readonly type?: string;
   readonly const?: unknown;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
+  readonly items?: SchemaNode;
+  readonly oneOf?: readonly SchemaNode[];
   readonly required?: readonly string[];
   readonly additionalProperties?: boolean;
 }
@@ -102,6 +132,39 @@ function result(overrides: Partial<RunResult> = {}): RunResult {
   } as RunResult;
 }
 
+function resultWithSingleStepState(state: ResultStep['state']): RunResult {
+  const executed = state === 'SUCCEEDED' || state === 'FAILED' || state === 'CANCELLED';
+  const outcome =
+    state === 'PENDING'
+      ? { status: 'planned' as const, exitCode: 0 as const, dryRun: true as const }
+      : state === 'FAILED'
+        ? { status: 'failed' as const, exitCode: 1 as const, dryRun: false as const }
+        : state === 'CANCELLED' || state === 'NOT_RUN'
+          ? { status: 'cancelled' as const, exitCode: 6 as const, dryRun: false as const }
+          : { status: 'succeeded' as const, exitCode: 0 as const, dryRun: false as const };
+  return result({
+    ...outcome,
+    stepsExecuted: executed ? 1 : 0,
+    stepsSucceeded: state === 'SUCCEEDED' ? 1 : 0,
+    stepsFailed: state === 'FAILED' ? 1 : 0,
+    stepsCancelled: state === 'CANCELLED' ? 1 : 0,
+    stepsSkipped: state === 'SKIPPED' ? 1 : 0,
+    stepsNotRun: state === 'NOT_RUN' || state === 'PENDING' ? 1 : 0,
+    nothingExecuted: !executed,
+    steps: [
+      {
+        id: 'state-step',
+        title: 'State step',
+        state,
+        exitCode: null,
+        durationMs: 0,
+        command: null,
+        skipReason: state === 'SKIPPED' ? 'condition false' : null,
+      } as ResultStep,
+    ],
+  } as Partial<RunResult>);
+}
+
 describe('resultJsonSchema', () => {
   it('is the strict version-1 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
@@ -138,6 +201,19 @@ describe('resultJsonSchema', () => {
       cancelled: { exitCode: 6, dryRun: undefined },
       internal_error: { exitCode: 70, dryRun: undefined },
     });
+
+    expect(JSON.stringify(schema)).not.toContain('RUNNING');
+
+    const stepBranches = branches[0]?.properties?.['steps']?.items?.oneOf;
+    expect(stepBranches).toHaveLength(6);
+    for (const stepBranch of stepBranches ?? []) {
+      const state = stepBranch.properties?.['state']?.const;
+      if (state === 'FAILED') {
+        expect(stepBranch.properties).toHaveProperty('outputTail');
+      } else {
+        expect(stepBranch.properties).not.toHaveProperty('outputTail');
+      }
+    }
   });
 
   it('accepts representative succeeded, planned, failed, and cancelled result shapes', () => {
@@ -243,9 +319,10 @@ describe('resultJsonSchema', () => {
   it('covers every public status, mode, platform, input source, and step state', () => {
     for (const status of RUN_STATUSES) {
       const dryRun = status === 'planned';
+      const base = dryRun ? resultWithSingleStepState('PENDING') : result();
       expect(
         resultV1Schema.safeParse({
-          ...result(),
+          ...base,
           status,
           exitCode: EXIT_CODE_BY_STATUS[status],
           dryRun,
@@ -269,9 +346,16 @@ describe('resultJsonSchema', () => {
       ).toBe(true);
     }
     for (const state of STEP_STATES) {
-      expect(
-        resultV1Schema.safeParse(result({ steps: [{ ...result().steps[0]!, state }] })).success,
-      ).toBe(true);
+      if (state === 'RUNNING') {
+        expect(
+          resultV1Schema.safeParse({
+            ...result(),
+            steps: [{ ...result().steps[0]!, state }],
+          }).success,
+        ).toBe(false);
+      } else {
+        expect(resultV1Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
+      }
     }
   });
 
@@ -332,6 +416,10 @@ describe('resultJsonSchema', () => {
         result({
           product: null,
           manifest: { path: 'installer.yaml', sha256: null, schemaVersion: null },
+          stepsTotal: 0,
+          stepsExecuted: 0,
+          stepsSucceeded: 0,
+          nothingExecuted: true,
           inputs: [],
           steps: [],
         }),
@@ -363,7 +451,9 @@ describe('resultJsonSchema', () => {
     expect(
       resultV1Schema.safeParse(
         result({
-          steps: [{ ...result().steps[0]!, unknown: true } as RunResult['steps'][number]],
+          steps: [
+            { ...result().steps[0]!, unknown: true } as unknown as RunResult['steps'][number],
+          ],
         }),
       ).success,
     ).toBe(false);
@@ -380,7 +470,7 @@ describe('resultJsonSchema', () => {
                   unknown: true,
                 } as NonNullable<RunResult['steps'][number]['outputTail']>[number],
               ],
-            },
+            } as unknown as RunResult['steps'][number],
           ],
         }),
       ).success,
@@ -395,5 +485,102 @@ describe('resultJsonSchema', () => {
       resultV1Schema.safeParse(result({ steps: [{ ...result().steps[0]!, durationMs: -1 }] }))
         .success,
     ).toBe(false);
+  });
+
+  it('rejects counters that do not correspond to the actual step list', () => {
+    const mismatches: readonly Partial<RunResult>[] = [
+      { stepsTotal: 0 },
+      { stepsExecuted: 0 },
+      { stepsSucceeded: 0 },
+      { stepsFailed: 1 },
+      { stepsCancelled: 1 },
+      { stepsSkipped: 1 },
+      { stepsNotRun: 1 },
+    ];
+
+    for (const mismatch of mismatches) {
+      expect(resultV1Schema.safeParse(result(mismatch)).success).toBe(false);
+    }
+  });
+
+  it('rejects contradictory nothingExecuted values and more than one cancelled step', () => {
+    expect(resultV1Schema.safeParse(result({ nothingExecuted: true })).success).toBe(false);
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          stepsTotal: 0,
+          stepsExecuted: 0,
+          stepsSucceeded: 0,
+          nothingExecuted: false,
+          steps: [],
+        }),
+      ).success,
+    ).toBe(false);
+
+    const cancelled = resultWithSingleStepState('CANCELLED').steps[0]!;
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          status: 'cancelled',
+          exitCode: 6,
+          stepsTotal: 2,
+          stepsExecuted: 2,
+          stepsSucceeded: 0,
+          stepsCancelled: 2,
+          steps: [cancelled, { ...cancelled, id: 'second-cancelled-step' }],
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('correlates PENDING steps with planned results', () => {
+    const pending = resultWithSingleStepState('PENDING');
+    expect(
+      resultV1Schema.safeParse({ ...pending, status: 'succeeded', dryRun: false }).success,
+    ).toBe(false);
+    expect(
+      resultV1Schema.safeParse({
+        ...result(),
+        status: 'planned',
+        dryRun: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects the formerly accepted RUNNING, non-failed tail, and impossible-counter shapes', () => {
+    const base = result();
+    const contradictions = [
+      {
+        ...base,
+        steps: [{ ...base.steps[0]!, state: 'RUNNING' }],
+      },
+      {
+        ...base,
+        steps: [{ ...base.steps[0]!, outputTail: [] }],
+      },
+      {
+        ...base,
+        stepsTotal: 0,
+        stepsExecuted: 99,
+        nothingExecuted: true,
+      },
+    ];
+
+    for (const contradiction of contradictions) {
+      expect(resultV1Schema.safeParse(contradiction).success).toBe(false);
+    }
+    expect(resultV1Schema.safeParse(resultWithSingleStepState('FAILED')).success).toBe(true);
+  });
+
+  it('rejects outputTail on every non-failed state', () => {
+    for (const state of ['PENDING', 'SKIPPED', 'SUCCEEDED', 'CANCELLED', 'NOT_RUN'] as const) {
+      const base = resultWithSingleStepState(state);
+      expect(
+        resultV1Schema.safeParse({
+          ...base,
+          steps: [{ ...base.steps[0]!, outputTail: [] }],
+        }).success,
+      ).toBe(false);
+    }
   });
 });

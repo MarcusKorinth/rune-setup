@@ -64,6 +64,10 @@ function forgedPlaintextSecretResult(id: string): RunResult {
   } as unknown as RunResult;
 }
 
+function forgedCounterResult(id: string): RunResult {
+  return { ...result(id), stepsExecuted: 99 } as RunResult;
+}
+
 function expectGenericResultError(caught: unknown): void {
   expect(caught).toBeInstanceOf(InternalError);
   const error = caught as InternalError;
@@ -120,6 +124,27 @@ describe('writeResult', () => {
       let caught: unknown;
       try {
         await writeResult(forgedPlaintextSecretResult('invalid-new-target'), destination);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+      expect(existsSync(destinationDirectory)).toBe(false);
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a semantically contradictory result before performing I/O', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destinationDirectory = join(directory, 'must-not-exist');
+    const destination = join(destinationDirectory, 'result.json');
+
+    try {
+      let caught: unknown;
+      try {
+        await writeResult(forgedCounterResult('invalid-counters'), destination);
       } catch (error) {
         caught = error;
       }

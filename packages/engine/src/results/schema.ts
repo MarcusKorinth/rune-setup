@@ -4,7 +4,6 @@ import { z } from 'zod';
 
 import { PLATFORMS } from '../engine/context.js';
 import { VALUE_SOURCES } from '../engine/inputs.js';
-import { STEP_STATES } from '../engine/state.js';
 import { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION, RUN_MODES, type RunResult } from './model.js';
 
 const nonnegativeInteger = z.number().int().nonnegative();
@@ -34,16 +33,27 @@ const resultOutputLineSchema = z.strictObject({
   line: z.string(),
 });
 
-const resultStepSchema = z.strictObject({
+const resultStepShape = {
   id: z.string(),
   title: z.string(),
-  state: z.enum(STEP_STATES),
   exitCode: z.number().int().nullable(),
   durationMs: z.number().nonnegative(),
   command: z.array(z.string()).nullable(),
   skipReason: z.string().nullable(),
-  outputTail: z.array(resultOutputLineSchema).max(50).optional(),
-});
+};
+
+const resultStepSchema = z.discriminatedUnion('state', [
+  z.strictObject({ ...resultStepShape, state: z.literal('PENDING') }),
+  z.strictObject({ ...resultStepShape, state: z.literal('SKIPPED') }),
+  z.strictObject({ ...resultStepShape, state: z.literal('SUCCEEDED') }),
+  z.strictObject({
+    ...resultStepShape,
+    state: z.literal('FAILED'),
+    outputTail: z.array(resultOutputLineSchema).max(50).optional(),
+  }),
+  z.strictObject({ ...resultStepShape, state: z.literal('CANCELLED') }),
+  z.strictObject({ ...resultStepShape, state: z.literal('NOT_RUN') }),
+]);
 
 const resultManifestSchema = z.strictObject({
   path: z.string(),
@@ -89,7 +99,7 @@ const resultShape = {
   steps: z.array(resultStepSchema),
 };
 
-export const resultV1Schema = z.discriminatedUnion('status', [
+const resultV1ShapeSchema = z.discriminatedUnion('status', [
   z.strictObject({
     ...resultShape,
     status: z.literal('succeeded'),
@@ -139,6 +149,70 @@ export const resultV1Schema = z.discriminatedUnion('status', [
     dryRun: z.boolean(),
   }),
 ]);
+
+export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+  const count = (state: RunResult['steps'][number]['state']): number =>
+    result.steps.filter((step) => step.state === state).length;
+  const expectedCounters = {
+    stepsTotal: result.steps.length,
+    stepsSucceeded: count('SUCCEEDED'),
+    stepsFailed: count('FAILED'),
+    stepsCancelled: count('CANCELLED'),
+    stepsSkipped: count('SKIPPED'),
+    stepsNotRun: count('NOT_RUN') + count('PENDING'),
+  } as const;
+  const stepsExecuted =
+    expectedCounters.stepsSucceeded +
+    expectedCounters.stepsFailed +
+    expectedCounters.stepsCancelled;
+
+  for (const [counter, expected] of Object.entries(expectedCounters)) {
+    if (result[counter as keyof typeof expectedCounters] !== expected) {
+      context.addIssue({
+        code: 'custom',
+        path: [counter],
+        message: `${counter} does not match the result steps`,
+      });
+    }
+  }
+  if (result.stepsExecuted !== stepsExecuted) {
+    context.addIssue({
+      code: 'custom',
+      path: ['stepsExecuted'],
+      message: 'stepsExecuted does not match the result steps',
+    });
+  }
+  if (result.nothingExecuted !== (stepsExecuted === 0)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['nothingExecuted'],
+      message: 'nothingExecuted does not match stepsExecuted',
+    });
+  }
+  if (expectedCounters.stepsCancelled > 1) {
+    context.addIssue({
+      code: 'custom',
+      path: ['stepsCancelled'],
+      message: 'stepsCancelled must not exceed one',
+    });
+  }
+
+  const invalidStateIndex = result.steps.findIndex((step) =>
+    result.status === 'planned'
+      ? step.state !== 'PENDING' && step.state !== 'SKIPPED'
+      : step.state === 'PENDING',
+  );
+  if (invalidStateIndex !== -1) {
+    context.addIssue({
+      code: 'custom',
+      path: ['steps', invalidStateIndex, 'state'],
+      message:
+        result.status === 'planned'
+          ? 'planned results may contain only PENDING or SKIPPED steps'
+          : 'PENDING steps are permitted only in planned results',
+    });
+  }
+});
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]

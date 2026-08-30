@@ -129,7 +129,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       wasCancelled = true;
     }
     if (fatalTerminationFailure || abortForFailure || abortForCancellation) {
-      const state = transitionStepState(step.state, 'NOT_RUN');
+      transitionStepState(step.state, 'NOT_RUN');
+      const state = 'NOT_RUN';
       steps.push(finishedStep(step, state, null, 0, maskArgv(step, secrets), [], secrets));
       emit({
         kind: 'stepFinished',
@@ -250,7 +251,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
     }
 
-    state = transitionStepState(state, terminalState);
+    transitionStepState(state, terminalState);
+    state = terminalState;
 
     if (state === 'FAILED') {
       failed = true;
@@ -405,7 +407,7 @@ function resultInput(state: PlanInput, secrets: SecretMasker): ResultInput {
 
 function finishedStep(
   step: PlannedStep,
-  state: StepState,
+  state: ResultStep['state'],
   exitCode: number | null,
   durationMs: number,
   command: readonly string[] | null,
@@ -415,13 +417,12 @@ function finishedStep(
   const result = {
     id: step.id,
     title: secrets.mask(step.title),
-    state,
     exitCode,
     durationMs,
     command,
     skipReason: step.state === 'SKIPPED' ? secrets.mask(step.skipReason) : null,
   };
-  return state === 'FAILED' ? { ...result, outputTail } : result;
+  return state === 'FAILED' ? { ...result, state, outputTail } : { ...result, state };
 }
 
 function maskInputValue(

@@ -7,7 +7,6 @@
 
 import type { ValueSource } from '../engine/inputs.js';
 import type { Platform } from '../engine/context.js';
-import type { StepState } from '../engine/state.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 
@@ -82,18 +81,29 @@ export interface ResultOutputLine {
   readonly line: string;
 }
 
-export interface ResultStep {
+interface ResultStepBody {
   readonly id: string;
   readonly title: string;
-  readonly state: StepState;
   readonly exitCode: number | null;
   readonly durationMs: number;
   /** The argv as spawned, masked (§10); `null` for a step that never had a command. */
   readonly command: readonly string[] | null;
   readonly skipReason: string | null;
+}
+
+type ResultStepWithoutOutput = ResultStepBody & {
+  readonly state: 'PENDING' | 'SKIPPED' | 'SUCCEEDED' | 'CANCELLED' | 'NOT_RUN';
+  readonly outputTail?: never;
+};
+
+type FailedResultStep = ResultStepBody & {
+  readonly state: 'FAILED';
   /** The last lines of a FAILED step's output, masked — CI triage from one file (§7). */
   readonly outputTail?: readonly ResultOutputLine[];
-}
+};
+
+/** A final or planned step representation; an actively RUNNING step is never publishable. */
+export type ResultStep = ResultStepWithoutOutput | FailedResultStep;
 
 export interface ResultManifest {
   readonly path: string;

@@ -2275,19 +2275,20 @@ describe('the result run block', () => {
       }),
     });
     const absent = [
-      pending.steps[0]!,
-      skipped.steps[0]!,
-      succeeded.steps[0]!,
-      cancelled.steps[0]!,
-      failedWithoutOutput.steps[1]!,
+      { result: pending, index: 0 },
+      { result: skipped, index: 0 },
+      { result: succeeded, index: 0 },
+      { result: cancelled, index: 0 },
+      { result: failedWithoutOutput, index: 1 },
     ];
 
-    for (const step of absent) {
+    for (const { result, index } of absent) {
+      const step = result.steps[index]!;
       expect(Object.hasOwn(step, 'outputTail')).toBe(false);
-      const serialized = JSON.parse(serializeResult({ ...pending, steps: [step] })) as {
+      const serialized = JSON.parse(serializeResult(result)) as {
         steps: Array<Record<string, unknown>>;
       };
-      expect(Object.hasOwn(serialized.steps[0]!, 'outputTail')).toBe(false);
+      expect(Object.hasOwn(serialized.steps[index]!, 'outputTail')).toBe(false);
     }
     const failureDiagnostic = {
       stream: 'stderr' as const,
