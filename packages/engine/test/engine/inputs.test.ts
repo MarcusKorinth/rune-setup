@@ -9,6 +9,7 @@ import { createRuntimeContext, type RuntimeContext } from '../../src/engine/cont
 import {
   parseValuesFile,
   resolveInputs,
+  UNKNOWN_KEY_SUGGESTION_WORK_BUDGET,
   type InputRejection,
   type Resolution,
   type ResolveInputsOptions,
@@ -109,6 +110,20 @@ function rejectionFor(resolution: Resolution, id: string): InputRejection {
 }
 
 const SIMPLE = ['inputs:', '  target:', '    type: text'];
+
+function numberedInputIds(count: number): readonly string[] {
+  return Array.from(
+    { length: count },
+    (_unused, index) => `input${index.toString().padStart(6, '0')}`,
+  );
+}
+
+function suggestionWorkEstimate(key: string, ids: readonly string[]): number {
+  return (
+    (key.toLowerCase().length + 1) *
+    ids.reduce((width, id) => width + id.toLowerCase().length + 1, 0)
+  );
+}
 
 describe('precedence', () => {
   const manifest = manifestOf(
@@ -679,6 +694,73 @@ describe('keys that name no input', () => {
       }),
     ).toEqual([
       '"installDirectroy" is not an input of this manifest — did you mean "installDirectory"? (set from --set)',
+    ]);
+  });
+
+  it('reports every large batch key while bounding optional suggestion work', () => {
+    const ids = numberedInputIds(100);
+    const unknownKeys = ids.map((id) => `${id}x`);
+    const manifest = manifestOf('inputs:', ...ids.flatMap((id) => [`  ${id}:`, '    type: text']));
+    const workPerSuggestion = suggestionWorkEstimate(unknownKeys[0]!, ids);
+    const expectedHints = Math.floor(UNKNOWN_KEY_SUGGESTION_WORK_BUDGET / workPerSuggestion);
+    const error = inputError(manifest, {
+      overrides: new Map(unknownKeys.map((key) => [key, 'value'])),
+    });
+
+    expect(expectedHints).toBeGreaterThan(0);
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues).toHaveLength(unknownKeys.length);
+    expect(error.issues.every((issue) => issue.code === 'RUNE-203')).toBe(true);
+    expect(
+      error.issues
+        .filter((issue) => issue.message.includes('did you mean'))
+        .map((issue) => issue.message),
+    ).toHaveLength(expectedHints);
+  });
+
+  it('skips a suggestion that would require a large Levenshtein matrix', () => {
+    const known = `input${'a'.repeat(1_000)}`;
+    const unknown = `${known.slice(0, -1)}b`;
+    const manifest = manifestOf('inputs:', `  ${known}:`, '    type: text');
+    const error = inputError(manifest, { overrides: new Map([[unknown, 'value']]) });
+
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues).toMatchObject([{ code: 'RUNE-203', location: undefined }]);
+    expect(error.issues[0]?.message).not.toContain('did you mean');
+  });
+
+  it('shares the suggestion budget across overrides, values files, and answers', () => {
+    const ids = numberedInputIds(120);
+    const unknownKeys = ids.map((id) => `${id}x`);
+    const manifest = manifestOf('inputs:', ...ids.flatMap((id) => [`  ${id}:`, '    type: text']));
+    const workPerSuggestion = suggestionWorkEstimate(unknownKeys[0]!, ids);
+    const hintCount = Math.floor(UNKNOWN_KEY_SUGGESTION_WORK_BUDGET / workPerSuggestion);
+    const overrideKey = unknownKeys[0]!;
+    const valuesKeys = unknownKeys.slice(1, hintCount + 2);
+    const answerKey = unknownKeys[hintCount + 2]!;
+    const error = inputError(manifest, {
+      overrides: new Map([[overrideKey, 'value']]),
+      values: [valuesFromFile(valuesKeys.map((key) => `${key}: value`).join('\n'))],
+      answers: new Map([[answerKey, 'value']]),
+    });
+
+    const byKey = (key: string) =>
+      error.issues.find((issue) => issue.message.startsWith(`"${key}" is not an input`));
+
+    expect(hintCount).toBeGreaterThan(1);
+    expect(error.issues).toHaveLength(1 + valuesKeys.length + 1);
+    expect(error.issues.every((issue) => issue.code === 'RUNE-203')).toBe(true);
+    expect(byKey(overrideKey)?.message).toContain('did you mean');
+    expect(byKey(valuesKeys[0]!)?.message).toContain('did you mean');
+    expect(byKey(valuesKeys[valuesKeys.length - 1]!)?.message).not.toContain('did you mean');
+    expect(byKey(answerKey)?.message).not.toContain('did you mean');
+    expect(byKey(overrideKey)?.location).toBeUndefined();
+    expect(byKey(valuesKeys[0]!)?.location).toEqual({ file: 'v.yaml', line: 1, column: 1 });
+    expect(byKey(answerKey)?.location).toBeUndefined();
+    expect(error.issues.map((issue) => issue.location?.line)).toEqual([
+      undefined,
+      undefined,
+      ...valuesKeys.map((_key, index) => index + 1),
     ]);
   });
 

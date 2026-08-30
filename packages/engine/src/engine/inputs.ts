@@ -60,6 +60,15 @@ const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
   answer: 'the answer',
 };
 
+/**
+ * Upper bound for optional unknown-key suggestion work during one input resolution.
+ *
+ * The bound covers the Levenshtein matrix dimensions for every candidate scan. Unknown keys
+ * are always reported; spending this budget only decides whether their optional hint is shown.
+ */
+export const UNKNOWN_KEY_SUGGESTION_WORK_BUDGET = 250_000;
+const SUGGESTION_WORK_CAP = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET + 1;
+
 export interface InputState {
   readonly id: string;
   readonly spec: InputSpec;
@@ -637,12 +646,18 @@ function checkUnknownKeys(
   issues: RuneIssue[],
 ): void {
   const knownIds = new Set(ids);
+  const candidateWidth = suggestionCandidateWidth(ids);
+  let remainingSuggestionWork = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET;
 
   const report = (key: string, origin: string, location: Location | undefined): void => {
     if (knownIds.has(key)) {
       return;
     }
-    const suggestion = suggest(key, ids);
+    const work = suggestionWork(key, candidateWidth);
+    const suggestion = work <= remainingSuggestionWork ? suggest(key, ids) : undefined;
+    if (work <= remainingSuggestionWork) {
+      remainingSuggestionWork -= work;
+    }
     issues.push({
       code: 'RUNE-203',
       message: `"${key}" is not an input of this manifest${
@@ -663,6 +678,34 @@ function checkUnknownKeys(
   for (const key of options.answers?.keys() ?? []) {
     report(key, 'the answer', undefined);
   }
+}
+
+/**
+ * Conservative cost of one `suggest()` call: its possible matrix rows times all candidate
+ * columns. Widths use the same lowercased strings as `suggest`, since lowercasing can expand
+ * a Unicode string. Every operation saturates at the budget cap to avoid numeric overflow.
+ */
+function suggestionWork(key: string, candidateWidth: number): number {
+  return saturatingProduct(suggestionStringWidth(key), candidateWidth);
+}
+
+function suggestionCandidateWidth(ids: readonly string[]): number {
+  return ids.reduce((width, id) => saturatingAdd(width, suggestionStringWidth(id)), 0);
+}
+
+function suggestionStringWidth(value: string): number {
+  return Math.min(value.toLowerCase().length + 1, SUGGESTION_WORK_CAP);
+}
+
+function saturatingAdd(left: number, right: number): number {
+  return left >= SUGGESTION_WORK_CAP - right ? SUGGESTION_WORK_CAP : left + right;
+}
+
+function saturatingProduct(left: number, right: number): number {
+  if (left === 0 || right === 0) {
+    return 0;
+  }
+  return left > Math.floor(SUGGESTION_WORK_CAP / right) ? SUGGESTION_WORK_CAP : left * right;
 }
 
 /**
