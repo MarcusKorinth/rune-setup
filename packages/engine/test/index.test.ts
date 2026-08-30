@@ -30,6 +30,10 @@ type UnknownChromeKeyIsRejected = 'rune.button.unknown' extends ChromeParameter 
 const chromeParameterIsPublicKey: ChromeParameterIsPublicKey = true;
 const knownChromeKeyIsAccepted: KnownChromeKeyIsAccepted = true;
 const unknownChromeKeyIsRejected: UnknownChromeKeyIsRejected = true;
+const compileTimeReadonlyAccessorContract = (strings: StringTable): void => {
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.chrome = () => '';
+};
 
 describe('@rune/engine public API', () => {
   it('exposes a semver version', () => {
@@ -47,6 +51,7 @@ describe('@rune/engine public API', () => {
     expect(chromeParameterIsPublicKey).toBe(true);
     expect(knownChromeKeyIsAccepted).toBe(true);
     expect(unknownChromeKeyIsRejected).toBe(true);
+    expect(compileTimeReadonlyAccessorContract).toBeTypeOf('function');
     expect(engine).not.toHaveProperty('StringTable');
     expect(engine).not.toHaveProperty('ChromeKey');
   });

@@ -20,14 +20,14 @@ export interface StringTable {
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
   readonly entries: Readonly<Record<string, string>>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
-  chrome(key: ChromeKey, values?: Readonly<Record<string, string | number>>): string;
-  inputTitle(id: string): string;
-  inputDescription(id: string): string | undefined;
-  patternHint(id: string): string | undefined;
-  optionLabel(inputId: string, value: string): string;
-  stepTitle(id: string): string;
-  productDescription(): string | undefined;
-  windowTitle(): string | undefined;
+  readonly chrome: (key: ChromeKey, values?: Readonly<Record<string, string | number>>) => string;
+  readonly inputTitle: (id: string) => string;
+  readonly inputDescription: (id: string) => string | undefined;
+  readonly patternHint: (id: string) => string | undefined;
+  readonly optionLabel: (inputId: string, value: string) => string;
+  readonly stepTitle: (id: string) => string;
+  readonly productDescription: () => string | undefined;
+  readonly windowTitle: () => string | undefined;
 }
 
 export interface ResolveStringsOptions {
