@@ -12,14 +12,15 @@ import {
   openSync,
   type WriteStream,
 } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import type { EngineObserver, RunEvent } from '../engine/events.js';
+import type { EngineObserver, RunEvent, RunFinished } from '../engine/events.js';
 
 export interface LogFileSink {
   readonly observer: EngineObserver;
-  /** Flushes and closes the file; call once, after the run settled. */
-  close(): Promise<void>;
+  /** Flushes and closes the file, then writes the optional final event exactly once. */
+  close(finalEvent?: RunFinished): Promise<void>;
 }
 
 export function createLogFileSink(path: string): LogFileSink {
@@ -56,17 +57,26 @@ export function createLogFileSink(path: string): LogFileSink {
     observer: (event) => {
       stream.write(`${new Date().toISOString()} ${describe(event)}\n`);
     },
-    close: () => {
+    close: (finalEvent) => {
       if (closePromise !== undefined) {
         return closePromise;
       }
       closePromise = new Promise<void>((resolve, reject) => {
         const settle = (): void => {
-          if (firstError === undefined) {
-            resolve();
-          } else {
+          if (firstError !== undefined) {
             reject(firstError);
+            return;
           }
+          if (finalEvent === undefined) {
+            resolve();
+            return;
+          }
+          // Only append the terminal status after all earlier writes closed cleanly. A
+          // failed flush must not leave a deliberately premature success in the log.
+          appendFile(path, `${new Date().toISOString()} ${describe(finalEvent)}\n`, 'utf8').then(
+            () => resolve(),
+            reject,
+          );
         };
         if (stream.closed) {
           settle();

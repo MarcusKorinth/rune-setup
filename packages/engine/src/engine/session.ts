@@ -26,7 +26,7 @@ import {
   type RuntimeContext,
 } from './context.js';
 import { describeCancelled, describePlan, executeRun } from './executor.js';
-import type { EngineObserver } from './events.js';
+import type { EngineObserver, RunFinished } from './events.js';
 import {
   parseValuesFile,
   resolveInputs,
@@ -281,12 +281,14 @@ export class Session {
     this.#cancel = token;
     let log: LogFileSink | undefined;
     const observers: EngineObserver = (event) => {
-      log?.observer(event);
       // Log finalization can still change the run's overall status. Keep the executor's
-      // final event internal until close settles, then publish the one truthful result.
-      if (event.kind !== 'runFinished') {
-        observer?.(event);
+      // final event internal until close settles, then publish the one truthful result
+      // to both sinks.
+      if (event.kind === 'runFinished') {
+        return;
       }
+      log?.observer(event);
+      observer?.(event);
     };
     try {
       try {
@@ -320,7 +322,10 @@ export class Session {
 
       let closeError: unknown;
       try {
-        await log?.close();
+        const finalEvent: RunFinished | undefined = outcome.ok
+          ? { kind: 'runFinished', result: outcome.result }
+          : undefined;
+        await log?.close(finalEvent);
       } catch (error) {
         closeError = error;
         this.#runtimeWarnings.push(

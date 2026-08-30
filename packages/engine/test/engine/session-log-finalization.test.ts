@@ -5,17 +5,25 @@ import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const logSink = vi.hoisted(() => {
+  interface FinalEvent {
+    readonly kind: 'runFinished';
+    readonly result: { readonly status: string; readonly exitCode: number };
+  }
   const state: {
     closeError: Error | undefined;
     closeCalled: boolean;
-  } = { closeError: undefined, closeCalled: false };
+    terminalEvents: FinalEvent[];
+  } = { closeError: undefined, closeCalled: false, terminalEvents: [] };
   return {
     state,
     observer: vi.fn(),
-    close: vi.fn(async () => {
+    close: vi.fn(async (finalEvent?: FinalEvent) => {
       state.closeCalled = true;
       if (state.closeError !== undefined) {
         throw state.closeError;
+      }
+      if (finalEvent !== undefined) {
+        state.terminalEvents.push(finalEvent);
       }
     }),
   };
@@ -34,6 +42,10 @@ import type { Runner } from '../../src/runners/base.js';
 
 const SECRET = 'finalization-secret';
 const fixtureDirectories = new Set<string>();
+
+function loggedEventKinds(): RunEvent['kind'][] {
+  return logSink.observer.mock.calls.map((call) => (call[0] as RunEvent).kind);
+}
 
 function fixture(): string {
   const directory = mkdtempSync(join(tmpdir(), 'rune-log-finalization-'));
@@ -63,6 +75,7 @@ function fixture(): string {
 beforeEach(() => {
   logSink.state.closeError = undefined;
   logSink.state.closeCalled = false;
+  logSink.state.terminalEvents.length = 0;
   logSink.observer.mockClear();
   logSink.close.mockClear();
 });
@@ -74,6 +87,24 @@ afterAll(() => {
 });
 
 describe('post-execution log finalization', () => {
+  it('publishes the executor events without its provisional finish and closes with one final event', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      overrides: { token: SECRET },
+      logFile: join(manifestPath, '..', 'run.log'),
+      runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
+    });
+
+    const result = await session.execute();
+
+    expect(loggedEventKinds()).toEqual(['runStarted', 'stepStarted', 'stepFinished']);
+    expect(logSink.state.terminalEvents).toHaveLength(1);
+    expect(logSink.state.terminalEvents[0]).toEqual({ kind: 'runFinished', result });
+    expect(logSink.state.terminalEvents[0]?.result).toBe(result);
+    expect(logSink.close).toHaveBeenCalledOnce();
+  });
+
   it('returns the real run as internal_error and publishes one matching final event', async () => {
     const manifestPath = fixture();
     const session = await Session.open(manifestPath, {
@@ -119,6 +150,8 @@ describe('post-execution log finalization', () => {
     expect(finalEvents).toHaveLength(1);
     expect(finalEvents[0]?.result).toBe(result);
     expect(finalizedAfterClose).toEqual([true]);
+    expect(loggedEventKinds()).not.toContain('runFinished');
+    expect(logSink.state.terminalEvents).toEqual([]);
     expect(session.warnings()).toEqual([
       expect.stringMatching(/could not finalize log file .*flush failed for \*\*\*/),
     ]);
@@ -148,6 +181,8 @@ describe('post-execution log finalization', () => {
     await expect(session.execute()).rejects.toBe(primary);
 
     expect(logSink.close).toHaveBeenCalledOnce();
+    expect(logSink.close).toHaveBeenCalledWith(undefined);
+    expect(logSink.state.terminalEvents).toEqual([]);
     expect(session.warnings().join(' ')).toMatch(/flush failed for \*\*\*/);
     expect(session.warnings().join(' ')).not.toContain(SECRET);
   });
