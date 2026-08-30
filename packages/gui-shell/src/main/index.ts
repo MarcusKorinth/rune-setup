@@ -190,42 +190,39 @@ export function registerBridge(
     onRendererDone?: () => void;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
-    ipcMain.handle(c, async (_event, ...args: unknown[]) => {
-      try {
-        return await h(...args);
-      } catch (error) {
-        // Electron serializes only the message across invoke; carry the RUNE code and the
-        // exit code the CLI would have used inside it (§9.2).
-        if (error instanceof RuneError) {
-          throw new Error(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`);
-        }
-        throw error;
-      }
-    }),
+    ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
 ): void {
   const mask = (text: string): string => session.mask(text);
-  register('rune:open', () =>
-    project({
-      runeVersion: RUNE_VERSION,
-      inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
-      product: {
-        name: session.manifest.product.name,
-        version: session.manifest.product.version,
-      },
-    }),
-  );
-  register('rune:pendingInputs', () => project(session.pendingInputs(), mask));
-  register('rune:allInputs', () => project(session.allInputs(), mask));
-  register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw), mask));
-  register('rune:plan', () => projectPlan(session.plan(), mask));
-  register('rune:getStrings', () => project(Object.fromEntries(session.getStrings().entries)));
-  register('rune:getThemeConfig', () => project(session.getThemeConfig()));
-  register('rune:warnings', () => project(session.warnings(), mask));
-  register('rune:cancel', () => {
+  const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
+    register(channel, async (...args: unknown[]) => {
+      try {
+        return project(await handler(...args), mask);
+      } catch (error) {
+        throw bridgeError(error, mask);
+      }
+    });
+  };
+
+  handle('rune:open', () => ({
+    runeVersion: RUNE_VERSION,
+    inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
+    product: {
+      name: session.manifest.product.name,
+      version: session.manifest.product.version,
+    },
+  }));
+  handle('rune:pendingInputs', () => session.pendingInputs());
+  handle('rune:allInputs', () => session.allInputs());
+  handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
+  handle('rune:plan', () => projectPlan(session.plan(), mask));
+  handle('rune:getStrings', () => Object.fromEntries(session.getStrings().entries));
+  handle('rune:getThemeConfig', () => session.getThemeConfig());
+  handle('rune:warnings', () => session.warnings());
+  handle('rune:cancel', () => {
     session.cancel();
     return undefined;
   });
-  register('rune:execute', async () => {
+  handle('rune:execute', async () => {
     hooks.onExecuteStart?.();
     let result: RunResult;
     try {
@@ -237,12 +234,26 @@ export function registerBridge(
       throw error;
     }
     hooks.onExecuteEnd?.(result);
-    return project(result, mask);
+    return result;
   });
-  register('rune:done', () => {
+  handle('rune:done', () => {
     hooks.onRendererDone?.();
     return undefined;
   });
+}
+
+function bridgeError(error: unknown, mask: (text: string) => string): Error {
+  if (error instanceof RuneError) {
+    return new Error(mask(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`));
+  }
+  if (error instanceof Error) {
+    return new Error(mask(error.message));
+  }
+  try {
+    return new Error(mask(String(error)));
+  } catch {
+    return new Error('Unknown error');
+  }
 }
 
 function deliver(result: RunResult, invocation: ShellInvocation): void {

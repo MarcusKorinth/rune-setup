@@ -22,8 +22,11 @@ function fixture(): string {
     [
       'schemaVersion: 1',
       'product:',
-      '  name: Example',
+      '  name: "Example super-secret-value"',
       '  version: "1.0.0"',
+      '  description: "Description super-secret-value"',
+      'gui:',
+      '  windowTitle: "Window super-secret-value"',
       'inputs:',
       '  installDatabase:',
       '    type: boolean',
@@ -100,6 +103,55 @@ describe('the IPC bridge', () => {
     const bridge = await bridgeOver(session);
 
     expect(bridge.channels.sort()).toEqual([...BRIDGE_CHANNELS].sort());
+  });
+
+  it('masks every successful return through the common registration sink', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    const bridge = await bridgeOver(session);
+
+    const opened = (await bridge.call('rune:open')) as {
+      product: { name: string };
+    };
+    const strings = (await bridge.call('rune:getStrings')) as Record<string, string>;
+    const theme = (await bridge.call('rune:getThemeConfig')) as { windowTitle: string };
+
+    expect(opened.product.name).toBe('Example ***');
+    expect(strings['product.description']).toBe('Description ***');
+    expect(strings['gui.windowTitle']).toBe('Window ***');
+    expect(theme.windowTitle).toBe('Window ***');
+    expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
+  });
+
+  it('masks and normalizes every rejection through the injectable registration sink', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    vi.spyOn(session, 'warnings').mockImplementation(() => {
+      throw new Error('generic failure contains super-secret-value');
+    });
+    vi.spyOn(session, 'getThemeConfig').mockImplementation(() =>
+      throwValue('non-Error failure contains super-secret-value'),
+    );
+    const bridge = await bridgeOver(session);
+
+    const runeError = await rejectedBy(bridge.call('rune:setValue', 'super-secret-value', true));
+    const genericError = await rejectedBy(bridge.call('rune:warnings'));
+    const nonError = await rejectedBy(bridge.call('rune:getThemeConfig'));
+
+    expect(runeError.message).toContain('RUNE-203 (exit 4)');
+    expect(runeError.message).toContain('"***" names no input');
+    expect(genericError.message).toBe('generic failure contains ***');
+    expect(nonError.message).toBe('non-Error failure contains ***');
+    for (const error of [runeError, genericError, nonError]) {
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).not.toContain('super-secret-value');
+    }
   });
 
   it('projects Session.plan exactly once as plain masked plan data', async () => {
@@ -208,3 +260,19 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify(bridge.sent)).toContain('***');
   });
 });
+
+async function rejectedBy(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof Error) {
+      return error;
+    }
+    throw new Error('bridge rejection was not normalized to Error');
+  }
+  throw new Error('bridge call unexpectedly resolved');
+}
+
+function throwValue(value: unknown): never {
+  throw value;
+}
