@@ -111,6 +111,54 @@ export interface ResolutionSnapshot {
 
 const resolutionSnapshots = new WeakMap<Resolution, ResolutionSnapshot>();
 
+/**
+ * A runtime-immutable view of a map. Freezing a Map does not freeze its internal slots, so a
+ * Map instance cannot safely be exposed as a ReadonlyMap facade.
+ */
+class ImmutableReadonlyMap<K, V> implements ReadonlyMap<K, V> {
+  readonly #source: ReadonlyMap<K, V>;
+
+  constructor(source: ReadonlyMap<K, V>) {
+    this.#source = source;
+  }
+
+  get size(): number {
+    return this.#source.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#source.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#source.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#source.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#source.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#source.values();
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+
+  forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    this.#source.forEach((value, key) => {
+      callbackfn.call(thisArg, value, key, this);
+    });
+  }
+}
+
+Object.freeze(ImmutableReadonlyMap.prototype);
+
 /** Internal fail-closed lookup: structural resolution copies have no resolver provenance. */
 export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapshot {
   const snapshot = resolutionSnapshots.get(resolution);
@@ -251,8 +299,7 @@ export function resolveInputsWithRegistry(
       .map(snapshotInputState),
   );
   const canonicalById = new Map(inputs.map((state) => [state.id, state]));
-  const publicById = new Map(canonicalById);
-  Object.freeze(publicById);
+  const publicById = Object.freeze(new ImmutableReadonlyMap(canonicalById));
   const missing = Object.freeze(
     inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
   );

@@ -776,7 +776,7 @@ describe('planning provenance', () => {
     );
   });
 
-  it('plans from the private snapshot after the public byId map is changed', () => {
+  it('plans from the private snapshot consistent with the public resolution facade', () => {
     const { manifest, resolution, context } = planFor(
       [
         'inputs:',
@@ -790,21 +790,10 @@ describe('planning provenance', () => {
       ],
       { overrides: new Map([['target', 'resolved']]) },
     );
-    const publicById = resolution.byId as Map<string, (typeof resolution.inputs)[number]>;
-
-    publicById.delete('target');
-    const afterDeletion = buildPlan({ manifest, resolution, context });
-    const deletedStep = afterDeletion.steps[0];
-    expect(deletedStep?.state === 'PENDING' && deletedStep.command.argv[1]).toBe('resolved');
-
-    const original = resolution.inputs[0];
-    if (original === undefined) {
-      throw new Error('expected target input');
-    }
-    publicById.set('target', { ...original, value: 'forged' });
-    const afterReplacement = buildPlan({ manifest, resolution, context });
-    const replacedStep = afterReplacement.steps[0];
-    expect(replacedStep?.state === 'PENDING' && replacedStep.command.argv[1]).toBe('resolved');
+    expect(resolution.byId.get('target')).toBe(resolution.inputs[0]);
+    const plan = buildPlan({ manifest, resolution, context });
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[1]).toBe('resolved');
   });
 });
 

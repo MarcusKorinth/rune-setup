@@ -89,12 +89,14 @@ describe('resolution provenance', () => {
     );
   });
 
-  it('freezes the facade, input states and copied array values', () => {
+  it('exposes a frozen immutable map view consistent with the input snapshot', () => {
     const manifest = manifestOf(
       'inputs:',
       '  tools:',
       '    type: multiselect',
       '    options: [git, docker]',
+      '  enabled:',
+      '    type: boolean',
     );
     const resolution = resolve(manifest, {
       overrides: new Map([['tools', 'git,docker']]),
@@ -107,6 +109,45 @@ describe('resolution provenance', () => {
     expect(Object.isFrozen(state)).toBe(true);
     expect(Object.isFrozen(state?.value)).toBe(true);
     expect(state?.value).toEqual(['git', 'docker']);
+
+    const byId = resolution.byId;
+    const entries = [...byId];
+    expect(byId.size).toBe(resolution.inputs.length);
+    expect(byId.get('tools')).toBe(resolution.inputs[0]);
+    expect(byId.has('tools')).toBe(true);
+    expect(byId.has('missing')).toBe(false);
+    expect([...byId.entries()]).toEqual(entries);
+    expect([...byId.keys()]).toEqual(['tools', 'enabled']);
+    expect([...byId.values()]).toEqual(resolution.inputs);
+    expect([...byId]).toEqual(entries);
+
+    const callbackThis = {};
+    const callbackKeys: string[] = [];
+    const callbackMaps: ReadonlyMap<string, (typeof resolution.inputs)[number]>[] = [];
+    byId.forEach(function (this: object, _value, key, map) {
+      expect(this).toBe(callbackThis);
+      callbackKeys.push(key);
+      callbackMaps.push(map);
+    }, callbackThis);
+    expect(callbackKeys).toEqual(['tools', 'enabled']);
+    expect(callbackMaps).toEqual([byId, byId]);
+
+    expect('set' in byId).toBe(false);
+    expect('delete' in byId).toBe(false);
+    expect('clear' in byId).toBe(false);
+    const prototype = Object.getPrototypeOf(byId) as object;
+    expect(Object.isFrozen(prototype)).toBe(true);
+    expect(() => Object.defineProperty(prototype, 'get', { value: () => undefined })).toThrow(
+      TypeError,
+    );
+    const mapView = byId as unknown as Map<string, (typeof resolution.inputs)[number]>;
+    expect(() => Map.prototype.set.call(mapView, 'forged', resolution.inputs[0]!)).toThrow(
+      TypeError,
+    );
+    expect(() => Map.prototype.delete.call(mapView, 'tools')).toThrow(TypeError);
+    expect(() => Map.prototype.clear.call(mapView)).toThrow(TypeError);
+    expect(byId.get('tools')).toBe(resolution.inputs[0]);
+    expect([...byId]).toEqual(entries);
   });
 });
 

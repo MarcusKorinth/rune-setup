@@ -159,6 +159,8 @@ Five layers, lowest to highest; later layers override earlier ones per key. Comp
 4. **`--set key=value`** — repeatable; last occurrence wins
 5. **Interactive answers** — CLI prompts and summary edit loop, or GUI pages
 
+The resulting public resolution snapshot is immutable at runtime: its arrays and states are frozen, and its id lookup is a frozen `ReadonlyMap` view without mutation operations. The lookup and `inputs` array represent the same frozen state objects in declaration order.
+
 Rationale — an explicitness gradient: each layer is more specific to *this invocation* than the one below. Env below `--set` matters operationally: a stray `RUNE_INPUT_*` in a CI image can never silently defeat an explicit flag in the pipeline script.
 
 Values files (layer 2) are YAML documents parsed with the same hardened loader as manifests (§4.3): each file is a single **flat mapping of input id → value** — no nesting, no sections, no per-file metadata. Values may be written natively in the input's declared type — `boolean` as a YAML bool, `multiselect` as a YAML list of strings, everything else as a YAML string — or as strings, which take the same registry coercion path as layers 3–4. Any other shape (a mapping as a value, a list for a non-multiselect input, a non-string list item, a bare integer where a string is expected) is an input error naming the key, the offending value, and the file (exit 4, RUNE-202).
