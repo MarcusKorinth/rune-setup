@@ -107,6 +107,33 @@ function stopProcess(pid: number): void {
   }
 }
 
+function createRealProcessTreeFixture(): {
+  readonly directory: string;
+  readonly parentScript: string;
+} {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-process-tree-'));
+  const readyPath = join(directory, 'grandchild-ready');
+  const grandchildScript = [
+    'process.on("SIGTERM", () => {});',
+    `require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");`,
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+  const parentScript = [
+    'const { spawn } = require("node:child_process");',
+    `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "ignore" });`,
+    `const readyPath = ${JSON.stringify(readyPath)};`,
+    'const ready = setInterval(() => {',
+    '  if (require("node:fs").existsSync(readyPath)) {',
+    '    clearInterval(ready);',
+    '    console.log(`${process.pid}:${grandchild.pid}`);',
+    '  }',
+    '}, 10);',
+    'process.on("SIGTERM", () => process.exit(0));',
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+  return { directory, parentScript };
+}
+
 describe('SpawnRunner', () => {
   it.each([
     ['win32', 'setup.cmd', true],
@@ -800,26 +827,7 @@ describe('SpawnRunner', () => {
   it('does not resolve termination until a real child process tree is gone', async () => {
     const cancel = new CancelToken();
     const previousPath = process.env.PATH;
-    const directory = mkdtempSync(join(tmpdir(), 'rune-process-tree-'));
-    const readyPath = join(directory, 'grandchild-ready');
-    const grandchildScript = [
-      'process.on("SIGTERM", () => {});',
-      `require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");`,
-      'setInterval(() => {}, 1000);',
-    ].join('\n');
-    const parentScript = [
-      'const { spawn } = require("node:child_process");',
-      `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "ignore" });`,
-      `const readyPath = ${JSON.stringify(readyPath)};`,
-      'const ready = setInterval(() => {',
-      '  if (require("node:fs").existsSync(readyPath)) {',
-      '    clearInterval(ready);',
-      '    console.log(`${process.pid}:${grandchild.pid}`);',
-      '  }',
-      '}, 10);',
-      'process.on("SIGTERM", () => process.exit(0));',
-      'setInterval(() => {}, 1000);',
-    ].join('\n');
+    const { directory, parentScript } = createRealProcessTreeFixture();
     let parentPid: number | undefined;
     let grandchildPid: number | undefined;
     let resolveProcessIds = (_ids: readonly [number, number]): void => undefined;
@@ -868,6 +876,55 @@ describe('SpawnRunner', () => {
       }
       try {
         await withDeadline(pending, 5000);
+      } catch {
+        // The explicit PID cleanup below remains the integration-test backstop.
+      }
+      if (parentPid !== undefined) {
+        stopProcess(parentPid);
+      }
+      if (grandchildPid !== undefined) {
+        stopProcess(grandchildPid);
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 25000);
+
+  it('does not resolve a timeout until a real child process tree is gone', async () => {
+    const { directory, parentScript } = createRealProcessTreeFixture();
+    let parentPid: number | undefined;
+    let grandchildPid: number | undefined;
+    let resolveProcessIds = (_ids: readonly [number, number]): void => undefined;
+    const processIds = new Promise<readonly [number, number]>((resolveIds) => {
+      resolveProcessIds = resolveIds;
+    });
+    const pending = run(nodeCommand(parentScript, { timeoutSeconds: 8 }), {
+      onOutput: (_stream, line) => {
+        const match = /^(\d+):(\d+)$/.exec(line);
+        if (match?.[1] !== undefined && match[2] !== undefined) {
+          parentPid = Number(match[1]);
+          grandchildPid = Number(match[2]);
+          resolveProcessIds([parentPid, grandchildPid]);
+        }
+      },
+    });
+
+    try {
+      [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
+      expect(processIsAlive(parentPid)).toBe(true);
+      expect(processIsAlive(grandchildPid)).toBe(true);
+
+      await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'timedOut' });
+      expect(processIsAlive(parentPid)).toBe(false);
+      expect(processIsAlive(grandchildPid)).toBe(false);
+    } finally {
+      if (parentPid !== undefined) {
+        stopProcess(parentPid);
+      }
+      if (grandchildPid !== undefined) {
+        stopProcess(grandchildPid);
+      }
+      try {
+        await withDeadline(pending, 15000);
       } catch {
         // The explicit PID cleanup below remains the integration-test backstop.
       }
