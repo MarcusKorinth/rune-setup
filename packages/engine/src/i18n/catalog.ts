@@ -31,6 +31,7 @@ export const CHROME_CATALOG: ReadonlyMap<string, string> = new Map([
   ['rune.page.progress.title', 'Installing'],
   ['rune.page.result.title', 'Result'],
   ['rune.prompt.value', 'Enter a value for {title}'],
+  ['rune.prompt.inputEnded', 'input ended before every question was answered'],
   ['rune.prompt.selectOne', 'enter the value of one option'],
   ['rune.prompt.selectMany', 'enter option values, separated by commas'],
   ['rune.prompt.boolean', 'enter true or false'],

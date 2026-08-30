@@ -59,10 +59,10 @@ export async function runCommand(
   // Interactive is the TTY default (§4.1); no TTY auto-degrades to non-interactive (§10).
   const interactive = flags.nonInteractive !== true && interaction.isTTY;
   const mode: RunMode = interactive ? 'interactive' : 'non-interactive';
-  const prompter = interactive ? new Prompter(interaction) : undefined;
 
   let session: Session | undefined;
   let strings: StringTable | undefined;
+  let prompter: Prompter | undefined;
   let removeExecutionSignalHandlers: (() => void) | undefined;
   try {
     session = await Session.open(manifestPath, {
@@ -75,6 +75,9 @@ export async function runCommand(
     });
     cliPromptPresenters.assertPresentable(session.allInputs());
     strings = session.getStrings();
+    if (interactive) {
+      prompter = new Prompter(interaction, strings.chrome('rune.prompt.inputEnded'));
+    }
 
     if (prompter !== undefined) {
       await promptForInputs(session, prompter);

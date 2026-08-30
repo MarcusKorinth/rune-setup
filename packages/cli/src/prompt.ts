@@ -116,20 +116,22 @@ class MutedOutput extends Writable {
 
 export class Prompter {
   readonly #interaction: Interaction;
+  readonly #inputEndedMessage: string;
   readonly #output: MutedOutput;
   #rl: Interface | undefined;
   #reject: ((error: Error) => void) | undefined;
   #inputEnded = false;
 
-  constructor(interaction: Interaction) {
+  constructor(interaction: Interaction, inputEndedMessage: string) {
     this.#interaction = interaction;
+    this.#inputEndedMessage = inputEndedMessage;
     this.#output = new MutedOutput(interaction.write);
   }
 
   /** Asks one question; `muted` suppresses the echo while a secret is typed. */
   ask(question: string, muted = false): Promise<string> {
     if (this.#inputEnded) {
-      return Promise.reject(new CancelledError('input ended before every question was answered'));
+      return Promise.reject(new CancelledError(this.#inputEndedMessage));
     }
     const rl = this.#interface();
     const promise = new Promise<string>((resolve, reject) => {
@@ -174,7 +176,7 @@ export class Prompter {
       this.#rl.on('close', () => {
         this.#inputEnded = true;
         this.#output.muted = false;
-        this.#reject?.(new CancelledError('input ended before every question was answered'));
+        this.#reject?.(new CancelledError(this.#inputEndedMessage));
       });
     }
     return this.#rl;

@@ -105,13 +105,13 @@ const INTERACTIVE_TEST_TIMEOUT_MS = 20_000;
 describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => {
   it('keeps EOF terminal after an accepted answer', async () => {
     const interaction = scriptedThenEof(['first']);
-    const prompter = new Prompter(interaction);
+    const prompter = new Prompter(interaction, 'test input ended');
 
     try {
       await expect(prompter.ask('First: ')).resolves.toBe('first');
       await expect(prompter.ask('Second: ')).rejects.toMatchObject({
         code: 'RUNE-601',
-        message: 'input ended before every question was answered',
+        message: 'test input ended',
       });
     } finally {
       prompter.close();
@@ -133,6 +133,32 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     };
     expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, mode: 'interactive' });
     expect(io.err.join('\n')).toContain('input ended before every question was answered');
+    expect(io.err.join('\n')).not.toContain('internal error');
+  });
+
+  it('uses the locale-resolved EOF message after an accepted answer', async () => {
+    const path = fixture(MANIFEST);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      'rune.prompt.inputEnded: Eingabe wurde vor allen Antworten beendet\n',
+      'utf8',
+    );
+    const io = capture();
+    const interaction = scriptedThenEof(['hello']);
+
+    const code = await run(['run', path, '--locale', 'de', '--result', '-'], io, interaction);
+
+    expect(code).toBe(6);
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      exitCode: number;
+      mode: string;
+    };
+    expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, mode: 'interactive' });
+    expect(io.err.join('\n')).toContain('Eingabe wurde vor allen Antworten beendet');
+    expect(io.err.join('\n')).not.toContain('input ended before every question was answered');
     expect(io.err.join('\n')).not.toContain('internal error');
   });
 
@@ -163,7 +189,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
   it('does not restore a secret answer through history navigation', async () => {
     const secret = 'history-sensitive-marker';
     const interaction = scripted([secret, '\u001B[A']);
-    const prompter = new Prompter(interaction);
+    const prompter = new Prompter(interaction, 'test input ended');
 
     try {
       expect(await prompter.ask('Secret: ', true)).toBe(secret);
