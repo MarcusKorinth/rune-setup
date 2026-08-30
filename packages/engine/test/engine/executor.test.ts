@@ -127,6 +127,39 @@ describe('a run that succeeds', () => {
     expect(seen).toEqual(['first', 'second']);
   });
 
+  it('ignores runner output after the runner settles', async () => {
+    const { plan, secrets, product } = setup([
+      'steps:',
+      '  - id: first',
+      '    run:',
+      '      command: a',
+    ]);
+    const events: RunEvent[] = [];
+    let outputAfterSettlement: SpawnRequest['onOutput'] | undefined;
+
+    const result = await executeRun({
+      plan,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        outputAfterSettlement = request.onOutput;
+        request.onOutput('stdout', 'during run');
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+    const settledEvents = [...events];
+    const settledResult = JSON.stringify(result);
+
+    expect(() => outputAfterSettlement?.('stdout', 'after settlement')).not.toThrow();
+    expect(events).toEqual(settledEvents);
+    expect(events.filter((event) => event.kind === 'stepOutput')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+    expect(events.at(-1)?.kind).toBe('runFinished');
+    expect(JSON.stringify(result)).toBe(settledResult);
+    expect(result.steps[0]?.outputTail).toBeNull();
+  });
+
   it('freezes every event and prevents a broken observer from corrupting the result', async () => {
     const { plan, secrets, product } = setup([
       'inputs:',
@@ -331,6 +364,38 @@ describe('a run that fails', () => {
     expect(events[0]?.kind).toBe('runStarted');
     expect(events.at(-1)?.kind).toBe('runFinished');
     expect(JSON.stringify({ events, result })).not.toContain(secretMarker);
+  });
+
+  it('ignores runner output after the runner rejects', async () => {
+    const { plan, secrets, product } = setup([
+      'steps:',
+      '  - id: first',
+      '    run:',
+      '      command: a',
+    ]);
+    const events: RunEvent[] = [];
+    let outputAfterRejection: SpawnRequest['onOutput'] | undefined;
+
+    const result = await executeRun({
+      plan,
+      product,
+      secrets,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        outputAfterRejection = request.onOutput;
+        request.onOutput('stdout', 'before rejection');
+        return Promise.reject(new Error('runner failed'));
+      }),
+    });
+    const settledEvents = [...events];
+    const settledTail = JSON.stringify(result.steps[0]?.outputTail);
+
+    expect(() => outputAfterRejection?.('stderr', 'after rejection')).not.toThrow();
+    expect(events).toEqual(settledEvents);
+    expect(events.filter((event) => event.kind === 'stepOutput')).toHaveLength(2);
+    expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+    expect(events.at(-1)?.kind).toBe('runFinished');
+    expect(JSON.stringify(result.steps[0]?.outputTail)).toBe(settledTail);
   });
 });
 

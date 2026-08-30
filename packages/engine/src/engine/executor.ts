@@ -152,12 +152,16 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     const stepStart = Date.now();
 
     let outcome: SpawnOutcome;
+    let acceptsRunnerOutput = true;
     try {
       outcome = await runner.run({
         command: step.command,
         extraEnv: { RUNE_RUN_ID: runId, RUNE_STEP_ID: step.id },
         cancel,
         onOutput: (stream, rawLine) => {
+          if (!acceptsRunnerOutput) {
+            return;
+          }
           const line = secrets.mask(rawLine);
           keepInTail(stream, line);
           emit({ kind: 'stepOutput', stepId: step.id, stream, line });
@@ -168,6 +172,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         kind: 'failedToStart',
         message: cause instanceof Error ? cause.message : String(cause),
       };
+    } finally {
+      acceptsRunnerOutput = false;
     }
 
     const durationMs = Date.now() - stepStart;
