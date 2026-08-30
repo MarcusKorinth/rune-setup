@@ -118,9 +118,26 @@ describe('loading an overlay', () => {
   });
 
   it.each([
-    ['null', 'null\n'],
-    ['~', '~\n'],
-  ])('rejects an explicit %s scalar as a non-mapping', (_name, text) => {
+    ['marker-only', '---\n'],
+    ['marker and comments', '--- # German translations\n# None yet\n'],
+    ['directive and marker-only', '%YAML 1.2\n---'],
+  ])('treats a %s document as an empty overlay', (_name, text) => {
+    const overlay = loadOverlayText(text, 'locales/de.yaml', 'de', MANIFEST);
+
+    expect(Object.keys(overlay.entries)).toHaveLength(0);
+  });
+
+  it.each([
+    ['null', 'null\n', 1, 1],
+    ['~', '~\n', 1, 1],
+    ['marked null', '---\nnull\n', 2, 1],
+    ['anchored null', '&a null\n', 1, 4],
+    ['anchored empty scalar', '&a\n', 1, 3],
+    ['tagged null', '!!null null\n', 1, 8],
+    ['tagged empty scalar', '!!null\n', 1, 7],
+    ['a string scalar', 'text\n', 1, 1],
+    ['a sequence', '[]\n', 1, 1],
+  ])('rejects %s as a non-mapping', (_name, text, line, column) => {
     let problem: unknown;
     try {
       loadOverlayText(text, 'locales/de.yaml', 'de', MANIFEST);
@@ -132,7 +149,7 @@ describe('loading an overlay', () => {
     expect(problem).toMatchObject({
       code: 'RUNE-104',
       message: 'a locale overlay must be a mapping of key to text',
-      location: { file: 'locales/de.yaml', line: 1, column: 1 },
+      location: { file: 'locales/de.yaml', line, column },
     });
   });
 });

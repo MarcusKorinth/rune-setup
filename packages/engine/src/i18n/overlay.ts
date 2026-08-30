@@ -8,8 +8,8 @@
  */
 
 import { ManifestError, type RuneIssue } from '../errors.js';
-import { loadYamlFile, loadYamlText } from '../manifest/loader.js';
-import { startOfFile, type SourceMap } from '../manifest/source.js';
+import { loadYamlFile, loadYamlText, type LoadedDocument } from '../manifest/loader.js';
+import { startOfFile } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG } from './catalog.js';
 
@@ -36,13 +36,13 @@ export function loadOverlayText(
 }
 
 function fromDocument(
-  document: { readonly file: string; readonly value: unknown; readonly sourceMap: SourceMap },
+  document: LoadedDocument,
   locale: string,
   manifest: ManifestV1,
 ): LocaleOverlay {
-  const { file, value, sourceMap } = document;
+  const { file, value, isEmpty, sourceMap } = document;
   const rootLocation = sourceMap.location([]);
-  if ((value === null || value === undefined) && rootLocation === undefined) {
+  if (isEmpty) {
     return Object.freeze({ locale, file, entries: Object.freeze({}) });
   }
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {

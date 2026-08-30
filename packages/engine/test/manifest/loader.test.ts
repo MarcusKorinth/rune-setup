@@ -16,9 +16,10 @@ function tempFile(name: string, contents: Buffer | string): string {
 
 describe('loadYamlText', () => {
   it('parses plain YAML into plain data', () => {
-    const { value } = loadYamlText('a: 1\nb: [x, y]\nc: { d: true }\n', 'f.yaml');
+    const { value, isEmpty } = loadYamlText('a: 1\nb: [x, y]\nc: { d: true }\n', 'f.yaml');
 
     expect(value).toEqual({ a: 1, b: ['x', 'y'], c: { d: true } });
+    expect(isEmpty).toBe(false);
   });
 
   it('reports a syntax error with its position', () => {
@@ -168,9 +169,31 @@ describe('loadYamlText', () => {
     expect(() => loadYamlText('a: 1\n---\nb: 2\n', 'f.yaml')).toThrow(ManifestError);
   });
 
-  it('returns null for an empty document', () => {
-    expect(loadYamlText('', 'f.yaml').value).toBeNull();
-    expect(loadYamlText('# just a comment\n', 'f.yaml').value).toBeNull();
+  it.each([
+    ['empty', ''],
+    ['comment-only', '# just a comment\n'],
+    ['marker-only', '---\n'],
+    ['directive and marker-only', '%YAML 1.2\n---'],
+  ])('marks a %s document as empty', (_name, text) => {
+    const document = loadYamlText(text, 'f.yaml');
+
+    expect(document.value).toBeNull();
+    expect(document.isEmpty).toBe(true);
+  });
+
+  it.each([
+    ['explicit null', 'null\n'],
+    ['explicit tilde null', '~\n'],
+    ['marked explicit null', '---\nnull\n'],
+    ['anchored null', '&a null\n'],
+    ['anchored empty scalar', '&a\n'],
+    ['tagged null', '!!null null\n'],
+    ['tagged empty scalar', '!!null\n'],
+  ])('does not mark %s as empty', (_name, text) => {
+    const document = loadYamlText(text, 'f.yaml');
+
+    expect(document.value).toBeNull();
+    expect(document.isEmpty).toBe(false);
   });
 });
 

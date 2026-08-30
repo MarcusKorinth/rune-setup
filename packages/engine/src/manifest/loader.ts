@@ -33,6 +33,8 @@ export interface LoadedDocument {
   readonly file: string;
   /** The document as plain JavaScript data. `null` for an empty document. */
   readonly value: unknown;
+  /** Whether the YAML document contains no authored value. */
+  readonly isEmpty: boolean;
   readonly sourceMap: SourceMap;
 }
 
@@ -76,6 +78,7 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
   const builder = new SourceMapBuilder();
   const keyProblems: RuneIssue[] = [];
   const contents: unknown = document.contents;
+  const isEmpty = isEmptyDocument(contents);
   if (contents !== null && contents !== undefined) {
     walk(contents as Node, [], builder, file, lineCounter, undefined, keyProblems);
   }
@@ -93,7 +96,7 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
     throw new ManifestError('RUNE-101', messageOf(cause), { cause, location: startOfFile(file) });
   }
 
-  return { file, value, sourceMap: builder.build() };
+  return { file, value, isEmpty, sourceMap: builder.build() };
 }
 
 /** Reads and parses a YAML file. */
@@ -134,6 +137,18 @@ function decodeUtf8(bytes: Buffer, file: string): string {
   }
   // A byte-order mark is legal in UTF-8 but not part of the document.
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+function isEmptyDocument(contents: unknown): boolean {
+  if (contents === null || contents === undefined) {
+    return true;
+  }
+  if (!isScalar(contents) || contents.anchor !== undefined || contents.tag !== undefined) {
+    return false;
+  }
+
+  const range = contents.range;
+  return contents.value === null && range !== null && range !== undefined && range[0] === range[1];
 }
 
 function positionOf(
