@@ -1291,6 +1291,138 @@ describe('secrets', () => {
     expect(secrets.mask('candidate-secret')).toBe('candidate-secret');
   }
 
+  it.each([
+    {
+      name: 'matching secret values',
+      token: 'alpha-secret',
+      comparison: 'alpha-secret',
+      choices: 'alpha-secret,beta-secret',
+      enabled: {
+        equalsLiteral: true,
+        differsLiteral: false,
+        equalsSecret: true,
+        needleIn: true,
+        needleNotIn: false,
+      },
+    },
+    {
+      name: 'different secret values',
+      token: 'gamma-secret',
+      comparison: 'delta-secret',
+      choices: 'alpha-secret,beta-secret',
+      enabled: {
+        equalsLiteral: false,
+        differsLiteral: true,
+        equalsSecret: false,
+        needleIn: false,
+        needleNotIn: true,
+      },
+    },
+  ])(
+    'evaluates every secret input condition for $name',
+    ({ token, comparison, choices, enabled }) => {
+      const conditional = manifestOf(
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '    required: false',
+        '  comparison:',
+        '    type: secret',
+        '    required: false',
+        '  choices:',
+        '    type: multiselect',
+        '    required: false',
+        '    options: [alpha-secret, beta-secret]',
+        '  equalsLiteral:',
+        '    type: text',
+        '    required: false',
+        '    when: \'${token} == "alpha-secret"\'',
+        '  differsLiteral:',
+        '    type: text',
+        '    required: false',
+        '    when: \'${token} != "alpha-secret"\'',
+        '  equalsSecret:',
+        '    type: text',
+        '    required: false',
+        "    when: '${token} == ${comparison}'",
+        '  needleIn:',
+        '    type: text',
+        '    required: false',
+        "    when: '${token} in ${choices}'",
+        '  needleNotIn:',
+        '    type: text',
+        '    required: false',
+        "    when: '${token} not in ${choices}'",
+      );
+      const resolution = resolve(conditional, {
+        overrides: new Map([
+          ['token', token],
+          ['comparison', comparison],
+          ['choices', choices],
+        ]),
+      });
+
+      for (const [id, expected] of Object.entries(enabled)) {
+        expect(resolution.byId.get(id)?.enabled, id).toBe(expected);
+      }
+    },
+  );
+
+  it('compares optional empty secrets without revealing or coercing them', () => {
+    const conditional = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      '  comparison:',
+      '    type: secret',
+      '    required: false',
+      '  equalsEmpty:',
+      '    type: text',
+      '    required: false',
+      '    when: \'${token} == ""\'',
+      '  differsEmpty:',
+      '    type: text',
+      '    required: false',
+      '    when: \'${token} != ""\'',
+      '  equalsEmptySecret:',
+      '    type: text',
+      '    required: false',
+      "    when: '${token} == ${comparison}'",
+    );
+    const resolution = resolve(conditional);
+
+    expect(resolution.byId.get('equalsEmpty')?.enabled).toBe(true);
+    expect(resolution.byId.get('differsEmpty')?.enabled).toBe(false);
+    expect(resolution.byId.get('equalsEmptySecret')?.enabled).toBe(true);
+  });
+
+  it('keeps secret condition state and serialization surfaces masked', () => {
+    const content = 'F049-INPUT-CONDITION-SECRET';
+    const conditional = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  comparison:',
+      '    type: secret',
+      '  dependent:',
+      '    type: text',
+      '    required: false',
+      "    when: '${token} == ${comparison}'",
+    );
+    const resolution = resolve(conditional, {
+      overrides: new Map([
+        ['token', content],
+        ['comparison', content],
+      ]),
+    });
+    const surfaces = [JSON.stringify(resolution.inputs), inspect(resolution.inputs)];
+
+    expect(resolution.byId.get('dependent')?.enabled).toBe(true);
+    expect(surfaces.join('\n')).not.toContain(content);
+    expect(surfaces.join('\n')).toContain('***');
+  });
+
   it('takes a resolved value back as an answer, which is how a frontend re-resolves', () => {
     const first = resolve(manifest, { overrides: new Map([['token', 'hunter2-and-more']]) });
     const answer = first.byId.get('token')?.value;

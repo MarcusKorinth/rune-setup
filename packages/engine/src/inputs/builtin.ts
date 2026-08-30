@@ -139,7 +139,7 @@ const secret: InputTypeHandler = {
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a
   // secret into text is exactly what invariant 6 forbids everywhere but there.
   render: () => MASK,
-  compare: (value) => (value instanceof SecretString ? value.reveal() : String(value)),
+  compare: (value) => normalizeSecretString(value) ?? new SecretString(''),
 };
 
 const boolean: InputTypeHandler = {

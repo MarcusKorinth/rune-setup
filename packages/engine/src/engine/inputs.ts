@@ -30,14 +30,15 @@ import { startOfFile, type Location, type SourceMap } from '../manifest/source.j
 import { environmentName } from '../manifest/v1/rules.js';
 import type { InputSpec, ManifestV1 } from '../manifest/v1/schema.js';
 import { suggest } from '../suggest.js';
-import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
+import {
+  evaluateCondition,
+  parseCondition,
+  type ConditionReference,
+  type ConditionValue,
+} from './conditions.js';
 import { resolveReference, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { normalizeSecretString, SecretRegistry, SecretString } from './secrets.js';
-
-// Capture the base implementation before an in-process client can replace it. The supplied
-// wrapper is normalized first; calling the cached method then reads only that stable copy.
-const BASE_SECRET_REVEAL = SecretString.prototype.reveal;
+import { SecretRegistry } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -331,11 +332,10 @@ function stageSuppliedSecrets(
     let maskable: boolean | undefined;
     const registerCandidate = (candidate: SuppliedValue | undefined): void => {
       if (candidate === undefined) return;
-      const text = authenticSecretText(candidate.raw);
-      if (text === undefined) {
+      const candidateMaskable = stagedSecrets.registerCandidate(candidate.raw);
+      if (candidateMaskable === undefined) {
         return;
       }
-      const candidateMaskable = stagedSecrets.register(text);
       maskable = maskable === undefined ? candidateMaskable : maskable && candidateMaskable;
     };
 
@@ -353,20 +353,6 @@ function stageSuppliedSecrets(
   }
 
   return suppliedSecrets;
-}
-
-/** Reads only strings and genuine wrappers, without dispatching through supplied methods. */
-function authenticSecretText(raw: unknown): string | undefined {
-  if (typeof raw === 'string') {
-    return raw;
-  }
-
-  const normalized = normalizeSecretString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  const text: unknown = Reflect.apply(BASE_SECRET_REVEAL, normalized, []);
-  return typeof text === 'string' ? text : undefined;
 }
 
 function warnIfUnreliablyMasked(
@@ -727,7 +713,7 @@ function lookup(
   visible: readonly string[],
   states: ReadonlyMap<string, InputState>,
   context: RuntimeContext,
-): boolean | string | readonly string[] {
+): ConditionValue {
   const resolved = resolveReference(reference.segments, visible);
   if (!resolved.ok) {
     throw new InternalError(`the condition names ${reference.text}: ${resolved.message}`);

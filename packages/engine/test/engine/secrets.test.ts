@@ -1,5 +1,9 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { inspect } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -75,6 +79,63 @@ describe('SecretString', () => {
 });
 
 describe('SecretRegistry', () => {
+  it('registers opaque candidates without invoking supplied traps or methods', () => {
+    let methodCalls = 0;
+    class SecretSubclass extends SecretString {
+      override reveal(): string {
+        methodCalls += 1;
+        return 'F049-METHOD-DECOY';
+      }
+    }
+    const subclass = new SecretSubclass('F049-SUBCLASS-SECRET');
+    Object.defineProperty(subclass, 'toString', {
+      get: () => {
+        methodCalls += 1;
+        return () => 'F049-STRING-DECOY';
+      },
+    });
+
+    let proxyCalls = 0;
+    const proxy = new Proxy(new SecretString('F049-PROXY-DECOY'), {
+      get: () => {
+        proxyCalls += 1;
+        throw new Error('proxy candidate was inspected');
+      },
+      getPrototypeOf: () => {
+        proxyCalls += 1;
+        throw new Error('proxy candidate prototype was inspected');
+      },
+    });
+    const { proxy: revoked, revoke } = Proxy.revocable(new SecretString('F049-REVOKED-DECOY'), {});
+    revoke();
+    const forged = Object.create(SecretString.prototype) as SecretString;
+    const nonString = new SecretString(1234 as unknown as string);
+    const accessor = Object.create(null, {
+      reveal: {
+        get: () => {
+          methodCalls += 1;
+          return () => 'F049-ACCESSOR-DECOY';
+        },
+      },
+    });
+    const registry = new SecretRegistry();
+
+    expect(registry.registerCandidate('F049-STRING-SECRET')).toBe(true);
+    expect(registry.registerCandidate(subclass)).toBe(true);
+    for (const candidate of [proxy, revoked, forged, nonString, accessor]) {
+      expect(() => registry.registerCandidate(candidate)).not.toThrow();
+      expect(registry.registerCandidate(candidate)).toBeUndefined();
+    }
+
+    expect(methodCalls).toBe(0);
+    expect(proxyCalls).toBe(0);
+    expect(registry.size).toBe(2);
+    expect(registry.mask('F049-STRING-SECRET/F049-SUBCLASS-SECRET')).toBe('***/***');
+    expect(registry.mask('F049-METHOD-DECOY/F049-PROXY-DECOY')).toBe(
+      'F049-METHOD-DECOY/F049-PROXY-DECOY',
+    );
+  });
+
   it('removes a registered secret from text, wherever it appears', () => {
     const registry = new SecretRegistry();
     registry.register('hunter2');
@@ -399,3 +460,45 @@ describe('SecretRegistry', () => {
     }
   });
 });
+
+describe('secret lifecycle boundary', () => {
+  it('has no product-source call to reveal before the runner exists', () => {
+    const sourceRoot = fileURLToPath(new URL('../../src/', import.meta.url));
+    const files = typeScriptFiles(sourceRoot);
+    const calls: string[] = [];
+
+    for (const file of files) {
+      const source = ts.createSourceFile(
+        file,
+        readFileSync(file, 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'reveal'
+        ) {
+          const position = source.getLineAndCharacterOfPosition(node.getStart(source));
+          calls.push(`${relative(sourceRoot, file)}:${position.line + 1}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+
+    expect(calls).toEqual([]);
+  });
+});
+
+function typeScriptFiles(directory: string): readonly string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return typeScriptFiles(path);
+    }
+    return entry.isFile() && entry.name.endsWith('.ts') ? [path] : [];
+  });
+}

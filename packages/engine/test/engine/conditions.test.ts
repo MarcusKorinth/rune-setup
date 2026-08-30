@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,6 +14,7 @@ import {
 } from '../../src/engine/conditions.js';
 import { ConditionError } from '../../src/errors.js';
 import type { ValueType } from '../../src/engine/context.js';
+import { SecretString } from '../../src/engine/secrets.js';
 
 /** The declared inputs a condition is checked against, by name. */
 const TYPES: Readonly<Record<string, ValueType>> = {
@@ -293,6 +296,43 @@ describe('evaluation', () => {
     ['false', false],
   ])('evaluates %s to %s', (text, expected) => {
     expect(evaluate(text, values)).toBe(expected);
+  });
+
+  it('compares opaque secrets with strings, secrets, and multiselect values', () => {
+    const matching = new SecretString('alpha-secret');
+    const different = new SecretString('beta-secret');
+    const secretValues = {
+      token: matching,
+      sameToken: new SecretString('alpha-secret'),
+      otherToken: different,
+      choices: ['alpha-secret', 'gamma-secret'],
+    } satisfies Record<string, ConditionValue>;
+
+    expect(evaluate("${token} == 'alpha-secret'", secretValues)).toBe(true);
+    expect(evaluate("'alpha-secret' == ${token}", secretValues)).toBe(true);
+    expect(evaluate("${token} != 'beta-secret'", secretValues)).toBe(true);
+    expect(evaluate('${token} == ${sameToken}', secretValues)).toBe(true);
+    expect(evaluate('${token} == ${otherToken}', secretValues)).toBe(false);
+    expect(evaluate('${token} in ${choices}', secretValues)).toBe(true);
+    expect(evaluate('${otherToken} in ${choices}', secretValues)).toBe(false);
+    expect(evaluate('${otherToken} not in ${choices}', secretValues)).toBe(true);
+  });
+
+  it('does not expose a secret through condition results or errors', () => {
+    const content = 'F049-CONDITION-SECRET';
+    const secret = new SecretString(content);
+    const result = evaluate("${token} == 'different'", { token: secret });
+    let failure: unknown;
+    try {
+      evaluateCondition(ast('${token}'), () => secret);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ConditionError);
+    const surfaces = [JSON.stringify({ result, secret }), String(failure), inspect(failure)];
+    expect(surfaces.join('\n')).not.toContain(content);
+    expect(surfaces[0]).toContain('***');
   });
 
   it('applies "not" to the whole comparison, as the grammar reads', () => {

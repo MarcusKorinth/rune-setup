@@ -1,7 +1,9 @@
+import { inspect } from 'node:util';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { InternalError } from '../../src/errors.js';
-import { SecretString } from '../../src/engine/secrets.js';
+import { isSecretString, SecretString } from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
 import { MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
 import type { InputTypeHandler } from '../../src/inputs/base.js';
@@ -345,8 +347,19 @@ describe('secret', () => {
     expect(handler('secret').render(value)).toBe('***');
   });
 
-  it('compares the value behind the wrapper, because a condition only yields a boolean', () => {
-    expect(handler('secret').compare(new SecretString('hunter2'))).toBe('hunter2');
+  it('gives conditions a normalized opaque wrapper without exposing its content', () => {
+    const content = 'F049-COMPARE-SECRET';
+    const compared = handler('secret').compare(new SecretString(content)) as SecretString;
+
+    expect(isSecretString(compared)).toBe(true);
+    expect(Object.getPrototypeOf(compared)).toBe(SecretString.prototype);
+    expect(String(compared)).toBe('***');
+    expect(`${compared}`).toBe('***');
+    expect(JSON.stringify(compared)).toBe('"***"');
+    expect(inspect(compared)).toBe('***');
+    expect(
+      [String(compared), `${compared}`, JSON.stringify(compared), inspect(compared)].join('\n'),
+    ).not.toContain(content);
   });
 
   it('is an empty secret when nothing set it', () => {

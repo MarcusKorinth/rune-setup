@@ -20,6 +20,9 @@ const MAX_MASKING_PASSES = 16;
  */
 export const MIN_MASKABLE_LENGTH = 4;
 
+/** Authentic wrapper contents, owned only by this module and never exposed through lookup. */
+const SECRET_VALUES = new WeakMap<object, unknown>();
+
 /** Returns whether `value` contains enough Unicode code points to mask safely. */
 function hasMinimumMaskableLength(value: string): boolean {
   let length = 0;
@@ -38,19 +41,25 @@ function hasMinimumMaskableLength(value: string): boolean {
  * mistake — only through `reveal()`, which is easy to find and to review.
  */
 export class SecretString {
-  readonly #value: string;
-
   constructor(value: string) {
-    this.#value = value;
+    SECRET_VALUES.set(this, value);
   }
 
   /** The secret itself. Called at spawn, inside the runner, and nowhere else. */
   reveal(): string {
-    return this.#value;
+    const value = privateSecretValue(this);
+    if (value === undefined) {
+      throw new TypeError('SecretString has no authentic string value');
+    }
+    return value;
   }
 
   get length(): number {
-    return this.#value.length;
+    const value = privateSecretValue(this);
+    if (value === undefined) {
+      throw new TypeError('SecretString has no authentic string value');
+    }
+    return value.length;
   }
 
   toString(): string {
@@ -66,29 +75,22 @@ export class SecretString {
   }
 }
 
-// Capture the base implementation before a programmatic client can replace or shadow it.
-// Calling it directly performs the private-brand check without dispatching through the value.
-const BASE_SECRET_REVEAL = SecretString.prototype.reveal;
-const APPLY = Reflect.apply;
-
 /** Reads a genuine wrapper's private string without dynamic method dispatch. */
 function privateSecretValue(value: unknown): string | undefined {
-  let text: unknown;
-  try {
-    text = APPLY(BASE_SECRET_REVEAL, value, []);
-  } catch {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
     return undefined;
   }
+  const text = SECRET_VALUES.get(value);
   return typeof text === 'string' ? text : undefined;
 }
 
 /**
  * Copies a genuine secret into a fresh base wrapper.
  *
- * `SecretString` is public and may be subclassed or modified by an in-process client. Reading
- * through the cached base implementation makes the private field the authority, while the
- * fresh wrapper prevents later calls from observing overrides or own properties on the input.
- * A proxy, forged prototype, or non-string value stored through plain JavaScript is rejected.
+ * `SecretString` is public and may be subclassed or modified by an in-process client. The
+ * module-private store makes the constructed wrapper identity the authority, while the fresh
+ * wrapper prevents later calls from observing overrides or own properties on the input. A
+ * proxy, forged prototype, or non-string value stored through plain JavaScript is rejected.
  */
 export function normalizeSecretString(value: unknown): SecretString | undefined {
   const text = privateSecretValue(value);
@@ -97,6 +99,31 @@ export function normalizeSecretString(value: unknown): SecretString | undefined 
 
 export function isSecretString(value: unknown): value is SecretString {
   return privateSecretValue(value) !== undefined;
+}
+
+/**
+ * Compares values when at least one is an authentic secret, without returning either text.
+ * Undefined means neither operand is an authentic wrapper and ordinary evaluation applies.
+ */
+export function secretValuesEqual(left: unknown, right: unknown): boolean | undefined {
+  const leftSecret = privateSecretValue(left);
+  const rightSecret = privateSecretValue(right);
+  if (leftSecret === undefined && rightSecret === undefined) {
+    return undefined;
+  }
+  if (leftSecret === undefined) {
+    return typeof left === 'string' && left === rightSecret;
+  }
+  if (rightSecret === undefined) {
+    return typeof right === 'string' && leftSecret === right;
+  }
+  return leftSecret === rightSecret;
+}
+
+/** Tests an authentic secret needle against a plain string list without exposing the needle. */
+export function secretValueIn(needle: unknown, haystack: readonly string[]): boolean | undefined {
+  const secret = privateSecretValue(needle);
+  return secret === undefined ? undefined : haystack.includes(secret);
 }
 
 interface SecretMatchStream {
@@ -280,6 +307,15 @@ export class SecretRegistry {
     return (
       contentLines.length > 0 && contentLines.every((line) => hasMinimumMaskableLength(line.trim()))
     );
+  }
+
+  /**
+   * Registers a plain string or authentic wrapper without exposing its text to the caller.
+   * Returns undefined for every other value, including proxies and forged prototypes.
+   */
+  registerCandidate(value: unknown): boolean | undefined {
+    const text = typeof value === 'string' ? value : privateSecretValue(value);
+    return text === undefined ? undefined : this.register(text);
   }
 
   get size(): number {
