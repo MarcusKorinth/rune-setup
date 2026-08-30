@@ -33,6 +33,55 @@ const ANSWER_ORDER = [
   'databasePort',
 ] as const satisfies readonly (keyof typeof ANSWERS)[];
 
+const RUNE_ENVIRONMENT_KEYS = [
+  'RUNE_LOCALE',
+  'RUNE_INPUT_INSTALLDATABASE',
+  'RUNE_INPUT_DATABASEPORT',
+  'RUNE_INPUT_ENVIRONMENT',
+  'RUNE_INPUT_TOKEN',
+] as const;
+
+type RuneEnvironmentKey = (typeof RUNE_ENVIRONMENT_KEYS)[number];
+type RuneEnvironment = Readonly<Record<RuneEnvironmentKey, string | undefined>>;
+
+const EMPTY_RUNE_ENVIRONMENT: RuneEnvironment = {
+  RUNE_LOCALE: undefined,
+  RUNE_INPUT_INSTALLDATABASE: undefined,
+  RUNE_INPUT_DATABASEPORT: undefined,
+  RUNE_INPUT_ENVIRONMENT: undefined,
+  RUNE_INPUT_TOKEN: undefined,
+};
+
+async function withRuneEnvironment<T>(
+  environment: RuneEnvironment,
+  run: () => Promise<T>,
+): Promise<T> {
+  const original = new Map<RuneEnvironmentKey, string | undefined>(
+    RUNE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]),
+  );
+
+  try {
+    for (const key of RUNE_ENVIRONMENT_KEYS) {
+      const value = environment[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    return await run();
+  } finally {
+    for (const key of RUNE_ENVIRONMENT_KEYS) {
+      const value = original.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-parity-'));
   writeFileSync(
@@ -235,6 +284,20 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
   return session.execute();
 }
 
+interface ThreeWayRun {
+  readonly nonInteractive: CapturedLeg<RunResult>;
+  readonly interactive: CapturedLeg<RunResult>;
+  readonly gui: CapturedLeg<RunResult>;
+}
+
+async function threeWayRun(manifest: string, locale?: string): Promise<ThreeWayRun> {
+  return withRuneEnvironment(EMPTY_RUNE_ENVIRONMENT, async () => ({
+    nonInteractive: await captureDriver(() => nonInteractiveLeg(manifest, locale)),
+    interactive: await captureDriver(() => interactiveLeg(manifest, locale)),
+    gui: await captureDriver(() => guiLeg(manifest, locale)),
+  }));
+}
+
 function planFrom(events: readonly RunEvent[]) {
   const started = events.find((event) => event.kind === 'runStarted');
   expect(started).toBeDefined();
@@ -251,9 +314,7 @@ describe('mode parity', () => {
     // --set exercises layer 4 in the non-interactive driver; the other two legs provide
     // the same values through layer 5. The three actual drivers must agree on the result,
     // frozen plan, and complete engine event stream (§14).
-    const nonInteractive = await captureDriver(() => nonInteractiveLeg(manifest));
-    const interactive = await captureDriver(() => interactiveLeg(manifest));
-    const gui = await captureDriver(() => guiLeg(manifest));
+    const { nonInteractive, interactive, gui } = await threeWayRun(manifest);
 
     expect(nonInteractive.value.mode).toBe('non-interactive');
     expect(interactive.value.mode).toBe('interactive');
@@ -282,9 +343,7 @@ describe('mode parity', () => {
 
   it('resolves identical localized titles through every leg', async () => {
     const manifest = fixture();
-    const nonInteractive = await captureDriver(() => nonInteractiveLeg(manifest, 'de'));
-    const interactive = await captureDriver(() => interactiveLeg(manifest, 'de'));
-    const gui = await captureDriver(() => guiLeg(manifest, 'de'));
+    const { nonInteractive, interactive, gui } = await threeWayRun(manifest, 'de');
 
     for (const leg of [nonInteractive, interactive, gui]) {
       expect(leg.value.steps[0]?.title).toBe('Konfigurieren');
@@ -303,5 +362,31 @@ describe('mode parity', () => {
     expect(gui.value.steps.map((step) => step.command)).toEqual(
       nonInteractive.value.steps.map((step) => step.command),
     );
+  });
+
+  it('isolates ambient RUNE values while preserving them after a three-way run', async () => {
+    const manifest = fixture();
+    const ambientEnvironment: RuneEnvironment = {
+      ...EMPTY_RUNE_ENVIRONMENT,
+      RUNE_LOCALE: 'de',
+      RUNE_INPUT_TOKEN: 'ambient-secret',
+    };
+
+    await withRuneEnvironment(ambientEnvironment, async () => {
+      const { nonInteractive, interactive, gui } = await threeWayRun(manifest);
+
+      expect(normalize(interactive.value)).toEqual(normalize(nonInteractive.value));
+      expect(normalize(gui.value)).toEqual(normalize(nonInteractive.value));
+      expect(nonInteractive.changes).toEqual([]);
+      expect(interactive.changes).toEqual([
+        [],
+        [],
+        [{ inputId: 'databasePort', enabled: true }],
+        [],
+      ]);
+      expect(gui.changes).toEqual(interactive.changes);
+      expect(process.env.RUNE_LOCALE).toBe(ambientEnvironment.RUNE_LOCALE);
+      expect(process.env.RUNE_INPUT_TOKEN).toBe(ambientEnvironment.RUNE_INPUT_TOKEN);
+    });
   });
 });
