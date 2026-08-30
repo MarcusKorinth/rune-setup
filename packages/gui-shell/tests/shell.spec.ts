@@ -12,6 +12,12 @@ const conditionalFixturePath = join(
   'fixtures',
   'conditional-input.yaml',
 );
+const requiredBooleanFixturePath = join(
+  packageDirectory,
+  'tests',
+  'fixtures',
+  'required-boolean.yaml',
+);
 const invalidSeedFixturePath = join(packageDirectory, 'tests', 'fixtures', 'invalid-seed.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
@@ -318,6 +324,33 @@ test('advances Progress without CSP-blocked inline styles', async () => {
   }
 });
 
+test('lets a required boolean be answered directly as false', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, requiredBooleanFixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    const boolean = page.locator('.field[data-id="continue"] select');
+    await expect(boolean).toHaveValue('');
+    await expect(boolean.locator('option:checked')).toHaveText('(not set)');
+    await expect(next).toBeDisabled();
+
+    await boolean.selectOption('false');
+    await expect(boolean).toHaveValue('false');
+    await expect(boolean.locator('option:checked')).toHaveText('false');
+    await expect(next).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
 test('disables conditional controls natively across input pages', async () => {
   let application: ElectronApplication | undefined;
 
@@ -329,26 +362,26 @@ test('disables conditional controls natively across input pages', async () => {
     });
     const page = await application.firstWindow();
     const next = page.locator('#next');
-    const controller = page.locator('.field[data-id="enableDetails"] input');
+    const controller = page.locator('.field[data-id="enableDetails"] select');
     const dependent = page.locator('.field[data-id="details"] input');
 
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await next.click();
-    await expect(controller).toBeChecked();
+    await expect(controller).toHaveValue('true');
     await expect(page.locator('.field[data-id="selectDetails"] select')).toHaveValue('');
     await dependent.fill('invalid');
     await dependent.dispatchEvent('change');
     await expect(page.locator('.field[data-id="details"]')).toHaveClass(/invalid/);
     await expect(next).toBeDisabled();
 
-    await controller.uncheck();
+    await controller.selectOption('false');
     await expect(page.locator('.field[data-id="details"]')).toHaveClass(/disabled/);
     await expect(page.locator('.field[data-id="details"]')).not.toHaveClass(/invalid/);
     await expect(controller).toBeEnabled();
     // The generic input path renders text, secret, file, and directory controls.
     await expect(page.locator('.field[data-id="details"] input')).toBeDisabled();
     await expect(page.locator('.field[data-id="secretDetails"] input')).toBeDisabled();
-    await expect(page.locator('.field[data-id="booleanDetails"] input')).toBeDisabled();
+    await expect(page.locator('.field[data-id="booleanDetails"] select')).toBeDisabled();
     await expect(page.locator('.field[data-id="selectDetails"] select')).toBeDisabled();
     await expect(next).toBeEnabled();
 

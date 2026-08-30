@@ -317,7 +317,7 @@ function renderField(input: BridgeInput): HTMLElement {
 function renderControl(input: BridgeInput): HTMLElement {
   const { spec } = input;
   if (spec.type === 'boolean') {
-    return checkbox(input);
+    return booleanSelect(input);
   }
   if (spec.type === 'select') {
     return selectBox(input);
@@ -343,17 +343,28 @@ function renderControl(input: BridgeInput): HTMLElement {
   return box;
 }
 
-function checkbox(input: BridgeInput): HTMLElement {
-  const row = div('option-row');
-  const box = document.createElement('input');
-  box.type = 'checkbox';
-  box.checked = input.value === true;
-  box.disabled = !input.enabled;
-  box.addEventListener('change', () => {
-    void submit(input.id, box.checked);
+function booleanSelect(input: BridgeInput): HTMLElement {
+  const select = document.createElement('select');
+  select.disabled = !input.enabled;
+  if (input.value === undefined) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    placeholder.textContent = text('rune.summary.notSet');
+    select.append(placeholder);
+  }
+  for (const value of [true, false]) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = String(value);
+    option.selected = input.value === value;
+    select.append(option);
+  }
+  select.addEventListener('change', () => {
+    void submit(input.id, select.value === 'true');
   });
-  row.append(box);
-  return row;
+  return select;
 }
 
 function selectBox(input: BridgeInput): HTMLElement {
