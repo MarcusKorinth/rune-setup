@@ -29,6 +29,9 @@ const TASKKILL_TIMEOUT_MS = 5000;
 /** Polling keeps process-group termination awaitable without blocking the event loop. */
 const PROCESS_POLL_MS = 25;
 
+/** Keep Linux process-group probes from flooding the filesystem worker pool. */
+const PROC_STAT_READ_WORKERS = 4;
+
 /** Maximum UTF-8 payload retained for one logical stdout/stderr line (§8). */
 export const MAX_OUTPUT_LINE_BYTES = 64 * 1024;
 
@@ -49,12 +52,17 @@ type ProcessGroupSignalResult = 'sent' | 'absent' | 'failed';
 
 interface ProcessGroupTerminationDependencies {
   readonly signal: (pid: number, signal: NodeJS.Signals) => unknown;
-  readonly probe: (pid: number) => Promise<boolean>;
+  readonly probe: (pid: number, signal: AbortSignal) => Promise<boolean>;
   readonly timings: {
     readonly graceMs: number;
     readonly confirmationMs: number;
     readonly pollMs: number;
   };
+}
+
+interface ProcProcessGroupProbeDependencies {
+  readonly readProcessIds: (signal: AbortSignal) => Promise<readonly string[]>;
+  readonly readProcessStat: (processId: string, signal: AbortSignal) => Promise<string>;
 }
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
@@ -434,9 +442,10 @@ function waitForProcessGroupExit(
   pid: number,
   timeoutMs: number,
   pollMs: number,
-  probe: (pid: number) => Promise<boolean>,
+  probe: (pid: number, signal: AbortSignal) => Promise<boolean>,
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    const probeController = new AbortController();
     let completed = false;
     let watchdog: NodeJS.Timeout | undefined;
     let poll: NodeJS.Timeout | undefined;
@@ -454,12 +463,13 @@ function waitForProcessGroupExit(
         clearTimeout(poll);
         poll = undefined;
       }
+      probeController.abort();
       resolve(gone);
     };
 
     const runProbe = (): void => {
       void Promise.resolve()
-        .then(() => probe(pid))
+        .then(() => probe(pid, probeController.signal))
         .then(
           (hasLiveMembers) => {
             if (completed) {
@@ -487,7 +497,8 @@ function waitForProcessGroupExit(
   });
 }
 
-async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
+async function processGroupHasLiveMembers(pid: number, signal: AbortSignal): Promise<boolean> {
+  signal.throwIfAborted();
   try {
     process.kill(-pid, 0);
   } catch (error) {
@@ -501,32 +512,79 @@ async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
   // zombies indefinitely. They cannot execute and must not keep a timed-out run open forever.
   // Linux /proc lets us distinguish those from live members of the process group.
   try {
-    const entries = await readdir('/proc', { withFileTypes: true });
-    const states = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-        .map(async (entry) => {
-          try {
-            return {
-              kind: 'state' as const,
-              value: await readFile(`/proc/${entry.name}/stat`, 'utf8'),
-            };
-          } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            return code === 'ENOENT' || code === 'ESRCH'
-              ? { kind: 'absent' as const }
-              : { kind: 'failed' as const };
-          }
-        }),
-    );
-    if (states.some((state) => state.kind === 'failed')) {
-      return true;
-    }
-    return states.some((state) => state.kind === 'state' && isLiveGroupMember(state.value, pid));
+    return await scanProcProcessGroup(pid, signal);
   } catch {
+    signal.throwIfAborted();
     // A restricted /proc mount cannot provide stronger confirmation; remain conservative.
     return true;
   }
+}
+
+async function scanProcProcessGroup(
+  processGroupId: number,
+  signal: AbortSignal,
+  dependencies: ProcProcessGroupProbeDependencies = {
+    readProcessIds: async (readSignal) => {
+      readSignal.throwIfAborted();
+      const entries = await readdir('/proc', { withFileTypes: true });
+      readSignal.throwIfAborted();
+      return entries
+        .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+        .map((entry) => entry.name);
+    },
+    readProcessStat: (processId, readSignal) =>
+      readFile(`/proc/${processId}/stat`, { encoding: 'utf8', signal: readSignal }),
+  },
+): Promise<boolean> {
+  signal.throwIfAborted();
+  const processIds = await dependencies.readProcessIds(signal);
+  signal.throwIfAborted();
+
+  const shortCircuitController = new AbortController();
+  const readSignal = AbortSignal.any([signal, shortCircuitController.signal]);
+  let nextIndex = 0;
+  let hasLiveMembers = false;
+
+  const shortCircuit = (): void => {
+    if (hasLiveMembers) {
+      return;
+    }
+    hasLiveMembers = true;
+    shortCircuitController.abort();
+  };
+
+  const readWorker = async (): Promise<void> => {
+    while (!hasLiveMembers) {
+      readSignal.throwIfAborted();
+      const index = nextIndex;
+      nextIndex += 1;
+      const processId = processIds[index];
+      if (processId === undefined) {
+        return;
+      }
+
+      try {
+        const processStat = await dependencies.readProcessStat(processId, readSignal);
+        if (isLiveGroupMember(processStat, processGroupId)) {
+          shortCircuit();
+        }
+      } catch (error) {
+        if (readSignal.aborted) {
+          signal.throwIfAborted();
+          return;
+        }
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ESRCH') {
+          shortCircuit();
+        }
+      }
+    }
+  };
+
+  const workerCount = Math.min(PROC_STAT_READ_WORKERS, processIds.length);
+  await Promise.all(Array.from({ length: workerCount }, () => readWorker()));
+  signal.throwIfAborted();
+  return hasLiveMembers;
 }
 
 function isLiveGroupMember(stat: string, processGroupId: number): boolean {
@@ -573,6 +631,7 @@ function waitForCompletion(completion: Promise<void>, timeoutMs: number): Promis
  * watchdog. It is intentionally not exported from the package root.
  */
 export const spawnRunnerTestSeam = Object.freeze({
+  scanProcProcessGroup,
   terminateProcessGroup,
   waitForCompletion,
 });

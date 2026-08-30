@@ -102,6 +102,10 @@ function errno(code?: string): Error {
   return error;
 }
 
+function processStat(pid: number, state: string, processGroupId: number): string {
+  return `${pid} (synthetic process) ${state} 1 ${processGroupId} 0`;
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -878,6 +882,88 @@ describe('SpawnRunner', () => {
     }
   });
 
+  it('bounds /proc stat reads to four workers while fully checking zombies and foreign groups', async () => {
+    const processIds = Array.from({ length: 100 }, (_, index) => String(index + 1));
+    let activeReads = 0;
+    let maximumActiveReads = 0;
+
+    await expect(
+      spawnRunnerTestSeam.scanProcProcessGroup(71, new AbortController().signal, {
+        readProcessIds: async () => processIds,
+        readProcessStat: async (processId) => {
+          activeReads += 1;
+          maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+          await Promise.resolve();
+          activeReads -= 1;
+          const numericPid = Number(processId);
+          return numericPid % 2 === 0
+            ? processStat(numericPid, 'Z', 71)
+            : processStat(numericPid, 'S', 72);
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(maximumActiveReads).toBe(4);
+    expect(activeReads).toBe(0);
+  });
+
+  it('short-circuits /proc scanning without starting more reads after a live member', async () => {
+    const processIds = Array.from({ length: 100 }, (_, index) => String(index + 1));
+    const reads: string[] = [];
+
+    await expect(
+      spawnRunnerTestSeam.scanProcProcessGroup(73, new AbortController().signal, {
+        readProcessIds: async () => processIds,
+        readProcessStat: (processId, signal) => {
+          reads.push(processId);
+          if (processId === '1') {
+            return Promise.resolve(processStat(1, 'S', 73));
+          }
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(reads).toEqual(['1', '2', '3', '4']);
+    await Promise.resolve();
+    expect(reads).toHaveLength(4);
+  });
+
+  it('ignores /proc disappearance races while checking the remaining entries', async () => {
+    const errors = new Map([
+      ['1', 'ENOENT'],
+      ['2', 'ESRCH'],
+    ]);
+
+    await expect(
+      spawnRunnerTestSeam.scanProcProcessGroup(74, new AbortController().signal, {
+        readProcessIds: async () => ['1', '2', '3'],
+        readProcessStat: async (processId) => {
+          const code = errors.get(processId);
+          if (code !== undefined) {
+            throw errno(code);
+          }
+          return processStat(3, 'S', 75);
+        },
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it.each([
+    ['EACCES', (): Promise<string> => Promise.reject(errno('EACCES'))],
+    ['EIO', (): Promise<string> => Promise.reject(errno('EIO'))],
+    ['malformed stat', (): Promise<string> => Promise.resolve('malformed')],
+  ])('treats an unclear /proc entry (%s) as live', async (_case, readProcessStat) => {
+    await expect(
+      spawnRunnerTestSeam.scanProcProcessGroup(76, new AbortController().signal, {
+        readProcessIds: async () => ['1'],
+        readProcessStat,
+      }),
+    ).resolves.toBe(true);
+  });
+
   it('confirms an initially absent POSIX process group only for ESRCH', async () => {
     const signal = vi.fn((): never => {
       throw errno('ESRCH');
@@ -1065,6 +1151,82 @@ describe('SpawnRunner', () => {
         [-48, 'SIGTERM'],
         [-48, 'SIGKILL'],
       ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts each expired /proc probe before the next termination phase starts', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn(() => true);
+      const probeSignals: AbortSignal[] = [];
+      const lateSettlements: Array<() => void> = [];
+      let activeReads = 0;
+      let maximumActiveReads = 0;
+      let readsStarted = 0;
+      const probe = (pid: number, probeSignal: AbortSignal): Promise<boolean> => {
+        probeSignals.push(probeSignal);
+        return spawnRunnerTestSeam.scanProcProcessGroup(pid, probeSignal, {
+          readProcessIds: async () => Array.from({ length: 100 }, (_, index) => String(index + 1)),
+          readProcessStat: (_processId, readSignal) => {
+            readsStarted += 1;
+            activeReads += 1;
+            maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+            return new Promise((resolve, reject) => {
+              let settled = false;
+              const settleLate = (): void => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                activeReads -= 1;
+                resolve(processStat(1, 'S', pid + 1));
+              };
+              lateSettlements.push(settleLate);
+              readSignal.addEventListener(
+                'abort',
+                () => {
+                  if (settled) {
+                    return;
+                  }
+                  settled = true;
+                  activeReads -= 1;
+                  reject(readSignal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        });
+      };
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(77, {
+        signal,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(pending).resolves.toBe(false);
+      expect(signal.mock.calls).toEqual([
+        [-77, 'SIGTERM'],
+        [-77, 'SIGKILL'],
+      ]);
+      expect(probeSignals).toHaveLength(2);
+      expect(probeSignals.every((probeSignal) => probeSignal.aborted)).toBe(true);
+      expect(maximumActiveReads).toBe(4);
+      expect(activeReads).toBe(0);
+      expect(readsStarted).toBe(8);
+
+      for (const settleLate of lateSettlements) {
+        settleLate();
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(readsStarted).toBe(8);
+      expect(signal).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
