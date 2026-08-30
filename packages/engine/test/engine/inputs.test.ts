@@ -435,6 +435,17 @@ describe('keys that name no input', () => {
       problems(manifestOf(...SIMPLE), { values: [values('v.yaml', { nope: 'x' })] })[0],
     ).toContain('(set from v.yaml)');
   });
+
+  it('still refuses unknown keys when known invalid values are being collected', () => {
+    const manifest = manifestOf('inputs:', '  installDirectory:', '    type: directory');
+
+    expect(() =>
+      resolve(manifest, {
+        overrides: new Map([['installDirectroy', '/opt']]),
+        invalidValues: 'collect',
+      }),
+    ).toThrow(/installDirectroy/);
+  });
 });
 
 describe('what counts as an answer', () => {
@@ -487,7 +498,40 @@ describe('a frontend that can ask again', () => {
       'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
     ]);
     expect(resolution.byId.get('port')?.value).toBeUndefined();
+    expect(resolution.byId.get('port')?.source).toBe('set');
     expect(resolution.missing).toEqual(['port']);
+  });
+
+  it('marks an invalid optional value for correction without calling it missing', () => {
+    const optional = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "[0-9]{2,5}"',
+    );
+
+    const resolution = resolve(optional, {
+      overrides: new Map([['port', 'eighty']]),
+      invalidValues: 'collect',
+    });
+
+    expect(resolution.byId.get('port')).toMatchObject({
+      enabled: true,
+      value: undefined,
+      source: 'set',
+    });
+    expect(resolution.missing).toEqual([]);
+    expect(resolution.problems).toHaveLength(1);
+  });
+
+  it('never collects a rejected layer-5 answer', () => {
+    expect(() =>
+      resolve(manifest, {
+        answers: new Map([['port', 'eighty']]),
+        invalidValues: 'collect',
+      }),
+    ).toThrow(/the answer.*does not match/);
   });
 
   it('throws by default, which is what a pipeline needs', () => {

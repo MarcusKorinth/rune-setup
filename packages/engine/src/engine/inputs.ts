@@ -41,8 +41,9 @@ export interface InputState {
   readonly spec: InputSpec;
   /** False when the input's `when:` is false: not required, never prompted, empty (§5). */
   readonly enabled: boolean;
-  /** The resolved value, or nothing when a required enabled input is still unanswered. */
+  /** The resolved value, or nothing while an enabled input is unanswered or invalid. */
   readonly value: InputValue | undefined;
+  /** Also records the source of an invalid candidate that an interactive frontend must fix. */
   readonly source: ValueSource | undefined;
   /** The layer whose value was discarded because the input turned out to be disabled. */
   readonly ignored: ValueSource | undefined;
@@ -69,10 +70,10 @@ export interface ResolveInputsOptions {
   /** Registers secrets for masking as they resolve — before any step can launch (§10). */
   readonly secrets?: SecretRegistry;
   /**
-   * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
-   * runs and the process exits. A frontend that can ask again takes `collect`, which records
-   * the problem and treats the input as unanswered, so the CLI re-prompts and the GUI marks
-   * the field (§5).
+   * What to do with a lower-layer value the registry rejected. `throw` is what a pipeline
+   * needs: nothing runs and the process exits. A frontend that can ask again takes `collect`,
+   * which records the problem and treats the input as unanswered, so the CLI re-prompts and
+   * the GUI marks the field (§5). Unknown keys and rejected layer-5 answers always throw.
    */
   readonly invalidValues?: 'throw' | 'collect';
 }
@@ -95,19 +96,24 @@ export interface Resolution {
 /**
  * Merges the layers for every input of a manifest.
  *
- * Throws {@link InputError} listing *every* problem: a value no type accepts, a key that
- * names no input. Missing values are not a failure here — a frontend is allowed to ask —
- * they are reported in {@link Resolution.missing}.
+ * Unknown keys always throw {@link InputError}. Rejected values throw or are collected per
+ * {@link ResolveInputsOptions.invalidValues}. Missing values are not a failure here — a
+ * frontend is allowed to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
   const environment = options.environment ?? process.env;
 
-  const issues: RuneIssue[] = [];
-  const warnings: string[] = [];
+  const unknownKeyIssues: RuneIssue[] = [];
+  checkUnknownKeys(options, ids, unknownKeyIssues);
+  if (unknownKeyIssues.length > 0) {
+    throw InputError.fromIssues('RUNE-203', unknownKeyIssues);
+  }
 
-  checkUnknownKeys(options, ids, issues);
+  const issues: RuneIssue[] = [];
+  const answerIssues: RuneIssue[] = [];
+  const warnings: string[] = [];
 
   const states = new Map<string, InputState>();
   const order: string[] = [];
@@ -161,13 +167,23 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
 
     const coerced = coerce(supplied, spec, id, context);
     if (!coerced.ok) {
-      issues.push({ code: 'RUNE-202', message: coerced.message, location: supplied.location });
+      const issue: RuneIssue = {
+        code: 'RUNE-202',
+        message: coerced.message,
+        location: supplied.location,
+      };
+      issues.push(issue);
+      if (supplied.source === 'answer') {
+        answerIssues.push(issue);
+      }
       states.set(id, {
         id,
         spec,
         enabled: true,
         value: undefined,
-        source: undefined,
+        // Keeping the source makes an invalid optional value distinguishable from an
+        // ordinary optional input that was never supplied, without parsing diagnostics.
+        source: supplied.source,
         ignored: undefined,
       });
       order.push(id);
@@ -196,11 +212,13 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     order.push(id);
   }
 
+  // Layer 5 is already the correction channel. Rejecting one answer atomically must never
+  // be weakened by the lower-layer collection policy used by interactive frontends.
+  if (answerIssues.length > 0) {
+    throw InputError.fromIssues('RUNE-202', answerIssues);
+  }
   if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
-    // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
-    // the values (§7).
-    const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+    throw InputError.fromIssues('RUNE-202', issues);
   }
 
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);

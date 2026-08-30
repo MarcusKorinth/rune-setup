@@ -136,6 +136,90 @@ describe('the interactive run', () => {
     expect(interaction.transcript()).toContain('lower-case letters only');
   });
 
+  it.each(['set', 'values'] as const)(
+    'prompts to correct an invalid %s seed instead of aborting',
+    async (source) => {
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  name:',
+        '    type: text',
+        '    pattern: "[a-z]+"',
+        'steps: []',
+      ]);
+      const sourceArgs =
+        source === 'set' ? ['--set', 'name=BAD1'] : ['--values', join(path, '..', 'values.yaml')];
+      if (source === 'values') {
+        writeFileSync(join(path, '..', 'values.yaml'), 'name: BAD1\n', 'utf8');
+      }
+      const io = capture();
+      const interaction = scripted(['good']);
+
+      const code = await run(['run', path, '--dry-run', ...sourceArgs], io, interaction);
+
+      expect(code).toBe(0);
+      expect(interaction.transcript()).toContain('name');
+    },
+  );
+
+  it('prompts to correct an explicitly invalid optional seed', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "[0-9]{2,5}"',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = scripted(['5432']);
+
+    const code = await run(['run', path, '--dry-run', '--set', 'port=eighty'], io, interaction);
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).toContain('port');
+  });
+
+  it('keeps invalid seeds strict without a TTY', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = { ...scripted([]), isTTY: false };
+
+    const code = await run(['run', path, '--set', 'name=BAD1'], io, interaction);
+
+    expect(code).toBe(4);
+    expect(io.err.join('\n')).toContain('does not match');
+  });
+
+  it('keeps unknown overrides strict in interactive mode', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const interaction = scripted([]);
+
+    const code = await run(['run', path, '--set', 'greetign=hello'], io, interaction);
+
+    expect(code).toBe(4);
+    expect(io.err.join('\n')).toContain('greetign');
+    expect(interaction.transcript()).toBe('');
+  });
+
   it('lets the summary edit a value, then prompts and re-renders', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
@@ -145,6 +229,32 @@ describe('the interactive run', () => {
 
     expect(code).toBe(0);
     expect(io.err.join('\n')).toContain('bye');
+  });
+
+  it('accepts a controller edit before correcting the dependent invalid seed', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    default: false',
+      '  databasePort:',
+      '    type: text',
+      '    when: "${installDatabase}"',
+      '    pattern: "[0-9]{2,5}"',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = scripted(['1', 'true', '5432', 'p']);
+
+    const code = await run(['run', path, '--set', 'databasePort=eighty'], io, interaction);
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).toContain('databasePort');
+    expect(io.err.join('\n')).toContain('5432');
   });
 
   it('cancels from the summary with exit 6 and a cancelled result', async () => {

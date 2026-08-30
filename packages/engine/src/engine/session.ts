@@ -146,6 +146,7 @@ export class Session {
     const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
     const overrides = new Map(Object.entries(options.overrides ?? {}));
     const secrets = new SecretRegistry();
+    const mode = options.mode ?? 'non-interactive';
 
     return new Session({
       manifest,
@@ -156,8 +157,8 @@ export class Session {
       values,
       overrides,
       environment,
-      // All-or-nothing: a value no type accepts, or a key naming no input, throws here and
-      // no session exists (paragraph 10).
+      // Automation is all-or-nothing. Interactive frontends keep known lower-layer problems
+      // pending so the user can correct them through the same engine-owned registry (§5).
       resolution: resolveInputs({
         manifest,
         context,
@@ -165,17 +166,22 @@ export class Session {
         environment,
         overrides,
         secrets,
+        invalidValues: mode === 'non-interactive' ? 'throw' : 'collect',
       }),
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
       runner: options.runner,
-      mode: options.mode ?? 'non-interactive',
+      mode,
     });
   }
 
-  /** Enabled required inputs still without an answer, in declaration order — what to ask for. */
+  /** Enabled unresolved inputs, including invalid optional seeds, in declaration order. */
   pendingInputs(): readonly InputState[] {
     const missing = new Set(this.#resolution.missing);
-    return this.#resolution.inputs.filter((state) => missing.has(state.id));
+    return this.#resolution.inputs.filter(
+      (state) =>
+        missing.has(state.id) ||
+        (state.enabled && state.value === undefined && state.source !== undefined),
+    );
   }
 
   /** Every input with its resolved state — what a GUI prefills (§9.1). */
@@ -224,8 +230,11 @@ export class Session {
     return changes;
   }
 
-  /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
+  /** Stage 4: the frozen plan. Refuses invalid seeds before listing every missing input. */
   plan(): ExecutionPlan {
+    if (this.#resolution.problems.length > 0) {
+      throw InputError.fromIssues('RUNE-202', this.#resolution.problems);
+    }
     const missing = this.#resolution.missing;
     if (missing.length > 0) {
       throw InputError.fromIssues(
@@ -333,6 +342,7 @@ export class Session {
       overrides: this.#overrides,
       answers: this.#answers,
       secrets: this.#secrets,
+      invalidValues: this.#mode === 'non-interactive' ? 'throw' : 'collect',
     });
   }
 
