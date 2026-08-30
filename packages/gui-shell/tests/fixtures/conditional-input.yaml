@@ -24,6 +24,7 @@ inputs:
   selectDetails:
     type: select
     title: Select details
+    required: false
     options: [one, two]
     when: '${enableDetails}'
   multiselectDetails:

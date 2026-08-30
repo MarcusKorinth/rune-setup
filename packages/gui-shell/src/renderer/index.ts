@@ -341,9 +341,13 @@ function checkbox(input: BridgeInput): HTMLElement {
 function selectBox(input: BridgeInput): HTMLElement {
   const select = document.createElement('select');
   select.disabled = !input.enabled;
-  // Until the engine has a value, the display must not pretend one: a hidden placeholder
-  // keeps the first option from looking chosen while nothing is set.
-  if (state.pending.has(input.id)) {
+  const options = input.spec.options ?? [];
+  const hasSelectedOption = options.some((option) => {
+    const value = typeof option === 'string' ? option : option.value;
+    return input.value === value;
+  });
+  // When the engine value is not an option, keep the first option from looking chosen.
+  if (!hasSelectedOption) {
     const placeholder = document.createElement('option');
     placeholder.value = '';
     placeholder.disabled = true;
@@ -351,7 +355,7 @@ function selectBox(input: BridgeInput): HTMLElement {
     placeholder.hidden = true;
     select.append(placeholder);
   }
-  for (const option of input.spec.options ?? []) {
+  for (const option of options) {
     const value = typeof option === 'string' ? option : option.value;
     const item = document.createElement('option');
     item.value = value;

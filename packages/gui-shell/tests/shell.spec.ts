@@ -158,6 +158,7 @@ test('disables conditional controls natively across input pages', async () => {
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await next.click();
     await expect(controller).toBeChecked();
+    await expect(page.locator('.field[data-id="selectDetails"] select')).toHaveValue('');
     await dependent.fill('invalid');
     await dependent.dispatchEvent('change');
     await expect(page.locator('.field[data-id="details"]')).toHaveClass(/invalid/);
