@@ -12,7 +12,7 @@ import { PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
-/** Built-in variables that stand alone: `${home}`, `${platform}`. */
+/** Built-in variables that stand alone: `${home}`, `${temp}`, `${platform}`, `${manifestDir}`. */
 export const BUILT_IN_VARIABLES = ['home', 'temp', 'platform', 'manifestDir'] as const;
 export type BuiltInVariable = (typeof BUILT_IN_VARIABLES)[number];
 
