@@ -92,7 +92,14 @@ describe('opening a session', () => {
 
     for (const session of [interactive, gui]) {
       expect(session.pendingInputs().map((input) => input.id)).toEqual(['port']);
-      expect(session.allInputs()[0]).toMatchObject({ enabled: true, value: undefined });
+      expect(session.allInputs()[0]).toMatchObject({
+        enabled: true,
+        value: undefined,
+        invalid: {
+          candidate: 'eighty',
+          issue: { code: 'RUNE-202', message: expect.stringContaining('does not match') },
+        },
+      });
     }
     expect(interactive.allInputs()[0]?.source).toBe('set');
     expect(gui.allInputs()[0]?.source).toBe('values');
@@ -118,6 +125,112 @@ describe('opening a session', () => {
         overrides: { port: 'eighty' },
       }),
     ).rejects.toMatchObject({ code: 'RUNE-202' });
+  });
+
+  it('projects typed non-secret candidates as immutable bridge-safe data', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '  channel:',
+        '    type: select',
+        '    options: [stable, preview]',
+        '  tools:',
+        '    type: multiselect',
+        '    options: [git, docker]',
+        'steps: []',
+      ],
+      {
+        'values.yaml': ['enabled: sometimes', 'channel: nightly', 'tools: [git, podman]', ''].join(
+          '\n',
+        ),
+      },
+    );
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'gui',
+      values: [join(path, '..', 'values.yaml')],
+    });
+
+    const states = session.allInputs();
+    expect(states.map((state) => state.invalid?.candidate)).toEqual([
+      'sometimes',
+      'nightly',
+      ['git', 'podman'],
+    ]);
+    expect(states.every((state) => state.invalid?.issue.code === 'RUNE-202')).toBe(true);
+    expect(Object.isFrozen(states)).toBe(true);
+    for (const state of states) {
+      expect(Object.isFrozen(state)).toBe(true);
+      expect(Object.isFrozen(state.invalid)).toBe(true);
+      expect(Object.isFrozen(state.invalid?.issue)).toBe(true);
+      expect(() => structuredClone(state)).not.toThrow();
+    }
+    expect(Object.isFrozen(states[2]?.invalid?.candidate)).toBe(true);
+    expect(() => JSON.stringify(states)).not.toThrow();
+  });
+
+  it('projects the rendered value of an invalid templated default', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    default: "${env.PORT}"',
+        '    pattern: "[0-9]+"',
+        'steps: []',
+      ]),
+      { environment: { PORT: 'eighty' }, mode: 'gui' },
+    );
+
+    expect(session.allInputs()[0]?.invalid?.candidate).toBe('eighty');
+  });
+
+  it('never projects an invalid secret candidate or repeats it in the issue', async () => {
+    const secret = 'plaintext-secret';
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps: []',
+      ],
+      { 'values.yaml': `token: [${secret}]\n` },
+    );
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'gui',
+      values: [join(path, '..', 'values.yaml')],
+    });
+
+    const state = session.allInputs()[0];
+    expect(state?.invalid).toMatchObject({
+      candidate: null,
+      issue: { code: 'RUNE-202', message: expect.stringContaining('value is not text') },
+    });
+    expect(JSON.stringify(state)).not.toContain(secret);
+    expect(JSON.stringify(state?.invalid?.issue)).not.toContain(secret);
+    let thrown: unknown;
+    try {
+      session.plan();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+    expect((thrown as Error).message).not.toContain(secret);
   });
 
   it('keeps unknown overrides hard in interactive mode', async () => {
@@ -188,12 +301,46 @@ describe('answering inputs', () => {
     ]);
     expect(session.allInputs()[0]?.value).toBe(true);
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
+    expect(session.allInputs()[1]?.invalid?.candidate).toBe('eighty');
     expect(() => session.plan()).toThrow(
       /databasePort \(from --set databasePort=…\).*does not match/s,
     );
 
     session.setValue('databasePort', '5432');
     expect(session.pendingInputs()).toEqual([]);
+    expect(session.allInputs()[1]?.invalid).toBeUndefined();
+  });
+
+  it('hides an invalid seed while disabled and restores it when re-enabled', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    default: true',
+      '  databasePort:',
+      '    type: text',
+      '    when: "${installDatabase}"',
+      '    pattern: "[0-9]{2,5}"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'gui',
+      overrides: { databasePort: 'eighty' },
+    });
+
+    expect(session.allInputs()[1]?.invalid?.candidate).toBe('eighty');
+    session.setValue('installDatabase', false);
+    expect(session.allInputs()[1]).toMatchObject({ enabled: false, invalid: undefined });
+    session.setValue('installDatabase', true);
+    expect(session.allInputs()[1]).toMatchObject({
+      enabled: true,
+      invalid: { candidate: 'eighty' },
+    });
   });
 
   it('rejects a bad layer-5 pattern answer atomically and retains its diagnostic hint', async () => {

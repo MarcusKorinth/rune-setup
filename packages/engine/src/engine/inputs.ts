@@ -27,6 +27,16 @@ import { SecretString, type SecretRegistry } from './secrets.js';
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
 export type ValueSource = (typeof VALUE_SOURCES)[number];
 
+/** A lower-layer candidate safe to project through the Session facade and IPC bridge. */
+export type InvalidInputCandidate = string | boolean | readonly string[] | null;
+
+/** Why a layer-1–4 value needs correction, without ever exposing a secret candidate. */
+export interface InvalidInputState {
+  /** The supplied value for a non-secret input; always `null` for a secret input. */
+  readonly candidate: InvalidInputCandidate;
+  readonly issue: RuneIssue;
+}
+
 /** How a source is named in a message, so a reader knows where to go and change it. */
 const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
   default: 'the manifest default',
@@ -45,6 +55,8 @@ export interface InputState {
   readonly value: InputValue | undefined;
   /** Also records the source of an invalid candidate that an interactive frontend must fix. */
   readonly source: ValueSource | undefined;
+  /** The correctable lower-layer candidate and its structured validation problem. */
+  readonly invalid: InvalidInputState | undefined;
   /** The layer whose value was discarded because the input turned out to be disabled. */
   readonly ignored: ValueSource | undefined;
 }
@@ -138,29 +150,37 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
           `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
         );
       }
-      states.set(id, {
+      states.set(
         id,
-        spec,
-        enabled: false,
-        value: handler.empty(spec),
-        source: undefined,
-        ignored: discarded?.source,
-      });
+        freezeInputState({
+          id,
+          spec,
+          enabled: false,
+          value: handler.empty(spec),
+          source: undefined,
+          invalid: undefined,
+          ignored: discarded?.source,
+        }),
+      );
       order.push(id);
       continue;
     }
 
     if (supplied === undefined) {
-      states.set(id, {
+      states.set(
         id,
-        spec,
-        enabled: true,
-        // A required input that nobody answered stays empty-handed on purpose: the frontends
-        // ask, and the non-interactive driver refuses (§10).
-        value: spec.required ? undefined : handler.empty(spec),
-        source: undefined,
-        ignored: undefined,
-      });
+        freezeInputState({
+          id,
+          spec,
+          enabled: true,
+          // A required input that nobody answered stays empty-handed on purpose: the frontends
+          // ask, and the non-interactive driver refuses (§10).
+          value: spec.required ? undefined : handler.empty(spec),
+          source: undefined,
+          invalid: undefined,
+          ignored: undefined,
+        }),
+      );
       order.push(id);
       continue;
     }
@@ -176,16 +196,20 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       if (supplied.source === 'answer') {
         answerIssues.push(issue);
       }
-      states.set(id, {
+      states.set(
         id,
-        spec,
-        enabled: true,
-        value: undefined,
-        // Keeping the source makes an invalid optional value distinguishable from an
-        // ordinary optional input that was never supplied, without parsing diagnostics.
-        source: supplied.source,
-        ignored: undefined,
-      });
+        freezeInputState({
+          id,
+          spec,
+          enabled: true,
+          value: undefined,
+          // Keeping the source makes an invalid optional value distinguishable from an
+          // ordinary optional input that was never supplied, without parsing diagnostics.
+          source: supplied.source,
+          invalid: freezeInvalidInput(coerced.candidate, handler.secret, issue),
+          ignored: undefined,
+        }),
+      );
       order.push(id);
       continue;
     }
@@ -201,14 +225,18 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
       }
     }
 
-    states.set(id, {
+    states.set(
       id,
-      spec,
-      enabled: true,
-      value: coerced.value,
-      source: supplied.source,
-      ignored: undefined,
-    });
+      freezeInputState({
+        id,
+        spec,
+        enabled: true,
+        value: coerced.value,
+        source: supplied.source,
+        invalid: undefined,
+        ignored: undefined,
+      }),
+    );
     order.push(id);
   }
 
@@ -221,7 +249,9 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     throw InputError.fromIssues('RUNE-202', issues);
   }
 
-  const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
+  const inputs = Object.freeze(
+    order.map((id) => states.get(id)).filter((state) => state !== undefined),
+  );
   return {
     inputs,
     byId: states,
@@ -229,6 +259,30 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
     warnings,
     problems: issues,
   };
+}
+
+/** Freezes the public state object so a frontend cannot mutate the resolver's live state. */
+function freezeInputState(state: InputState): InputState {
+  return Object.freeze(state);
+}
+
+/** Builds the plain-data invalid projection; secret candidates stop at this boundary. */
+function freezeInvalidInput(raw: unknown, secret: boolean, issue: RuneIssue): InvalidInputState {
+  const candidate = secret ? null : safeCandidate(raw);
+  const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
+  const frozenIssue = Object.freeze({ ...issue, location });
+  return Object.freeze({ candidate, issue: frozenIssue });
+}
+
+/** Resolution accepts only these raw shapes; clone lists before exposing them publicly. */
+function safeCandidate(raw: unknown): InvalidInputCandidate {
+  if (typeof raw === 'string' || typeof raw === 'boolean') {
+    return raw;
+  }
+  if (Array.isArray(raw) && raw.every((entry) => typeof entry === 'string')) {
+    return Object.freeze([...raw]) as readonly string[];
+  }
+  return null;
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */
@@ -304,7 +358,7 @@ function highestLayer(
 
 type CoercionOutcome =
   | { readonly ok: true; readonly value: InputValue }
-  | { readonly ok: false; readonly message: string };
+  | { readonly ok: false; readonly message: string; readonly candidate: unknown };
 
 function coerce(
   supplied: SuppliedValue,
@@ -329,7 +383,13 @@ function coerce(
   // belongs to and where the value came from, which is what a reader needs to go and fix it.
   return result.ok
     ? result
-    : { ok: false, message: `${id} (from ${supplied.origin}): ${result.message}` };
+    : {
+        ok: false,
+        message: `${id} (from ${supplied.origin}): ${result.message}`,
+        // A rendered default is the effective seed a frontend prefills (§6.1), not the
+        // template text the author wrote before resolution.
+        candidate: raw,
+      };
 }
 
 /** Only the free-text types carry templates; a select default is one of its option values. */

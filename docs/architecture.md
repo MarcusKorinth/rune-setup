@@ -329,7 +329,7 @@ export class Session {
   }): Promise<Session>;
   readonly manifest: Manifest;
   pendingInputs(): readonly InputState[];        // unresolved AND enabled, declaration order
-  allInputs(): readonly InputState[];            // {id, spec, value, enabled, source} — GUI prefill
+  allInputs(): readonly InputState[];            // {id, spec, value, enabled, source, invalid} — GUI prefill
   warnings(): readonly string[];                 // §5/§10 warnings a frontend says out loud
   setValue(id: string, raw: unknown): readonly InputStateChanged[];
                                                  // an answer is always layer 5; registry-validated
@@ -349,6 +349,8 @@ export class Session {
 ```
 
 The engine is **asynchronous**: `Session.open()` and `execute()` return Promises and run on the Node event loop (child processes and streams are awaited, nothing blocks). Whoever hosts the engine — the CLI process or the Electron main process — stays responsive without threads.
+
+An invalid layer-1–4 seed is exposed on its frozen `InputState` as `value: undefined` plus a frozen plain-data `invalid: {candidate, issue}` projection, so an interactive frontend can prefill the rejected candidate and present the structured `RuneIssue` without reimplementing validation. `candidate` retains the supplied string, boolean, or string list for non-secret inputs; for a `secret` input it is always `null`, and the issue never contains the supplied value. An accepted `setValue` correction removes `invalid`; disabling the input hides it, and re-enabling restores it if the lower-layer candidate still wins.
 
 Events are frozen plain objects (`readonly` types, `Object.freeze`d). **Run events**, delivered through `EngineObserver` during `execute()`: `RunStarted(plan)`, `StepStarted(stepId, index, total, title)`, `StepOutput(stepId, stream, line)` (pre-masked), `StepFinished(stepId, state, exitCode, durationMs)`, `RunFinished(result)` — durations are milliseconds everywhere (events, IPC payloads, result file `durationMs`). Plan-time `SKIPPED` steps emit exactly one `StepFinished(state=SKIPPED)` and no `StepStarted`/`StepOutput`; `total` counts all planned steps including skipped ones — progress renderers and the mode-parity suite rely on both rules. `title` is the localized title (§6.3); `stepId` is never localized.
 
