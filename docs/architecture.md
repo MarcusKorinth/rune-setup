@@ -458,6 +458,8 @@ Documented limitations: the registry registers every maskable content line of a 
 
 One npm-workspaces monorepo; root `package.json` (workspaces), `tsconfig.base.json` (strict), eslint and prettier config, dependency-cruiser config. No other monorepo tooling.
 
+This is the target layout across the roadmap milestones; entries not present in the current repository are planned.
+
 ```
 packages/
 ├── engine/                        # @rune/engine — the library; no CLI parsing, no Electron
@@ -466,6 +468,7 @@ packages/
 │       ├── index.ts               # curated public API: Session, events, errors, value types, version,
 │       │                          #   manifestJsonSchema/resultJsonSchema, envReferences, writeResult
 │       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
+│       ├── diagnostics.ts         # safe diagnostic escaping and JSON-style quoting
 │       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
 │       ├── manifest/
 │       │   ├── index.ts           # parseManifest()/validateManifest() facade, schemaVersion registry dispatch
@@ -479,14 +482,15 @@ packages/
 │       ├── inputs/
 │       │   ├── base.ts            # InputType interface: validate(), fromString(), isSecret()
 │       │   ├── registry.ts        # name -> InputType map; duplicate registration is an error
-│       │   └── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
+│       │   ├── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
+│       │   └── snapshot.ts        # safe immutable snapshots of native string arrays
 │       ├── i18n/
 │       │   ├── catalog.ts         # built-in English chrome strings (`rune.*` keys) — the key authority
 │       │   ├── loader.ts          # locales/<lang>.yaml discovery + overlay key validation
 │       │   └── resolve.ts         # locale selection (--locale > RUNE_LOCALE > system), fallback chain, Strings
 │       ├── engine/
 │       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
-│       │   ├── context.ts         # built-in variable table and reference resolution; later: platform detection, placeholders, run id
+│       │   ├── context.ts         # built-in names/reference resolution and runtime platform/preview values
 │       │   ├── inputs.ts          # 5-layer merge, provenance, coercion via inputs/registry, input when:
 │       │   ├── interpolate.ts     # ${...} scanner/renderer; single-pass, no eval
 │       │   ├── conditions.ts      # when: lexer, parser, AST, typed evaluator (steps and inputs)
