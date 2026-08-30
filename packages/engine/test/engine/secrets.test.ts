@@ -227,6 +227,31 @@ describe('SecretRegistry', () => {
     expect(registry.register('a'.repeat(MIN_MASKABLE_LENGTH))).toBe(true);
   });
 
+  it('refuses two astral code points even though they occupy four UTF-16 code units', () => {
+    const registry = new SecretRegistry();
+    const secret = '🔑🔑';
+
+    expect(registry.register(secret)).toBe(false);
+    expect(registry.size).toBe(0);
+    expect(registry.mask(`value: ${secret}`)).toBe(`value: ${secret}`);
+  });
+
+  it('registers and masks four astral code points', () => {
+    const registry = new SecretRegistry();
+    const secret = '🔑🔑🔑🔑';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask(`value: ${secret}`)).toBe(`value: ${MASK}`);
+  });
+
+  it('counts combining marks as code points for the masking threshold', () => {
+    const registry = new SecretRegistry();
+    const secret = 'e\u0301xy';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask(`value: ${secret}`)).toBe(`value: ${MASK}`);
+  });
+
   it('refuses a value that is only whitespace, however long it is', () => {
     const registry = new SecretRegistry();
 
@@ -252,6 +277,18 @@ describe('SecretRegistry', () => {
     expect(registry.register(secret)).toBe(false);
     expect(registry.mask('value: long-secret')).toBe(`value: ${MASK}`);
     expect(registry.mask('value: abc')).toBe('value: abc');
+    expect(registry.mask(secret)).toBe(MASK);
+  });
+
+  it('partially masks multiline astral secrets and reports short lines as incomplete', () => {
+    const registry = new SecretRegistry();
+    const shortLine = '🔑🔑';
+    const longLine = '🔑🔑🔑🔑';
+    const secret = `${shortLine}\r\n${longLine}`;
+
+    expect(registry.register(secret)).toBe(false);
+    expect(registry.mask(`short: ${shortLine}`)).toBe(`short: ${shortLine}`);
+    expect(registry.mask(`long: ${longLine}`)).toBe(`long: ${MASK}`);
     expect(registry.mask(secret)).toBe(MASK);
   });
 

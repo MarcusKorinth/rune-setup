@@ -16,6 +16,18 @@ export const MASK = '***';
  */
 export const MIN_MASKABLE_LENGTH = 4;
 
+/** Returns whether `value` contains enough Unicode code points to mask safely. */
+function hasMinimumMaskableLength(value: string): boolean {
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length >= MIN_MASKABLE_LENGTH) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * A string that does not show itself. `toString`, template interpolation, `JSON.stringify`
  * and `util.inspect` all render the mask, so a secret cannot reach a log through an ordinary
@@ -251,7 +263,7 @@ export class SecretRegistry {
     for (const part of parts) {
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
-      if (part.trim().length >= MIN_MASKABLE_LENGTH) {
+      if (hasMinimumMaskableLength(part.trim())) {
         const size = this.#values.size;
         this.#values.add(part);
         if (this.#values.size !== size) {
@@ -262,8 +274,7 @@ export class SecretRegistry {
 
     const contentLines = lines.filter((line) => line.trim() !== '');
     return (
-      contentLines.length > 0 &&
-      contentLines.every((line) => line.trim().length >= MIN_MASKABLE_LENGTH)
+      contentLines.length > 0 && contentLines.every((line) => hasMinimumMaskableLength(line.trim()))
     );
   }
 
