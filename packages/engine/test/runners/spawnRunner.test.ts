@@ -20,6 +20,7 @@ import {
   mergeSpawnEnvironment,
   OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
   SpawnRunner,
+  spawnRunnerTestSeam,
   waitForTaskkill,
 } from '../../src/runners/spawnRunner.js';
 
@@ -79,6 +80,20 @@ function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> 
       },
     );
   });
+}
+
+const TEST_TERMINATION_TIMINGS = {
+  graceMs: 50,
+  confirmationMs: 50,
+  pollMs: 10,
+} as const;
+
+function errno(code?: string): Error {
+  const error = new Error('injected process signal failure') as NodeJS.ErrnoException;
+  if (code !== undefined) {
+    error.code = code;
+  }
+  return error;
 }
 
 function processIsAlive(pid: number): boolean {
@@ -742,6 +757,269 @@ describe('SpawnRunner', () => {
       helper.emit('close', 0);
       await Promise.resolve();
       expect(settlements).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirms an initially absent POSIX process group only for ESRCH', async () => {
+    const signal = vi.fn((): never => {
+      throw errno('ESRCH');
+    });
+    const probe = vi.fn(async () => true);
+
+    await expect(
+      spawnRunnerTestSeam.terminateProcessGroup(41, {
+        signal,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      }),
+    ).resolves.toBe(true);
+    expect(signal).toHaveBeenCalledExactlyOnceWith(-41, 'SIGTERM');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each(['EPERM', 'EACCES', 'EIO', undefined])(
+    'does not confirm an initial POSIX signal failure with code %s',
+    async (code) => {
+      const signal = vi.fn((): never => {
+        throw errno(code);
+      });
+      const probe = vi.fn(async () => false);
+
+      await expect(
+        spawnRunnerTestSeam.terminateProcessGroup(42, {
+          signal,
+          probe,
+          timings: TEST_TERMINATION_TIMINGS,
+        }),
+      ).resolves.toBe(false);
+      expect(signal).toHaveBeenCalledExactlyOnceWith(-42, 'SIGTERM');
+      expect(probe).not.toHaveBeenCalled();
+    },
+  );
+
+  it('confirms POSIX group exit during the SIGTERM grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn(() => true);
+      const probe = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(43, {
+        signal,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(pending).resolves.toBe(true);
+      expect(signal).toHaveBeenCalledExactlyOnceWith(-43, 'SIGTERM');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirms POSIX termination when SIGKILL finds the group absent', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
+        if (signalName === 'SIGKILL') {
+          throw errno('ESRCH');
+        }
+      });
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(44, {
+        signal,
+        probe: async () => true,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(pending).resolves.toBe(true);
+      expect(signal.mock.calls).toEqual([
+        [-44, 'SIGTERM'],
+        [-44, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not confirm POSIX termination when SIGKILL is denied', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
+        if (signalName === 'SIGKILL') {
+          throw errno('EPERM');
+        }
+      });
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(45, {
+        signal,
+        probe: async () => true,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(pending).resolves.toBe(false);
+      expect(signal.mock.calls).toEqual([
+        [-45, 'SIGTERM'],
+        [-45, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirms POSIX group exit after SIGKILL', async () => {
+    vi.useFakeTimers();
+    try {
+      let firmSignalSent = false;
+      let firmProbes = 0;
+      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
+        firmSignalSent ||= signalName === 'SIGKILL';
+      });
+      const probe = vi.fn(async () => {
+        if (!firmSignalSent) {
+          return true;
+        }
+        firmProbes += 1;
+        return firmProbes === 1;
+      });
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(46, {
+        signal,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(60);
+
+      await expect(pending).resolves.toBe(true);
+      expect(signal.mock.calls).toEqual([
+        [-46, 'SIGTERM'],
+        [-46, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails POSIX confirmation when the group stays live through both deadlines', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn(() => true);
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(47, {
+        signal,
+        probe: async () => true,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(pending).resolves.toBe(false);
+      expect(signal.mock.calls).toEqual([
+        [-47, 'SIGTERM'],
+        [-47, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds POSIX probes that never settle in either termination phase', async () => {
+    vi.useFakeTimers();
+    try {
+      const signal = vi.fn(() => true);
+      const never = new Promise<boolean>(() => undefined);
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(48, {
+        signal,
+        probe: () => never,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(pending).resolves.toBe(false);
+      expect(signal.mock.calls).toEqual([
+        [-48, 'SIGTERM'],
+        [-48, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans POSIX timers and ignores a late grace probe without another signal', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLateProbe = (_live: boolean): void => undefined;
+      const lateProbe = new Promise<boolean>((resolve) => {
+        resolveLateProbe = resolve;
+      });
+      let firmSignalSent = false;
+      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
+        firmSignalSent ||= signalName === 'SIGKILL';
+      });
+      const probe = vi.fn(() => (firmSignalSent ? Promise.resolve(false) : lateProbe));
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(49, {
+        signal,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(pending).resolves.toBe(true);
+      expect(signal.mock.calls).toEqual([
+        [-49, 'SIGTERM'],
+        [-49, 'SIGKILL'],
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+
+      resolveLateProbe(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(signal).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds child-close completion and contains a late close', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveClose = (): void => undefined;
+      const close = new Promise<void>((resolve) => {
+        resolveClose = resolve;
+      });
+      const pending = spawnRunnerTestSeam.waitForCompletion(close, 25);
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(pending).resolves.toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      resolveClose();
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans the child-close watchdog after early completion', async () => {
+    vi.useFakeTimers();
+    try {
+      await expect(spawnRunnerTestSeam.waitForCompletion(Promise.resolve(), 25)).resolves.toBe(
+        true,
+      );
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

@@ -17,6 +17,12 @@ import type { Runner, SpawnOutcome, SpawnRequest, StartFailureReason } from './b
 /** How long a process gets between the polite signal and the firm one (§7). */
 const KILL_GRACE_MS = 5000;
 
+/** How long the firm signal gets to produce confirmed process-group removal. */
+const KILL_CONFIRMATION_MS = 5000;
+
+/** A child close event must not keep a completed tree-kill operation pending forever. */
+const CHILD_CLOSE_TIMEOUT_MS = 5000;
+
 /** A stuck Windows helper must not leave an engine run pending forever. */
 const TASKKILL_TIMEOUT_MS = 5000;
 
@@ -34,14 +40,21 @@ type TerminationCause =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'streamFailed'; readonly stream: 'stdout' | 'stderr' };
 
-interface TerminationResult {
-  readonly confirmed: boolean;
-  readonly awaitChildClose: boolean;
-}
-
 interface TaskkillProcess {
   readonly once: ChildProcess['once'];
   readonly kill: ChildProcess['kill'];
+}
+
+type ProcessGroupSignalResult = 'sent' | 'absent' | 'failed';
+
+interface ProcessGroupTerminationDependencies {
+  readonly signal: (pid: number, signal: NodeJS.Signals) => unknown;
+  readonly probe: (pid: number) => Promise<boolean>;
+  readonly timings: {
+    readonly graceMs: number;
+    readonly confirmationMs: number;
+    readonly pollMs: number;
+  };
 }
 
 /** The one place in RUNE a secret is unwrapped (§8): the child needs the value, not `***`. */
@@ -165,11 +178,11 @@ export class SpawnRunner implements Runner {
         terminationCause = cause;
         clearRunTimeout();
         terminationTask = (async () => {
-          const termination = await terminateTree(child);
-          if (termination.awaitChildClose && !childClosed) {
-            await childClosePromise;
+          const terminationConfirmed = await terminateTree(child);
+          if (!childClosed) {
+            await waitForCompletion(childClosePromise, CHILD_CLOSE_TIMEOUT_MS);
           }
-          settle(termination.confirmed ? cause : { kind: 'terminationFailed' });
+          settle(terminationConfirmed ? cause : { kind: 'terminationFailed' });
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
         // absorb platform process errors and therefore cannot reject.
@@ -236,22 +249,22 @@ async function classifyStartFailure(error: Error, cwd: string): Promise<StartFai
 }
 
 /** Terminates the platform process tree and resolves only after the kill operation is complete. */
-async function terminateTree(child: ChildProcess): Promise<TerminationResult> {
+async function terminateTree(child: ChildProcess): Promise<boolean> {
   const { pid } = child;
   if (pid === undefined) {
-    return process.platform === 'win32'
-      ? { confirmed: false, awaitChildClose: false }
-      : { confirmed: true, awaitChildClose: true };
+    return false;
   }
+
+  let confirmed: boolean;
   if (process.platform === 'win32') {
-    const killedTree = await runTaskkill(pid);
-    if (killedTree) {
-      return { confirmed: true, awaitChildClose: true };
-    }
-    return { confirmed: false, awaitChildClose: killDirectChild(child) };
+    confirmed = await runTaskkill(pid);
+  } else {
+    confirmed = await terminateProcessGroup(pid);
   }
-  await terminateProcessGroup(pid);
-  return { confirmed: true, awaitChildClose: true };
+  if (!confirmed) {
+    killDirectChild(child);
+  }
+  return confirmed;
 }
 
 /** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
@@ -308,57 +321,135 @@ export function waitForTaskkill(
       }
       complete(false);
     }, timeoutMs);
-    watchdog.unref();
   });
 }
 
-/** Best-effort fallback when Windows cannot start or complete taskkill. */
-function killDirectChild(child: ChildProcess): boolean {
+/** Best-effort fallback when tree termination cannot be confirmed. */
+function killDirectChild(child: ChildProcess): void {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
   try {
-    return child.kill('SIGKILL');
+    child.kill('SIGKILL');
   } catch {
-    return false;
+    // The unconfirmed result remains authoritative regardless of direct-child kill failure.
   }
 }
 
 /** SIGTERM the group, give it the documented grace period, then confirm SIGKILL completion. */
-async function terminateProcessGroup(pid: number): Promise<void> {
-  if (!signalProcessGroup(pid, 'SIGTERM')) {
-    return;
-  }
-  if (await waitForProcessGroupExit(pid, KILL_GRACE_MS)) {
-    return;
-  }
-  signalProcessGroup(pid, 'SIGKILL');
-  // There is no later settlement until the firm signal has actually removed the group. This
-  // prevents a surviving grandchild and eliminates a delayed signal against a reused PGID.
-  await waitForProcessGroupExit(pid);
-}
-
-function signalProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
-  try {
-    process.kill(-pid, signal);
+async function terminateProcessGroup(
+  pid: number,
+  dependencies: ProcessGroupTerminationDependencies = {
+    signal: (processId, signal) => process.kill(processId, signal),
+    probe: processGroupHasLiveMembers,
+    timings: {
+      graceMs: KILL_GRACE_MS,
+      confirmationMs: KILL_CONFIRMATION_MS,
+      pollMs: PROCESS_POLL_MS,
+    },
+  },
+): Promise<boolean> {
+  const politeSignal = signalProcessGroup(pid, 'SIGTERM', dependencies.signal);
+  if (politeSignal === 'absent') {
     return true;
-  } catch {
-    // The group is already gone (or could not be signalled); no delayed signal is retained.
+  }
+  if (politeSignal === 'failed') {
     return false;
   }
+  if (
+    await waitForProcessGroupExit(
+      pid,
+      dependencies.timings.graceMs,
+      dependencies.timings.pollMs,
+      dependencies.probe,
+    )
+  ) {
+    return true;
+  }
+
+  const firmSignal = signalProcessGroup(pid, 'SIGKILL', dependencies.signal);
+  if (firmSignal === 'absent') {
+    return true;
+  }
+  if (firmSignal === 'failed') {
+    return false;
+  }
+  return waitForProcessGroupExit(
+    pid,
+    dependencies.timings.confirmationMs,
+    dependencies.timings.pollMs,
+    dependencies.probe,
+  );
 }
 
-async function waitForProcessGroupExit(pid: number, timeoutMs?: number): Promise<boolean> {
-  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-  while (await processGroupHasLiveMembers(pid)) {
-    let waitMs = PROCESS_POLL_MS;
-    if (deadline !== undefined) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        return false;
-      }
-      waitMs = Math.min(PROCESS_POLL_MS, remaining);
-    }
-    await delay(waitMs);
+function signalProcessGroup(
+  pid: number,
+  signal: NodeJS.Signals,
+  sendSignal: (pid: number, signal: NodeJS.Signals) => unknown,
+): ProcessGroupSignalResult {
+  try {
+    sendSignal(-pid, signal);
+    return 'sent';
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'absent' : 'failed';
   }
-  return true;
+}
+
+function waitForProcessGroupExit(
+  pid: number,
+  timeoutMs: number,
+  pollMs: number,
+  probe: (pid: number) => Promise<boolean>,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let completed = false;
+    let watchdog: NodeJS.Timeout | undefined;
+    let poll: NodeJS.Timeout | undefined;
+
+    const complete = (gone: boolean): void => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      if (watchdog !== undefined) {
+        clearTimeout(watchdog);
+        watchdog = undefined;
+      }
+      if (poll !== undefined) {
+        clearTimeout(poll);
+        poll = undefined;
+      }
+      resolve(gone);
+    };
+
+    const runProbe = (): void => {
+      void Promise.resolve()
+        .then(() => probe(pid))
+        .then(
+          (hasLiveMembers) => {
+            if (completed) {
+              return;
+            }
+            if (!hasLiveMembers) {
+              complete(true);
+              return;
+            }
+            poll = setTimeout(runProbe, pollMs);
+          },
+          () => {
+            if (!completed) {
+              // An unclear probe failure is conservative: the group may still be live.
+              poll = setTimeout(runProbe, pollMs);
+            }
+          },
+        );
+    };
+
+    // This is installed before the first probe so even a probe Promise that never settles is
+    // bounded. Completion clears both this watchdog and any pending poll.
+    watchdog = setTimeout(() => complete(false), timeoutMs);
+    runProbe();
+  });
 }
 
 async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
@@ -381,13 +472,22 @@ async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
         .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
         .map(async (entry) => {
           try {
-            return await readFile(`/proc/${entry.name}/stat`, 'utf8');
-          } catch {
-            return undefined;
+            return {
+              kind: 'state' as const,
+              value: await readFile(`/proc/${entry.name}/stat`, 'utf8'),
+            };
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            return code === 'ENOENT' || code === 'ESRCH'
+              ? { kind: 'absent' as const }
+              : { kind: 'failed' as const };
           }
         }),
     );
-    return states.some((stat) => stat !== undefined && isLiveGroupMember(stat, pid));
+    if (states.some((state) => state.kind === 'failed')) {
+      return true;
+    }
+    return states.some((state) => state.kind === 'state' && isLiveGroupMember(state.value, pid));
   } catch {
     // A restricted /proc mount cannot provide stronger confirmation; remain conservative.
     return true;
@@ -397,18 +497,50 @@ async function processGroupHasLiveMembers(pid: number): Promise<boolean> {
 function isLiveGroupMember(stat: string, processGroupId: number): boolean {
   const commandEnd = stat.lastIndexOf(')');
   if (commandEnd === -1) {
-    return false;
+    return true;
   }
   // Fields after `(comm)` start with state, parent PID and process-group ID.
   const fields = stat.slice(commandEnd + 2).split(' ');
   const state = fields[0];
   const group = Number(fields[2]);
+  if (state === undefined || !Number.isSafeInteger(group)) {
+    return true;
+  }
   return group === processGroupId && state !== 'Z' && state !== 'X' && state !== 'x';
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function waitForCompletion(completion: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let completed = false;
+    let watchdog: NodeJS.Timeout | undefined;
+    const complete = (finished: boolean): void => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      if (watchdog !== undefined) {
+        clearTimeout(watchdog);
+        watchdog = undefined;
+      }
+      resolve(finished);
+    };
+
+    watchdog = setTimeout(() => complete(false), timeoutMs);
+    completion.then(
+      () => complete(true),
+      () => complete(true),
+    );
+  });
 }
+
+/**
+ * @internal Narrow deterministic seam for the production POSIX state machine and completion
+ * watchdog. It is intentionally not exported from the package root.
+ */
+export const spawnRunnerTestSeam = Object.freeze({
+  terminateProcessGroup,
+  waitForCompletion,
+});
 
 /**
  * Splits a stream into bounded logical lines without exposing artificial raw fragments.

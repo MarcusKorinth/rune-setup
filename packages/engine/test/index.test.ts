@@ -36,6 +36,7 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'SpawnRunner',
   'MAX_OUTPUT_LINE_BYTES',
   'OVERSIZED_OUTPUT_LINE_PLACEHOLDER',
+  'spawnRunnerTestSeam',
   'isLegalTransition',
   'isTerminal',
   'STEP_STATES',
