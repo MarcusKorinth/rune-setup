@@ -302,7 +302,7 @@ Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner
 Process contract:
 
 - `child_process.spawn(command, args, { shell: false, ... })` — argv arrays, never a shell; **async on the Node event loop** (the process exit and the stream ends are awaited; no worker threads, no blocking calls), so the engine never blocks whoever hosts it — the CLI or the Electron main process
-- argv = interpolated `[command, ...args]`; relative `command`/`cwd` resolve against `${manifestDir}`, never the caller's cwd. Target-absolute path values stay byte-identical; target-relative path values translate only separators recognized by the target grammar (`/` and `\` on Windows, `/` on Linux) to host separators before anchoring
+- argv = interpolated `[command, ...args]`; relative `cwd` and commands containing a target path separator resolve against `${manifestDir}`, never the caller's cwd, while bare command names remain unchanged for ordinary `PATH` lookup. Target-absolute path values stay byte-identical; target-relative path values translate only separators recognized by the target grammar (`/` and `\` on Windows, `/` on Linux) to host separators before anchoring
 - Windows drive-relative command spellings (`C:tool.exe`, `C:dir\tool.exe`) are rejected at
   plan time: their meaning depends on process-global per-drive state and therefore cannot be
   anchored to `${manifestDir}` deterministically
