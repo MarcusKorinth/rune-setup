@@ -3635,6 +3635,38 @@ describe('values files', () => {
     },
   );
 
+  it.each([undefined, 'collect'] as const)(
+    'orders aggregate values-file issues by document before their source positions with invalidValues=%s',
+    (invalidValues) => {
+      const manifest = manifestOf(
+        'inputs:',
+        '  badShape:',
+        '    type: text',
+        '    required: false',
+        '  known:',
+        '    type: boolean',
+        '    required: false',
+      );
+      const first = valuesFromFile(
+        [...Array<string>(9).fill(''), 'badShape:', '  nested: value', ''].join('\n'),
+        'first.yaml',
+      );
+      const second = valuesFromFile('mistake: value\nknown: perhaps\n', 'second.yaml');
+      const error = inputError(manifest, {
+        values: [first, second],
+        ...(invalidValues === undefined ? {} : { invalidValues }),
+      });
+
+      expect(error.code).toBe('RUNE-202');
+      expect(error.issues.map((issue) => [issue.code, issue.location])).toEqual([
+        ['RUNE-202', { file: 'first.yaml', line: 10, column: 1 }],
+        ['RUNE-203', { file: 'second.yaml', line: 1, column: 1 }],
+        ['RUNE-202', { file: 'second.yaml', line: 2, column: 1 }],
+      ]);
+      expect(error.location).toEqual({ file: 'first.yaml', line: 10, column: 1 });
+    },
+  );
+
   it('keeps a deferred values problem ahead of a later input condition resolution error', () => {
     const manifest = manifestOf(
       'inputs:',

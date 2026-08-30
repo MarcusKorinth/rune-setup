@@ -21,6 +21,7 @@ import {
   ResolutionError,
   RuneError,
   type RuneIssue,
+  withValuesDocumentOrdinal,
 } from '../errors.js';
 import { escapeDiagnosticText, formatDiagnostic, quotedDiagnostic } from '../diagnostics.js';
 import type { InputValue } from '../inputs/base.js';
@@ -187,8 +188,8 @@ function resolveInputsStaged(
   // from the rest of the document. Its presence remains fatal even for an interactive caller
   // that otherwise collects rejected values to re-prompt.
   const hasDeferredValuesProblems = valuesLayer.problems.length > 0;
-  const issues: RuneIssue[] = valuesLayer.problems.map((problem) =>
-    materializeValuesProblem(problem, redactor),
+  const issues: RuneIssue[] = valuesLayer.problems.map(({ problem, documentOrdinal }) =>
+    withValuesDocumentOrdinal(materializeValuesProblem(problem, redactor), documentOrdinal),
   );
   const warnings: string[] = [];
 
@@ -261,7 +262,11 @@ function resolveInputsStaged(
           message: coerced.message,
           location: supplied.location,
         };
-        issues.push(issue);
+        issues.push(
+          supplied.valuesDocumentOrdinal === undefined
+            ? issue
+            : withValuesDocumentOrdinal(issue, supplied.valuesDocumentOrdinal),
+        );
         states.set(id, {
           id,
           spec,
@@ -538,6 +543,8 @@ interface SuppliedValue {
   readonly location: Location | undefined;
   /** How the source is named in a message; the environment names the variable it read. */
   readonly origin: string;
+  /** The values-file invocation order, when this value came from that layer. */
+  readonly valuesDocumentOrdinal?: number;
 }
 
 /** One values-file entry retained for unknown-key validation in source order. */
@@ -545,6 +552,12 @@ interface ValuesLayerEntry {
   readonly id: string;
   readonly origin: string;
   readonly location: Location;
+  readonly documentOrdinal: number;
+}
+
+interface ValuesLayerProblem {
+  readonly problem: DeferredValuesProblem;
+  readonly documentOrdinal: number;
 }
 
 interface ValuesLayerIndex {
@@ -552,7 +565,7 @@ interface ValuesLayerIndex {
   /** Every entry per id in document order, retained for secret candidate staging. */
   readonly candidatesById: ReadonlyMap<string, readonly SuppliedValue[]>;
   readonly entries: readonly ValuesLayerEntry[];
-  readonly problems: readonly DeferredValuesProblem[];
+  readonly problems: readonly ValuesLayerProblem[];
 }
 
 function materializeValuesProblem(
@@ -578,10 +591,11 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
   const byId = new Map<string, SuppliedValue>();
   const candidatesById = new Map<string, SuppliedValue[]>();
   const entries: ValuesLayerEntry[] = [];
-  const problems: DeferredValuesProblem[] = [];
+  const problems: ValuesLayerProblem[] = [];
 
+  let documentOrdinal = 0;
   for (const document of documents ?? []) {
-    problems.push(...(document.problems ?? []));
+    problems.push(...(document.problems ?? []).map((problem) => ({ problem, documentOrdinal })));
     for (const [id, raw] of document.values) {
       const location = document.sourceMap?.best([id]) ?? startOfFile(document.file);
       const supplied = {
@@ -589,6 +603,7 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
         raw,
         location,
         origin: document.file,
+        valuesDocumentOrdinal: documentOrdinal,
       } as const;
       byId.set(id, supplied);
       const candidates = candidatesById.get(id);
@@ -597,8 +612,9 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
       } else {
         candidates.push(supplied);
       }
-      entries.push({ id, origin: document.file, location });
+      entries.push({ id, origin: document.file, location, documentOrdinal });
     }
+    documentOrdinal += 1;
   }
 
   return { byId, candidatesById, entries, problems };
@@ -840,7 +856,12 @@ function checkUnknownKeys(
   const candidateWidth = suggestionCandidateWidth(inputIndex.orderedIds);
   let remainingSuggestionWork = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET;
 
-  const report = (key: string, origin: string, location: Location | undefined): void => {
+  const report = (
+    key: string,
+    origin: string,
+    location: Location | undefined,
+    documentOrdinal?: number,
+  ): void => {
     if (inputIndex.ordinals.has(key)) {
       return;
     }
@@ -858,18 +879,21 @@ function checkUnknownKeys(
       origin,
       ')',
     ];
-    issues.push({
+    const issue: RuneIssue = {
       code: 'RUNE-203',
       message: formatDiagnostic(parts, (part) => secrets.mask(part)),
       location,
-    });
+    };
+    issues.push(
+      documentOrdinal === undefined ? issue : withValuesDocumentOrdinal(issue, documentOrdinal),
+    );
   };
 
   for (const key of options.overrides?.keys() ?? []) {
     report(key, SOURCE_NAMES.set, undefined);
   }
   for (const entry of values) {
-    report(entry.id, entry.origin, entry.location);
+    report(entry.id, entry.origin, entry.location, entry.documentOrdinal);
   }
   for (const key of options.answers?.keys() ?? []) {
     report(key, 'the answer', undefined);

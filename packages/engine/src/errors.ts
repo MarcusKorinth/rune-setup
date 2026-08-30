@@ -42,6 +42,15 @@ export interface RuneIssue {
   readonly location: Location | undefined;
 }
 
+/** Values-file order is internal diagnostic metadata, not part of the public issue shape. */
+const valuesDocumentOrdinals = new WeakMap<RuneIssue, number>();
+
+/** Retains a values document's invocation order while its issue is being collected. */
+export function withValuesDocumentOrdinal(issue: RuneIssue, ordinal: number): RuneIssue {
+  valuesDocumentOrdinals.set(issue, ordinal);
+  return issue;
+}
+
 export interface RuneErrorOptions {
   readonly location?: Location;
   /** All collected problems; defaults to the single problem this error describes. */
@@ -61,9 +70,10 @@ export function formatIssues(issues: readonly RuneIssue[]): string {
 }
 
 /**
- * Puts a batch of problems into the order an author reads them — by position in the document,
- * each distinct problem once. Every layer that collects problems orders them through here, so
- * a shape batch and a semantics batch make the same promise instead of two different ones.
+ * Puts a batch of problems into the order an author reads them — values-file invocation order
+ * first, then position in a document, each distinct problem once. Every layer that collects
+ * problems orders them through here, so a shape batch and a semantics batch make the same
+ * promise instead of two different ones.
  */
 export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
   const seen = new Set<string>();
@@ -78,14 +88,20 @@ export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
       unique.push(issue);
     }
   }
-  return unique.sort(
-    (a, b) =>
+  return unique.sort((a, b) => {
+    const aValuesDocumentOrdinal = valuesDocumentOrdinals.get(a);
+    const bValuesDocumentOrdinal = valuesDocumentOrdinals.get(b);
+    return (
+      (aValuesDocumentOrdinal !== undefined && bValuesDocumentOrdinal !== undefined
+        ? aValuesDocumentOrdinal - bValuesDocumentOrdinal
+        : 0) ||
       (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
       (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
       // Code-unit order, not locale order: the golden files must read the same on every
       // machine, whatever locale it runs in and whether its Node carries the full ICU data.
-      compareCodeUnits(a.message, b.message),
-  );
+      compareCodeUnits(a.message, b.message)
+    );
+  });
 }
 
 function compareCodeUnits(a: string, b: string): number {
