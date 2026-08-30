@@ -291,10 +291,19 @@ describe('the interactive run', () => {
     const io = capture();
     const interaction = scripted(['hello', 'super-secret-value', '1', 'bye', 'p']);
 
-    const code = await run(['run', path], io, interaction);
+    const code = await run(['run', path, '--result', '-'], io, interaction);
 
     expect(code).toBe(0);
-    expect(io.err.join('\n')).toContain('bye');
+    const diagnostics = io.err.join('\n');
+    const summaries = diagnostics.split('Review your configuration').slice(1);
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]?.match(/^ {2}1\) greeting = hello$/m)).not.toBeNull();
+    expect(summaries[1]?.match(/^ {2}1\) greeting = bye$/m)).not.toBeNull();
+
+    const result = JSON.parse(io.out.join('\n')) as {
+      inputs: readonly { id: string; value: unknown }[];
+    };
+    expect(result.inputs.find((input) => input.id === 'greeting')?.value).toBe('bye');
   });
 
   it('rejects malformed summary indexes before accepting a valid index', async () => {
@@ -350,11 +359,30 @@ describe('the interactive run', () => {
     const io = capture();
     const interaction = scripted(['1', 'true', '5432', 'p']);
 
-    const code = await run(['run', path, '--set', 'databasePort=eighty'], io, interaction);
+    const code = await run(
+      ['run', path, '--set', 'databasePort=eighty', '--result', '-'],
+      io,
+      interaction,
+    );
 
     expect(code).toBe(0);
-    expect(interaction.transcript()).toContain('databasePort');
-    expect(io.err.join('\n')).toContain('5432');
+    const diagnostics = io.err.join('\n');
+    const summaries = diagnostics.split('Review your configuration').slice(1);
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]).not.toMatch(/^ {2}\d+\) databasePort = /m);
+    expect(interaction.transcript().match(/Enter a value for installDatabase: /g)).toHaveLength(1);
+    expect(interaction.transcript().match(/Enter a value for databasePort: /g)).toHaveLength(1);
+    expect(summaries[1]).toMatch(/^ {2}\d+\) databasePort = 5432$/m);
+
+    const result = JSON.parse(io.out.join('\n')) as {
+      inputs: readonly { id: string; value: unknown; enabled: boolean }[];
+    };
+    expect(result.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'installDatabase', value: true, enabled: true }),
+        expect.objectContaining({ id: 'databasePort', value: '5432', enabled: true }),
+      ]),
+    );
   });
 
   it('cancels from the summary with exit 6 and a cancelled result', async () => {
