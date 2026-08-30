@@ -284,6 +284,91 @@ describe('planning and executing', () => {
     expect(log).toContain('run finished: succeeded (exit 0)');
   });
 
+  it('executes the exact plan object reviewed beforehand', async () => {
+    const session = await Session.open(fixture(BASE), { environment: {}, runner: okRunner });
+    const reviewedPlan = session.plan();
+    let started: Extract<RunEvent, { kind: 'runStarted' }> | undefined;
+
+    await session.execute((event) => {
+      if (event.kind === 'runStarted') {
+        started = event;
+      }
+    });
+
+    expect(started?.plan).toBe(reviewedPlan);
+  });
+
+  it('keeps reviewed environment interpolation unchanged during execution', async () => {
+    const environment = { TARGET: 'reviewed' };
+    let executedArgv: readonly unknown[] | undefined;
+    const runner: Runner = {
+      run: async (request) => {
+        executedArgv = request.command.argv;
+        return { kind: 'exited', exitCode: 0 };
+      },
+    };
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs: {}',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${env.TARGET}"]',
+      ]),
+      { environment, runner },
+    );
+
+    session.plan();
+    environment.TARGET = 'changed';
+    await session.execute();
+
+    expect(executedArgv).toEqual(['node', 'reviewed']);
+  });
+
+  it('invalidates a plan only after an accepted input edit', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  port:',
+        '    type: text',
+        '    default: "5432"',
+        '    pattern: "[0-9]+"',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${port}"]',
+      ]),
+      { environment: {} },
+    );
+    const initialPlan = session.plan();
+
+    session.setValue('port', '1234');
+    const editedPlan = session.plan();
+
+    expect(editedPlan).not.toBe(initialPlan);
+    expect(editedPlan.steps[0]).toMatchObject({
+      state: 'PENDING',
+      command: { argv: ['node', '1234'] },
+    });
+
+    session.setValue('port', '1234');
+    const equalValuePlan = session.plan();
+    expect(equalValuePlan).not.toBe(editedPlan);
+
+    expect(() => session.setValue('port', 'invalid')).toThrow(/port/);
+    expect(session.plan()).toBe(equalValuePlan);
+  });
+
   it('describes a dry run without executing', async () => {
     const session = await Session.open(fixture(BASE), { environment: {} });
 

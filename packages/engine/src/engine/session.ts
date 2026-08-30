@@ -87,6 +87,7 @@ export class Session {
   readonly #runner: Runner | undefined;
   readonly #mode: RunMode;
   #resolution: Resolution;
+  #cachedPlan: ExecutionPlan | undefined;
   #cancel: CancelToken | undefined;
 
   private constructor(fields: {
@@ -220,6 +221,7 @@ export class Session {
       throw error;
     }
     this.#resolution = after;
+    this.#cachedPlan = undefined;
 
     const changes: InputStateChanged[] = [];
     for (const state of after.inputs) {
@@ -242,13 +244,14 @@ export class Session {
         missing.map((id) => this.#missingIssue(id)),
       );
     }
-    return buildPlan({
+    this.#cachedPlan ??= buildPlan({
       manifest: this.manifest,
       manifestPath: this.manifestPath,
       resolution: this.#resolution,
       context: this.#context,
       strings: this.#strings,
     });
+    return this.#cachedPlan;
   }
 
   /**
