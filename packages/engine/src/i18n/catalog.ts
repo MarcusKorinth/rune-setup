@@ -6,7 +6,7 @@
  * English built-ins only; every other language comes from the manifest author's overlays.
  */
 
-export const CHROME_CATALOG: Readonly<Record<string, string>> = Object.freeze({
+export const CHROME_CATALOG = Object.freeze({
   'rune.button.next': 'Next',
   'rune.button.back': 'Back',
   'rune.button.cancel': 'Cancel',
@@ -29,7 +29,9 @@ export const CHROME_CATALOG: Readonly<Record<string, string>> = Object.freeze({
   'rune.result.cancelled': 'Setup was cancelled.',
   'rune.result.planned': 'Dry run: nothing was executed.',
   'rune.result.nothingExecuted': 'No step needed to run.',
-});
+} as const satisfies Readonly<Record<string, string>>);
+
+export type ChromeKey = keyof typeof CHROME_CATALOG;
 
 /**
  * Fills `{name}` placeholders in a chrome string. Single pass over the template, and a

@@ -91,6 +91,7 @@ export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/mo
 export { serializeResult, writeResult } from './results/writer.js';
 
 export type { StringTable } from './i18n/strings.js';
+export type { ChromeKey } from './i18n/catalog.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 

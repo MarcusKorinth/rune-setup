@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { InternalError } from '../../src/errors.js';
 import { formatChrome } from '../../src/i18n/catalog.js';
 import { loadOverlayText } from '../../src/i18n/overlay.js';
 import { resolveStrings } from '../../src/i18n/strings.js';
@@ -90,6 +91,20 @@ describe('the resolved string table', () => {
       'Step 2 of 5: {index}',
     );
     expect(formatChrome('no placeholders')).toBe('no placeholders');
+  });
+
+  it('rejects unknown chrome keys at runtime', () => {
+    const strings = resolveStrings({ manifest: MANIFEST });
+    const untypedChrome = strings.chrome as (key: string) => string;
+
+    expect.assertions(3);
+    try {
+      untypedChrome('steps.install.title');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InternalError);
+      expect(error).toMatchObject({ code: 'RUNE-500' });
+      expect((error as Error).message).toContain('unknown chrome string key "steps.install.title"');
+    }
   });
 
   it('fills placeholders only from own values', () => {

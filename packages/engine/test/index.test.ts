@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
-import type { StringTable } from '../src/index.js';
+import type { ChromeKey, StringTable } from '../src/index.js';
 
 const INTERNAL_RUNTIME_EXPORTS = [
   'EXIT_CODE_BY_STATUS',
@@ -21,6 +21,15 @@ const INTERNAL_RUNTIME_EXPORTS = [
 
 type StringTableIsExported = StringTable extends object ? true : false;
 const stringTableTypeIsExported: StringTableIsExported = true;
+type ChromeParameter = Parameters<StringTable['chrome']>[0];
+type ChromeParameterIsPublicKey = [ChromeParameter, ChromeKey] extends [ChromeKey, ChromeParameter]
+  ? true
+  : false;
+type KnownChromeKeyIsAccepted = 'rune.button.next' extends ChromeParameter ? true : false;
+type UnknownChromeKeyIsRejected = 'rune.button.unknown' extends ChromeParameter ? false : true;
+const chromeParameterIsPublicKey: ChromeParameterIsPublicKey = true;
+const knownChromeKeyIsAccepted: KnownChromeKeyIsAccepted = true;
+const unknownChromeKeyIsRejected: UnknownChromeKeyIsRejected = true;
 
 describe('@rune/engine public API', () => {
   it('exposes a semver version', () => {
@@ -33,8 +42,12 @@ describe('@rune/engine public API', () => {
     }
   });
 
-  it('keeps StringTable as a type-only contract', () => {
+  it('keeps i18n contracts as type-only exports', () => {
     expect(stringTableTypeIsExported).toBe(true);
+    expect(chromeParameterIsPublicKey).toBe(true);
+    expect(knownChromeKeyIsAccepted).toBe(true);
+    expect(unknownChromeKeyIsRejected).toBe(true);
     expect(engine).not.toHaveProperty('StringTable');
+    expect(engine).not.toHaveProperty('ChromeKey');
   });
 });

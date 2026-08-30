@@ -7,8 +7,9 @@
  * this table and never resolve text themselves.
  */
 
+import { InternalError } from '../errors.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
-import { CHROME_CATALOG, formatChrome } from './catalog.js';
+import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
 import type { LocaleOverlay } from './overlay.js';
 
 export interface StringTable {
@@ -19,7 +20,7 @@ export interface StringTable {
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
   readonly entries: Readonly<Record<string, string>>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
-  chrome(key: string, values?: Readonly<Record<string, string | number>>): string;
+  chrome(key: ChromeKey, values?: Readonly<Record<string, string | number>>): string;
   inputTitle(id: string): string;
   inputDescription(id: string): string | undefined;
   patternHint(id: string): string | undefined;
@@ -84,7 +85,16 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     locale: options.locale ?? overlay?.locale,
     overlayLocale: overlay?.locale,
     entries: snapshot,
-    chrome: (key, values) => formatChrome(get(key) ?? key, values),
+    chrome: (key, values) => {
+      if (!Object.hasOwn(CHROME_CATALOG, key)) {
+        throw new InternalError(`unknown chrome string key "${key}"`);
+      }
+      const template = get(key);
+      if (template === undefined) {
+        throw new InternalError(`missing resolved chrome string for key "${key}"`);
+      }
+      return formatChrome(template, values);
+    },
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
     inputDescription: (id) => get(`inputs.${id}.description`),
     patternHint: (id) => get(`inputs.${id}.patternHint`),
