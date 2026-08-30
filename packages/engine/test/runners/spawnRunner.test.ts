@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -647,17 +647,57 @@ describe('SpawnRunner', () => {
     expect(outcome).toEqual({ kind: 'failedToStart', reason: 'invalidCwd' });
   });
 
+  it('reports a working-directory file as invalid', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-file-cwd-'));
+    const file = join(directory, 'not-a-directory');
+    writeFileSync(file, '');
+
+    try {
+      await expect(run(nodeCommand('', { cwd: file }))).resolves.toEqual({
+        kind: 'failedToStart',
+        reason: 'invalidCwd',
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not blame a valid cwd for ENOTDIR in the executable path',
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'rune-file-command-'));
+      const file = join(directory, 'not-a-directory');
+      writeFileSync(file, '');
+
+      try {
+        await expect(
+          run(
+            nodeCommand('', {
+              argv: [join(file, 'command')],
+              cwd: directory,
+            }),
+          ),
+        ).resolves.toEqual({ kind: 'failedToStart', reason: 'other' });
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
-    ['executable', nodeCommand('', { argv: ['invalid\0executable'] })],
-    ['argument', nodeCommand('', { argv: [process.execPath, 'invalid\0argument'] })],
-    ['working directory', nodeCommand('', { cwd: 'invalid\0directory' })],
-    ['environment value', nodeCommand('', { env: { INVALID: 'invalid\0value' } })],
-    ['environment name', nodeCommand('', { env: { ['INVALID\0NAME']: 'value' } })],
-  ])('reports an invalid NUL-containing %s without rejecting', async (_name, command) => {
-    await expect(run(command)).resolves.toEqual({
+    ['executable', nodeCommand('', { argv: ['invalid\0executable'] }), 'other'],
+    ['argument', nodeCommand('', { argv: [process.execPath, 'invalid\0argument'] }), 'other'],
+    ['working directory', nodeCommand('', { cwd: 'invalid\0directory' }), 'invalidCwd'],
+    ['environment value', nodeCommand('', { env: { INVALID: 'invalid\0value' } }), 'other'],
+    ['environment name', nodeCommand('', { env: { ['INVALID\0NAME']: 'value' } }), 'other'],
+  ])('reports an invalid NUL-containing %s without rejecting', async (_name, command, reason) => {
+    const outcome = await run(command);
+
+    expect(outcome).toEqual({
       kind: 'failedToStart',
-      reason: 'other',
+      reason,
     });
+    expect(JSON.stringify(outcome)).not.toContain('\\u0000');
   });
 
   it('does not include a secret-wrapped invalid value in a startup failure', async () => {

@@ -121,14 +121,25 @@ export class SpawnRunner implements Runner {
         );
 
         cwd = reveal(command.cwd);
-        child = spawn(executable, args.map(reveal), {
-          cwd,
-          env,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          shell: false,
-          // Its own process group on POSIX, so the kill path can address the whole tree.
-          detached: process.platform !== 'win32',
-        });
+        if (cwd.includes('\0')) {
+          resolve({ kind: 'failedToStart', reason: 'invalidCwd' });
+          return;
+        }
+        try {
+          child = spawn(executable, args.map(reveal), {
+            cwd,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: false,
+            // Its own process group on POSIX, so the kill path can address the whole tree.
+            detached: process.platform !== 'win32',
+          });
+        } catch (error) {
+          void classifyStartFailure(error, cwd).then((reason) =>
+            resolve({ kind: 'failedToStart', reason }),
+          );
+          return;
+        }
       } catch {
         resolve({ kind: 'failedToStart', reason: 'other' });
         return;
@@ -236,13 +247,17 @@ export class SpawnRunner implements Runner {
   }
 }
 
-/** ENOENT names both a missing executable and a bad cwd; inspect only the already-revealed cwd. */
-async function classifyStartFailure(error: Error, cwd: string): Promise<StartFailureReason> {
-  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+/** ENOENT/ENOTDIR can name the executable path or cwd; inspect only the revealed cwd. */
+async function classifyStartFailure(error: unknown, cwd: string): Promise<StartFailureReason> {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== 'ENOENT' && code !== 'ENOTDIR') {
     return 'other';
   }
   try {
-    return (await stat(cwd)).isDirectory() ? 'commandNotFound' : 'invalidCwd';
+    if (!(await stat(cwd)).isDirectory()) {
+      return 'invalidCwd';
+    }
+    return code === 'ENOENT' ? 'commandNotFound' : 'other';
   } catch {
     return 'invalidCwd';
   }
