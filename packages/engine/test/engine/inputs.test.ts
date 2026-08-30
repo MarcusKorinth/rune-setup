@@ -160,6 +160,25 @@ describe('precedence', () => {
     expect(resolution.byId.get('target')?.value).toBe('overlay');
   });
 
+  it('keeps the later values file origin and exact location', () => {
+    const patterned = manifestOf('inputs:', '  target:', '    type: text', '    pattern: "x+"');
+    const resolution = resolve(patterned, {
+      values: [
+        valuesFromFile('target: x\n', 'base.yaml'),
+        valuesFromFile('target: not-x\n', 'overlay.yaml'),
+      ],
+      invalidValues: 'collect',
+    });
+    const rejection = rejectionFor(resolution, 'target');
+
+    expect(rejection.source).toBe('values');
+    expect(rejection.candidate).toBe('not-x');
+    expect(rejection.issue).toMatchObject({
+      message: 'target (from overlay.yaml): "not-x" does not match x+',
+      location: { file: 'overlay.yaml', line: 1, column: 1 },
+    });
+  });
+
   it('lets the environment override a values file', () => {
     const resolution = resolve(
       manifest,
@@ -187,6 +206,10 @@ describe('precedence', () => {
     const resolution = resolve(
       manifest,
       {
+        values: [
+          values('base.yaml', { target: 'from-base-values' }),
+          values('overlay.yaml', { target: 'from-overlay-values' }),
+        ],
         overrides: new Map([['target', 'from-set']]),
         answers: new Map([['target', 'from-answer']]),
       },
@@ -648,20 +671,45 @@ describe('values a type refuses', () => {
 });
 
 describe('keys that name no input', () => {
-  it('does not rescan known ids or values-file order for every input', () => {
+  it('indexes values documents and entries exactly once per resolution', () => {
     const inputCount = 200;
     const documentCount = 48;
     const ids = Array.from({ length: inputCount }, (_, index) => `input${index}`);
     const supplied = Object.fromEntries(ids.map((id) => [id, `value-${id}`]));
     const manifest = manifestOf('inputs:', ...ids.flatMap((id) => [`  ${id}:`, '    type: text']));
-    const documents = Array.from({ length: documentCount }, (_, index) =>
-      values(`values-${index}.yaml`, supplied),
-    );
-    let iteratorRequests = 0;
+    let documentIteratorRequests = 0;
+    let valuesIteratorRequests = 0;
+    let entryVisits = 0;
+    const documents = Array.from({ length: documentCount }, (_, index) => {
+      const entries = new Map(Object.entries(supplied));
+      const monitoredEntries = new Proxy(entries, {
+        get(target, property, receiver) {
+          if (property === Symbol.iterator) {
+            valuesIteratorRequests += 1;
+            return function* (): Generator<[string, unknown]> {
+              for (const entry of target) {
+                entryVisits += 1;
+                yield entry;
+              }
+            };
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      return {
+        file: `values-${index}.yaml`,
+        values: monitoredEntries as unknown as ReadonlyMap<string, unknown>,
+        sourceMap: {
+          location: () => undefined,
+          keyLocation: () => undefined,
+          best: () => undefined,
+        },
+      } as unknown as ValuesDocument;
+    });
     const monitoredDocuments = new Proxy(documents, {
       get(target, property, receiver) {
         if (property === Symbol.iterator) {
-          iteratorRequests += 1;
+          documentIteratorRequests += 1;
         }
         return Reflect.get(target, property, receiver);
       },
@@ -677,9 +725,9 @@ describe('keys that name no input', () => {
       includes.mockRestore();
     }
 
-    // Unknown-key validation iterates the documents once. Resolution must then index from the
-    // end instead of creating and reversing a new document array for each input.
-    expect(iteratorRequests).toBe(1);
+    expect(documentIteratorRequests).toBe(1);
+    expect(valuesIteratorRequests).toBe(documentCount);
+    expect(entryVisits).toBe(documentCount * inputCount);
     expect(includesCalls).toBe(0);
     expect(resolution?.byId.get('input0')).toMatchObject({
       value: 'value-input0',
@@ -1192,6 +1240,21 @@ describe('secrets', () => {
     expect(second.byId.get('token')?.value).toBeInstanceOf(SecretString);
     expect((second.byId.get('token')?.value as SecretString).reveal()).toBe('hunter2-and-more');
     expect(second.missing).toEqual([]);
+  });
+
+  it('pre-stages the later values-file secret selected by the values index', () => {
+    const base = 'F046-BASE-VALUES-SECRET';
+    const winner = 'F046-OVERLAY-VALUES-SECRET';
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      values: [values('base.yaml', { token: base }), values('overlay.yaml', { token: winner })],
+      secrets,
+    });
+
+    expect(resolution.byId.get('token')?.source).toBe('values');
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+    expect(secrets.mask(winner)).toBe('***');
+    expect(secrets.mask(base)).toBe(base);
   });
 
   it('takes every other type back as an answer too', () => {

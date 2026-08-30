@@ -151,12 +151,13 @@ function resolveInputsStaged(
 ): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
-  const suppliedSecrets = stageSuppliedSecrets(options, ids, stagedSecrets);
+  const valuesLayer = indexValuesLayer(options.values);
+  const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer.byId, stagedSecrets);
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
 
-  checkUnknownKeys(options, ids, issues);
+  checkUnknownKeys(options, ids, valuesLayer.entries, issues);
 
   const states = new Map<string, InputState>();
   const order: string[] = [];
@@ -170,7 +171,7 @@ function resolveInputsStaged(
     const enabled = isEnabled(spec, id, order, states, context);
     const supplied = handler.secret
       ? suppliedSecrets.get(id)?.supplied
-      : highestLayer(id, spec, options);
+      : highestLayer(id, spec, options, valuesLayer.byId);
 
     if (!enabled) {
       // A manifest default is not something anybody *supplied* for this run: it is what the
@@ -307,6 +308,7 @@ interface StagedSecret {
 function stageSuppliedSecrets(
   options: ResolveInputsOptions,
   ids: readonly string[],
+  values: ReadonlyMap<string, SuppliedValue>,
   stagedSecrets: SecretRegistry,
 ): ReadonlyMap<string, StagedSecret> {
   const suppliedSecrets = new Map<string, StagedSecret>();
@@ -317,7 +319,7 @@ function stageSuppliedSecrets(
       continue;
     }
 
-    const supplied = highestLayer(id, spec, options);
+    const supplied = highestLayer(id, spec, options, values);
     if (supplied === undefined || supplied.source === 'default') {
       continue;
     }
@@ -473,11 +475,46 @@ interface SuppliedValue {
   readonly origin: string;
 }
 
+/** One values-file entry retained for unknown-key validation in source order. */
+interface ValuesLayerEntry {
+  readonly id: string;
+  readonly origin: string;
+  readonly location: Location;
+}
+
+/**
+ * Folds values files once per resolution. Later documents replace earlier values per input,
+ * while the entry list preserves unknown-key diagnostics and their suggestion order.
+ */
+function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): {
+  readonly byId: ReadonlyMap<string, SuppliedValue>;
+  readonly entries: readonly ValuesLayerEntry[];
+} {
+  const byId = new Map<string, SuppliedValue>();
+  const entries: ValuesLayerEntry[] = [];
+
+  for (const document of documents ?? []) {
+    for (const [id, raw] of document.values) {
+      const location = document.sourceMap.best([id]) ?? startOfFile(document.file);
+      byId.set(id, {
+        source: 'values',
+        raw,
+        location,
+        origin: document.file,
+      });
+      entries.push({ id, origin: document.file, location });
+    }
+  }
+
+  return { byId, entries };
+}
+
 /** The value of the highest layer that supplied one, which is the value that wins (§5). */
 function highestLayer(
   id: string,
   spec: InputSpec,
   options: ResolveInputsOptions,
+  values: ReadonlyMap<string, SuppliedValue>,
 ): SuppliedValue | undefined {
   if (options.answers?.has(id)) {
     const answer = options.answers.get(id);
@@ -494,18 +531,9 @@ function highestLayer(
     return fromEnvironment;
   }
 
-  // Later files override earlier ones, so the last one that mentions the input wins.
-  const documents = options.values ?? [];
-  for (let index = documents.length - 1; index >= 0; index -= 1) {
-    const document = documents[index]!;
-    if (document.values.has(id)) {
-      return {
-        source: 'values',
-        raw: document.values.get(id),
-        location: document.sourceMap.best([id]) ?? startOfFile(document.file),
-        origin: document.file,
-      };
-    }
+  const fromValues = values.get(id);
+  if (fromValues !== undefined) {
+    return fromValues;
   }
 
   // A `secret` has no default at all — the type carries no such key, which is why this asks
@@ -671,6 +699,7 @@ function lookup(
 function checkUnknownKeys(
   options: ResolveInputsOptions,
   ids: readonly string[],
+  values: readonly ValuesLayerEntry[],
   issues: RuneIssue[],
 ): void {
   const knownIds = new Set(ids);
@@ -698,10 +727,8 @@ function checkUnknownKeys(
   for (const key of options.overrides?.keys() ?? []) {
     report(key, SOURCE_NAMES.set, undefined);
   }
-  for (const document of options.values ?? []) {
-    for (const key of document.values.keys()) {
-      report(key, document.file, document.sourceMap.best([key]) ?? startOfFile(document.file));
-    }
+  for (const entry of values) {
+    report(entry.id, entry.origin, entry.location);
   }
   for (const key of options.answers?.keys() ?? []) {
     report(key, 'the answer', undefined);
