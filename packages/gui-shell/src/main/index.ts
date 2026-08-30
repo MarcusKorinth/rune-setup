@@ -281,11 +281,20 @@ export async function windowedRun(
       return;
     }
     rendererLost = true;
-    fatalCode = 70;
     resolveRendererLost?.();
+    // Once the engine outcome is durably delivered it remains authoritative: losing only
+    // the Result-page renderer cannot rewrite the workflow behind the caller's back.
+    if (outcome !== undefined) {
+      destroyAfterRendererLoss();
+      return;
+    }
     if (running) {
       session.cancel();
     } else {
+      // Main, the Session and the writer are still alive, so this is an ordinary owned
+      // internal-error outcome rather than the resultless main-process crash of §10.
+      fatalCode = 70;
+      deliverFailure(70, invocation, writer, session);
       destroyAfterRendererLoss();
     }
   };
@@ -299,6 +308,16 @@ export async function windowedRun(
     onExecuteEnd: (result) => {
       if (rendererLost) {
         running = false;
+        const internalResult: RunResult = {
+          ...result,
+          status: 'internal_error',
+          exitCode: 70,
+        };
+        if (deliverSafely(internalResult, invocation, writer, session)) {
+          outcome = internalResult;
+        } else {
+          fatalCode = 70;
+        }
         destroyAfterRendererLoss();
         return;
       }
@@ -319,6 +338,8 @@ export async function windowedRun(
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
       if (rendererLost) {
+        fatalCode = 70;
+        deliverFailure(70, invocation, writer, session);
         destroyAfterRendererLoss();
         return;
       }
@@ -378,7 +399,7 @@ export async function windowedRun(
   } catch (error) {
     if (rendererLost) {
       await closed;
-      return 70;
+      return outcome?.exitCode ?? 70;
     }
     const code = failWith(error, invocation, session, writer);
     if (!window.isDestroyed()) {

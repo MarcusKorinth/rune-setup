@@ -465,7 +465,7 @@ describe('the IPC bridge', () => {
     expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
   });
 
-  it('treats renderer loss while idle as a hard crash without a result', async () => {
+  it('writes one internal-error result when the renderer is lost while idle', async () => {
     const manifestPath = emptyFixture();
     const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
     const invocation = {
@@ -484,10 +484,46 @@ describe('the IPC bridge', () => {
     window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
 
     await expect(run).resolves.toBe(70);
-    expect(writer).not.toHaveBeenCalled();
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'internal_error',
+        exitCode: 70,
+        stepsTotal: 0,
+        stepsExecuted: 0,
+      }),
+      invocation.result,
+    );
     expect(window.closeCalls).toBe(0);
     expect(window.destroyCalls).toBe(1);
     expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
+  });
+
+  it('keeps renderer-loss writer failures at exit 70 after one delivery attempt', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = windowedRun(session, invocation, () => {
+      writes += 1;
+      throw new Error('disk denied');
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    await expect(run).resolves.toBe(70);
+    expect(writes).toBe(1);
+    expect(window.destroyCalls).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
   });
 
   it('cancels and finishes active runner cleanup before ending a renderer crash', async () => {
@@ -546,13 +582,24 @@ describe('the IPC bridge', () => {
     await expect(execution).resolves.toMatchObject({ status: 'cancelled', exitCode: 6 });
     await expect(run).resolves.toBe(70);
     expect(cleanupFinished).toBe(true);
-    expect(writer).not.toHaveBeenCalled();
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'internal_error',
+        exitCode: 70,
+        stepsTotal: 1,
+        stepsExecuted: 1,
+        stepsCancelled: 1,
+        steps: [expect.objectContaining({ id: 'use', state: 'CANCELLED' })],
+      }),
+      invocation.result,
+    );
     expect(window.closeCalls).toBe(0);
     expect(window.destroyCalls).toBe(1);
     expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
   });
 
-  it('does not write a load error result after renderer loss wins the load race', async () => {
+  it('writes one internal-error result when renderer loss wins the load race', async () => {
     const manifestPath = emptyFixture();
     const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
     const invocation = {
@@ -573,9 +620,122 @@ describe('the IPC bridge', () => {
     load.reject(new Error('renderer load failed after process loss'));
 
     await expect(run).resolves.toBe(70);
-    expect(writer).not.toHaveBeenCalled();
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'internal_error', exitCode: 70 }),
+      invocation.result,
+    );
     expect(window.destroyCalls).toBe(1);
     expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
+  });
+
+  it('writes one internal-error result after active execute rejects during renderer loss', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const executeStarted = deferred();
+    let rejectExecution: ((error: Error) => void) | undefined;
+    const rejectedExecution = new Promise<never>((_resolve, reject) => {
+      rejectExecution = reject;
+    });
+    vi.spyOn(session, 'execute').mockImplementation(() => {
+      executeStarted.resolve();
+      return rejectedExecution;
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const writer = vi.fn();
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    if (execute === undefined) {
+      throw new Error('execute handler was not registered');
+    }
+    const execution = execute({});
+    await executeStarted.promise;
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    expect(writer).not.toHaveBeenCalled();
+    expect(window.destroyCalls).toBe(0);
+    rejectExecution?.(new Error('execute failed after renderer loss'));
+
+    await expect(execution).rejects.toThrow('execute failed after renderer loss');
+    await expect(run).resolves.toBe(70);
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'internal_error', exitCode: 70 }),
+      invocation.result,
+    );
+    expect(window.destroyCalls).toBe(1);
+  });
+
+  it('keeps a persisted successful outcome authoritative after renderer loss', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const writer = vi.fn();
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    await expect(execute?.({})).resolves.toMatchObject({ status: 'succeeded', exitCode: 0 });
+    expect(writer).toHaveBeenCalledTimes(1);
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    await expect(run).resolves.toBe(0);
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'succeeded', exitCode: 0 }),
+      invocation.result,
+    );
+    expect(window.destroyCalls).toBe(1);
+  });
+
+  it('keeps a persisted nonzero outcome authoritative after renderer loss', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'provided-token' },
+      runner: { run: async () => ({ kind: 'exited', exitCode: 9 }) },
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const writer = vi.fn();
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    await expect(execute?.({})).resolves.toMatchObject({ status: 'failed', exitCode: 1 });
+    expect(writer).toHaveBeenCalledTimes(1);
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    await expect(run).resolves.toBe(1);
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', exitCode: 1 }),
+      invocation.result,
+    );
+    expect(window.destroyCalls).toBe(1);
   });
 
   it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {
