@@ -136,6 +136,72 @@ describe('the interactive run', () => {
     expect(interaction.transcript()).toContain('lower-case letters only');
   });
 
+  it('displays option labels while accepting only select and multiselect values', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  releaseChannel:',
+      '    type: select',
+      '    options:',
+      '      - value: prod',
+      '        label: Production release',
+      '      - value: dev',
+      '        label: Developer preview',
+      '  components:',
+      '    type: multiselect',
+      '    options:',
+      '      - value: git',
+      '        label: Source control',
+      '      - value: docker',
+      '        label: Container runtime',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = scripted([
+      'Production release',
+      'prod',
+      'Source control, Container runtime',
+      'git,docker',
+      'p',
+    ]);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(0);
+    const transcript = interaction.transcript();
+    expect(transcript).toContain('Production release (prod)');
+    expect(transcript).toContain('Developer preview (dev)');
+    expect(transcript).toContain('enter the value of one option');
+    expect(transcript).toContain('Source control (git)');
+    expect(transcript).toContain('Container runtime (docker)');
+    expect(transcript).toContain('enter option values, separated by commas');
+    expect(transcript).toContain(
+      '"Production release" is not one of the option values ("prod", "dev")',
+    );
+    expect(transcript).toContain(
+      '"Source control", "Container runtime" are not option values ("git", "docker")',
+    );
+    expect(transcript.match(/Enter a value for releaseChannel: /g)).toHaveLength(2);
+    expect(transcript.match(/Enter a value for components: /g)).toHaveLength(2);
+    expect(transcript).toContain('Proceed (p) / Change a value <n> / Cancel (c): ');
+
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      mode: string;
+      inputs: readonly { id: string; value: unknown }[];
+    };
+    expect(result.status).toBe('succeeded');
+    expect(result.mode).toBe('interactive');
+    expect(result.inputs.find((input) => input.id === 'releaseChannel')?.value).toBe('prod');
+    expect(result.inputs.find((input) => input.id === 'components')?.value).toEqual([
+      'git',
+      'docker',
+    ]);
+  });
+
   it.each(['set', 'values'] as const)(
     'prompts to correct an invalid %s seed instead of aborting',
     async (source) => {
