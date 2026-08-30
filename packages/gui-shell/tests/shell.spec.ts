@@ -7,7 +7,13 @@ import { _electron as electron, expect, test, type ElectronApplication } from '@
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixturePath = join(packageDirectory, 'tests', 'fixtures', 'smoke.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
+const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
+
+interface SummaryTestControl {
+  planCount(): number;
+  resolvePlan(index: number, title: string): void;
+}
 
 test('launches the real Node 22 shell and renders Welcome', async () => {
   let application: ElectronApplication | undefined;
@@ -35,6 +41,66 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
     console.log('[shell-smoke] Welcome rendered for RUNE Shell Smoke');
     expect(pageErrors).toEqual([]);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps Install disabled for the current summary plan only', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
+    await expect(install).toBeDisabled();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+
+    await page.locator('#back').click();
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(2);
+    await expect(install).toBeDisabled();
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'stale plan'),
+    );
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    await expect(page.locator('.summary-step')).toHaveCount(0);
+    await expect(install).toBeDisabled();
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(1, 'current plan'),
+    );
+    await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
+    await expect(install).toBeEnabled();
   } finally {
     await application?.close();
   }

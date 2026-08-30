@@ -7,7 +7,13 @@
  * and keeps Next disabled, and the enabled/disabled flips come back from the same call.
  */
 
-import type { BridgeEvent, BridgeInput, BridgeResult, RuneBridge } from '../preload/types.js';
+import type {
+  BridgeEvent,
+  BridgeInput,
+  BridgePlan,
+  BridgeResult,
+  RuneBridge,
+} from '../preload/types.js';
 
 declare global {
   interface Window {
@@ -58,6 +64,9 @@ const state: State = {
   productName: '',
   productVersion: '',
 };
+
+/** Advances on every page render so an async summary can only update its own page. */
+let renderVersion = 0;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -168,6 +177,7 @@ async function navigate(direction: 1 | -1): Promise<void> {
 }
 
 function render(): void {
+  const version = ++renderVersion;
   el.page.classList.remove('page');
   void el.page.offsetWidth; // restart the page-in animation
   el.page.classList.add('page');
@@ -181,7 +191,9 @@ function render(): void {
       renderInputs();
       break;
     case 'summary':
-      void renderSummary();
+      // A summary cannot proceed until the engine has produced the current plan.
+      state.planFailed = true;
+      void renderSummary(version);
       break;
     case 'progress':
       renderProgress();
@@ -391,24 +403,38 @@ function messageOf(error: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '');
 }
 
-async function renderSummary(): Promise<void> {
+function isCurrentSummary(version: number): boolean {
+  return state.page === 'summary' && renderVersion === version;
+}
+
+async function renderSummary(version: number): Promise<void> {
+  if (!isCurrentSummary(version)) {
+    return;
+  }
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.summary.title');
   heading.className = 'result-heading';
   el.page.append(heading);
 
-  const plan = await window.rune.plan().catch((error: unknown) => {
+  let plan: BridgePlan;
+  try {
+    plan = await window.rune.plan();
+  } catch (error) {
+    if (!isCurrentSummary(version)) {
+      return;
+    }
     const problem = document.createElement('p');
     problem.className = 'error';
     problem.textContent = messageOf(error);
     el.page.append(problem);
-    return undefined;
-  });
-  state.planFailed = plan === undefined;
-  renderFooter();
-  if (plan === undefined) {
+    renderFooter();
     return;
   }
+  if (!isCurrentSummary(version)) {
+    return;
+  }
+  state.planFailed = false;
+  renderFooter();
   for (const step of plan.steps) {
     const row = div('summary-step');
     if (step.state === 'SKIPPED') {
