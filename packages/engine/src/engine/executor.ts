@@ -24,7 +24,7 @@ import type { RunEvent, EngineObserver } from './events.js';
 import { deepFreeze } from './freeze.js';
 import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
-import type { StepState } from './state.js';
+import { transitionStepState, type StepState } from './state.js';
 import { SpawnRunner } from '../runners/spawnRunner.js';
 import type { Runner, StartFailureReason } from '../runners/base.js';
 import {
@@ -129,16 +129,19 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       wasCancelled = true;
     }
     if (fatalTerminationFailure || abortForFailure || abortForCancellation) {
-      steps.push(finishedStep(step, 'NOT_RUN', null, 0, maskArgv(step, secrets), [], secrets));
+      const state = transitionStepState(step.state, 'NOT_RUN');
+      steps.push(finishedStep(step, state, null, 0, maskArgv(step, secrets), [], secrets));
       emit({
         kind: 'stepFinished',
         stepId: step.id,
-        state: 'NOT_RUN',
+        state,
         exitCode: undefined,
         durationMs: 0,
       });
       continue;
     }
+
+    let state = transitionStepState(step.state, 'RUNNING');
 
     emit({
       kind: 'stepStarted',
@@ -195,45 +198,47 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     const durationMs = Math.max(0, performance.now() - stepStartedAt);
-    let state: StepState;
+    let terminalState: 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
     let exitCode: number | null = null;
     let diagnostic: string | undefined;
 
     switch (outcome.kind) {
       case 'exited': {
         exitCode = outcome.exitCode;
-        state = step.command.successExitCodes.includes(outcome.exitCode) ? 'SUCCEEDED' : 'FAILED';
-        if (state === 'FAILED') {
+        terminalState = step.command.successExitCodes.includes(outcome.exitCode)
+          ? 'SUCCEEDED'
+          : 'FAILED';
+        if (terminalState === 'FAILED') {
           diagnostic = `RUNE-401 step "${step.id}" exited with code ${outcome.exitCode}; expected one of [${step.command.successExitCodes.join(', ')}]`;
         }
         break;
       }
       case 'signalled': {
-        state = 'FAILED';
+        terminalState = 'FAILED';
         diagnostic = `RUNE-401 step "${step.id}" terminated by a signal`;
         break;
       }
       case 'timedOut': {
-        state = 'FAILED';
+        terminalState = 'FAILED';
         diagnostic = `RUNE-402 step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
         break;
       }
       case 'cancelled':
-        state = 'CANCELLED';
+        terminalState = 'CANCELLED';
         break;
       case 'terminationFailed': {
-        state = 'FAILED';
+        terminalState = 'FAILED';
         fatalTerminationFailure = true;
         diagnostic = `RUNE-401 step "${step.id}" process-tree termination could not be confirmed`;
         break;
       }
       case 'streamFailed': {
-        state = 'FAILED';
+        terminalState = 'FAILED';
         diagnostic = `RUNE-401 step "${step.id}" ${outcome.stream} stream could not be read`;
         break;
       }
       case 'failedToStart': {
-        state = 'FAILED';
+        terminalState = 'FAILED';
         diagnostic = startFailureDiagnostic(step.id, outcome.reason);
         break;
       }
@@ -244,6 +249,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       keepInTail('stderr', line);
       emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
     }
+
+    state = transitionStepState(state, terminalState);
 
     if (state === 'FAILED') {
       failed = true;
