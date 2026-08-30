@@ -99,7 +99,7 @@ export function renderOutcome(result: RunResult, warnings: readonly string[], io
   for (const warning of warnings) {
     io.stderr(`warning: ${warning}`);
   }
-  if (!result.dryRun && result.nothingExecuted) {
+  if (result.status === 'succeeded' && result.nothingExecuted) {
     io.stderr('warning: nothing was executed — every step was skipped');
   }
   io.stderr(

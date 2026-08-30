@@ -256,6 +256,173 @@ describe('result files for failed outcomes', () => {
     expect(io.out).toHaveLength(1);
     expect(io.out[0]).not.toContain('Execution plan');
   });
+
+  it('preserves post-open context and renders session warnings once on plan failure', async () => {
+    const secret = 'failure-path-secret';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  ignoredInput:',
+      '    type: text',
+      '    when: "${enabled}"',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: unresolved',
+      '    run:',
+      '      command: "${env.RUNE_F011_MISSING}"',
+    ]);
+    const resultPath = join(path, '..', 'failure-result.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--set',
+        'ignoredInput=discarded',
+        '--set',
+        `token=${secret}`,
+        '--result',
+        resultPath,
+      ],
+      io,
+    );
+
+    expect(code).toBe(5);
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'resolution_error',
+      product: { name: 'Example', version: '1.0.0' },
+      manifest: {
+        path,
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+        schemaVersion: 1,
+      },
+      inputs: [
+        { id: 'enabled', value: false, source: 'default', enabled: true, secret: false },
+        {
+          id: 'ignoredInput',
+          value: '',
+          source: 'set',
+          enabled: false,
+          secret: false,
+          ignored: 'input disabled',
+        },
+        { id: 'token', value: null, source: 'set', enabled: true, secret: true },
+      ],
+      steps: [],
+    });
+    expect(JSON.stringify(written)).not.toContain(secret);
+    const warnings = io.err.filter((line) => line.includes('ignoredInput was set'));
+    expect(warnings).toHaveLength(1);
+    expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
+  });
+
+  it('passes a completed plan to failure-result construction', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: skipped',
+      '    when: "${enabled}"',
+      '    run:',
+      '      command: never-runs',
+      '  - id: pending',
+      '    run:',
+      '      command: node',
+    ]);
+    const directory = join(path, '..');
+    const resultPath = join(directory, 'planned-failure.json');
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--non-interactive', '--log-file', directory, '--result', resultPath],
+      io,
+    );
+
+    expect(code).toBe(70);
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'internal_error',
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+      steps: [
+        { id: 'skipped', state: 'SKIPPED', command: null },
+        { id: 'pending', state: 'NOT_RUN', command: ['node'] },
+      ],
+    });
+    expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
+  });
+
+  it('writes an honest empty topology for a plan-time execution error', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  channel:',
+      '    type: text',
+      '    default: stable',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const resultPath = join(path, '..', 'policy-failure.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--dry-run',
+        '--non-interactive',
+        '--platform',
+        'windows',
+        '--result',
+        resultPath,
+      ],
+      io,
+    );
+
+    expect(code).toBe(1);
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      dryRun: true,
+      platform: 'windows',
+      product: { name: 'Example', version: '1.0.0' },
+      manifest: {
+        path,
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+        schemaVersion: 1,
+      },
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      nothingExecuted: true,
+      inputs: [{ id: 'channel', value: 'stable', source: 'default' }],
+      steps: [],
+    });
+  });
 });
 
 describe('rune --version', () => {

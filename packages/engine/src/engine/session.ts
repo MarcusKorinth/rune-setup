@@ -83,6 +83,8 @@ export class Session {
   readonly manifestPath: string;
   readonly manifestSha256: string;
   readonly mode: RunMode;
+  readonly platform: Platform;
+  readonly preview: boolean;
   readonly #context: RuntimeContext;
   readonly #secrets: SecretRegistry;
   readonly #strings: StringTable;
@@ -115,6 +117,8 @@ export class Session {
     this.manifestPath = fields.manifestPath;
     this.manifestSha256 = fields.manifestSha256;
     this.mode = fields.mode;
+    this.platform = fields.context.platform;
+    this.preview = fields.context.preview;
     this.#context = fields.context;
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;

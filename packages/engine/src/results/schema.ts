@@ -171,8 +171,9 @@ const statusVariants = [
     ...runResultBaseShape,
     status: z.literal('failed'),
     exitCode: z.literal(1),
-    dryRun: z.literal(false),
-    crossPlatformPreview: z.literal(false),
+    // A plan-time execution-policy error may end a dry-run before any step exists.
+    dryRun: z.boolean(),
+    crossPlatformPreview: z.boolean(),
   }),
   ...(
     [
@@ -248,7 +249,7 @@ export const runResultSchema = z
       issue(['status'], 'succeeded results may contain only SUCCEEDED or SKIPPED steps');
     }
     if (result.status === 'failed') {
-      if (!states.has('FAILED')) {
+      if (result.steps.length > 0 && !states.has('FAILED')) {
         issue(['status'], 'failed results must contain at least one FAILED step');
       }
       if (states.has('CANCELLED') || states.has('PENDING')) {

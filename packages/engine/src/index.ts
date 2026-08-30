@@ -84,8 +84,17 @@ export type {
 export { Session } from './engine/session.js';
 export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/session.js';
 
-export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
-export type { ExecuteOptions } from './engine/executor.js';
+export {
+  createFailureResult,
+  describePlan,
+  executeRun,
+  OUTPUT_TAIL_LINES,
+} from './engine/executor.js';
+export type {
+  ExecuteOptions,
+  FailureResultOptions,
+  FailureResultSession,
+} from './engine/executor.js';
 
 export { CancelToken } from './engine/cancel.js';
 export type { EngineObserver, RunEvent } from './engine/events.js';

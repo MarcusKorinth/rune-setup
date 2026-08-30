@@ -326,6 +326,8 @@ export class Session {
     runner?: Runner;                       // the §13 seam; the default is the real spawn runner
   }): Promise<Session>;
   readonly manifest: Manifest;
+  readonly platform: Platform;                    // selected target platform
+  readonly preview: boolean;                      // true for a foreign-platform session
   pendingInputs(): readonly InputState[];        // unresolved AND enabled, declaration order
   allInputs(): readonly InputState[];            // {id, spec, value, enabled, source} — GUI prefill
   warnings(): readonly string[];                 // §5/§10 warnings a frontend says out loud
@@ -425,13 +427,13 @@ stdout is reserved exclusively for requested machine output (`--result -`, the d
 
 ### Result file (`--result`)
 
-Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune schema --result` emits its JSON Schema), written **atomically** (tmp + `fs.rename`) and on **every** outcome except usage errors — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error; only usage errors (exit 2, where no run was configured), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The writer is one function — `writeResult` in `results/writer.ts`, part of the public API: `Session` calls it for every outcome it owns, and both hosts (`cli/runCmd.ts`, `gui-shell/src/main`) call the same function for failures raised by `Session.open()` itself (e.g. a manifest error), so no host re-implements always-on-outcome writing. Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code implies exactly one status once `dryRun` is known — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
+Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune schema --result` emits its JSON Schema), written **atomically** (tmp + `fs.rename`) and on **every** outcome except usage errors — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error; only usage errors (exit 2, where no run was configured), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. Result construction is engine-owned: the public `createFailureResult` factory accepts optional opened-session and completed-plan context, preserves resolved inputs, identity, locale and platform, and projects a completed plan as unchanged `SKIPPED` steps plus `NOT_RUN` steps for a real run or `PENDING` steps for a dry-run. Hosts only supply that context, render session warnings once on failure, and call the public `writeResult`; they never duplicate result semantics. Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code implies exactly one status once `dryRun` is known — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
 
 | `status` | Exit code | Produced by |
 |---|---|---|
 | `succeeded` | 0 | real run, all steps succeeded or skipped (`nothingExecuted` tells the two apart) |
 | `planned` | 0 | `--dry-run` (`"dryRun": true`), plan built successfully; counters describe the plan (`stepsExecuted` is 0, `nothingExecuted` always `true`, no warning — §7) |
-| `failed` | 1 | one or more steps failed or timed out |
+| `failed` | 1 | one or more steps failed or timed out; also an execution-policy error before planning completed (for example RUNE-405), which records an empty step list rather than inventing execution |
 | `config_error` | 3 | manifest invalid (RUNE-1xx) |
 | `input_error` | 4 | missing/invalid input, unknown `--set`/values key (RUNE-2xx) |
 | `resolution_error` | 5 | interpolation or condition error (RUNE-3xx) |

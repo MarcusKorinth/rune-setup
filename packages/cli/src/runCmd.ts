@@ -6,19 +6,16 @@
  * `--non-interactive` follows the same non-interactive path.
  */
 
-import { randomUUID } from 'node:crypto';
-
 import {
-  EXIT_CODE_BY_STATUS,
+  createFailureResult,
   exitCodeFor,
-  RUNE_VERSION,
   RuneError,
   Session,
   UsageError,
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { RunResult, RunStatus } from '@rune/engine';
+import type { ExecutionPlan, RunResult } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
@@ -42,6 +39,7 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
   const platform = parsePlatform(flags.platform);
 
   let session: Session | undefined;
+  let plan: ExecutionPlan | undefined;
   try {
     session = await Session.open(manifestPath, {
       mode: 'non-interactive',
@@ -52,12 +50,12 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
       ...(platform === undefined ? {} : { platform }),
     });
 
-    const plan = flags.dryRun === true ? session.plan() : undefined;
+    plan = session.plan();
     const result =
       flags.dryRun === true ? session.describe() : await session.execute(progressObserver(io));
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
-    if (plan !== undefined && flags.result !== '-') {
+    if (flags.dryRun === true && flags.result !== '-') {
       renderPlan(plan, session.manifest.product, io);
     }
     renderOutcome(result, session.warnings(), io);
@@ -73,14 +71,22 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
     }
     // The result file is written on every outcome the run owns — manifest, input,
     // resolution, cancellation, internal — only usage errors skip it (§10).
-    if (
-      error instanceof RuneError &&
-      !(error instanceof UsageError) &&
-      flags.result !== undefined
-    ) {
+    if (error instanceof RuneError && !(error instanceof UsageError)) {
       io.stderr(error.message);
       const code = exitCodeFor(error);
-      deliverResult(failureShell({ session, code, manifestPath, flags }), flags.result, io);
+      const result = createFailureResult({
+        error,
+        manifestPath,
+        dryRun: flags.dryRun === true,
+        mode: 'non-interactive',
+        ...(platform === undefined ? {} : { platform }),
+        ...(session === undefined ? {} : { session }),
+        ...(plan === undefined ? {} : { plan }),
+      });
+      renderOutcome(result, session?.warnings() ?? [], io);
+      if (flags.result !== undefined) {
+        deliverResult(result, flags.result, io);
+      }
       throw new ExitWithCode(code);
     }
     throw error;
@@ -95,66 +101,4 @@ function deliverResult(result: RunResult, destination: string, io: CliIo): void 
   }
   writeResult(result, destination);
   io.stderr(`result written to ${destination}`);
-}
-
-/**
- * The result file of a run that never happened (§10): the failing status with zero
- * counters — honest about the fact that the pipeline refused before any plan existed.
- */
-function failureShell(options: {
-  session: Session | undefined;
-  code: number;
-  manifestPath: string;
-  flags: RunFlags;
-}): RunResult {
-  const { session, code, flags } = options;
-  const now = new Date().toISOString();
-  const host = process.platform === 'win32' ? 'windows' : 'linux';
-  const platform =
-    flags.platform === 'windows' || flags.platform === 'linux' ? flags.platform : host;
-  return {
-    resultSchemaVersion: 1,
-    id: randomUUID(),
-    status: statusForExit(code),
-    exitCode: code,
-    mode: session?.mode ?? 'non-interactive',
-    dryRun: flags.dryRun === true,
-    crossPlatformPreview: platform !== host,
-    platform,
-    locale: session?.getStrings().locale ?? null,
-    startedAt: now,
-    finishedAt: now,
-    durationMs: 0,
-    runeVersion: RUNE_VERSION,
-    // A manifest that failed to parse has no product to report; empty identity says so.
-    product:
-      session === undefined
-        ? { name: '', version: '' }
-        : { name: session.manifest.product.name, version: session.manifest.product.version },
-    manifest: {
-      path: session?.manifestPath ?? options.manifestPath,
-      sha256: session?.manifestSha256 ?? null,
-      schemaVersion: session?.manifest.schemaVersion ?? null,
-    },
-    stepsTotal: 0,
-    stepsExecuted: 0,
-    stepsSucceeded: 0,
-    stepsFailed: 0,
-    stepsCancelled: 0,
-    stepsSkipped: 0,
-    stepsNotRun: 0,
-    nothingExecuted: true,
-    inputs: [],
-    steps: [],
-  };
-}
-
-/** The §10 table read backwards: every exit code implies exactly one status. */
-function statusForExit(code: number): RunStatus {
-  for (const [status, exit] of Object.entries(EXIT_CODE_BY_STATUS)) {
-    if (exit === code && status !== 'planned' && status !== 'succeeded') {
-      return status as RunStatus;
-    }
-  }
-  return 'internal_error';
 }

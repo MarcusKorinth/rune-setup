@@ -8,8 +8,10 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { InternalError } from '../errors.js';
+import { ExecutionError, exitCodeFor, InternalError, type RuneError } from '../errors.js';
 import { RUNE_VERSION } from '../version.js';
+import { hostPlatform, type Platform } from './context.js';
+import type { InputState } from './inputs.js';
 import type { ExecutionPlan, PlannedStep, ResolvedPlanInput } from './plan.js';
 import type { RunEvent, EngineObserver } from './events.js';
 import type { SecretRegistry } from './secrets.js';
@@ -40,6 +42,32 @@ export interface ExecuteOptions {
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
+}
+
+/** The opened-session data an engine-owned failure result preserves (§10). */
+export interface FailureResultSession {
+  readonly manifest: {
+    readonly schemaVersion: 1;
+    readonly product: { readonly name: string; readonly version: string };
+  };
+  readonly manifestPath: string;
+  readonly manifestSha256: string;
+  readonly mode: RunMode;
+  readonly platform: Platform;
+  readonly preview: boolean;
+  allInputs(): readonly InputState[];
+  getStrings(): { readonly locale: string | undefined };
+}
+
+export interface FailureResultOptions {
+  readonly error: RuneError;
+  readonly manifestPath: string;
+  readonly dryRun: boolean;
+  readonly mode?: RunMode;
+  readonly platform?: Platform;
+  readonly session?: FailureResultSession;
+  /** A plan completed before the failure; PENDING stays for dry-run and becomes NOT_RUN live. */
+  readonly plan?: ExecutionPlan;
 }
 
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
@@ -189,8 +217,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const finishedAt = new Date();
   const result = assembleResult({
     runId,
-    plan,
-    product: options.product,
+    source: sourceFromPlan(plan, options.product),
     mode: options.mode ?? 'non-interactive',
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
@@ -220,8 +247,7 @@ export function describePlan(options: {
 
   return assembleResult({
     runId: randomUUID(),
-    plan: options.plan,
-    product: options.product,
+    source: sourceFromPlan(options.plan, options.product),
     mode: options.mode ?? 'non-interactive',
     steps,
     status: 'planned',
@@ -231,10 +257,123 @@ export function describePlan(options: {
   });
 }
 
+/**
+ * Builds the result for a known run-owned error. Hosts provide invocation/session context;
+ * result identity, input projection, step topology, counters, and freezing stay engine-owned.
+ */
+export function createFailureResult(options: FailureResultOptions): RunResult {
+  if (options.plan !== undefined && options.session === undefined) {
+    throw new InternalError('a failure result with a plan requires its opened session');
+  }
+  if (options.plan !== undefined && options.error instanceof ExecutionError) {
+    throw new InternalError('a pre-execution failure result cannot carry a completed plan');
+  }
+
+  const status = failureStatus(options.error);
+  const now = new Date();
+  const host = hostPlatform();
+  const session = options.session;
+  const platform = options.plan?.platform ?? session?.platform ?? options.platform ?? host;
+  const preview = options.plan?.preview ?? session?.preview ?? platform !== host;
+  const source: ResultSource =
+    options.plan !== undefined && session !== undefined
+      ? sourceFromPlan(options.plan, session.manifest.product)
+      : session === undefined
+        ? {
+            product: { name: '', version: '' },
+            manifest: { path: options.manifestPath, sha256: null, schemaVersion: null },
+            platform,
+            preview,
+            locale: null,
+            inputs: [],
+          }
+        : {
+            product: {
+              name: session.manifest.product.name,
+              version: session.manifest.product.version,
+            },
+            manifest: {
+              path: session.manifestPath,
+              sha256: session.manifestSha256,
+              schemaVersion: session.manifest.schemaVersion,
+            },
+            platform,
+            preview,
+            locale: session.getStrings().locale ?? null,
+            inputs: session.allInputs().map(resultInput),
+          };
+
+  const steps =
+    options.plan?.steps.map((step): ResultStep => {
+      if (step.state === 'SKIPPED') {
+        return finishedStep(step, 'SKIPPED', null, 0, null, null);
+      }
+      return finishedStep(
+        step,
+        options.dryRun ? 'PENDING' : 'NOT_RUN',
+        null,
+        0,
+        maskArgv(step),
+        null,
+      );
+    }) ?? [];
+
+  return assembleResult({
+    runId: randomUUID(),
+    source,
+    mode: session?.mode ?? options.mode ?? 'non-interactive',
+    steps,
+    status,
+    dryRun: options.dryRun,
+    startedAt: now,
+    finishedAt: now,
+  });
+}
+
+interface ResultSource {
+  readonly product: { readonly name: string; readonly version: string };
+  readonly manifest: {
+    readonly path: string;
+    readonly sha256: string | null;
+    readonly schemaVersion: number | null;
+  };
+  readonly platform: string;
+  readonly preview: boolean;
+  readonly locale: string | null;
+  readonly inputs: readonly ResultInput[];
+}
+
+function sourceFromPlan(
+  plan: ExecutionPlan,
+  product: { readonly name: string; readonly version: string },
+): ResultSource {
+  return {
+    product: { name: product.name, version: product.version },
+    manifest: {
+      path: plan.manifestPath,
+      sha256: plan.manifestSha256,
+      schemaVersion: plan.manifestSchemaVersion,
+    },
+    platform: plan.platform,
+    preview: plan.preview,
+    locale: plan.locale,
+    inputs: plan.resolvedInputs.map(resultInput),
+  };
+}
+
+function failureStatus(error: RuneError): RunStatus {
+  const exitCode = exitCodeFor(error);
+  for (const [status, code] of Object.entries(EXIT_CODE_BY_STATUS)) {
+    if (code === exitCode && status !== 'planned' && status !== 'succeeded') {
+      return status as RunStatus;
+    }
+  }
+  throw new InternalError('a usage error cannot produce a run result');
+}
+
 function assembleResult(input: {
   readonly runId: string;
-  readonly plan: ExecutionPlan;
-  readonly product: { readonly name: string; readonly version: string };
+  readonly source: ResultSource;
   readonly mode: RunMode;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
@@ -243,6 +382,7 @@ function assembleResult(input: {
   readonly finishedAt: Date;
 }): RunResult {
   const { steps } = input;
+  const { source } = input;
   const count = (state: StepState): number => steps.filter((step) => step.state === state).length;
   const executed = count('SUCCEEDED') + count('FAILED') + count('CANCELLED');
 
@@ -253,21 +393,17 @@ function assembleResult(input: {
     exitCode: EXIT_CODE_BY_STATUS[input.status],
     mode: input.mode,
     dryRun: input.dryRun,
-    crossPlatformPreview: input.plan.preview,
-    platform: input.plan.platform,
-    locale: input.plan.locale ?? null,
+    crossPlatformPreview: source.preview,
+    platform: source.platform,
+    locale: source.locale,
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
     durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
     runeVersion: RUNE_VERSION,
     // Identity only: a manifest's product block may carry more (a description), and the
     // result schema pins exactly these two fields (§10).
-    product: { name: input.product.name, version: input.product.version },
-    manifest: {
-      path: input.plan.manifestPath,
-      sha256: input.plan.manifestSha256,
-      schemaVersion: input.plan.manifestSchemaVersion,
-    },
+    product: source.product,
+    manifest: source.manifest,
     stepsTotal: steps.length,
     stepsExecuted: executed,
     stepsSucceeded: count('SUCCEEDED'),
@@ -276,13 +412,13 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.plan.resolvedInputs.map(resultInput),
+    inputs: source.inputs,
     steps,
   });
 }
 
-function resultInput(state: ResolvedPlanInput): ResultInput {
-  const handler = state.type === 'secret';
+function resultInput(state: ResolvedPlanInput | InputState): ResultInput {
+  const handler = ('type' in state ? state.type : state.spec.type) === 'secret';
   const value = state.value;
 
   return {
@@ -293,7 +429,7 @@ function resultInput(state: ResolvedPlanInput): ResultInput {
     source: state.source ?? state.ignored ?? null,
     secret: handler,
     enabled: state.enabled,
-    ignored: state.ignored === null ? null : 'input disabled',
+    ignored: state.ignored === null || state.ignored === undefined ? null : 'input disabled',
   };
 }
 
@@ -317,12 +453,12 @@ function finishedStep(
   };
 }
 
-function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[] | null {
+function maskArgv(step: PlannedStep, secrets?: SecretRegistry): readonly string[] | null {
   if (step.state !== 'PENDING') {
     return null;
   }
   return step.command.argv.map((entry) =>
-    entry instanceof SecretString ? MASK : secrets.mask(entry),
+    entry instanceof SecretString ? MASK : (secrets?.mask(entry) ?? entry),
   );
 }
 
