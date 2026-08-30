@@ -1,6 +1,7 @@
 const { contextBridge } = require('electron');
 
 const pendingPlans = [];
+let eventListener;
 
 function plan(title) {
   return {
@@ -38,9 +39,7 @@ contextBridge.exposeInMainWorld('rune', {
     new Promise((resolve) => {
       pendingPlans.push(resolve);
     }),
-  execute: async () => {
-    throw new Error('execute is not available in the renderer fixture');
-  },
+  execute: () => new Promise(() => {}),
   cancel: async () => undefined,
   getStrings: async () => ({
     'rune.page.welcome.title': 'Welcome',
@@ -53,7 +52,9 @@ contextBridge.exposeInMainWorld('rune', {
   getThemeConfig: async () => ({}),
   warnings: async () => [],
   done: async () => undefined,
-  onEvent: () => undefined,
+  onEvent: (listener) => {
+    eventListener = listener;
+  },
 });
 
 contextBridge.exposeInMainWorld('summaryTestControl', {
@@ -64,5 +65,21 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
       throw new Error(`no pending plan at index ${index}`);
     }
     resolve(plan(title));
+  },
+  emitOutput: (line) => {
+    eventListener?.({
+      kind: 'stepOutput',
+      stepId: 'test-step',
+      stream: 'stdout',
+      line,
+    });
+  },
+  emitFinished: () => {
+    eventListener?.({
+      kind: 'stepFinished',
+      stepId: 'test-step',
+      state: 'SUCCEEDED',
+      durationMs: 1,
+    });
   },
 });

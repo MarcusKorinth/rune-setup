@@ -22,6 +22,7 @@ declare global {
 }
 
 const INPUTS_PER_PAGE = 5;
+const LIVE_LOG_MAX_CHARACTERS = 20_000;
 
 /** The renderer's field registry — asserted against the manifest's types at open (§9.3). */
 const RENDERABLE_TYPES = new Set([
@@ -475,6 +476,7 @@ async function renderSummary(version: number): Promise<void> {
 }
 
 let progress: { fill: HTMLElement; title: HTMLElement; log: HTMLElement } | undefined;
+let liveLog = '';
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
@@ -487,6 +489,16 @@ function renderProgress(): void {
   const log = div('log');
   el.page.append(heading, track, title, log);
   progress = { fill, title, log };
+  liveLog = '';
+}
+
+function appendLiveLog(line: string): void {
+  if (progress === undefined) {
+    return;
+  }
+  liveLog = `${liveLog}${line}\n`.slice(-LIVE_LOG_MAX_CHARACTERS);
+  progress.log.textContent = liveLog;
+  progress.log.scrollTop = progress.log.scrollHeight;
 }
 
 function onRunEvent(event: BridgeEvent): void {
@@ -502,12 +514,10 @@ function onRunEvent(event: BridgeEvent): void {
     progress.fill.style.width = `${(event.index / event.total) * 100}%`;
   }
   if (event.kind === 'stepOutput') {
-    progress.log.textContent += `${event.line}\n`;
-    progress.log.scrollTop = progress.log.scrollHeight;
+    appendLiveLog(event.line);
   }
   if (event.kind === 'stepFinished') {
-    progress.log.textContent += `-- ${event.stepId}: ${event.state}\n`;
-    progress.log.scrollTop = progress.log.scrollHeight;
+    appendLiveLog(`-- ${event.stepId}: ${event.state}`);
   }
   if (event.kind === 'runFinished') {
     progress.fill.style.width = '100%';

@@ -19,6 +19,8 @@ const electronExecutable = createRequire(import.meta.url)('electron') as string;
 interface SummaryTestControl {
   planCount(): number;
   resolvePlan(index: number, title: string): void;
+  emitOutput(line: string): void;
+  emitFinished(): void;
 }
 
 test('launches the real Node 22 shell and renders Welcome', async () => {
@@ -136,6 +138,59 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('bounds the live Progress log while retaining its newest output', async () => {
+  const liveLogCap = 20_000;
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'progress plan'),
+    );
+    await expect(install).toBeEnabled();
+    await install.click();
+    await expect(page.locator('.log')).toBeVisible();
+
+    await page.evaluate((cap) => {
+      const control = (window as unknown as { summaryTestControl: SummaryTestControl })
+        .summaryTestControl;
+      control.emitOutput('discard-this-old-head');
+      for (let index = 0; index < 30; index += 1) {
+        control.emitOutput(`intermediate-${index}-${'x'.repeat(1_000)}`);
+      }
+      control.emitOutput(`${'x'.repeat(cap + 100)}keep-this-newest-tail`);
+      control.emitFinished();
+    }, liveLogCap);
+
+    await expect.poll(() => page.locator('.log').textContent()).toContain('keep-this-newest-tail');
+    const log = await page.locator('.log').textContent();
+    expect(log).not.toContain('discard-this-old-head');
+    expect(log).toContain('-- test-step: SUCCEEDED');
+    expect(log.length).toBeLessThanOrEqual(liveLogCap);
   } finally {
     await application?.close();
   }
