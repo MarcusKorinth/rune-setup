@@ -15,7 +15,11 @@ import {
   type ResolveInputsOptions,
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
-import { SecretRegistry, SecretString } from '../../src/engine/secrets.js';
+import {
+  MAX_SECRET_REGISTRY_CODE_UNITS,
+  SecretRegistry,
+  SecretString,
+} from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
 import { exitCodeFor, InputError, ManifestError, ResolutionError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -1654,6 +1658,90 @@ describe('secrets', () => {
 
     expect(error.code).toBe('RUNE-203');
     expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('rejects a near-5-MiB values secret before matcher construction or publication', () => {
+    const prefix = 'F053-LARGE-VALUES-SECRET-PREFIX';
+    const suffix = 'F053-LARGE-VALUES-SECRET-SUFFIX';
+    const candidate = `${prefix}${'x'.repeat(5 * 1_024 * 1_024 - 2_048)}${suffix}`;
+    const secrets = existingRegistry();
+    const error = inputError(manifest, {
+      values: [values('large-values.yaml', { token: candidate })],
+      secrets,
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe(
+      'the total size of secret input values exceeds the masking safety limit',
+    );
+    expect(error.message).not.toContain(String(candidate.length));
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    expect(surfaces).not.toContain(prefix);
+    expect(surfaces).not.toContain(suffix);
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('counts every shadowed values, environment, set, and answer candidate atomically', () => {
+    const candidateLength = Math.floor(MAX_SECRET_REGISTRY_CODE_UNITS / 5) + 1;
+    const labels = ['F053-BASE', 'F053-OVERLAY', 'F053-ENV', 'F053-SET', 'F053-ANSWER'];
+    const candidates = labels.map((label, index) => label.padEnd(candidateLength, String(index)));
+    const [base, overlay, inherited, set, answer] = candidates as [
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    const secrets = existingRegistry();
+    const error = inputError(
+      manifest,
+      {
+        values: [values('base.yaml', { token: base }), values('overlay.yaml', { token: overlay })],
+        overrides: new Map([['token', set]]),
+        answers: new Map([['token', answer]]),
+        secrets,
+      },
+      { RUNE_INPUT_TOKEN: inherited },
+    );
+
+    expect(candidates.reduce((total, candidate) => total + candidate.length, 0)).toBeGreaterThan(
+      MAX_SECRET_REGISTRY_CODE_UNITS,
+    );
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe(
+      'the total size of secret input values exceeds the masking safety limit',
+    );
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    for (const label of labels) {
+      expect(surfaces).not.toContain(label);
+    }
+    expectExistingRegistryUnchanged(secrets);
+  });
+
+  it('fails closed when the active and staged registry union exceeds the budget', () => {
+    const activePrefix = 'F053-ACTIVE-UNION-SECRET';
+    const stagedPrefix = 'F053-STAGED-UNION-SECRET';
+    const candidateLength = MAX_SECRET_REGISTRY_CODE_UNITS / 2 + 1;
+    const activeSecret = activePrefix.padEnd(candidateLength, 'a');
+    const stagedSecret = stagedPrefix.padEnd(candidateLength, 'b');
+    const secrets = new SecretRegistry();
+    secrets.register(activeSecret);
+
+    const error = inputError(manifest, {
+      overrides: new Map([['token', stagedSecret]]),
+      secrets,
+    });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe(
+      'the total size of secret input values exceeds the masking safety limit',
+    );
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    expect(surfaces).not.toContain(activePrefix);
+    expect(surfaces).not.toContain(stagedPrefix);
+    expect(secrets.size).toBe(1);
+    expect(secrets.register(activeSecret)).toBe(true);
+    expect(secrets.size).toBe(1);
   });
 
   it('leaves a prefilled registry unchanged when a later input is invalid', () => {

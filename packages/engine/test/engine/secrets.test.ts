@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
+import { InputError } from '../../src/errors.js';
 import {
   isSecretString,
   MASK,
+  MAX_SECRET_REGISTRY_CODE_UNITS,
   MIN_MASKABLE_LENGTH,
   SecretRegistry,
   SecretString,
@@ -411,6 +413,52 @@ describe('SecretRegistry', () => {
     expect(registry.size).toBe(1);
   });
 
+  it('accepts exactly the snapshot budget and rejects one more unique part atomically', () => {
+    const registry = new SecretRegistry();
+    const patterns = nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS, 'x');
+    for (const pattern of patterns) {
+      expect(registry.register(pattern)).toBe(true);
+    }
+    expect(patterns.reduce((total, pattern) => total + pattern.length, 0)).toBe(
+      MAX_SECRET_REGISTRY_CODE_UNITS,
+    );
+    expect(registry.size).toBe(patterns.length);
+
+    const longest = patterns.at(-1)!;
+    expect(registry.mask(longest)).toBe(MASK);
+    const transitionWrite = vi.spyOn(Map.prototype, 'set');
+    const size = registry.size;
+    try {
+      expect(registry.register(patterns[0]!)).toBe(true);
+      const error = capacityErrorFrom(() => registry.register('yyyy'));
+
+      expect(error.code).toBe('RUNE-202');
+      expect(error.message).toBe(
+        'the total size of secret input values exceeds the masking safety limit',
+      );
+      expect(registry.size).toBe(size);
+      expect(registry.mask(longest)).toBe(MASK);
+      expect(registry.mask('yyyy')).toBe('yyyy');
+      expect(transitionWrite).not.toHaveBeenCalled();
+    } finally {
+      transitionWrite.mockRestore();
+    }
+  });
+
+  it('preflights every multiline part without leaving a partial registration', () => {
+    const registry = new SecretRegistry();
+    const patterns = nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS - 15, 'x');
+    for (const pattern of patterns) {
+      registry.register(pattern);
+    }
+    const size = registry.size;
+    const error = capacityErrorFrom(() => registry.register('alpha\nbravo'));
+
+    expect(error.code).toBe('RUNE-202');
+    expect(registry.size).toBe(size);
+    expect(registry.mask('alpha/bravo')).toBe('alpha/bravo');
+  });
+
   it('replaces its contents from a private snapshot of another registry', () => {
     const target = new SecretRegistry();
     target.register('previous-secret');
@@ -442,6 +490,33 @@ describe('SecretRegistry', () => {
     expect(combined.mask('new-left-value')).toBe('new-left-value');
     expect(left.mask('new-left-value')).toBe(MASK);
     expect(right.mask('right-secret')).toBe('right-secret');
+  });
+
+  it('rejects an over-budget registry union before building or publishing it', () => {
+    const left = new SecretRegistry();
+    const right = new SecretRegistry();
+    const half = MAX_SECRET_REGISTRY_CODE_UNITS / 2;
+    for (const pattern of nestedPatternsForBudget(half, 'x')) {
+      left.register(pattern);
+    }
+    for (const pattern of nestedPatternsForBudget(half + 1, 'y')) {
+      right.register(pattern);
+    }
+    const transitionWrite = vi.spyOn(Map.prototype, 'set');
+
+    try {
+      const error = capacityErrorFrom(() => left.combinedWith(right));
+
+      expect(error.code).toBe('RUNE-202');
+      expect(error.message).toBe(
+        'the total size of secret input values exceeds the masking safety limit',
+      );
+      expect(transitionWrite).not.toHaveBeenCalled();
+      expect(left.size).toBe(nestedPatternsForBudget(half, 'x').length);
+      expect(right.size).toBe(nestedPatternsForBudget(half + 1, 'y').length);
+    } finally {
+      transitionWrite.mockRestore();
+    }
   });
 
   it('caches one immutable matcher per registry snapshot', () => {
@@ -656,6 +731,37 @@ describe('secret lifecycle boundary', () => {
     expect(calls).toEqual([]);
   });
 });
+
+function capacityErrorFrom(action: () => unknown): InputError {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof InputError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error('expected secret registration to exceed its capacity');
+}
+
+/** Produces exact aggregate cost with heavily shared prefixes, keeping matcher tests small. */
+function nestedPatternsForBudget(budget: number, codeUnit: string): readonly string[] {
+  const lengths: number[] = [];
+  let total = 0;
+  for (let length = MIN_MASKABLE_LENGTH; total + length <= budget; length += 1) {
+    lengths.push(length);
+    total += length;
+  }
+  const remainder = budget - total;
+  if (remainder > 0) {
+    const last = lengths.pop();
+    if (last === undefined) {
+      throw new Error('budget is too small for a maskable test pattern');
+    }
+    lengths.push(last + remainder);
+  }
+  return lengths.map((length) => codeUnit.repeat(length));
+}
 
 function typeScriptFiles(directory: string): readonly string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

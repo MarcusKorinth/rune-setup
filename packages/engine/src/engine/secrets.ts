@@ -7,6 +7,8 @@
  * registry catches what the wrapper cannot: a script that echoes the password it was given.
  */
 
+import { InputError } from '../errors.js';
+
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
 
@@ -19,6 +21,15 @@ const MAX_MASKING_PASSES = 16;
  * every digit in every log line, which hides far more than it protects (§10).
  */
 export const MIN_MASKABLE_LENGTH = 4;
+
+/**
+ * Maximum UTF-16 code units across the unique maskable parts in one registry snapshot.
+ * This bounds the matcher to at most this many non-root trie nodes.
+ */
+export const MAX_SECRET_REGISTRY_CODE_UNITS = 262_144;
+
+const CAPACITY_ERROR_MESSAGE =
+  'the total size of secret input values exceeds the masking safety limit';
 
 /** Authentic wrapper contents, owned only by this module and never exposed through lookup. */
 const SECRET_VALUES = new WeakMap<object, unknown>();
@@ -281,6 +292,7 @@ function createMatcherNode(): MatcherNode {
  */
 export class SecretRegistry {
   readonly #values = new Set<string>();
+  #registeredCodeUnits = 0;
   /** Immutable matcher for the current value-set snapshot. */
   #matcher: SecretMatcher | undefined;
 
@@ -295,17 +307,34 @@ export class SecretRegistry {
     // Each line is registered as well, which is what actually protects a key or certificate.
     const lines = value.split(/\r\n|\r|\n/);
     const parts = lines.length > 1 ? [value, ...lines] : lines;
+    const additions = new Set<string>();
+    let addedCodeUnits = 0;
 
     for (const part of parts) {
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
-      if (hasMinimumMaskableLength(part.trim())) {
-        const size = this.#values.size;
-        this.#values.add(part);
-        if (this.#values.size !== size) {
-          this.#matcher = undefined;
+      if (
+        hasMinimumMaskableLength(part.trim()) &&
+        !this.#values.has(part) &&
+        !additions.has(part)
+      ) {
+        if (
+          part.length >
+          MAX_SECRET_REGISTRY_CODE_UNITS - this.#registeredCodeUnits - addedCodeUnits
+        ) {
+          throw capacityError();
         }
+        additions.add(part);
+        addedCodeUnits += part.length;
       }
+    }
+
+    if (additions.size > 0) {
+      for (const part of additions) {
+        this.#values.add(part);
+      }
+      this.#registeredCodeUnits += addedCodeUnits;
+      this.#matcher = undefined;
     }
 
     const contentLines = lines.filter((line) => line.trim() !== '');
@@ -329,13 +358,30 @@ export class SecretRegistry {
 
   /** Returns an independent registry containing the secrets known by both registries. */
   combinedWith(source: SecretRegistry): SecretRegistry {
+    const additions: string[] = [];
+    let addedCodeUnits = 0;
+    for (const value of source.#values) {
+      if (this.#values.has(value)) {
+        continue;
+      }
+      if (
+        value.length >
+        MAX_SECRET_REGISTRY_CODE_UNITS - this.#registeredCodeUnits - addedCodeUnits
+      ) {
+        throw capacityError();
+      }
+      additions.push(value);
+      addedCodeUnits += value.length;
+    }
+
     const combined = new SecretRegistry();
     for (const value of this.#values) {
       combined.#values.add(value);
     }
-    for (const value of source.#values) {
+    for (const value of additions) {
       combined.#values.add(value);
     }
+    combined.#registeredCodeUnits = this.#registeredCodeUnits + addedCodeUnits;
     if (combined.#values.size === this.#values.size) {
       combined.#matcher = this.#matcher;
     } else if (combined.#values.size === source.#values.size) {
@@ -356,6 +402,7 @@ export class SecretRegistry {
     for (const value of values) {
       this.#values.add(value);
     }
+    this.#registeredCodeUnits = source.#registeredCodeUnits;
     // The matcher is immutable, so sharing this snapshot remains safe when either registry
     // later changes its own set and invalidates its reference.
     this.#matcher = source.#matcher;
@@ -389,6 +436,10 @@ export class SecretRegistry {
     // the extra masking is limited to this pathological budget-exhaustion path.
     return MASK;
   }
+}
+
+function capacityError(): InputError {
+  return new InputError('RUNE-202', CAPACITY_ERROR_MESSAGE);
 }
 
 function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
