@@ -6,7 +6,7 @@ import { InternalError } from '../../src/errors.js';
 import { isSecretString, SecretString } from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
 import { BUILT_IN_INPUT_TYPES, MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
-import type { InputTypeHandler } from '../../src/inputs/base.js';
+import { FALSE_WORDS, TRUE_WORDS, type InputTypeHandler } from '../../src/inputs/base.js';
 import { INPUT_TYPES, type InputSpec, type InputType } from '../../src/manifest/v1/schema.js';
 
 /** A spec of the given type with whatever extra fields a test needs. */
@@ -398,6 +398,19 @@ describe('secret', () => {
 });
 
 describe('boolean', () => {
+  it('keeps the registered vocabulary stable when callers try to mutate its exports', () => {
+    const registered = handler('boolean');
+
+    expect(Reflect.set(TRUE_WORDS, 0, 'maybe')).toBe(false);
+    expect(Reflect.set(FALSE_WORDS, 0, 'perhaps')).toBe(false);
+    expect(registered.fromString('yes', spec('boolean'))).toEqual({ ok: true, value: true });
+    expect(registered.fromString('no', spec('boolean'))).toEqual({ ok: true, value: false });
+    expect(registered.fromString('maybe', spec('boolean'))).toEqual({
+      ok: false,
+      message: '"maybe" is not one of true, 1, yes, false, 0, no',
+    });
+  });
+
   it.each([
     ['true', true],
     ['TRUE', true],

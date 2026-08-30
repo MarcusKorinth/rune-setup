@@ -57,5 +57,5 @@ export interface InputTypeHandler {
 }
 
 /** The accepted spellings of a boolean, as documented in §5. */
-export const TRUE_WORDS = ['true', '1', 'yes'] as const;
-export const FALSE_WORDS = ['false', '0', 'no'] as const;
+export const TRUE_WORDS = Object.freeze(['true', '1', 'yes'] as const);
+export const FALSE_WORDS = Object.freeze(['false', '0', 'no'] as const);
