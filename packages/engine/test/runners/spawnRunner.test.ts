@@ -49,7 +49,9 @@ function delayedSigtermExit(delayMs: number): string {
   `;
 }
 
-describe('SpawnRunner', () => {
+const SPAWN_RUNNER_TEST_TIMEOUT_MS = 15_000;
+
+describe('SpawnRunner', { timeout: SPAWN_RUNNER_TEST_TIMEOUT_MS }, () => {
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
       kind: 'exited',
@@ -129,7 +131,7 @@ describe('SpawnRunner', () => {
     const outcome = await run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }));
 
     expect(outcome).toEqual({ kind: 'timedOut' });
-  }, 15000);
+  });
 
   it('kills a process when the run is cancelled', async () => {
     const cancel = new CancelToken();
@@ -137,7 +139,7 @@ describe('SpawnRunner', () => {
     setTimeout(() => cancel.cancel(), 200);
 
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
-  }, 15000);
+  });
 
   it.skipIf(process.platform === 'win32')(
     'keeps timeout as the first cause when cancellation arrives before close',
