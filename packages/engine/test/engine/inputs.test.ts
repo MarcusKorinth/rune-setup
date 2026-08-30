@@ -3667,6 +3667,25 @@ describe('values files', () => {
     },
   );
 
+  it.each([undefined, 'collect'] as const)(
+    'keeps a reused invalid values document at its first ordinal with invalidValues=%s',
+    (invalidValues) => {
+      const first = valuesFromFile('- invalid\n', 'first.yaml');
+      const second = valuesFromFile('- invalid\n', 'second.yaml');
+      const error = inputError(emptyManifest, {
+        values: [first, second, first],
+        ...(invalidValues === undefined ? {} : { invalidValues }),
+      });
+
+      expect(error.code).toBe('RUNE-202');
+      expect(error.issues.map((issue) => [issue.code, issue.location])).toEqual([
+        ['RUNE-202', { file: 'first.yaml', line: 1, column: 1 }],
+        ['RUNE-202', { file: 'second.yaml', line: 1, column: 1 }],
+      ]);
+      expect(error.location).toEqual({ file: 'first.yaml', line: 1, column: 1 });
+    },
+  );
+
   it('keeps a deferred values problem ahead of a later input condition resolution error', () => {
     const manifest = manifestOf(
       'inputs:',

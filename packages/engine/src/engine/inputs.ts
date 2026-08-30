@@ -580,7 +580,7 @@ function materializeValuesProblem(
         ),
         location: problem.location,
       }
-    : problem;
+    : { code: problem.code, message: problem.message, location: problem.location };
 }
 
 /**
