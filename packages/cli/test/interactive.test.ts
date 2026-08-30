@@ -231,6 +231,40 @@ describe('the interactive run', () => {
     expect(io.err.join('\n')).toContain('bye');
   });
 
+  it('rejects malformed summary indexes before accepting a valid index', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const interaction = scripted([
+      'hello',
+      'super-secret-value',
+      '1foo',
+      'foo1',
+      '1.5',
+      '+1',
+      '0',
+      '-1',
+      '1e0',
+      '1 2',
+      '1',
+      'bye',
+      'p',
+    ]);
+
+    const code = await run(['run', path], io, interaction);
+
+    expect(code).toBe(0);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics).toContain('"1foo" is not');
+    expect(diagnostics).toContain('"foo1" is not');
+    expect(diagnostics).toContain('"1.5" is not');
+    expect(diagnostics).toContain('"+1" is not');
+    expect(diagnostics).toContain('"0" is not');
+    expect(diagnostics).toContain('"-1" is not');
+    expect(diagnostics).toContain('"1e0" is not');
+    expect(diagnostics).toContain('"1 2" is not');
+    expect(diagnostics).toContain('bye');
+  });
+
   it('accepts a controller edit before correcting the dependent invalid seed', async () => {
     const path = fixture([
       'schemaVersion: 1',

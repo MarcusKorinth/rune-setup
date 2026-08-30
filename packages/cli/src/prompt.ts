@@ -174,9 +174,9 @@ export async function summaryLoop(
     if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {
       return 'cancel';
     }
-    const index = Number.parseInt(choice, 10);
-    const chosen = editable[index - 1];
-    if (Number.isNaN(index) || chosen === undefined) {
+    const index = /^\d+$/.test(choice) ? Number(choice) : Number.NaN;
+    const chosen = Number.isSafeInteger(index) && index > 0 ? editable[index - 1] : undefined;
+    if (chosen === undefined) {
       io.stderr(
         strings.chrome('rune.summary.invalidChoice', {
           choice,
