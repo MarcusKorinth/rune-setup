@@ -56,6 +56,7 @@ export async function runCommand(
 
   let session: Session | undefined;
   let strings: StringTable | undefined;
+  let removeExecutionSignalHandlers: (() => void) | undefined;
   try {
     session = await Session.open(manifestPath, {
       values: flags.values ?? [],
@@ -76,10 +77,18 @@ export async function runCommand(
       prompter.close();
     }
 
-    const result =
-      flags.dryRun === true
-        ? session.describe()
-        : await executeWithCancel(session, strings, io, interaction);
+    let result: RunResult;
+    if (flags.dryRun === true) {
+      result = session.describe();
+    } else {
+      removeExecutionSignalHandlers = installExecutionSignalHandlers(
+        session,
+        strings,
+        io,
+        interaction,
+      );
+      result = await session.execute(progressObserver(strings, io));
+    }
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
@@ -116,21 +125,22 @@ export async function runCommand(
     }
     throw error;
   } finally {
+    removeExecutionSignalHandlers?.();
     prompter?.close();
   }
 }
 
 /**
- * Runs with the §7/§9.3 cancel flow: SIGTERM and the first Ctrl+C fire the same CancelToken
- * path (the interrupted step becomes CANCELLED and exits 6); a second Ctrl+C force-quits.
- * SIGTERM stays idempotent and never advances the Ctrl+C force-quit count.
+ * Installs the §7/§9.3 cancel flow: SIGTERM and the first Ctrl+C fire the same
+ * CancelToken path (the interrupted step becomes CANCELLED and exits 6); a second Ctrl+C
+ * force-quits. SIGTERM stays idempotent and never advances the Ctrl+C force-quit count.
  */
-async function executeWithCancel(
+function installExecutionSignalHandlers(
   session: Session,
   strings: StringTable,
   io: CliIo,
   interaction: Interaction,
-): Promise<RunResult> {
+): () => void {
   const signalSource = interaction.signalSource ?? process;
   let cancellationRequested = false;
   let sigintCount = 0;
@@ -157,12 +167,11 @@ async function executeWithCancel(
 
   signalSource.on('SIGINT', onSigint);
   signalSource.on('SIGTERM', onSigterm);
-  try {
-    return await session.execute(progressObserver(strings, io));
-  } finally {
+
+  return () => {
     signalSource.removeListener('SIGINT', onSigint);
     signalSource.removeListener('SIGTERM', onSigterm);
-  }
+  };
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */

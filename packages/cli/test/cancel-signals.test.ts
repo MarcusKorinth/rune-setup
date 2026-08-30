@@ -52,7 +52,10 @@ function interaction(signalSource: SignalSource, forceExit: (code: number) => vo
   };
 }
 
-function fixture(): { readonly manifestPath: string; readonly directory: string } {
+function fixture(firstStepScript = "console.log('ready'); setInterval(() => undefined, 1000)"): {
+  readonly manifestPath: string;
+  readonly directory: string;
+} {
   const directory = mkdtempSync(join(tmpdir(), 'rune-cli-signals-'));
   const manifestPath = join(directory, 'installer.yaml');
   writeFileSync(
@@ -68,7 +71,7 @@ function fixture(): { readonly manifestPath: string; readonly directory: string 
       '    title: Long running',
       '    run:',
       '      command: node',
-      `      args: ["-e", "console.log('ready'); setInterval(() => undefined, 1000)"]`,
+      `      args: ["-e", "${firstStepScript}"]`,
       '  - id: later',
       '    title: Later',
       '    run:',
@@ -249,6 +252,78 @@ describe('CLI execution signals', () => {
 
     expect(code).toBe(70);
     expect(io.err.join('\n')).toContain('internal error:');
+    expect(listenerCounts(signals)).toEqual(before);
+  });
+
+  it('keeps both listeners through outcome rendering', async () => {
+    const { manifestPath } = fixture('process.exit(0)');
+    const signals = new TestSignalSource();
+    const unrelatedSigint = (): void => undefined;
+    const unrelatedSigterm = (): void => undefined;
+    signals.on('SIGINT', unrelatedSigint);
+    signals.on('SIGTERM', unrelatedSigterm);
+    const before = listenerCounts(signals);
+    const forceExit = vi.fn<(code: number) => void>();
+    const out: string[] = [];
+    const err: string[] = [];
+    let signalEmitted = false;
+    const io: Capture = {
+      out,
+      err,
+      stdout: (line) => out.push(line),
+      stderr: (line) => {
+        err.push(line);
+        if (!signalEmitted && line === 'Setup completed successfully.') {
+          signalEmitted = true;
+          expect(listenerCounts(signals)).toEqual([before[0] + 1, before[1] + 1]);
+          signals.emit('SIGTERM');
+        }
+      },
+    };
+
+    const code = await run(
+      ['run', manifestPath, '--non-interactive'],
+      io,
+      interaction(signals, forceExit),
+    );
+
+    expect(code).toBe(0);
+    expect(signalEmitted).toBe(true);
+    expect(forceExit).not.toHaveBeenCalled();
+    expect(
+      err.filter((line) => line === 'cancelling - press Ctrl+C again to force quit'),
+    ).toHaveLength(1);
+    expect(listenerCounts(signals)).toEqual(before);
+  });
+
+  it('keeps both listeners through result delivery and removes them when delivery fails', async () => {
+    const { manifestPath } = fixture('process.exit(0)');
+    const signals = new TestSignalSource();
+    const before = listenerCounts(signals);
+    const forceExit = vi.fn<(code: number) => void>();
+    const err: string[] = [];
+    let deliveryStarted = false;
+    const io: CliIo = {
+      stdout: () => {
+        deliveryStarted = true;
+        expect(listenerCounts(signals)).toEqual([before[0] + 1, before[1] + 1]);
+        signals.emit('SIGINT');
+        throw new Error('result sink failed');
+      },
+      stderr: (line) => err.push(line),
+    };
+
+    const code = await run(
+      ['run', manifestPath, '--non-interactive', '--result', '-'],
+      io,
+      interaction(signals, forceExit),
+    );
+
+    expect(code).toBe(70);
+    expect(deliveryStarted).toBe(true);
+    expect(forceExit).not.toHaveBeenCalled();
+    expect(err).toContain('cancelling - press Ctrl+C again to force quit');
+    expect(err).toContain('internal error: result sink failed');
     expect(listenerCounts(signals)).toEqual(before);
   });
 });
