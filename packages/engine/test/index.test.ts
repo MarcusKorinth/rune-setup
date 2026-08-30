@@ -8,6 +8,7 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'CHROME_CATALOG',
   'formatChrome',
   'discoverOverlays',
+  'discoverSelectedOverlay',
   'LOCALES_DIRECTORY',
   'matchOverlay',
   'normalizeLocaleTag',
