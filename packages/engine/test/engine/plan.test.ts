@@ -326,6 +326,52 @@ describe('interpolation into the command', () => {
     expect(step?.state === 'PENDING' && step.command.cwd).toMatch(/[\\/]project[\\/]work$/);
   });
 
+  it('translates Windows target separators before anchoring relative command and cwd paths', () => {
+    const command = '.\\tools/install.exe';
+    const cwd = 'work\\nested/cache';
+    const { plan } = planFor(
+      [
+        'steps:',
+        '  - id: install',
+        '    run:',
+        `      command: '${command}'`,
+        `      cwd: '${cwd}'`,
+      ],
+      { platform: 'windows' },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
+      resolvePath('/project', 'tools', 'install.exe'),
+    );
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(
+      resolvePath('/project', 'work', 'nested', 'cache'),
+    );
+  });
+
+  it('translates Linux target separators before anchoring relative command and cwd paths', () => {
+    const command = './tools/install';
+    const cwd = 'work/cache';
+    const { plan } = planFor(
+      [
+        'steps:',
+        '  - id: install',
+        '    run:',
+        `      command: '${command}'`,
+        `      cwd: '${cwd}'`,
+      ],
+      { platform: 'linux' },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
+      resolvePath('/project', 'tools', 'install'),
+    );
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(
+      resolvePath('/project', 'work', 'cache'),
+    );
+  });
+
   it('leaves a bare command name to the PATH lookup', () => {
     const { plan } = planFor(['steps:', '  - id: a', '    run:', '      command: pwsh']);
 
@@ -630,6 +676,42 @@ describe('secrets in the plan', () => {
     const step = plan.steps[0];
     expect(step?.state).toBe('PENDING');
     expect(step?.state === 'PENDING' && secretValuesEqual(step.command.cwd, expected)).toBe(true);
+  });
+
+  it('keeps Windows target relative command and cwd normalization opaque and registered', () => {
+    const secretPath = '.\\private/work';
+    const expected = resolvePath('/project', 'private', 'work');
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  secretPath:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: "${secretPath}"',
+        '      cwd: "${secretPath}"',
+      ],
+      {
+        platform: 'windows',
+        overrides: new Map([
+          ['secretPath', secretPath],
+          ['mirror', expected],
+        ]),
+      },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state).toBe('PENDING');
+    expect(step?.state === 'PENDING' && isSecretString(step.command.argv[0])).toBe(true);
+    expect(step?.state === 'PENDING' && secretValuesEqual(step.command.argv[0], expected)).toBe(
+      true,
+    );
+    expect(step?.state === 'PENDING' && isSecretString(step.command.cwd)).toBe(true);
+    expect(step?.state === 'PENDING' && secretValuesEqual(step.command.cwd, expected)).toBe(true);
+    expect(plan.resolvedInputs[1]).toMatchObject({ value: MASK, secret: false });
   });
 
   it('keeps resolved and rendered secrets wrapped, so the plan serializes as ***', () => {

@@ -11,5 +11,7 @@ export function resolveTargetPathFrom(value: string, basePath: string, platform:
   if (targetPath.isAbsolute(value)) {
     return value;
   }
-  return resolvePath(basePath, `.${sep}${value}`);
+  const hostRelative =
+    platform === 'windows' ? value.replace(/[\\/]/g, sep) : value.replace(/\//g, sep);
+  return resolvePath(basePath, `.${sep}${hostRelative}`);
 }
