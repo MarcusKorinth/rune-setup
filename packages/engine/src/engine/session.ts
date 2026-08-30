@@ -121,7 +121,8 @@ export class Session {
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
-    const manifest = parseManifest(absolutePath);
+    const mode = options.mode ?? 'non-interactive';
+    const manifest = parseManifest(absolutePath, { checkAssetFiles: mode === 'gui' });
     const environment = options.environment ?? process.env;
 
     const locale = selectLocale({
@@ -168,7 +169,7 @@ export class Session {
       }),
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
       runner: options.runner,
-      mode: options.mode ?? 'non-interactive',
+      mode,
     });
   }
 

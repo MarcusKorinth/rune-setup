@@ -66,6 +66,20 @@ describe('opening a session', () => {
     expect(session.allInputs()[0]?.source).toBe('values');
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
   });
+
+  it('checks gui assets only for GUI sessions', async () => {
+    const path = fixture([...BASE, 'gui:', '  logo: assets/missing.png']);
+
+    await expect(Session.open(path, { environment: {}, mode: 'gui' })).rejects.toThrow(
+      /gui\.logo points at "assets\/missing\.png", which does not exist/,
+    );
+    await expect(
+      Session.open(path, { environment: {}, mode: 'interactive' }),
+    ).resolves.toBeInstanceOf(Session);
+    await expect(
+      Session.open(path, { environment: {}, mode: 'non-interactive' }),
+    ).resolves.toBeInstanceOf(Session);
+  });
 });
 
 describe('answering inputs', () => {
