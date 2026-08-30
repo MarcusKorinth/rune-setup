@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { InternalError } from '../../src/errors.js';
 import { isSecretString, SecretString } from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
-import { MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
+import { BUILT_IN_INPUT_TYPES, MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
 import type { InputTypeHandler } from '../../src/inputs/base.js';
 import { INPUT_TYPES, type InputSpec, type InputType } from '../../src/manifest/v1/schema.js';
 
@@ -191,6 +191,33 @@ describe('the registry', () => {
       value: 'original',
     });
     expect(replacement).not.toHaveBeenCalled();
+  });
+
+  it('keeps both select coercion paths stable when the built-in handler changes', () => {
+    const builtInSelect = BUILT_IN_INPUT_TYPES.find(({ name }) => name === 'select');
+    if (builtInSelect === undefined) {
+      throw new Error('the built-in select handler is missing');
+    }
+    const registered = inputTypes.get('select');
+    const originalFromString = builtInSelect.fromString;
+    const replacement = vi.fn(() => ({ ok: true, value: 'replacement' }) as const);
+    const selectSpec = spec('select', { options: ['production'] });
+
+    try {
+      expect(Reflect.set(builtInSelect, 'fromString', replacement)).toBe(true);
+
+      expect(registered.fromString('production', selectSpec)).toEqual({
+        ok: true,
+        value: 'production',
+      });
+      expect(registered.fromNative('production', selectSpec)).toEqual({
+        ok: true,
+        value: 'production',
+      });
+      expect(replacement).not.toHaveBeenCalled();
+    } finally {
+      Reflect.set(builtInSelect, 'fromString', originalFromString);
+    }
   });
 
   it.each([

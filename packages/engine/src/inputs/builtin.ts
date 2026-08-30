@@ -168,23 +168,27 @@ const boolean: InputTypeHandler = {
   compare: (value) => value === true,
 };
 
+/** Reads one select option value written as text. */
+function selectFromString(value: string, spec: InputSpec): Coercion {
+  return optionValues(spec).includes(value)
+    ? ok(value)
+    : fail(
+        quotedDiagnostic(value),
+        ' is not one of the option values (',
+        ...listOptions(spec),
+        ')',
+      );
+}
+
 const select: InputTypeHandler = {
   name: 'select',
   secret: false,
   empty: () => '',
   isAbsent: (value) => value === '',
-  fromString: (value, spec) =>
-    optionValues(spec).includes(value)
-      ? ok(value)
-      : fail(
-          quotedDiagnostic(value),
-          ' is not one of the option values (',
-          ...listOptions(spec),
-          ')',
-        ),
+  fromString: selectFromString,
   fromNative: (value, spec) =>
     typeof value === 'string'
-      ? select.fromString(value, spec)
+      ? selectFromString(value, spec)
       : fail(describe(value), ' is not text'),
   render: (value) => String(value),
   compare: (value) => String(value),
