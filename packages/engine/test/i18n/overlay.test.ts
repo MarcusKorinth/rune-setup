@@ -105,6 +105,54 @@ describe('loading an overlay', () => {
     ).toThrow(/must be a string/);
   });
 
+  it('reports every invalid entry in source order', () => {
+    let problem: unknown;
+    try {
+      loadOverlayText(
+        [
+          'steps.missing.title: Unbekannt',
+          '"2": Ungueltig',
+          'rune.button.nope: Unbekannt',
+          '',
+        ].join('\n'),
+        'locales/de.yaml',
+        'de',
+        MANIFEST,
+      );
+    } catch (cause) {
+      problem = cause;
+    }
+
+    expect(problem).toBeInstanceOf(ManifestError);
+    const error = problem as ManifestError;
+    expect(error.code).toBe('RUNE-104');
+    expect(error.location).toEqual({ file: 'locales/de.yaml', line: 1, column: 1 });
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-104',
+        message: 'steps.missing.title does not name a localizable text of this manifest',
+        location: { file: 'locales/de.yaml', line: 1, column: 1 },
+      },
+      {
+        code: 'RUNE-104',
+        message: '2 does not name a localizable text of this manifest',
+        location: { file: 'locales/de.yaml', line: 2, column: 1 },
+      },
+      {
+        code: 'RUNE-104',
+        message: "rune.button.nope is not in RUNE's chrome catalogue",
+        location: { file: 'locales/de.yaml', line: 3, column: 1 },
+      },
+    ]);
+    expect(error.message).toBe(
+      [
+        'locales/de.yaml:1:1: steps.missing.title does not name a localizable text of this manifest',
+        'locales/de.yaml:2:1: 2 does not name a localizable text of this manifest',
+        "locales/de.yaml:3:1: rune.button.nope is not in RUNE's chrome catalogue",
+      ].join('\n'),
+    );
+  });
+
   it('treats an empty file as an empty overlay', () => {
     const overlay = loadOverlayText('', 'locales/de.yaml', 'de', MANIFEST);
     expect(Object.keys(overlay.entries)).toHaveLength(0);

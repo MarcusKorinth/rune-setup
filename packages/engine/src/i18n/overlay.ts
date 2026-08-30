@@ -7,7 +7,7 @@
  * validation error, never a silent no-op.
  */
 
-import { ManifestError, type RuneIssue } from '../errors.js';
+import { ManifestError, orderIssues, type RuneIssue } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from '../manifest/loader.js';
 import { startOfFile } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
@@ -73,7 +73,7 @@ function fromDocument(
   }
 
   if (issues.length > 0) {
-    throw ManifestError.fromIssues('RUNE-104', issues);
+    throw ManifestError.fromIssues('RUNE-104', orderIssues(issues));
   }
   return Object.freeze({
     locale,
