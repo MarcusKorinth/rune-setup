@@ -162,7 +162,7 @@ export async function windowedRun(
         `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
       );
       fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
-      deliverFailure(fatalCode, invocation);
+      deliverFailure(fatalCode, invocation, session);
       window.close();
     },
     onRendererDone: () => {
@@ -303,18 +303,29 @@ function deliverCompletedRun(
   }
 }
 
-function deliverFailure(exitCode: number, invocation: ShellInvocation): void {
+function deliverFailure(exitCode: number, invocation: ShellInvocation, session?: Session): void {
   if (invocation.result === undefined) {
     return;
   }
-  writeResult(
-    failureResult({
-      exitCode,
-      mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
-      manifestPath: invocation.manifestPath,
-    }),
-    invocation.result,
-  );
+  writeResult(failureResultFor(exitCode, invocation, session), invocation.result);
+}
+
+/** Builds the §10 zero-counter result, retaining metadata available from an opened session. */
+export function failureResultFor(
+  exitCode: number,
+  invocation: ShellInvocation,
+  session?: Session,
+): RunResult {
+  return failureResult({
+    exitCode,
+    mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
+    manifestPath: invocation.manifestPath,
+    locale: session?.getStrings().locale ?? null,
+    product:
+      session === undefined
+        ? undefined
+        : { name: session.manifest.product.name, version: session.manifest.product.version },
+  });
 }
 
 function failWith(error: unknown, invocation: ShellInvocation, session: Session): number {
@@ -327,7 +338,7 @@ function failWith(error: unknown, invocation: ShellInvocation, session: Session)
       return code;
     }
   }
-  deliverFailure(code, invocation);
+  deliverFailure(code, invocation, session);
   return code;
 }
 

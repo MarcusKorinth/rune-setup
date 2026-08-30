@@ -78,6 +78,7 @@ vi.mock('electron', () => ({
 import {
   BRIDGE_CHANNELS,
   EVENT_CHANNEL,
+  failureResultFor,
   headlessRun,
   openSession,
   registerBridge,
@@ -233,6 +234,25 @@ describe('the IPC bridge', () => {
 
     await expect(handlers.get('rune:execute')?.()).rejects.toThrow(/token|databasePort/);
     expect(errors).toHaveLength(1);
+  });
+
+  it('retains opened-session metadata in GUI failure results', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+
+    const result = failureResultFor(4, shellInvocation(manifestPath, false), session);
+
+    expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
+    expect(result.locale).toBe(session.getStrings().locale);
+  });
+
+  it('leaves metadata empty for failures before a session opens', () => {
+    const manifestPath = join(tmpdir(), 'missing-installer.yaml');
+
+    const result = failureResultFor(3, shellInvocation(manifestPath, false));
+
+    expect(result.product).toEqual({ name: '', version: '' });
+    expect(result.locale).toBeNull();
   });
 
   it('ends a headless run with 70 after one masked result-write failure', async () => {
