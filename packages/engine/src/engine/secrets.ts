@@ -40,6 +40,7 @@ export const MAX_SECRET_REGISTRY_CODE_UNITS = 262_144;
 
 const CAPACITY_ERROR_MESSAGE =
   'the total size of secret input values exceeds the masking safety limit';
+const DERIVED_SECRET_MASKING_ERROR_MESSAGE = 'a derived secret value cannot be masked safely';
 
 const SECRET_STRING = Symbol('SecretString');
 
@@ -81,10 +82,16 @@ function hasMinimumMaskableLength(value: string): boolean {
   return false;
 }
 
-function secretFromResolver(resolve: () => string, registry?: SecretRegistry): SecretString {
+function secretFromResolver(
+  resolve: () => string,
+  registry?: SecretRegistry,
+  requireCompleteRegistration = false,
+): SecretString {
   const secret = Object.freeze(new OpaqueSecretString());
   SECRET_VALUES.set(secret, resolve);
-  registry?.register(resolve());
+  if (registry !== undefined && !registry.register(resolve()) && requireCompleteRegistration) {
+    throw new InputError('RUNE-202', DERIVED_SECRET_MASKING_ERROR_MESSAGE);
+  }
   return secret;
 }
 
@@ -137,6 +144,7 @@ export function resolveSecretPathFrom(
   return secretFromResolver(
     () => resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
     registry,
+    true,
   );
 }
 

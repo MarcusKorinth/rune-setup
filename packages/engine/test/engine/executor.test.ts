@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, dirname, join, parse as parsePath, sep } from 'node:path';
 import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -32,6 +32,7 @@ import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import { serializeResult } from '../../src/results/writer.js';
 import type { RunMode, RunResult } from '../../src/results/model.js';
 import { resultV1Schema } from '../../src/results/schema.js';
+import { InputError } from '../../src/errors.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
@@ -721,6 +722,70 @@ describe('a run that fails', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('rejects a secret cwd that normalizes to the host root before starting the runner', async () => {
+    const root = parsePath(tmpdir()).root;
+    const manifestDir = join(root, 'base');
+    const sentinel = 'F062A-DISCARDED-SEGMENT';
+    const secretCwd = `${sentinel}${sep}..${sep}..`;
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  workingDirectory:',
+        '    type: secret',
+        'steps:',
+        '  - id: root-cwd',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        '      cwd: "${workingDirectory}"',
+        '',
+      ].join('\n'),
+      join(manifestDir, 'installer.yaml'),
+    );
+    const context = createRuntimeContext({
+      manifestDir,
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      overrides: new Map([['workingDirectory', secretCwd]]),
+    });
+    const run = vi.fn(() => ({ kind: 'exited', exitCode: 0 }) as const);
+    const runner = stubRunner(run);
+
+    expect(resolution.warnings).toEqual([]);
+
+    let thrown: unknown;
+    try {
+      const plan = buildPlan({ manifest, resolution, context });
+      await executeRun({ plan, runner });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-202');
+    expect(error.message).toBe('a derived secret value cannot be masked safely');
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: 'a derived secret value cannot be masked safely',
+        location: undefined,
+      },
+    ]);
+    expect(error.cause).toBeUndefined();
+    const diagnostic = JSON.stringify(error);
+    expect(diagnostic).not.toContain(sentinel);
+    expect(diagnostic).not.toContain(secretCwd);
+    expect(diagnostic).not.toContain(manifestDir);
+    expect(diagnostic).not.toContain(root);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('masks a normalized secret command path emitted by the default runner', async () => {

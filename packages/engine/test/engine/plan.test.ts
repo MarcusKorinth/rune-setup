@@ -546,6 +546,27 @@ describe('the Windows honesty rule', () => {
 });
 
 describe('secrets in the plan', () => {
+  it('keeps the warning policy for an originally short declared secret', () => {
+    const { plan, resolution } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: deploy',
+        '      args: ["${token}"]',
+      ],
+      { overrides: new Map([['token', 'abc']]) },
+    );
+
+    expect(resolution.warnings).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    expect(plan.steps[0]?.state).toBe('PENDING');
+  });
+
   it('keeps resolved and rendered secrets wrapped, so the plan serializes as ***', () => {
     const { plan } = planFor(
       [
