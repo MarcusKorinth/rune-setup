@@ -385,6 +385,7 @@ describe('planning and executing', () => {
       name: InternalError.name,
     });
     expect(run).not.toHaveBeenCalled();
+    expect(session.setValue('installDatabase', false)).toEqual([]);
 
     rmdirSync(logFile);
     await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });
@@ -431,6 +432,79 @@ describe('planning and executing', () => {
 
     await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects value changes while execution is active without changing its plan or inputs', async () => {
+    let runnerStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      runnerStarted = resolve;
+    });
+    let releaseRunner!: () => void;
+    const runnerFinished = new Promise<SpawnOutcome>((resolve) => {
+      releaseRunner = () => resolve({ kind: 'exited', exitCode: 0 });
+    });
+    const requests: SpawnRequest[] = [];
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  target:',
+        '    type: text',
+        '    default: before',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${target}"]',
+      ]),
+      {
+        environment: {},
+        runner: {
+          run: async (request) => {
+            requests.push(request);
+            runnerStarted();
+            return await runnerFinished;
+          },
+        },
+      },
+    );
+    const inputs = session.allInputs();
+    const warnings = session.warnings();
+    const plan = session.plan();
+
+    const active = session.execute();
+    await started;
+
+    let rejection: unknown;
+    try {
+      session.setValue('target', 'after');
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({
+      code: 'RUNE-500',
+      name: InternalError.name,
+    });
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.warnings()).toBe(warnings);
+    expect(session.plan()).toBe(plan);
+    expect(requests[0]?.command.argv).toEqual(['node', 'before']);
+
+    releaseRunner();
+    await expect(active).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(session.setValue('target', 'after')).toEqual([]);
+    const updatedPlan = session.plan();
+    expect(updatedPlan).not.toBe(plan);
+    const updatedStep = updatedPlan.steps[0];
+    expect(updatedStep?.state, 'the updated plan must retain the pending step').toBe('PENDING');
+    if (updatedStep?.state !== 'PENDING') {
+      throw new Error('the updated plan must retain the pending step');
+    }
+    expect(updatedStep.command.argv).toEqual(['node', 'after']);
   });
 
   it('describes a dry run without executing', async () => {

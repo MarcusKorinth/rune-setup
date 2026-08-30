@@ -230,6 +230,9 @@ export class Session {
    * inputs' `when:` flipped, for live enable/disable in the GUI (§9.1).
    */
   setValue(id: string, raw: unknown): readonly InputStateChanged[] {
+    if (this.#activeExecution !== undefined) {
+      throw new InternalError('cannot set a session value while execution is active');
+    }
     if (!(id in this.manifest.inputs)) {
       throw new InputError('RUNE-203', `"${id}" names no input of this manifest`);
     }
