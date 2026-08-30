@@ -3595,10 +3595,69 @@ describe('values files', () => {
   it('locates each problem in the file it came from', () => {
     const error = loadError('a: "ok"\nb:\n  nested: 1\n');
 
-    expect(error.issues[0]?.location).toMatchObject({
-      file: 'values.yaml',
-      line: 2,
-      column: 1,
+    expect(error.issues.map((issue) => [issue.code, issue.location])).toEqual([
+      ['RUNE-203', { file: 'values.yaml', line: 1, column: 1 }],
+      ['RUNE-202', { file: 'values.yaml', line: 2, column: 1 }],
+    ]);
+  });
+
+  it.each([undefined, 'collect'] as const)(
+    'aggregates deferred shape, unknown-key and coercion problems with invalidValues=%s',
+    (invalidValues) => {
+      const manifest = manifestOf(
+        'inputs:',
+        '  badShape:',
+        '    type: text',
+        '    required: false',
+        '  known:',
+        '    type: boolean',
+        '    required: false',
+      );
+      const document = valuesFromFile(
+        ['badShape:', '  nested: value', 'mistake: value', 'known: perhaps', ''].join('\n'),
+      );
+      const error = inputError(manifest, {
+        values: [document],
+        ...(invalidValues === undefined ? {} : { invalidValues }),
+      });
+
+      expect(error.code).toBe('RUNE-202');
+      expect(error.issues.map((issue) => [issue.code, issue.location])).toEqual([
+        ['RUNE-202', { file: 'v.yaml', line: 1, column: 1 }],
+        ['RUNE-203', { file: 'v.yaml', line: 3, column: 1 }],
+        ['RUNE-202', { file: 'v.yaml', line: 4, column: 1 }],
+      ]);
+      expect(error.issues.map((issue) => issue.message)).toEqual([
+        '"badShape" is a mapping; a values file is one flat mapping of input ids to values',
+        '"mistake" is not an input of this manifest (set from v.yaml)',
+        'known (from v.yaml): "perhaps" is not one of true, 1, yes, false, 0, no',
+      ]);
+    },
+  );
+
+  it('keeps a deferred values problem ahead of a later input condition resolution error', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  badShape:',
+      '    type: text',
+      '    required: false',
+      '  conditional:',
+      '    type: text',
+      '    required: false',
+      '    when: \'${env.MISSING} == "enabled"\'',
+    );
+    const error = inputError(manifest, {
+      values: [valuesFromFile(['badShape:', '  nested: value', ''].join('\n'))],
     });
+
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message:
+          '"badShape" is a mapping; a values file is one flat mapping of input ids to values',
+        location: { file: 'v.yaml', line: 1, column: 1 },
+      },
+    ]);
   });
 });

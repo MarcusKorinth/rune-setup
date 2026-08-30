@@ -13,6 +13,7 @@
  */
 
 import {
+  ConditionError,
   formatIssues,
   InputError,
   InternalError,
@@ -182,14 +183,13 @@ function resolveInputsStaged(
   const redactor = options.secrets.combinedWith(stagedSecrets);
   attempt.redactor = redactor;
 
-  if (valuesLayer.problems.length > 0) {
-    throw InputError.fromIssues(
-      'RUNE-202',
-      valuesLayer.problems.map((problem) => materializeValuesProblem(problem, redactor)),
-    );
-  }
-
-  const issues: RuneIssue[] = [];
+  // A malformed values-file entry must not hide unknown keys or independent coercion errors
+  // from the rest of the document. Its presence remains fatal even for an interactive caller
+  // that otherwise collects rejected values to re-prompt.
+  const hasDeferredValuesProblems = valuesLayer.problems.length > 0;
+  const issues: RuneIssue[] = valuesLayer.problems.map((problem) =>
+    materializeValuesProblem(problem, redactor),
+  );
   const warnings: string[] = [];
 
   checkUnknownKeys(options, inputIndex, valuesLayer.entries, issues, redactor);
@@ -197,101 +197,111 @@ function resolveInputsStaged(
   const states = new Map<string, InputState>();
   const order: string[] = [];
 
-  for (const id of ids) {
-    const spec = manifest.inputs[id];
-    if (spec === undefined) {
-      continue;
-    }
-    const handler = inputTypes.get(spec.type);
-    const enabled = isEnabled(spec, id, inputIndex, order.length, states, context);
-    const supplied = handler.secret
-      ? suppliedSecrets.get(id)?.supplied
-      : highestLayer(id, spec, options, valuesLayer.byId);
+  try {
+    for (const id of ids) {
+      const spec = manifest.inputs[id];
+      if (spec === undefined) {
+        continue;
+      }
+      const handler = inputTypes.get(spec.type);
+      const enabled = isEnabled(spec, id, inputIndex, order.length, states, context);
+      const supplied = handler.secret
+        ? suppliedSecrets.get(id)?.supplied
+        : highestLayer(id, spec, options, valuesLayer.byId);
 
-    if (!enabled) {
-      // A manifest default is not something anybody *supplied* for this run: it is what the
-      // author wrote for the case where the input is used at all. Only a value from layers
-      // 2–5 is worth a warning, and only that is recorded as discarded (§5, §10).
-      const discarded =
-        supplied !== undefined && supplied.source !== 'default' ? supplied : undefined;
-      if (discarded !== undefined) {
-        warnings.push(
-          `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
-        );
+      if (!enabled) {
+        // A manifest default is not something anybody *supplied* for this run: it is what the
+        // author wrote for the case where the input is used at all. Only a value from layers
+        // 2–5 is worth a warning, and only that is recorded as discarded (§5, §10).
+        const discarded =
+          supplied !== undefined && supplied.source !== 'default' ? supplied : undefined;
+        if (discarded !== undefined) {
+          warnings.push(
+            `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
+          );
+          warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
+        }
+        states.set(id, {
+          id,
+          spec,
+          enabled: false,
+          value: handler.empty(spec),
+          source: undefined,
+          rejection: undefined,
+          ignored: discarded?.source,
+        });
+        order.push(id);
+        continue;
+      }
+
+      if (supplied === undefined) {
+        states.set(id, {
+          id,
+          spec,
+          enabled: true,
+          // A required input that nobody answered stays empty-handed on purpose: the frontends
+          // ask, and the non-interactive driver refuses (§10).
+          value: spec.required ? undefined : handler.empty(spec),
+          source: undefined,
+          rejection: undefined,
+          ignored: undefined,
+        });
+        order.push(id);
+        continue;
+      }
+
+      if (handler.secret) {
         warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
       }
-      states.set(id, {
-        id,
-        spec,
-        enabled: false,
-        value: handler.empty(spec),
-        source: undefined,
-        rejection: undefined,
-        ignored: discarded?.source,
-      });
-      order.push(id);
-      continue;
-    }
 
-    if (supplied === undefined) {
-      states.set(id, {
-        id,
-        spec,
-        enabled: true,
-        // A required input that nobody answered stays empty-handed on purpose: the frontends
-        // ask, and the non-interactive driver refuses (§10).
-        value: spec.required ? undefined : handler.empty(spec),
-        source: undefined,
-        rejection: undefined,
-        ignored: undefined,
-      });
-      order.push(id);
-      continue;
-    }
+      const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
+      if (!coerced.ok) {
+        const issue: RuneIssue = {
+          code: 'RUNE-202',
+          message: coerced.message,
+          location: supplied.location,
+        };
+        issues.push(issue);
+        states.set(id, {
+          id,
+          spec,
+          enabled: true,
+          value: undefined,
+          source: undefined,
+          rejection: { candidate: coerced.candidate, source: supplied.source, issue },
+          ignored: undefined,
+        });
+        order.push(id);
+        continue;
+      }
 
-    if (handler.secret) {
-      warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
-    }
-
-    const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
-    if (!coerced.ok) {
-      const issue: RuneIssue = {
-        code: 'RUNE-202',
-        message: coerced.message,
-        location: supplied.location,
-      };
-      issues.push(issue);
       states.set(id, {
         id,
         spec,
         enabled: true,
-        value: undefined,
-        source: undefined,
-        rejection: { candidate: coerced.candidate, source: supplied.source, issue },
+        value: coerced.value,
+        source: supplied.source,
+        rejection: undefined,
         ignored: undefined,
       });
       order.push(id);
-      continue;
     }
-
-    states.set(id, {
-      id,
-      spec,
-      enabled: true,
-      value: coerced.value,
-      source: supplied.source,
-      rejection: undefined,
-      ignored: undefined,
-    });
-    order.push(id);
+  } catch (cause) {
+    if (
+      hasDeferredValuesProblems &&
+      (cause instanceof ResolutionError || cause instanceof ConditionError)
+    ) {
+      throwCollectedInputIssues(issues);
+    }
+    throw cause;
   }
 
   const hasUnknownKey = issues.some((issue) => issue.code === 'RUNE-203');
-  if (issues.length > 0 && ((options.invalidValues ?? 'throw') === 'throw' || hasUnknownKey)) {
-    // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
-    // the values (§7).
-    const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+  if (
+    issues.length > 0 &&
+    ((options.invalidValues ?? 'throw') === 'throw' || hasUnknownKey || hasDeferredValuesProblems)
+  ) {
+    throwCollectedInputIssues(issues);
   }
 
   const redactedIssues = issues.map((issue) => redactIssue(issue, redactor));
@@ -324,6 +334,14 @@ function resolveInputsStaged(
   };
   options.secrets.replaceWith(stagedSecrets);
   return resolution;
+}
+
+/** Throws collected issues under their aggregate code, preserving the existing taxonomy. */
+function throwCollectedInputIssues(issues: readonly RuneIssue[]): never {
+  // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
+  // the values (§7).
+  const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
+  throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
 }
 
 interface StagedSecret {
