@@ -6,6 +6,13 @@ import extractDepcruiseConfig from 'dependency-cruiser/config-utl/extract-depcru
 import extractTSConfig from 'dependency-cruiser/config-utl/extract-ts-config';
 import { describe, expect, it } from 'vitest';
 
+// Dependency-Cruiser analyzes the workspace graph and can exceed the unit-test default under CI load.
+const INTEGRATION_TIMEOUT_MS = 30_000;
+
+function slowIt(name: string, run: () => Promise<void>): void {
+  it(name, run, INTEGRATION_TIMEOUT_MS);
+}
+
 /**
  * Guards the import-boundary gate of docs/architecture.md §14 against going vacuous:
  * dependency-cruiser must see every `import ... from '@rune/*'` resolved to that package's
@@ -43,7 +50,7 @@ describe('import boundaries (dependency-cruiser gate)', () => {
     }
   });
 
-  it('resolves workspace imports of @rune/engine to the engine sources', async () => {
+  slowIt('resolves workspace imports of @rune/engine to the engine sources', async () => {
     const config = await extractDepcruiseConfig(repoPath('../.dependency-cruiser.cjs'));
     const tsConfig = extractTSConfig(repoPath('../tsconfig.depcruise.json'));
     // Same composition the depcruise CLI performs: the config's `options` become the cruise

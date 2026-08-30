@@ -9,6 +9,13 @@ import { run } from '@rune/cli';
 import type { CliIo } from '@rune/cli';
 import { Session, type InputStateChanged, type RunEvent, type RunResult } from '@rune/engine';
 
+// Three real frontend runs spawn processes and can exceed the unit-test default under CI load.
+const INTEGRATION_TIMEOUT_MS = 30_000;
+
+function slowIt(name: string, run: () => Promise<void>): void {
+  it(name, run, INTEGRATION_TIMEOUT_MS);
+}
+
 /**
  * The mode-parity contract suite (docs/architecture.md §14): one fixture through the
  * non-interactive driver, the scripted interactive CLI, and an in-process client of the
@@ -308,7 +315,7 @@ function planFrom(events: readonly RunEvent[]) {
 }
 
 describe('mode parity', () => {
-  it('produces one result across non-interactive, interactive, and the GUI leg', async () => {
+  slowIt('produces one result across non-interactive, interactive, and the GUI leg', async () => {
     const manifest = fixture();
 
     // --set exercises layer 4 in the non-interactive driver; the other two legs provide
@@ -341,7 +348,7 @@ describe('mode parity', () => {
     expect(gui.changes).toEqual(interactive.changes);
   });
 
-  it('resolves identical localized titles through every leg', async () => {
+  slowIt('resolves identical localized titles through every leg', async () => {
     const manifest = fixture();
     const { nonInteractive, interactive, gui } = await threeWayRun(manifest, 'de');
 
@@ -364,7 +371,7 @@ describe('mode parity', () => {
     );
   });
 
-  it('isolates ambient RUNE values while preserving them after a three-way run', async () => {
+  slowIt('isolates ambient RUNE values while preserving them after a three-way run', async () => {
     const manifest = fixture();
     const ambientEnvironment: RuneEnvironment = {
       ...EMPTY_RUNE_ENVIRONMENT,
