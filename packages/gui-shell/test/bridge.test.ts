@@ -47,7 +47,9 @@ const electron = vi.hoisted(() => {
 
     show(): void {}
 
-    async loadFile(_path: string): Promise<void> {}
+    async loadFile(path: string): Promise<void> {
+      await electron.loadFile(path);
+    }
 
     close(): void {
       this.closeCalls += 1;
@@ -62,12 +64,13 @@ const electron = vi.hoisted(() => {
   return {
     handlers: new Map<string, (...args: unknown[]) => unknown>(),
     windows: [] as TestBrowserWindow[],
+    loadFile: vi.fn(async (_path: string) => undefined),
     TestBrowserWindow,
   };
 });
 
 vi.mock('electron', () => ({
-  app: { getAppPath: () => process.cwd() },
+  app: { getAppPath: () => process.cwd(), whenReady: async () => undefined },
   BrowserWindow: electron.TestBrowserWindow,
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
@@ -82,6 +85,7 @@ import {
   headlessRun,
   openSession,
   registerBridge,
+  runShell,
   runWorkflow,
   windowedRun,
 } from '../src/main/index.js';
@@ -240,6 +244,8 @@ describe('the IPC bridge', () => {
   beforeEach(() => {
     electron.handlers.clear();
     electron.windows.length = 0;
+    electron.loadFile.mockReset();
+    electron.loadFile.mockResolvedValue(undefined);
     sigtermListeners = new Set(process.listeners('SIGTERM'));
   });
 
@@ -259,6 +265,48 @@ describe('the IPC bridge', () => {
       /gui\.logo.*does not exist/,
     );
     await expect(openSession(shellInvocation(manifestPath, true))).resolves.toBeInstanceOf(Session);
+  });
+
+  it('maps malformed shell argv to one internal-error diagnostic and exit 70', async () => {
+    const exit = vi.fn();
+    const writeStderr = vi.fn();
+
+    await expect(
+      runShell({ argv: [], packaged: false, exit, writeStderr }),
+    ).resolves.toBeUndefined();
+
+    expect(writeStderr).toHaveBeenCalledTimes(1);
+    expect(writeStderr).toHaveBeenCalledWith(
+      'internal shell error: the shell needs a manifest path\n',
+    );
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(70);
+    expect(electron.windows).toHaveLength(0);
+  });
+
+  it('maps a rejected window load to one internal-error diagnostic and exit 70', async () => {
+    const manifestPath = emptyFixture();
+    const exit = vi.fn();
+    const writeStderr = vi.fn();
+    electron.loadFile.mockRejectedValueOnce(new Error('renderer assets unavailable'));
+
+    await expect(
+      runShell({
+        argv: ['electron', 'shell.js', manifestPath],
+        packaged: false,
+        exit,
+        writeStderr,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(writeStderr).toHaveBeenCalledTimes(1);
+    expect(writeStderr).toHaveBeenCalledWith(
+      'internal shell error: renderer assets unavailable\n',
+    );
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(70);
+    expect(electron.windows).toHaveLength(1);
+    expect(electron.windows[0]?.closeCalls).toBe(0);
   });
 
   it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {

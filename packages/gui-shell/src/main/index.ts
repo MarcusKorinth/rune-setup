@@ -57,6 +57,15 @@ interface WorkflowMainOptions {
   readonly subscribeToSigterm?: SigtermSubscriber;
 }
 
+/** Test seam for the Electron startup boundary outside the regular workflow lifecycle. */
+export interface ShellMainOptions {
+  readonly argv?: readonly string[];
+  readonly packaged?: boolean;
+  readonly exit?: (code: number) => void;
+  readonly runWorkflow?: (invocation: ShellInvocation) => Promise<number>;
+  readonly writeStderr?: (message: string) => void;
+}
+
 /** Buffers the one §9.4 cancel request until the window/session lifecycle can receive it. */
 class SigtermRelay {
   readonly #unsubscribe: () => void;
@@ -105,18 +114,31 @@ function subscribeToSigterm(listener: () => void): () => void {
   return () => process.removeListener('SIGTERM', listener);
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(app.isPackaged ? 1 : 2);
-  if (isShellVersionProbe(argv)) {
-    await new Promise<void>((resolve) =>
-      process.stdout.write(shellVersionProbeOutput(), () => resolve()),
-    );
-    app.exit(0);
-    return;
-  }
-  const invocation = parseShellArgv(argv);
+/**
+ * Owns the shell process boundary. Workflow results already carry their §10 exit code;
+ * only failures that escape startup or the Electron lifecycle become internal errors.
+ */
+export async function runShell(options: ShellMainOptions = {}): Promise<void> {
+  const exit = options.exit ?? ((code: number) => app.exit(code));
+  const writeStderr = options.writeStderr ?? ((message: string) => process.stderr.write(message));
 
-  app.exit(await runWorkflow(invocation));
+  try {
+    const argv = (options.argv ?? process.argv).slice((options.packaged ?? app.isPackaged) ? 1 : 2);
+    if (isShellVersionProbe(argv)) {
+      await new Promise<void>((resolve) =>
+        process.stdout.write(shellVersionProbeOutput(), () => resolve()),
+      );
+      exit(0);
+      return;
+    }
+    const invocation = parseShellArgv(argv);
+
+    exit(await (options.runWorkflow ?? runWorkflow)(invocation));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    writeStderr(`internal shell error: ${message}\n`);
+    exit(70);
+  }
 }
 
 /** Runs one ordinary shell invocation; the standalone version probe never enters here. */
@@ -472,5 +494,5 @@ if (
   process.versions['electron'] !== undefined &&
   (process as { type?: string }).type === 'browser'
 ) {
-  void main();
+  void runShell();
 }
