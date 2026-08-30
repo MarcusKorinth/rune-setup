@@ -8,6 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
+import { snapshotEnvironment, type Environment } from '../environment.js';
 import { InputError, InternalError, type RuneIssue } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
@@ -90,7 +91,7 @@ export class Session {
   readonly #strings: StringTable;
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
-  readonly #environment: Readonly<Record<string, string | undefined>>;
+  readonly #environment: Environment;
   readonly #answers = new Map<string, unknown>();
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
@@ -108,7 +109,7 @@ export class Session {
     strings: StringTable;
     values: readonly ValuesDocument[];
     overrides: ReadonlyMap<string, string>;
-    environment: Readonly<Record<string, string | undefined>>;
+    environment: Environment;
     resolution: Resolution;
     logFile: string | undefined;
     runner: Runner | undefined;
@@ -142,9 +143,7 @@ export class Session {
     const manifest = parsed.manifest;
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
-    const environment: Readonly<Record<string, string | undefined>> = Object.freeze({
-      ...(options.environment ?? process.env),
-    });
+    const environment = snapshotEnvironment(options.environment);
 
     const locale = selectLocale({
       flag: options.locale,

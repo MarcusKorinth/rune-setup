@@ -8,6 +8,8 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { environmentValue } from '../environment.js';
+
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
 
@@ -38,7 +40,7 @@ export interface LocaleSelectionOptions {
 
 /** The display locale for a session, or `undefined` for the built-in defaults (§6.3). */
 export function selectLocale(options: LocaleSelectionOptions): string | undefined {
-  for (const candidate of [options.flag, options.environment['RUNE_LOCALE']]) {
+  for (const candidate of [options.flag, environmentValue(options.environment, 'RUNE_LOCALE')]) {
     if (candidate !== undefined && candidate !== '') {
       // An explicit choice terminates the chain: `--locale C` asks for the built-in
       // defaults, never for whatever the next source would have said.

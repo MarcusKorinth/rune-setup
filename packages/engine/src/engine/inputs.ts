@@ -10,6 +10,7 @@
  * resolves again rather than patching state, which is what keeps conditional inputs honest.
  */
 
+import { environmentValue } from '../environment.js';
 import { InputError, InternalError, ResolutionError, type RuneIssue } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
@@ -252,7 +253,7 @@ function highestLayer(
   }
 
   const variable = environmentName(id);
-  const fromEnvironment = environment[variable];
+  const fromEnvironment = environmentValue(environment, variable);
   if (fromEnvironment !== undefined) {
     return {
       source: 'environment',

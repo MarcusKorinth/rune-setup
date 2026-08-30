@@ -69,6 +69,86 @@ describe('opening a session', () => {
     expect(session.allInputs()[0]?.source).toBe('values');
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
   });
+
+  it.runIf(process.platform === 'win32')(
+    'uses Windows casing semantics for interpolation, inputs, and locale selection',
+    async () => {
+      const path = fixture(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  target:',
+          '    type: text',
+          'steps:',
+          '  - id: install',
+          '    title: Install',
+          '    run:',
+          '      command: node',
+          '      args: ["${target}", "${env.PATH}"]',
+        ],
+        { 'locales/de.yaml': 'steps.install.title: Installieren\n' },
+      );
+      const session = await Session.open(path, {
+        environment: {
+          Path: 'C:\\tools',
+          rUnE_iNpUt_tArGeT: 'from-environment',
+          rUnE_lOcAlE: 'de',
+        },
+        systemLocale: 'en-US',
+      });
+
+      expect(session.allInputs()[0]).toMatchObject({
+        value: 'from-environment',
+        source: 'environment',
+      });
+      expect(session.getStrings().locale).toBe('de');
+      expect(session.plan().steps[0]).toMatchObject({
+        title: 'Installieren',
+        command: { argv: ['node', 'from-environment', 'C:\\tools'] },
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps interpolation, inputs, and locale environment names case-sensitive on Linux',
+    async () => {
+      const path = fixture(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  target:',
+          '    type: text',
+          '    required: false',
+          'steps:',
+          '  - id: install',
+          '    title: Install',
+          '    run:',
+          '      command: node',
+          '      args: ["${target}", "${env.PATH}"]',
+        ],
+        { 'locales/de.yaml': 'steps.install.title: Installieren\n' },
+      );
+      const session = await Session.open(path, {
+        environment: {
+          Path: '/tools',
+          rUnE_iNpUt_tArGeT: 'from-environment',
+          rUnE_lOcAlE: 'de',
+        },
+        systemLocale: 'en-US',
+      });
+
+      expect(session.allInputs()[0]).toMatchObject({ value: '', source: undefined });
+      expect(session.getStrings().locale).toBe('en-US');
+      expect(session.getStrings().stepTitle('install')).toBe('Install');
+      expect(() => session.plan()).toThrow(/environment variable PATH is not set/);
+    },
+  );
 });
 
 describe('answering inputs', () => {
@@ -299,6 +379,38 @@ describe('strings and theme', () => {
 });
 
 describe('facade immutability', () => {
+  it('snapshots process.env before later process mutations', async () => {
+    const variable = `RUNE_F016_SNAPSHOT_${process.pid}`;
+    const previous = process.env[variable];
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+      `      args: ["\${env.${variable}}"]`,
+    ]);
+
+    try {
+      process.env[variable] = 'before';
+      const session = await Session.open(path);
+      process.env[variable] = 'after';
+
+      expect(session.plan().steps[0]).toMatchObject({
+        command: { argv: ['node', 'before'] },
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env[variable];
+      } else {
+        process.env[variable] = previous;
+      }
+    }
+  });
+
   it('keeps manifest, input, warning, change, and string projections outside engine authority', async () => {
     const path = fixture([
       'schemaVersion: 1',

@@ -8,6 +8,7 @@
 
 import { homedir, tmpdir } from 'node:os';
 
+import { environmentValue } from '../environment.js';
 import { ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
@@ -236,7 +237,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
         case 'product':
           return options.product[reference.field];
         case 'environment': {
-          const value = environment[reference.name];
+          const value = environmentValue(environment, reference.name);
           if (value === undefined) {
             throw new ResolutionError(
               'RUNE-301',
