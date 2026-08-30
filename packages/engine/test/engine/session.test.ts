@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { hostPlatform } from '../../src/engine/context.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
-import type { InputError } from '../../src/errors.js';
+import { InternalError, type InputError } from '../../src/errors.js';
 import type { Runner } from '../../src/runners/base.js';
 import { runResultSchema } from '../../src/results/schema.js';
 
@@ -429,6 +429,59 @@ describe('planning and executing', () => {
       nothingExecuted: true,
     });
     expect(result.steps.map((step) => step.state)).toEqual(['NOT_RUN', 'SKIPPED']);
+  });
+
+  it('describes cancellation when an expected plan-time error prevents a plan', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  target:',
+      '    type: text',
+      '    default: workstation',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'gui', platform: 'windows' });
+
+    expect(() => session.plan()).toThrow(/needs a shell/);
+    expect(() => session.describe()).toThrow(/needs a shell/);
+    await expect(session.execute()).rejects.toMatchObject({ code: 'RUNE-405' });
+
+    const result = session.describeCancelled();
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      platform: 'windows',
+      stepsTotal: 0,
+      stepsNotRun: 0,
+      steps: [],
+      inputs: [
+        {
+          id: 'target',
+          value: 'workstation',
+          source: 'default',
+          secret: false,
+          enabled: true,
+          ignored: null,
+        },
+      ],
+    });
+    expect(() => runResultSchema.parse(result)).not.toThrow();
+  });
+
+  it('does not reinterpret an internal planning error as cancellation', async () => {
+    const session = await Session.open(fixture(BASE), { environment: {}, mode: 'gui' });
+    const internal = new InternalError('forced planning failure');
+    vi.spyOn(session, 'plan').mockImplementation(() => {
+      throw internal;
+    });
+
+    expect(() => session.describeCancelled()).toThrow(internal);
   });
 });
 

@@ -8,7 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { InputError, type RuneIssue } from '../errors.js';
+import { InputError, InternalError, RuneError, type RuneIssue } from '../errors.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
@@ -256,28 +256,41 @@ export class Session {
 
   /**
    * The result of cancelling before anything ran — the CLI edit-loop Cancel, the GUI
-   * window closed before Proceed (§10). When the inputs are complete, every pending step
-   * is NOT_RUN and plan-time skips are kept. When an input is rejected or required inputs
-   * are still missing, no truthful plan exists, so the result has zero steps and retains
-   * the resolved input provenance.
+   * window closed before Proceed (§10). When the inputs are complete and planning succeeds,
+   * every pending step is NOT_RUN and plan-time skips are kept. When an input is rejected,
+   * required inputs are still missing, or an expected plan-time error prevents a truthful
+   * plan, the result has zero steps and retains the resolved input provenance.
    */
   describeCancelled(): RunResult {
-    const plan =
-      this.#resolution.missing.length === 0 && this.#resolution.problems.length === 0
-        ? this.plan()
-        : buildPlan({
-            manifest: { ...this.manifest, steps: [] },
-            manifestPath: this.manifestPath,
-            resolution: this.#resolution,
-            context: this.#context,
-            strings: this.#strings,
-          });
+    let plan: ExecutionPlan;
+    if (this.#resolution.missing.length > 0 || this.#resolution.problems.length > 0) {
+      plan = this.#emptyPlan();
+    } else {
+      try {
+        plan = this.plan();
+      } catch (error) {
+        if (!(error instanceof RuneError) || error instanceof InternalError) {
+          throw error;
+        }
+        plan = this.#emptyPlan();
+      }
+    }
     return describeCancelled({
       plan,
       resolution: this.#resolution,
       product: this.manifest.product,
       secrets: this.#secrets,
       mode: this.#mode,
+    });
+  }
+
+  #emptyPlan(): ExecutionPlan {
+    return buildPlan({
+      manifest: { ...this.manifest, steps: [] },
+      manifestPath: this.manifestPath,
+      resolution: this.#resolution,
+      context: this.#context,
+      strings: this.#strings,
     });
   }
 
