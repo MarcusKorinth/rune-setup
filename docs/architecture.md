@@ -324,7 +324,9 @@ export class Session {
   }): Promise<Session>;
   readonly manifest: Manifest;
   pendingInputs(): readonly InputSpec[];         // unresolved AND enabled, declaration order
-  allInputs(): readonly InputState[];            // {spec, value | null, enabled, source} — GUI prefill
+  allInputs(): readonly InputState[];            // {id, spec, value, enabled, source, rejection, ignored};
+                                                 // absent value/source/rejection/ignored are undefined;
+                                                 // secret values stay SecretString-wrapped in-process
   setValue(name: string, raw: unknown, source: ValueSource): readonly InputStateChanged[];
                                                  // registry-validated (type, options, pattern);
                                                  // re-evaluates input when: for later inputs
