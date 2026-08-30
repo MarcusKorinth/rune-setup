@@ -1,8 +1,8 @@
 # Roadmap
 
-Current state: **repository bootstrap (Milestone 0) complete**. [architecture.md](architecture.md)
-is the binding architectural contract; only the package skeleton exists — engine and CLI
-functionality start with Milestone 1.
+Current state: **M0–M3 (v0.1.0) complete MVP**, including the engine, CLI modes, and GUI
+shell. [architecture.md](architecture.md) is the binding architectural contract; the next
+core milestone is M4, `rune package` / **0.2.0**.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
