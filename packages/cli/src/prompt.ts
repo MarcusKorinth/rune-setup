@@ -13,6 +13,14 @@ import type { InputState, Session, StringTable } from '@rune/engine';
 import type { CliIo } from './io.js';
 import { renderPlan } from './render.js';
 
+export type CancelSignal = 'SIGINT' | 'SIGTERM';
+
+/** Process-signal subset used while a session executes; injectable to keep tests isolated. */
+export interface SignalSource {
+  on(signal: CancelSignal, listener: () => void): void;
+  removeListener(signal: CancelSignal, listener: () => void): void;
+}
+
 /** Where the prompter reads and writes — injected, so tests can script a whole session. */
 export interface Interaction {
   readonly input: NodeJS.ReadableStream;
@@ -21,6 +29,8 @@ export interface Interaction {
   write(text: string): void;
   /** The documented second-Ctrl+C force quit (§9.3); `process.exit` in the real process. */
   forceExit(code: number): void;
+  /** Defaults to the host process; tests inject a private signal source. */
+  readonly signalSource?: SignalSource | undefined;
 }
 
 /** A writable readline can echo through, with a switch for the muted secret echo. */

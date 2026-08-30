@@ -117,29 +117,46 @@ export async function runCommand(
 }
 
 /**
- * Runs with the §9.3 cancel flow: the first Ctrl+C fires the CancelToken (the interrupted
- * step becomes CANCELLED, the run exits 6 through the ordinary path), a second force-quits.
+ * Runs with the §7/§9.3 cancel flow: SIGTERM and the first Ctrl+C fire the same CancelToken
+ * path (the interrupted step becomes CANCELLED and exits 6); a second Ctrl+C force-quits.
+ * SIGTERM stays idempotent and never advances the Ctrl+C force-quit count.
  */
 async function executeWithCancel(
   session: Session,
   io: CliIo,
   interaction: Interaction,
 ): Promise<RunResult> {
-  let cancelledOnce = false;
-  const onSigint = (): void => {
-    if (cancelledOnce) {
-      interaction.forceExit(6);
+  const signalSource = interaction.signalSource ?? process;
+  let cancellationRequested = false;
+  let sigintCount = 0;
+
+  const requestCancel = (): void => {
+    if (cancellationRequested) {
       return;
     }
-    cancelledOnce = true;
+    cancellationRequested = true;
     io.stderr(session.getStrings().chrome('rune.run.cancelling'));
     session.cancel();
   };
-  process.on('SIGINT', onSigint);
+  const onSigint = (): void => {
+    sigintCount += 1;
+    if (sigintCount >= 2) {
+      interaction.forceExit(6);
+      return;
+    }
+    requestCancel();
+  };
+  const onSigterm = (): void => {
+    requestCancel();
+  };
+
+  signalSource.on('SIGINT', onSigint);
+  signalSource.on('SIGTERM', onSigterm);
   try {
     return await session.execute(progressObserver(io));
   } finally {
-    process.removeListener('SIGINT', onSigint);
+    signalSource.removeListener('SIGINT', onSigint);
+    signalSource.removeListener('SIGTERM', onSigterm);
   }
 }
 
