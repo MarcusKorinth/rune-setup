@@ -16,6 +16,7 @@ import {
 } from 'electron';
 
 import {
+  CancelToken,
   CancelledError,
   RUNE_VERSION,
   RuneError,
@@ -51,6 +52,33 @@ export const EVENT_CHANNEL = 'rune:event';
 export interface SigtermSource {
   on(signal: 'SIGTERM', listener: () => void): void;
   off(signal: 'SIGTERM', listener: () => void): void;
+}
+
+/** Keeps one early SIGTERM until the selected shell lifecycle is ready to receive it. */
+class LatchedSigtermSource implements SigtermSource {
+  #listener: (() => void) | undefined;
+  #requested = false;
+
+  on(_signal: 'SIGTERM', listener: () => void): void {
+    this.#listener = listener;
+    if (this.#requested) {
+      listener();
+    }
+  }
+
+  off(_signal: 'SIGTERM', listener: () => void): void {
+    if (this.#listener === listener) {
+      this.#listener = undefined;
+    }
+  }
+
+  request(): void {
+    if (this.#requested) {
+      return;
+    }
+    this.#requested = true;
+    this.#listener?.();
+  }
 }
 
 /** Keeps a process signal listener scoped to exactly one asynchronous shell run. */
@@ -91,16 +119,24 @@ export function windowOptions(theme: Pick<ThemeConfig, 'logo'>): BrowserWindowCo
 
 export async function main(
   argv: readonly string[] = process.argv.slice(app.isPackaged ? 1 : 2),
+  signals: SigtermSource = process,
 ): Promise<void> {
   let exitCode: number;
   try {
     const invocation = parseShellArgv(argv);
-    await app.whenReady();
-    const session = await openSession(invocation);
+    const routedSignals = new LatchedSigtermSource();
+    exitCode = await withSigtermHandler(
+      () => routedSignals.request(),
+      async () => {
+        await app.whenReady();
+        const session = await openSession(invocation);
 
-    exitCode = invocation.nonInteractive
-      ? await headlessRun(session, invocation)
-      : await windowedRun(session, invocation);
+        return invocation.nonInteractive
+          ? headlessRun(session, invocation, routedSignals)
+          : windowedRun(session, invocation, routedSignals);
+      },
+      signals,
+    );
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     exitCode = exitCodeFor(error);
@@ -123,16 +159,26 @@ export function headlessRun(
   invocation: ShellInvocation,
   signals: SigtermSource = process,
 ): Promise<number> {
+  const cancel = new CancelToken();
   return withSigtermHandler(
-    () => session.cancel(),
-    () => executeHeadless(session, invocation),
+    () => {
+      // Preserve Session.cancel() as the public shell action (§9.4). The explicit token also
+      // remembers a signal that arrived before execute() installed it on the Session.
+      cancel.cancel();
+      session.cancel();
+    },
+    () => executeHeadless(session, invocation, cancel),
     signals,
   );
 }
 
-async function executeHeadless(session: Session, invocation: ShellInvocation): Promise<number> {
+async function executeHeadless(
+  session: Session,
+  invocation: ShellInvocation,
+  cancel: CancelToken,
+): Promise<number> {
   try {
-    const result = await session.execute();
+    const result = await session.execute(undefined, cancel);
     for (const warning of session.warnings()) {
       writeSessionDiagnostic(session, `warning: ${warning}`);
     }
@@ -146,7 +192,11 @@ async function executeHeadless(session: Session, invocation: ShellInvocation): P
   }
 }
 
-async function windowedRun(session: Session, invocation: ShellInvocation): Promise<number> {
+async function windowedRun(
+  session: Session,
+  invocation: ShellInvocation,
+  signals: SigtermSource = process,
+): Promise<number> {
   const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
   window.once('ready-to-show', () => window.show());
 
@@ -155,6 +205,7 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
   let outcome: RunResult | undefined;
   let fatalCode: number | undefined;
   let renderedDone = false;
+  let sigtermRequested = false;
 
   registerBridge(session, {
     events: window.webContents,
@@ -206,10 +257,25 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
   });
   const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
 
-  await withSigtermHandler(closeWindowOnSigterm(window), async () => {
-    await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-    await closed;
-  });
+  await withSigtermHandler(
+    () => {
+      sigtermRequested = true;
+      closeWindowOnSigterm(window)();
+    },
+    async () => {
+      if (!sigtermRequested) {
+        try {
+          await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+        } catch (error) {
+          if (!sigtermRequested) {
+            throw error;
+          }
+        }
+      }
+      await closed;
+    },
+    signals,
+  );
 
   if (fatalCode !== undefined) {
     return fatalCode;

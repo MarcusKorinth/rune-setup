@@ -161,6 +161,61 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     expect(signals.listener).toBeUndefined();
   });
 
+  it('latches SIGTERM during readiness and completes the headless cancellation flow', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-early-sigterm-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const resultPath = join(dir, 'result.json');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Early signal lifecycle',
+        '  version: 1.0.0',
+        'inputs: {}',
+        'steps:',
+        '  - id: never-started',
+        '    run:',
+        '      command: unused',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      runner: {
+        run: vi.fn(async () => {
+          throw new Error('a latched cancellation must stop before the runner');
+        }),
+      },
+    });
+    const open = vi.spyOn(Session, 'open').mockResolvedValue(session);
+    const ready = deferred<void>();
+    vi.mocked(app.whenReady).mockReturnValue(ready.promise);
+    const signals = new FakeSigtermSource();
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const run = main([manifestPath, '--non-interactive', '--result', resultPath], signals);
+
+    expect(signals.added).toHaveLength(1);
+    expect(open).not.toHaveBeenCalled();
+    signals.emit();
+    ready.resolve();
+
+    await run;
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(6);
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'non-interactive',
+      stepsNotRun: 1,
+    });
+    expect(signals.removed).toEqual(signals.added);
+    expect(signals.listener).toBeUndefined();
+  });
+
   it('turns windowed SIGTERM into an unconditional close request', async () => {
     const signals = new FakeSigtermSource();
     const window = { close: vi.fn() };
