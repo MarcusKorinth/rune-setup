@@ -22,6 +22,7 @@ import { evaluateCondition, parseCondition, type ConditionReference } from './co
 import { resolveReference, runtimeContextFor, type RuntimeContext } from './context.js';
 import { renderTemplate } from './interpolate.js';
 import {
+  createSecretString,
   isSecretString,
   registerSecretForMasking,
   SecretRegistry,
@@ -216,6 +217,12 @@ export function resolveInputsWithRegistry(
         warnings.push(
           `${id} was set from ${SOURCE_NAMES[discarded.source]}, but its condition is false — the value is ignored`,
         );
+        if (handler.secret) {
+          // A disabled value stays uncoerced and ineffective, but it can still collide with a
+          // later diagnostic. Wrap only text-shaped secret values so the final masker covers
+          // them without validating or exposing what was discarded.
+          registerSecretValue(id, discarded.raw, secrets, warnings);
+        }
       }
       states.set(id, {
         id,
@@ -262,16 +269,7 @@ export function resolveInputsWithRegistry(
     if (handler.secret) {
       // Registration resolves the opaque value only inside the secret/registry boundary; the
       // resolver never receives the text it is arranging to mask (§10, invariant 6).
-      const value = isSecretString(coerced.value) ? coerced.value : undefined;
-      if (
-        value !== undefined &&
-        secretLength(value) > 0 &&
-        !registerSecretForMasking(value, secrets)
-      ) {
-        warnings.push(
-          `${id} contains a non-empty value or line that is too short to mask reliably, so it may appear in logs — each non-empty value or line needs at least 4 non-whitespace characters to be masked`,
-        );
-      }
+      registerSecretValue(id, coerced.value, secrets, warnings);
     }
 
     states.set(id, {
@@ -345,6 +343,29 @@ function freezeIssue(issue: RuneIssue): RuneIssue {
 
 function maskIssue(issue: RuneIssue, secrets: SecretMasker): RuneIssue {
   return { ...issue, message: secrets.mask(issue.message) };
+}
+
+/** Registers an effective or discarded secret without returning its text to resolution. */
+function registerSecretValue(
+  id: string,
+  value: unknown,
+  secrets: SecretRegistry,
+  warnings: string[],
+): void {
+  const secret = isSecretString(value)
+    ? value
+    : typeof value === 'string'
+      ? createSecretString(value)
+      : undefined;
+  if (
+    secret !== undefined &&
+    secretLength(secret) > 0 &&
+    !registerSecretForMasking(secret, secrets)
+  ) {
+    warnings.push(
+      `${id} contains a non-empty value or line that is too short to mask reliably, so it may appear in logs — each non-empty value or line needs at least 4 non-whitespace characters to be masked`,
+    );
+  }
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */

@@ -375,6 +375,63 @@ describe('conditional inputs', () => {
     ]);
   });
 
+  it('registers a discarded secret before masking later diagnostics', () => {
+    const secret = 'disabled-secret-value';
+    const withDisabledSecret = manifestOf(
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  token:',
+      '    type: secret',
+      '    when: "${enabled}"',
+      '  mirror:',
+      '    type: text',
+      '    pattern: never',
+    );
+    const resolution = resolve(withDisabledSecret, {
+      overrides: new Map([
+        ['token', secret],
+        ['mirror', secret],
+      ]),
+      invalidValues: 'collect',
+    });
+    const token = resolution.byId.get('token');
+
+    expect(token).toMatchObject({
+      enabled: false,
+      source: undefined,
+      ignored: 'set',
+    });
+    expect(isSecretString(token?.value)).toBe(true);
+    expect(isSecretString(token?.value) && secretEquals(token.value, '')).toBe(true);
+    expect(resolution.problems[0]?.message).toContain('***');
+    expect(JSON.stringify(resolution.problems)).not.toContain(secret);
+    expect(resolutionSnapshotFor(resolution).secrets.mask(`later diagnostic: ${secret}`)).toBe(
+      'later diagnostic: ***',
+    );
+  });
+
+  it('warns consistently when a discarded secret is too short to mask', () => {
+    const withDisabledSecret = manifestOf(
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  token:',
+      '    type: secret',
+      '    when: "${enabled}"',
+    );
+    const resolution = resolve(withDisabledSecret, {
+      overrides: new Map([['token', 'ab']]),
+    });
+
+    expect(resolution.warnings).toEqual([
+      'token was set from --set, but its condition is false — the value is ignored',
+      'token contains a non-empty value or line that is too short to mask reliably, so it may appear in logs — each non-empty value or line needs at least 4 non-whitespace characters to be masked',
+    ]);
+  });
+
   it('honours the same value again once the condition turns true', () => {
     const resolution = resolve(manifest, {
       overrides: new Map([

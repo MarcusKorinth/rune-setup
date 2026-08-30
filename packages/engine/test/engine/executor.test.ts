@@ -6,7 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { describePlan, executeRun, OUTPUT_TAIL_LINES } from '../../src/engine/executor.js';
+import {
+  describePlan,
+  executeRun,
+  OUTPUT_TAIL_LINES,
+  snapshotParentEnvironment,
+} from '../../src/engine/executor.js';
 import { resolveInputs, resolveInputsWithRegistry } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { isSecretString, SecretRegistry } from '../../src/engine/secrets.js';
@@ -14,6 +19,7 @@ import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
   MAX_OUTPUT_LINE_BYTES,
+  mergeSpawnEnvironment,
   OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
 } from '../../src/runners/spawnRunner.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
@@ -30,9 +36,14 @@ function stubRunner(
 
 function setup(
   lines: readonly string[],
-  options: { overrides?: ReadonlyMap<string, string>; failFast?: boolean } = {},
+  options: {
+    overrides?: ReadonlyMap<string, string>;
+    failFast?: boolean;
+    environment?: Readonly<Record<string, string | undefined>>;
+  } = {},
 ): { plan: ExecutionPlan } {
   const failFastLine = options.failFast === false ? ['execution:', '  failFast: false'] : [];
+  const environment = options.environment ?? {};
   const manifest = parseManifestText(
     [...HEAD, ...failFastLine, ...lines, ''].join('\n'),
     'installer.yaml',
@@ -42,12 +53,12 @@ function setup(
     manifestDir: '/project',
     product: manifest.product,
     platform: hostPlatform(),
-    environment: {},
+    environment,
   });
   const resolution = resolveInputs({
     manifest,
     context,
-    environment: {},
+    environment,
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
@@ -200,6 +211,101 @@ describe('a run that succeeds', () => {
         delete process.env[environmentName];
       } else {
         process.env[environmentName] = previousValue;
+      }
+    }
+  });
+
+  it('removes only declared input controls with Windows name semantics', () => {
+    const parentEnv = snapshotParentEnvironment(
+      {
+        RUNE_INPUT_TOKEN: 'discarded-token',
+        rune_input_install_dir: 'discarded-directory',
+        RUNE_INPUT_UNDECLARED: 'keep-control',
+        KEEP_ME: 'keep-value',
+      },
+      ['token', 'install-dir'],
+      'win32',
+    );
+
+    expect(parentEnv).toEqual({
+      RUNE_INPUT_UNDECLARED: 'keep-control',
+      KEEP_ME: 'keep-value',
+    });
+    expect(Object.isFrozen(parentEnv)).toBe(true);
+
+    const spawnEnv = mergeSpawnEnvironment(
+      parentEnv,
+      { rune_input_token: 'explicit-command-value' },
+      {},
+      'win32',
+    );
+    expect(spawnEnv).toEqual({
+      RUNE_INPUT_UNDECLARED: 'keep-control',
+      KEEP_ME: 'keep-value',
+      rune_input_token: 'explicit-command-value',
+    });
+  });
+
+  it('keeps a disabled environment secret out of the runner parent and every sink', async () => {
+    const variable = 'RUNE_INPUT_TOKEN';
+    const secret = 'discarded-environment-secret';
+    const previousValue = process.env[variable];
+    process.env[variable] = secret;
+
+    try {
+      const { plan } = setup(
+        [
+          'inputs:',
+          '  enabled:',
+          '    type: boolean',
+          '    default: false',
+          '  token:',
+          '    type: secret',
+          '    when: "${enabled}"',
+          'steps:',
+          '  - id: inspect',
+          '    run:',
+          '      command: a',
+        ],
+        { environment: { [variable]: secret } },
+      );
+      const events: RunEvent[] = [];
+
+      const result = await executeRun({
+        plan,
+        observer: (event) => events.push(event),
+        runner: stubRunner((request) => {
+          expect(request.parentEnv[variable]).toBeUndefined();
+          expect(
+            Object.keys(request.parentEnv).some(
+              (name) => name.toUpperCase() === variable.toUpperCase(),
+            ),
+          ).toBe(false);
+          request.onOutput('stderr', `discarded value: ${secret}`);
+          return { kind: 'exited', exitCode: 1 };
+        }),
+      });
+
+      expect(result.inputs.find((input) => input.id === 'token')).toMatchObject({
+        value: null,
+        source: 'environment',
+        secret: true,
+        enabled: false,
+        ignored: 'input disabled',
+      });
+      expect(events.find((event) => event.kind === 'stepOutput')).toMatchObject({
+        line: 'discarded value: ***',
+      });
+      expect(result.steps[0]?.outputTail?.[0]).toEqual({
+        stream: 'stderr',
+        line: 'discarded value: ***',
+      });
+      expect(JSON.stringify({ events, result })).not.toContain(secret);
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env[variable];
+      } else {
+        process.env[variable] = previousValue;
       }
     }
   });

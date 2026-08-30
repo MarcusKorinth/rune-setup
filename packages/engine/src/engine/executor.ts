@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 import { InternalError } from '../errors.js';
+import { environmentName } from '../manifest/v1/rules.js';
 import { RUNE_VERSION } from '../version.js';
 import {
   executionContextFor,
@@ -45,6 +46,23 @@ export interface ExecuteOptions {
   readonly runner?: Runner;
 }
 
+/** Captures the inherited environment without manifest input-control variables. */
+export function snapshotParentEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  inputIds: readonly string[],
+  platform: NodeJS.Platform,
+): Readonly<Record<string, string | undefined>> {
+  const comparableName = (name: string): string =>
+    platform === 'win32' ? name.toUpperCase() : name;
+  const inputEnvironmentNames = new Set(inputIds.map((id) => comparableName(environmentName(id))));
+  const inherited = Object.fromEntries(
+    Object.entries(environment).filter(
+      ([name]) => !inputEnvironmentNames.has(comparableName(name)),
+    ),
+  );
+  return Object.freeze(inherited);
+}
+
 /** Runs the plan to its end and reports what happened. Never throws for a failing step. */
 export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const { plan } = options;
@@ -75,9 +93,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   let wasCancelled = false;
   let fatalTerminationFailure = false;
 
-  const parentEnv: Readonly<Record<string, string | undefined>> = Object.freeze({
-    ...process.env,
-  });
+  const parentEnv = snapshotParentEnvironment(
+    process.env,
+    plan.resolvedInputs.map((input) => input.id),
+    process.platform,
+  );
   emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
   wasCancelled = cancel.isCancelled;
 
