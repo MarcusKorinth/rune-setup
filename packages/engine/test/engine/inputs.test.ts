@@ -21,7 +21,13 @@ import {
   SecretString,
 } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
-import { exitCodeFor, InputError, ManifestError, ResolutionError } from '../../src/errors.js';
+import {
+  exitCodeFor,
+  formatIssues,
+  InputError,
+  ManifestError,
+  ResolutionError,
+} from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -1963,6 +1969,58 @@ describe('secrets', () => {
     expect(secrets.mask(existing)).toBe('***');
     expect(secrets.mask(before)).toBe(before);
     expect(secrets.mask(after)).toBe(after);
+  });
+
+  it('preserves only formatter-owned newlines in an aggregate input error message', () => {
+    const active = 'F059-ACTIVE-SECRET';
+    const staged = 'F059-STAGED-SECRET';
+    const displayName = `${active}-${staged}${DIAGNOSTIC_CONTROLS}.yaml`;
+    const unknown = `unknown${DIAGNOSTIC_CONTROLS}`;
+    const withInvalidValues = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const secrets = new SecretRegistry();
+    secrets.register(active);
+    const error = inputError(withInvalidValues, {
+      values: [
+        values(displayName, {
+          token: staged,
+          note: `${active}/${staged}${DIAGNOSTIC_CONTROLS}`,
+          [unknown]: 'value',
+        }),
+      ],
+      secrets,
+    });
+
+    expect(error).toBeInstanceOf(InputError);
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues).toHaveLength(2);
+    expect(error.message).toBe(formatIssues(error.issues));
+
+    const messageLines = error.message.split('\n');
+    expect(messageLines).toHaveLength(error.issues.length);
+    expect(error.message).not.toBe(messageLines.join('\\n'));
+    expect(error.issues.some((issue) => issue.message.includes('\\n'))).toBe(true);
+    for (const line of messageLines) {
+      expect(hasRawDiagnosticControl(line)).toBe(false);
+    }
+
+    const stackLines = error.stack?.split('\n') ?? [];
+    expect(stackLines[0]).toContain('\\n');
+    expect(hasRawDiagnosticControl(stackLines[0] ?? '')).toBe(false);
+    expect(stackLines.slice(1).some((line) => line.startsWith('    at '))).toBe(true);
+
+    for (const sentinel of [active, staged]) {
+      expect(publicErrorSurfaces(error).join('\n')).not.toContain(sentinel);
+    }
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask(active)).toBe('***');
+    expect(secrets.mask(staged)).toBe(staged);
   });
 
   it('redacts active and staged secrets from every located input-error surface', () => {

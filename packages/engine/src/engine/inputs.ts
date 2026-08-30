@@ -13,6 +13,7 @@
  */
 
 import {
+  formatIssues,
   InputError,
   InternalError,
   ManifestError,
@@ -452,8 +453,17 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
 
   const rawMessage = error.message;
   const rawStack = error.stack;
+  const messageWasFormattedFromIssues =
+    error instanceof RuneError && rawMessage === formatIssues(error.issues);
+  const redactedIssues =
+    error instanceof RuneError
+      ? error.issues.map((issue) => redactIssue(issue, secrets))
+      : undefined;
   const maskedMessage = secrets.mask(rawMessage);
-  error.message = escapeDiagnosticText(maskedMessage);
+  error.message =
+    messageWasFormattedFromIssues && redactedIssues !== undefined
+      ? formatIssues(redactedIssues)
+      : escapeDiagnosticText(maskedMessage);
   if (rawStack !== undefined) {
     const maskedStack = secrets.mask(rawStack);
     const maskedHeader = secrets.mask(`${error.name}: ${rawMessage}`);
@@ -467,7 +477,7 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
     });
     Object.defineProperty(error, 'issues', {
       ...Object.getOwnPropertyDescriptor(error, 'issues'),
-      value: error.issues.map((issue) => redactIssue(issue, secrets)),
+      value: redactedIssues,
     });
   }
 
