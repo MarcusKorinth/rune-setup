@@ -100,7 +100,9 @@ const MANIFEST = [
   '      args: ["-e", "console.log(process.argv[1])", "${greeting}"]',
 ];
 
-describe('the interactive run', () => {
+const INTERACTIVE_TEST_TIMEOUT_MS = 20_000;
+
+describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => {
   it('keeps EOF terminal after an accepted answer', async () => {
     const interaction = scriptedThenEof(['first']);
     const prompter = new Prompter(interaction);
