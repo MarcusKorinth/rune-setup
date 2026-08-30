@@ -560,6 +560,48 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(written.inputs.map((input) => input.id)).toEqual(['installDatabase']);
   });
 
+  it('masks secrets in the result when cancelling from the summary', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: pending',
+      '    run:',
+      '      command: node',
+      '      args: ["--token", "${token}"]',
+    ]);
+    const io = capture();
+    const secret = 'summary-cancel-secret-marker';
+    const interaction = scripted([secret, 'c']);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(6);
+    const resultJson = io.out.join('\n');
+    const result = JSON.parse(resultJson) as {
+      status: string;
+      inputs: readonly { id: string; value: unknown; secret: boolean }[];
+      steps: readonly { state: string; command: readonly string[] }[];
+    };
+    expect(result.status).toBe('cancelled');
+    expect(result.inputs.find((input) => input.id === 'token')).toMatchObject({
+      value: null,
+      secret: true,
+    });
+    expect(result.steps).toEqual([
+      expect.objectContaining({ state: 'NOT_RUN', command: ['node', '--token', '***'] }),
+    ]);
+    expect(resultJson).not.toContain(secret);
+    expect(io.out.join('\n')).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+    expect(interaction.transcript()).not.toContain(secret);
+  });
+
   it.each([
     { label: 'with a result', result: true },
     { label: 'without a result', result: false },
