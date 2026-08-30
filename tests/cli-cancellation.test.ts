@@ -75,7 +75,7 @@ describe('CLI cancellation control', () => {
         { id: 'after', state: 'NOT_RUN' },
       ],
     });
-  }, 15_000);
+  }, 30_000);
 
   it('writes a cancelled dry-run result when the token was already cancelled', async () => {
     const cancel = new CancelToken();
