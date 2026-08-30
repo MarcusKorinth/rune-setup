@@ -83,7 +83,6 @@ function setup(
   const resolution = resolveInputs({
     manifest,
     context,
-    environment,
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
@@ -609,7 +608,6 @@ describe('a run that fails', () => {
       const resolution = resolveInputs({
         manifest,
         context,
-        environment: {},
         overrides: new Map([['token', secret]]),
       });
       const plan = buildPlan({ manifest, resolution, context });
@@ -1575,7 +1573,7 @@ describe('skipped steps and the dry run', () => {
       platform: foreign,
       environment: {},
     });
-    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const resolution = resolveInputs({ manifest, context });
     const plan = buildPlan({ manifest, resolution, context });
 
     await expect(executeRun({ plan })).rejects.toThrow(/preview plan/);
@@ -1636,7 +1634,6 @@ describe('skipped steps and the dry run', () => {
       {
         manifest,
         context,
-        environment: {},
         overrides: new Map([['token', original]]),
       },
       secrets,
@@ -1702,7 +1699,7 @@ describe('skipped steps and the dry run', () => {
         platform: hostPlatform(),
         environment: {},
       });
-      const resolution = resolveInputs({ manifest, context, environment: {} });
+      const resolution = resolveInputs({ manifest, context });
       const plan = buildPlan({ manifest, resolution, context });
 
       writeFileSync(manifestPath, 'changed bytes');
@@ -1831,7 +1828,6 @@ describe('the plan execution context', () => {
     const resolution = resolveInputs({
       manifest,
       context,
-      environment: {},
       overrides: new Map([['tools', 'git,docker']]),
     });
     const plan = buildPlan({ manifest, resolution, context });
@@ -1889,7 +1885,6 @@ describe('the plan execution context', () => {
     const resolution = resolveInputs({
       manifest,
       context,
-      environment: {},
       overrides: new Map([['token', 'bound-secret']]),
     });
     const plan = buildPlan({ manifest, resolution, context });

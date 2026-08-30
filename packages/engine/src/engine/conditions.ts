@@ -10,9 +10,9 @@
  */
 
 import { ConditionError } from '../errors.js';
-import { isSecretString, secretEquals, secretIsIncludedIn, type SecretString } from './secrets.js';
 import type { ValueType } from './context.js';
 import { scanReference, type TemplateReference } from './interpolate.js';
+import { secretValueIn, secretValuesEqual, type SecretString } from './secrets.js';
 
 /**
  * Guards against a pathological expression; a real condition is a line, not a page. Counted
@@ -697,19 +697,19 @@ function evaluate(
     case 'or':
       return asBoolean(evaluate(node.left, lookup)) || asBoolean(evaluate(node.right, lookup));
     case 'equality': {
-      const equal = valuesEqual(evaluate(node.left, lookup), evaluate(node.right, lookup));
+      const left = evaluate(node.left, lookup);
+      const right = evaluate(node.right, lookup);
+      const equal = secretValuesEqual(left, right) ?? left === right;
       return node.negated ? !equal : equal;
     }
     case 'membership': {
-      const needle = asString(evaluate(node.needle, lookup));
+      const needle = evaluate(node.needle, lookup);
       const haystack = evaluate(node.haystack, lookup);
       if (!Array.isArray(haystack)) {
         throw new ConditionError('RUNE-312', '"in" needs a multiselect value on its right');
       }
-      const values = haystack as readonly string[];
-      const found = isSecretString(needle)
-        ? secretIsIncludedIn(needle, values)
-        : values.includes(needle);
+      const strings = haystack as readonly string[];
+      const found = secretValueIn(needle, strings) ?? strings.includes(asString(needle));
       return node.negated ? !found : found;
     }
   }
@@ -722,18 +722,8 @@ function asBoolean(value: ConditionValue): boolean {
   return value;
 }
 
-function valuesEqual(left: ConditionValue, right: ConditionValue): boolean {
-  if (isSecretString(left)) {
-    return secretEquals(left, right);
-  }
-  if (isSecretString(right)) {
-    return secretEquals(right, left);
-  }
-  return left === right;
-}
-
-function asString(value: ConditionValue): string | SecretString {
-  if (typeof value !== 'string' && !isSecretString(value)) {
+function asString(value: ConditionValue): string {
+  if (typeof value !== 'string') {
     throw new ConditionError('RUNE-312', '"in" tests a string, and was given something else');
   }
   return value;

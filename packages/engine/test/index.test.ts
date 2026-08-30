@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
-import type { Resolution, ResolveInputsOptions, RunMode, SecretString } from '../src/index.js';
+import { PlatformError, RUNE_VERSION } from '../src/index.js';
+import type { RunMode } from '../src/index.js';
+// @ts-expect-error input resolution internals are not package-root API
+import type { Resolution as ForbiddenResolution } from '../src/index.js';
+// @ts-expect-error input resolver options are not package-root API
+import type { ResolveInputsOptions as ForbiddenResolveInputsOptions } from '../src/index.js';
+// @ts-expect-error opaque secret capabilities are not package-root API
+import type { SecretString as ForbiddenSecretString } from '../src/index.js';
 // @ts-expect-error low-level planning options are not package-root API
 import type { PlanOptions as ForbiddenPlanOptions } from '../src/index.js';
 // @ts-expect-error low-level execution options are not package-root API
@@ -16,6 +23,9 @@ import type { SpawnRequest as ForbiddenSpawnRequest } from '../src/index.js';
 import type { StartFailureReason as ForbiddenStartFailureReason } from '../src/index.js';
 
 type ForbiddenRootTypes = readonly [
+  ForbiddenResolution,
+  ForbiddenResolveInputsOptions,
+  ForbiddenSecretString,
   ForbiddenPlanOptions,
   ForbiddenExecuteOptions,
   ForbiddenRunner,
@@ -43,34 +53,6 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'serializeResult',
 ] as const;
 
-function assertOpaqueSecretType(secret: SecretString): void {
-  // @ts-expect-error plaintext reveal is not public
-  secret.reveal();
-  // @ts-expect-error plaintext matching is not public
-  secret.matches(/secret/);
-  // @ts-expect-error plaintext equality is not public
-  secret.equals('secret');
-  // @ts-expect-error plaintext membership is not public
-  secret.isIncludedIn(['secret']);
-  // @ts-expect-error registry access is not public
-  secret.registerForMasking(undefined);
-  // @ts-expect-error secret path transformation is not public
-  secret.resolvePathFrom('/project');
-  // @ts-expect-error secret length is not public
-  void secret.length;
-}
-
-void assertOpaqueSecretType;
-
-function assertNoPublicRegistry(options: ResolveInputsOptions, resolution: Resolution): void {
-  // @ts-expect-error callers cannot inject a masking registry
-  void options.secrets;
-  // @ts-expect-error resolutions do not expose their masking registry
-  void resolution.secrets;
-}
-
-void assertNoPublicRegistry;
-
 const PUBLIC_RUN_MODES = [
   'gui',
   'interactive',
@@ -81,7 +63,7 @@ void PUBLIC_RUN_MODES;
 
 describe('@rune/engine public API', () => {
   it('exposes a semver version', () => {
-    expect(engine.RUNE_VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
+    expect(RUNE_VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
   });
 
   it('exports the execution-plan schema version', () => {
@@ -95,5 +77,21 @@ describe('@rune/engine public API', () => {
   it('does not export secret constructors or registries', () => {
     expect(engine).not.toHaveProperty('SecretString');
     expect(engine).not.toHaveProperty('SecretRegistry');
+  });
+
+  it('exposes errors without exposing engine internals', () => {
+    expect(PlatformError).toBeTypeOf('function');
+
+    expect(engine).not.toHaveProperty('createRuntimeContext');
+    expect(engine).not.toHaveProperty('hostPlatform');
+    expect(engine).not.toHaveProperty('parseValuesFile');
+    expect(engine).not.toHaveProperty('resolveInputs');
+    expect(engine).not.toHaveProperty('VALUE_SOURCES');
+    expect(engine).not.toHaveProperty('isSecretString');
+    expect(engine).not.toHaveProperty('MASK');
+    expect(engine).not.toHaveProperty('SecretRegistry');
+    expect(engine).not.toHaveProperty('SecretString');
+    expect(engine).not.toHaveProperty('inputTypes');
+    expect(engine).not.toHaveProperty('InputTypeRegistry');
   });
 });

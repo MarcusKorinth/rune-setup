@@ -51,7 +51,6 @@ function planFor(
   const resolution = resolveInputs({
     manifest,
     context,
-    environment: options.environment ?? {},
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
@@ -154,7 +153,7 @@ describe('input completeness', () => {
       platform: 'linux',
       environment: {},
     });
-    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const resolution = resolveInputs({ manifest, context });
 
     const error = planningError(manifest, resolution, context);
     expect(error.code).toBe('RUNE-201');
@@ -195,7 +194,6 @@ describe('input completeness', () => {
     const resolution = resolveInputs({
       manifest,
       context,
-      environment: {},
       overrides: new Map([['port', 'not-a-number']]),
       invalidValues: 'collect',
     });
@@ -230,7 +228,6 @@ describe('input completeness', () => {
     const resolution = resolveInputs({
       manifest,
       context,
-      environment: {},
       overrides: new Map([['port', 'not-a-number']]),
       invalidValues: 'collect',
     });
@@ -247,6 +244,7 @@ describe('input completeness', () => {
         'inputs:',
         '  port:',
         '    type: text',
+        '    pattern: "[0-9]+"',
         '  target:',
         '    type: directory',
         'steps: []',
@@ -264,13 +262,12 @@ describe('input completeness', () => {
     const resolution = resolveInputs({
       manifest,
       context,
-      environment: {},
-      overrides: new Map([['porrt', '8080']]),
+      overrides: new Map([['port', 'not-a-number']]),
       invalidValues: 'collect',
     });
 
     const error = planningError(manifest, resolution, context);
-    expect(error.code).toBe('RUNE-203');
+    expect(error.code).toBe('RUNE-202');
     expect(error.issues.map((issue) => issue.message)).toEqual([
       resolution.problems[0]?.message,
       'required input "port" is missing',
@@ -761,7 +758,7 @@ describe('planning provenance', () => {
       platform: 'linux',
       environment: {},
     });
-    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const resolution = resolveInputs({ manifest, context });
 
     expect(() => buildPlan({ manifest, resolution, context })).toThrow(InternalError);
     expect(() => buildPlan({ manifest, resolution, context })).toThrow(
@@ -782,7 +779,7 @@ describe('planning provenance', () => {
       platform: 'linux',
       environment: {},
     });
-    const resolution = resolveInputs({ manifest, context, environment: {} });
+    const resolution = resolveInputs({ manifest, context });
 
     expect(() => buildPlan({ manifest, resolution, context })).toThrow(InternalError);
     expect(() => buildPlan({ manifest, resolution, context })).toThrow(
@@ -808,7 +805,7 @@ describe('planning provenance', () => {
           platform: 'linux',
           environment: {},
         });
-        const resolution = resolveInputs({ manifest, context, environment: {} });
+        const resolution = resolveInputs({ manifest, context });
 
         expect(buildPlan({ manifest, resolution, context }).steps).toEqual([]);
       }

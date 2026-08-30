@@ -17,6 +17,7 @@ export {
   InternalError,
   INTERNAL_EXIT_CODE,
   ManifestError,
+  PlatformError,
   ResolutionError,
   RuneError,
   UsageError,
@@ -43,34 +44,8 @@ export {
 } from './manifest/index.js';
 export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
 
-export {
-  BUILT_IN_NAMES,
-  BUILT_IN_VARIABLES,
-  createRuntimeContext,
-  hostPlatform,
-  PRODUCT_FIELDS,
-} from './engine/context.js';
-export type {
-  Platform,
-  RuntimeContext,
-  RuntimeContextOptions,
-  ValueType,
-} from './engine/context.js';
-
-export { parseValuesFile, resolveInputs, VALUE_SOURCES } from './engine/inputs.js';
-export type {
-  InputState,
-  Resolution,
-  ResolveInputsOptions,
-  ValuesDocument,
-  ValueSource,
-} from './engine/inputs.js';
-
-export { isSecretString, MASK } from './engine/secrets.js';
-export type { SecretString } from './engine/secrets.js';
-
-export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
-export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
+export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
+export type { ValueType } from './engine/context.js';
 
 export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {

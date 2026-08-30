@@ -569,7 +569,6 @@ describe('SpawnRunner', () => {
       const resolution = resolveInputs({
         manifest,
         context,
-        environment: {},
         overrides: new Map([
           ['runtime', process.execPath],
           ['work', '.'],

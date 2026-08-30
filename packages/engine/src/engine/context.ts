@@ -8,11 +8,11 @@
 
 import { homedir, tmpdir } from 'node:os';
 
-import { InternalError, ResolutionError, UsageError } from '../errors.js';
+import { InternalError, PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
-/** Built-in variables that stand alone: `${home}`, `${platform}`. */
+/** Built-in variables that stand alone: `${home}`, `${temp}`, `${platform}`, `${manifestDir}`. */
 export const BUILT_IN_VARIABLES = ['home', 'temp', 'platform', 'manifestDir'] as const;
 export type BuiltInVariable = (typeof BUILT_IN_VARIABLES)[number];
 
@@ -56,18 +56,35 @@ export type ReferenceResolution =
   | { readonly ok: true; readonly reference: Reference }
   | { readonly ok: false; readonly message: string };
 
+/** Ordered input ids plus their constant-time declaration ordinals. */
+export interface InputReferenceIndex {
+  readonly orderedIds: readonly string[];
+  readonly ordinals: ReadonlyMap<string, number>;
+}
+
+/** Builds the reference authority once for one immutable manifest input order. */
+export function createInputReferenceIndex(inputIds: readonly string[]): InputReferenceIndex {
+  return {
+    orderedIds: inputIds,
+    ordinals: new Map(inputIds.map((id, ordinal) => [id, ordinal])),
+  };
+}
+
 /**
  * Resolves the dotted path of a `${...}` reference against the declared inputs and the
  * built-ins. The message of a failure is the whole error a reader gets, so it says what the
  * name would have to be instead of only that it is wrong.
  *
- * `inputIds` is a list rather than any iterable because this runs once per reference and a
- * manifest may hold thousands: a caller that reads the ids once must not pay to copy them
- * again here.
+ * `visibleInputCount` is an ordinal boundary: valid input membership is constant-time while
+ * the ordered ids remain available for deterministic suggestions on the invalid path.
+ * Callers that only classify references may turn suggestions off, avoiding candidate work
+ * that cannot affect their result.
  */
 export function resolveReference(
   segments: readonly string[],
-  inputIds: readonly string[],
+  inputs: InputReferenceIndex,
+  visibleInputCount = inputs.orderedIds.length,
+  includeSuggestion = true,
 ): ReferenceResolution {
   const [head, ...rest] = segments;
   if (head === undefined) {
@@ -117,7 +134,8 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'builtin', name: head } };
   }
 
-  if (inputIds.includes(head)) {
+  const inputOrdinal = inputs.ordinals.get(head);
+  if (inputOrdinal !== undefined && inputOrdinal < visibleInputCount) {
     if (rest.length > 0) {
       return {
         ok: false,
@@ -127,7 +145,14 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'input', id: head } };
   }
 
-  const suggestion = suggest(head, [...inputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  let suggestion: string | undefined;
+  if (includeSuggestion) {
+    const visibleInputIds =
+      visibleInputCount >= inputs.orderedIds.length
+        ? inputs.orderedIds
+        : inputs.orderedIds.slice(0, visibleInputCount);
+    suggestion = suggest(head, [...visibleInputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  }
   return {
     ok: false,
     message: `\${${segments.join('.')}} is neither a declared input nor a built-in variable${
@@ -179,14 +204,19 @@ export type Platform = (typeof PLATFORMS)[number];
 
 /** The platform this process is on. */
 export function hostPlatform(): Platform {
-  switch (process.platform) {
+  return platformForNode(process.platform);
+}
+
+/** Maps Node's host identifier without treating an unsupported host as Linux. */
+export function platformForNode(platform: NodeJS.Platform): Platform {
+  switch (platform) {
     case 'win32':
       return 'windows';
     case 'linux':
       return 'linux';
     default:
-      throw new UsageError(
-        `the host platform "${process.platform}" is not supported; RUNE supports only Windows and Linux`,
+      throw new PlatformError(
+        `host platform "${platform}" is not supported; supported Node platforms are win32 and linux`,
       );
   }
 }
@@ -197,7 +227,7 @@ export interface RuntimeContextOptions {
   readonly product: { readonly name: string; readonly version: string };
   /** Defaults to the host; `validate` and `--dry-run` may preview the other one. */
   readonly platform?: Platform;
-  /** Defaults to this process's environment. */
+  /** Defaults to this process's environment; names always follow host-platform semantics. */
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -213,13 +243,15 @@ export interface RuntimeContext {
   readonly manifestDir: string;
   /** True when `platform` is not the host's, so host-dependent values are placeholders. */
   readonly preview: boolean;
+  /** Reads one string-valued own property using the host platform's environment-name semantics. */
+  environmentValue(name: string): string | undefined;
   /** The text a reference contributes. Throws {@link ResolutionError} for an unset variable. */
   valueOf(reference: Reference): string;
 }
 
 const runtimeContexts = new WeakMap<RuntimeContext, RuntimeContext>();
 
-/** Internal fail-closed lookup: structural context copies have no runtime provenance. */
+/** Internal fail-closed lookup: structural copies have no runtime provenance. */
 export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
   const trusted = runtimeContexts.get(context);
   if (trusted === undefined) {
@@ -228,47 +260,35 @@ export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
   return trusted;
 }
 
-function environmentNameForLookup(name: string): string {
-  return process.platform === 'win32'
-    ? name.replace(/[a-z]/g, (character) => character.toUpperCase())
-    : name;
-}
-
-function snapshotEnvironment(
-  source: Readonly<Record<string, string | undefined>>,
-): Readonly<Record<string, string | undefined>> {
-  const snapshot = Object.create(null) as Record<string, string | undefined>;
-  for (const [name, value] of Object.entries(source)) {
-    snapshot[environmentNameForLookup(name)] = value;
-  }
-  return Object.freeze(snapshot);
-}
-
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
-  const platform = options.platform ?? hostPlatform();
-  const preview = platform !== hostPlatform();
+  const host = hostPlatform();
+  const platform =
+    options.platform === undefined ? host : validatePreviewPlatform(options.platform);
   const manifestDir = options.manifestDir;
-  const product = Object.freeze({
-    name: options.product.name,
-    version: options.product.version,
-  });
-  const environment = snapshotEnvironment(options.environment ?? process.env);
+  const productName = options.product.name;
+  const productVersion = options.product.version;
+  const preview = platform !== host;
+  const environment = options.environment ?? process.env;
+  const environmentValues = snapshotEnvironment(environment, host === 'windows');
+  const home = preview ? `<home@${platform}>` : homedir();
+  const temp = preview ? `<temp@${platform}>` : tmpdir();
 
-  const hostDependent = (name: BuiltInVariable, value: () => string): string =>
-    preview ? `<${name}@${platform}>` : value();
+  const environmentValue = (name: string): string | undefined =>
+    environmentValues.get(host === 'windows' ? name.toLowerCase() : name);
 
   const context: RuntimeContext = Object.freeze({
     platform,
     manifestDir,
     preview,
+    environmentValue,
     valueOf(reference: Reference): string {
       switch (reference.kind) {
         case 'builtin':
           switch (reference.name) {
             case 'home':
-              return hostDependent('home', homedir);
+              return home;
             case 'temp':
-              return hostDependent('temp', tmpdir);
+              return temp;
             case 'platform':
               return platform;
             case 'manifestDir':
@@ -276,9 +296,9 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
           }
         // eslint-disable-next-line no-fallthrough -- every branch above returns
         case 'product':
-          return product[reference.field];
+          return reference.field === 'name' ? productName : productVersion;
         case 'environment': {
-          const value = environment[environmentNameForLookup(reference.name)];
+          const value = environmentValue(reference.name);
           if (value === undefined) {
             throw new ResolutionError(
               'RUNE-301',
@@ -297,4 +317,30 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
   });
   runtimeContexts.set(context, context);
   return context;
+}
+
+function validatePreviewPlatform(platform: unknown): Platform {
+  if (platform === 'windows' || platform === 'linux') {
+    return platform;
+  }
+  throw new PlatformError(
+    `preview platform "${String(platform)}" is not supported; supported preview platforms are windows and linux`,
+  );
+}
+
+function snapshotEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  caseInsensitive: boolean,
+): ReadonlyMap<string, string> {
+  const values = new Map<string, string>();
+  for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(environment))) {
+    if (!('value' in descriptor) || typeof descriptor.value !== 'string') {
+      continue;
+    }
+    const key = caseInsensitive ? name.toLowerCase() : name;
+    if (!values.has(key)) {
+      values.set(key, descriptor.value);
+    }
+  }
+  return values;
 }

@@ -311,7 +311,7 @@ function lookup(
   resolution: ResolutionSnapshot,
   context: RuntimeContext,
 ): boolean | string | readonly string[] | SecretString {
-  const resolved = resolveReference(reference.segments, [...resolution.byId.keys()]);
+  const resolved = resolveReference(reference.segments, resolution.inputIndex);
   if (!resolved.ok) {
     throw new InternalError(`the condition names ${reference.text}: ${resolved.message}`);
   }
@@ -332,7 +332,6 @@ function resolveCommand(
   resolution: ResolutionSnapshot,
   context: RuntimeContext,
 ): ResolvedCommand {
-  const inputIds = [...resolution.byId.keys()];
   const render = (template: string): string | SecretString => {
     const scan = scanTemplate(template);
     if (!scan.ok) {
@@ -340,7 +339,7 @@ function resolveCommand(
     }
 
     const resolve = (reference: TemplateReference): string | SecretString => {
-      const resolved = resolveReference(reference.segments, inputIds);
+      const resolved = resolveReference(reference.segments, resolution.inputIndex);
       if (!resolved.ok) {
         throw new InternalError(
           `${reference.text} was not caught by validation: ${resolved.message}`,

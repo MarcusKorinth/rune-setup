@@ -7,11 +7,16 @@
  * registry catches what the wrapper cannot: a script that echoes the password it was given.
  */
 
+import { InputError } from '../errors.js';
 import type { Platform } from './context.js';
 import { resolveTargetPathFrom } from './paths.js';
 
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
+
+// Ordinary replacement collisions settle in a handful of passes. Keeping a small fixed
+// budget leaves ample room for those chains while bounding pathological full-text rescans.
+const MAX_MASKING_PASSES = 16;
 
 /**
  * Below this length a secret is not registered for masking: masking "1" would black out
@@ -25,15 +30,21 @@ export interface SecretMasker {
 }
 
 /**
- * A string that does not show itself. The public shape exposes only safe stringification;
- * every operation over the hidden text is a narrowly named package-internal helper.
+ * Maximum UTF-16 code units across the unique maskable parts in one registry snapshot.
+ * This bounds the matcher to at most this many non-root trie nodes.
  */
+export const MAX_SECRET_REGISTRY_CODE_UNITS = 262_144;
+
+const CAPACITY_ERROR_MESSAGE =
+  'the total size of secret input values exceeds the masking safety limit';
+
 const SECRET_STRING = Symbol('SecretString');
 
+/** Publicly nameable only as an opaque, safely stringifiable value. */
 export interface SecretString {
   readonly [SECRET_STRING]: true;
   toString(): string;
-  toJSON(): string;
+  toJSON(): typeof MASK;
 }
 
 class OpaqueSecretString implements SecretString {
@@ -43,7 +54,7 @@ class OpaqueSecretString implements SecretString {
     return MASK;
   }
 
-  toJSON(): string {
+  toJSON(): typeof MASK {
     return MASK;
   }
 
@@ -52,28 +63,54 @@ class OpaqueSecretString implements SecretString {
   }
 }
 
-const secretResolvers = new WeakMap<SecretString, () => string>();
+/** Authentic wrapper resolvers, owned only by this module and never exposed through lookup. */
+const SECRET_VALUES = new WeakMap<object, () => string>();
+
+/** Returns whether `value` contains enough Unicode code points to mask safely. */
+function hasMinimumMaskableLength(value: string): boolean {
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length >= MIN_MASKABLE_LENGTH) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function secretFromResolver(resolve: () => string): SecretString {
   const secret = Object.freeze(new OpaqueSecretString());
-  secretResolvers.set(secret, resolve);
+  SECRET_VALUES.set(secret, resolve);
   return secret;
 }
 
-function resolveSecret(secret: SecretString): string {
-  const resolve = secretResolvers.get(secret);
-  if (resolve === undefined) {
-    throw new TypeError('the value is not an engine secret');
+/** Reads a genuine wrapper's private string without dynamic method dispatch. */
+function privateSecretValue(value: unknown): string | undefined {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
+    return undefined;
   }
-  return resolve();
+  const resolve = SECRET_VALUES.get(value);
+  if (resolve === undefined) {
+    return undefined;
+  }
+  const text = resolve();
+  return typeof text === 'string' ? text : undefined;
 }
 
-/** Creates an opaque secret at the resolution boundary. Not part of the package API. */
+function resolveSecret(secret: SecretString): string {
+  const text = privateSecretValue(secret);
+  if (text === undefined) {
+    throw new TypeError('the value is not an engine secret');
+  }
+  return text;
+}
+
+/** Creates an opaque secret at the resolution boundary. */
 export function createSecretString(value: string): SecretString {
   return secretFromResolver(() => value);
 }
 
-/** Joins public and opaque pieces without exposing the result. */
+/** Joins public and opaque pieces without exposing the resulting text. */
 export function composeSecretString(parts: readonly (string | SecretString)[]): SecretString {
   const snapshot = Object.freeze([...parts]);
   return secretFromResolver(() =>
@@ -98,25 +135,12 @@ export function secretMatches(secret: SecretString, pattern: RegExp): boolean {
   return new RegExp(pattern.source, pattern.flags).test(resolveSecret(secret));
 }
 
-/** Compares an opaque condition value without returning either secret as text. */
-export function secretEquals(secret: SecretString, other: unknown): boolean {
-  if (isSecretString(other)) {
-    return resolveSecret(secret) === resolveSecret(other);
-  }
-  return typeof other === 'string' && resolveSecret(secret) === other;
-}
-
-/** Tests membership when an opaque value is the left operand of `in`. */
-export function secretIsIncludedIn(secret: SecretString, values: readonly string[]): boolean {
-  return values.includes(resolveSecret(secret));
-}
-
 /** Returns only the length needed by required-input validation. */
 export function secretLength(secret: SecretString): number {
   return resolveSecret(secret).length;
 }
 
-/** Registers a secret without handing its text back to resolution. */
+/** Registers an opaque secret without handing its text back to resolution. */
 export function registerSecretForMasking(secret: SecretString, registry: SecretRegistry): boolean {
   return registry.register(resolveSecret(secret));
 }
@@ -127,7 +151,187 @@ export function revealSecretString(secret: SecretString): string {
 }
 
 export function isSecretString(value: unknown): value is SecretString {
-  return typeof value === 'object' && value !== null && secretResolvers.has(value as SecretString);
+  return (
+    ((typeof value === 'object' && value !== null) || typeof value === 'function') &&
+    SECRET_VALUES.has(value)
+  );
+}
+
+/**
+ * Compares values when at least one is an authentic secret, without returning either text.
+ * Undefined means neither operand is an authentic wrapper and ordinary evaluation applies.
+ */
+export function secretValuesEqual(left: unknown, right: unknown): boolean | undefined {
+  const leftSecret = privateSecretValue(left);
+  const rightSecret = privateSecretValue(right);
+  if (leftSecret === undefined && rightSecret === undefined) {
+    return undefined;
+  }
+  if (leftSecret === undefined) {
+    return typeof left === 'string' && left === rightSecret;
+  }
+  if (rightSecret === undefined) {
+    return typeof right === 'string' && leftSecret === right;
+  }
+  return leftSecret === rightSecret;
+}
+
+/** Tests an authentic secret needle against a plain string list without exposing the needle. */
+export function secretValueIn(needle: unknown, haystack: readonly string[]): boolean | undefined {
+  const secret = privateSecretValue(needle);
+  return secret === undefined ? undefined : haystack.includes(secret);
+}
+
+interface MatcherNode {
+  readonly transitions: Map<number, number>;
+  failure: number;
+  longestMatchLength: number;
+}
+
+/**
+ * An immutable Aho-Corasick matcher for one registry snapshot.
+ *
+ * JavaScript string offsets are UTF-16 code-unit offsets, as are `String.indexOf` offsets.
+ * Building and scanning by `charCodeAt` therefore preserves the old matching semantics for
+ * astral characters and unpaired surrogates. Only the longest match ending at a state is
+ * needed: every shorter match with the same end is contained in that interval.
+ */
+class SecretMatcher {
+  readonly #nodes: readonly MatcherNode[];
+  readonly #maximumPatternLength: number;
+
+  constructor(patterns: readonly string[]) {
+    const nodes: MatcherNode[] = [createMatcherNode()];
+    let maximumPatternLength = 0;
+
+    for (const pattern of patterns) {
+      let state = 0;
+      maximumPatternLength = Math.max(maximumPatternLength, pattern.length);
+
+      for (let index = 0; index < pattern.length; index += 1) {
+        const codeUnit = pattern.charCodeAt(index);
+        const transition = nodes[state]!.transitions.get(codeUnit);
+        if (transition !== undefined) {
+          state = transition;
+          continue;
+        }
+
+        const parentState = state;
+        state = nodes.length;
+        nodes.push(createMatcherNode());
+        nodes[parentState]!.transitions.set(codeUnit, state);
+      }
+
+      nodes[state]!.longestMatchLength = Math.max(nodes[state]!.longestMatchLength, pattern.length);
+    }
+
+    const queue: number[] = [];
+    for (const state of nodes[0]!.transitions.values()) {
+      queue.push(state);
+    }
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const state = queue[head]!;
+      const node = nodes[state]!;
+
+      for (const [codeUnit, childState] of node.transitions) {
+        let failureState = node.failure;
+        let failureTransition = nodes[failureState]!.transitions.get(codeUnit);
+        while (failureTransition === undefined && failureState !== 0) {
+          failureState = nodes[failureState]!.failure;
+          failureTransition = nodes[failureState]!.transitions.get(codeUnit);
+        }
+
+        const child = nodes[childState]!;
+        child.failure = failureTransition ?? 0;
+        child.longestMatchLength = Math.max(
+          child.longestMatchLength,
+          nodes[child.failure]!.longestMatchLength,
+        );
+        queue.push(childState);
+      }
+    }
+
+    this.#nodes = nodes;
+    this.#maximumPatternLength = maximumPatternLength;
+  }
+
+  /** Replaces every range containing a secret found in this version of `text`. */
+  maskOnce(text: string): string {
+    if (this.#maximumPatternLength === 0 || text.length === 0) {
+      return text;
+    }
+
+    // Matches arrive in end-position order. Pending connected components are a numeric
+    // stack, not an object per occurrence. A component is emitted only after the maximum
+    // pattern length proves that no later match can overlap it; adjacent matches remain
+    // separate because the overlap comparison is strict.
+    const pendingStarts: number[] = [];
+    const pendingEnds: number[] = [];
+    let pendingHead = 0;
+    let state = 0;
+    let out = '';
+    let cursor = 0;
+
+    const flushThrough = (safeStart: number): void => {
+      while (pendingHead < pendingEnds.length && pendingEnds[pendingHead]! <= safeStart) {
+        out += text.slice(cursor, pendingStarts[pendingHead]!) + MASK;
+        cursor = pendingEnds[pendingHead]!;
+        pendingHead += 1;
+      }
+
+      if (pendingHead === pendingEnds.length) {
+        pendingStarts.length = 0;
+        pendingEnds.length = 0;
+        pendingHead = 0;
+      } else if (pendingHead >= 1_024 && pendingHead * 2 >= pendingEnds.length) {
+        pendingStarts.copyWithin(0, pendingHead);
+        pendingEnds.copyWithin(0, pendingHead);
+        pendingStarts.length -= pendingHead;
+        pendingEnds.length -= pendingHead;
+        pendingHead = 0;
+      }
+    };
+
+    for (let index = 0; index < text.length; index += 1) {
+      const codeUnit = text.charCodeAt(index);
+      let transition = this.#nodes[state]!.transitions.get(codeUnit);
+      while (transition === undefined && state !== 0) {
+        state = this.#nodes[state]!.failure;
+        transition = this.#nodes[state]!.transitions.get(codeUnit);
+      }
+      state = transition ?? 0;
+
+      const end = index + 1;
+      const matchLength = this.#nodes[state]!.longestMatchLength;
+      if (matchLength > 0) {
+        let start = end - matchLength;
+        let mergedEnd = end;
+
+        while (pendingEnds.length > pendingHead && pendingEnds[pendingEnds.length - 1]! > start) {
+          start = Math.min(start, pendingStarts.pop()!);
+          mergedEnd = Math.max(mergedEnd, pendingEnds.pop()!);
+        }
+
+        pendingStarts.push(start);
+        pendingEnds.push(mergedEnd);
+      }
+
+      flushThrough(end + 1 - this.#maximumPatternLength);
+    }
+
+    flushThrough(Number.POSITIVE_INFINITY);
+    return cursor === 0 ? text : out + text.slice(cursor);
+  }
+}
+
+function createMatcherNode(): MatcherNode {
+  return { transitions: new Map(), failure: 0, longestMatchLength: 0 };
+}
+
+/** Shared only by registries whose independent value sets describe the same snapshot. */
+interface MatcherCache {
+  matcher?: SecretMatcher;
 }
 
 /**
@@ -138,113 +342,180 @@ export function isSecretString(value: unknown): value is SecretString {
  */
 export class SecretRegistry {
   readonly #values = new Set<string>();
-  #patterns: readonly string[] = [];
+  #registeredCodeUnits = 0;
+  #matcherCache: MatcherCache = {};
 
   /**
-   * Registers a secret. Returns false when the value is too short to mask safely, which the
-   * caller reports — silently not masking something would be the worse half of the choice.
+   * Registers every maskable part of a secret. Returns false when any content line is too
+   * short to mask safely, which the caller reports — silently not masking something would
+   * be the worse half of the choice.
    */
   register(value: string): boolean {
     // Every sink RUNE masks is line-oriented — a child's output is read line by line, and so
     // is the log — so a secret spanning several lines would never match anything a sink sees.
-    // Only its non-empty logical lines are registered, which is what actually protects a key
-    // or certificate. Empty separator lines need no coverage.
-    const multiline = /\r\n|\r|\n/.test(value);
-    const parts = multiline ? value.split(/\r\n|\r|\n/) : [value];
-    let registered = false;
-    let hasNonEmptyLine = false;
-    let allNonEmptyLinesMaskable = true;
+    // Each line is registered as well, which is what actually protects a key or certificate.
+    const lines = value.split(/\r\n|\r|\n/);
+    const parts = lines.length > 1 ? [value, ...lines] : lines;
+    const additions = new Set<string>();
+    let addedCodeUnits = 0;
 
     for (const part of parts) {
-      if (multiline && part.length === 0) {
-        continue;
-      }
-      hasNonEmptyLine = true;
-
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
-      if (part.trim().length >= MIN_MASKABLE_LENGTH) {
-        this.#values.add(part);
-        registered = true;
-      } else {
-        allNonEmptyLinesMaskable = false;
+      if (
+        hasMinimumMaskableLength(part.trim()) &&
+        !this.#values.has(part) &&
+        !additions.has(part)
+      ) {
+        if (
+          part.length >
+          MAX_SECRET_REGISTRY_CODE_UNITS - this.#registeredCodeUnits - addedCodeUnits
+        ) {
+          throw capacityError();
+        }
+        additions.add(part);
+        addedCodeUnits += part.length;
       }
     }
 
-    if (registered) {
-      this.#patterns = [...this.#values];
+    if (additions.size > 0) {
+      this.#matcherCache = {};
+      for (const part of additions) {
+        this.#values.add(part);
+      }
+      this.#registeredCodeUnits += addedCodeUnits;
     }
-    return multiline ? hasNonEmptyLine && allNonEmptyLinesMaskable : registered;
+
+    const contentLines = lines.filter((line) => line.trim() !== '');
+    return (
+      contentLines.length > 0 && contentLines.every((line) => hasMinimumMaskableLength(line.trim()))
+    );
+  }
+
+  /**
+   * Registers a plain string or authentic wrapper without exposing its text to the caller.
+   * Returns undefined for every other value, including proxies and forged prototypes.
+   */
+  registerCandidate(value: unknown): boolean | undefined {
+    const text = typeof value === 'string' ? value : privateSecretValue(value);
+    return text === undefined ? undefined : this.register(text);
   }
 
   get size(): number {
     return this.#values.size;
   }
 
-  /** Captures the current patterns without exposing registry mutation capabilities. */
+  /** Returns an independent registry containing the secrets known by both registries. */
+  combinedWith(source: SecretRegistry): SecretRegistry {
+    const additions: string[] = [];
+    let addedCodeUnits = 0;
+    for (const value of source.#values) {
+      if (this.#values.has(value)) {
+        continue;
+      }
+      if (
+        value.length >
+        MAX_SECRET_REGISTRY_CODE_UNITS - this.#registeredCodeUnits - addedCodeUnits
+      ) {
+        throw capacityError();
+      }
+      additions.push(value);
+      addedCodeUnits += value.length;
+    }
+
+    const combined = new SecretRegistry();
+    for (const value of this.#values) {
+      combined.#values.add(value);
+    }
+    for (const value of additions) {
+      combined.#values.add(value);
+    }
+    combined.#registeredCodeUnits = this.#registeredCodeUnits + addedCodeUnits;
+    if (combined.#values.size === this.#values.size) {
+      combined.#matcherCache = this.#matcherCache;
+    } else if (combined.#values.size === source.#values.size) {
+      combined.#matcherCache = source.#matcherCache;
+    }
+    return combined;
+  }
+
+  /** Replaces this registry with the completed secret set of one successful resolution. */
+  replaceWith(source: SecretRegistry): void {
+    if (setsEqual(this.#values, source.#values)) {
+      this.#matcherCache = source.#matcherCache;
+      return;
+    }
+
+    const values = new Set(source.#values);
+
+    this.#values.clear();
+    for (const value of values) {
+      this.#values.add(value);
+    }
+    this.#registeredCodeUnits = source.#registeredCodeUnits;
+    this.#matcherCache = source.#matcherCache;
+  }
+
+  /** Captures the current secret set as an immutable mask-only capability. */
   snapshot(): SecretMasker {
-    const patterns = Object.freeze([...this.#patterns]);
-    return Object.freeze({ mask: (text: string): string => maskWithPatterns(text, patterns) });
+    const matcher = this.#matcher();
+    return Object.freeze({
+      mask: (text: string): string =>
+        matcher === undefined ? text : maskWithMatcher(text, matcher),
+    });
   }
 
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
-    return maskWithPatterns(text, this.#patterns);
+    const matcher = this.#matcher();
+    return matcher === undefined ? text : maskWithMatcher(text, matcher);
+  }
+
+  #matcher(): SecretMatcher | undefined {
+    if (this.#values.size === 0) {
+      return undefined;
+    }
+
+    // Stable ordering makes the cached snapshot deterministic even though matching behavior
+    // itself is independent of registration order.
+    return (this.#matcherCache.matcher ??= new SecretMatcher(
+      [...this.#values].sort(
+        (left, right) => right.length - left.length || (left < right ? -1 : left === right ? 0 : 1),
+      ),
+    ));
   }
 }
 
-/** Shared overlap-safe implementation for the mutable registry and immutable snapshots. */
-function maskWithPatterns(text: string, patterns: readonly string[]): string {
-  // One slot per input position bounds temporary storage by the text length, even when
-  // many self-overlapping patterns all match at nearly every position.
-  const matchEnds = new Uint32Array(text.length);
-  let hasMatches = false;
-
-  // Match every pattern against the original text. Advancing one character at a time
-  // deliberately retains self-overlapping occurrences such as "aaaa" in "aaaaa".
-  for (const secret of patterns) {
-    let start = text.indexOf(secret);
-    while (start !== -1) {
-      const end = start + secret.length;
-      if (end > (matchEnds[start] ?? 0)) {
-        matchEnds[start] = end;
-      }
-      hasMatches = true;
-      start = text.indexOf(secret, start + 1);
-    }
-  }
-
-  if (!hasMatches) {
-    return text;
-  }
-
-  const parts: string[] = [];
-  let cursor = 0;
-  let rangeStart = -1;
-  let rangeEnd = 0;
-
-  for (let start = 0; start < matchEnds.length; start += 1) {
-    const end = matchEnds[start] ?? 0;
-    if (end === 0) {
-      continue;
+/** Shared overlap-safe implementation for mutable registries and immutable snapshots. */
+function maskWithMatcher(text: string, matcher: SecretMatcher): string {
+  let masked = text;
+  for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
+    const next = matcher.maskOnce(masked);
+    if (next === masked) {
+      return masked;
     }
 
-    if (rangeStart === -1) {
-      rangeStart = start;
-      rangeEnd = end;
-    } else if (start < rangeEnd) {
-      rangeEnd = Math.max(rangeEnd, end);
-    } else {
-      // Adjacent occurrences are intentionally separate masks.
-      parts.push(text.slice(cursor, rangeStart), MASK);
-      cursor = rangeEnd;
-      rangeStart = start;
-      rangeEnd = end;
-    }
+    masked = next;
   }
 
-  parts.push(text.slice(cursor, rangeStart), MASK);
-  cursor = rangeEnd;
-  parts.push(text.slice(cursor));
-  return parts.join('');
+  // Returning an intermediate value could expose part of a collision chain. MASK itself is
+  // shorter than every registrable secret, so masking the whole input is safely stable; the
+  // extra masking is limited to this pathological budget-exhaustion path.
+  return MASK;
+}
+
+function capacityError(): InputError {
+  return new InputError('RUNE-202', CAPACITY_ERROR_MESSAGE);
+}
+
+function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
 }

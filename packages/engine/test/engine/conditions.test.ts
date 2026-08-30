@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -296,29 +298,41 @@ describe('evaluation', () => {
     expect(evaluate(text, values)).toBe(expected);
   });
 
-  it('compares and finds secret strings without turning them into plain values', () => {
+  it('compares opaque secrets with strings, secrets, and multiselect values', () => {
+    const matching = createSecretString('alpha-secret');
+    const different = createSecretString('beta-secret');
     const secretValues = {
-      environment: createSecretString('production'),
-      tools: ['production', 'staging'],
+      token: matching,
+      sameToken: createSecretString('alpha-secret'),
+      otherToken: different,
+      choices: ['alpha-secret', 'gamma-secret'],
     } satisfies Record<string, ConditionValue>;
 
-    expect(evaluate("${environment} == 'production'", secretValues)).toBe(true);
-    expect(evaluate("${environment} != 'production'", secretValues)).toBe(false);
-    expect(evaluate("${environment} == 'staging'", secretValues)).toBe(false);
-    expect(evaluate('${environment} in ${tools}', secretValues)).toBe(true);
-    expect(evaluate('${environment} not in ${tools}', secretValues)).toBe(false);
-    expect(
-      evaluate('${left} == ${right}', {
-        left: createSecretString('same'),
-        right: createSecretString('same'),
-      }),
-    ).toBe(true);
-    expect(
-      evaluate('${left} == ${right}', {
-        left: createSecretString('same'),
-        right: createSecretString('different'),
-      }),
-    ).toBe(false);
+    expect(evaluate("${token} == 'alpha-secret'", secretValues)).toBe(true);
+    expect(evaluate("'alpha-secret' == ${token}", secretValues)).toBe(true);
+    expect(evaluate("${token} != 'beta-secret'", secretValues)).toBe(true);
+    expect(evaluate('${token} == ${sameToken}', secretValues)).toBe(true);
+    expect(evaluate('${token} == ${otherToken}', secretValues)).toBe(false);
+    expect(evaluate('${token} in ${choices}', secretValues)).toBe(true);
+    expect(evaluate('${otherToken} in ${choices}', secretValues)).toBe(false);
+    expect(evaluate('${otherToken} not in ${choices}', secretValues)).toBe(true);
+  });
+
+  it('does not expose a secret through condition results or errors', () => {
+    const content = 'F049-CONDITION-SECRET';
+    const secret = createSecretString(content);
+    const result = evaluate("${token} == 'different'", { token: secret });
+    let failure: unknown;
+    try {
+      evaluateCondition(ast('${token}'), () => secret);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ConditionError);
+    const surfaces = [JSON.stringify({ result, secret }), String(failure), inspect(failure)];
+    expect(surfaces.join('\n')).not.toContain(content);
+    expect(surfaces[0]).toContain('***');
   });
 
   it('applies "not" to the whole comparison, as the grammar reads', () => {
