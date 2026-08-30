@@ -5,7 +5,7 @@
  * exact tag first, then the language alone — `de-DE` falls back to `de`.
  */
 
-import { readdirSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { ManifestError, messageOf } from '../errors.js';
@@ -64,7 +64,16 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
     names = readdirSync(directory);
   } catch (cause) {
     if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      return [];
+      try {
+        lstatSync(directory);
+      } catch (lstatCause) {
+        if (
+          lstatCause instanceof Error &&
+          (lstatCause as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
+          return [];
+        }
+      }
     }
     throw new ManifestError('RUNE-101', `${directory} cannot be read: ${messageOf(cause)}`, {
       cause,

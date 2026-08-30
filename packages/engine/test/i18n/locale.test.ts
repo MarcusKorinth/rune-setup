@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -76,6 +76,26 @@ describe('overlay discovery and matching', () => {
 
   it('treats a missing locales directory as no overlays', () => {
     expect(discoverOverlays(mkdtempSync(join(tmpdir(), 'rune-i18n-')))).toEqual([]);
+  });
+
+  it('fails loudly when locales is a dangling link', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    const missingTarget = join(dir, 'missing-locales-target');
+    symlinkSync(missingTarget, localesPath, process.platform === 'win32' ? 'junction' : 'dir');
+
+    let thrown: unknown;
+    try {
+      discoverOverlays(dir);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManifestError);
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-101');
+    expect(error.message).toContain(localesPath);
+    expect(error.message).toMatch(/ENOENT|no such file or directory/i);
   });
 
   it('rejects multiple files that claim the same locale', () => {
