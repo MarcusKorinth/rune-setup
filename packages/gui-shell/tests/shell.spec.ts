@@ -247,19 +247,35 @@ test('bounds the live Progress log while retaining its newest output', async () 
     await install.click();
     await expect(page.locator('.log')).toBeVisible();
 
-    await page.evaluate((cap) => {
+    const logUpdates = await page.evaluate(async (cap) => {
       const control = (window as unknown as { summaryTestControl: SummaryTestControl })
         .summaryTestControl;
+      const log = document.querySelector('.log');
+      if (log === null) {
+        throw new Error('Progress log did not render');
+      }
+      let mutationCount = 0;
+      const observer = new MutationObserver((records) => {
+        mutationCount += records.length;
+      });
+      observer.observe(log, { childList: true });
       control.emitOutput('discard-this-old-head');
       for (let index = 0; index < 30; index += 1) {
         control.emitOutput(`intermediate-${index}-${'x'.repeat(1_000)}`);
       }
       control.emitOutput(`${'x'.repeat(cap + 100)}keep-this-newest-tail`);
       control.emitFinished();
+      const beforeFrameText = log.textContent;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await Promise.resolve();
+      observer.disconnect();
+      return { beforeFrameText, mutationCount };
     }, liveLogCap);
 
     await expect.poll(() => page.locator('.log').textContent()).toContain('keep-this-newest-tail');
     const log = await page.locator('.log').textContent();
+    expect(logUpdates.beforeFrameText).toBe('');
+    expect(logUpdates.mutationCount).toBe(1);
     expect(log).not.toContain('discard-this-old-head');
     expect(log).toContain('-- test-step: SUCCEEDED');
     expect(log.length).toBeLessThanOrEqual(liveLogCap);

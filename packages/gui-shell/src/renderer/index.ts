@@ -23,6 +23,7 @@ declare global {
 
 const INPUTS_PER_PAGE = 5;
 const LIVE_LOG_MAX_CHARACTERS = 20_000;
+const LIVE_LOG_PENDING_MAX_CHARACTERS = LIVE_LOG_MAX_CHARACTERS * 2;
 
 /** The renderer's field registry — asserted against the manifest's types at open (§9.3). */
 const RENDERABLE_TYPES = new Set([
@@ -527,6 +528,11 @@ async function renderSummary(version: number): Promise<void> {
 
 let progress: { bar: HTMLProgressElement; title: HTMLElement; log: HTMLElement } | undefined;
 let liveLog = '';
+let pendingLiveLog: string[] = [];
+let pendingLiveLogStart = 0;
+let pendingLiveLogCharacters = 0;
+let liveLogFrame: number | undefined;
+let progressRenderVersion = 0;
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
@@ -540,16 +546,65 @@ function renderProgress(): void {
   const log = div('log');
   el.page.append(heading, bar, title, log);
   progress = { bar, title, log };
+  progressRenderVersion += 1;
   liveLog = '';
+  pendingLiveLog = [];
+  pendingLiveLogStart = 0;
+  pendingLiveLogCharacters = 0;
+  if (liveLogFrame !== undefined) {
+    cancelAnimationFrame(liveLogFrame);
+    liveLogFrame = undefined;
+  }
 }
 
 function appendLiveLog(line: string): void {
   if (progress === undefined) {
     return;
   }
-  liveLog = `${liveLog}${line}\n`.slice(-LIVE_LOG_MAX_CHARACTERS);
-  progress.log.textContent = liveLog;
-  progress.log.scrollTop = progress.log.scrollHeight;
+
+  const entry = `${line}\n`;
+  pendingLiveLog.push(entry);
+  pendingLiveLogCharacters += entry.length;
+  while (
+    pendingLiveLogCharacters > LIVE_LOG_PENDING_MAX_CHARACTERS &&
+    pendingLiveLogStart < pendingLiveLog.length - 1
+  ) {
+    pendingLiveLogCharacters -= pendingLiveLog[pendingLiveLogStart]?.length ?? 0;
+    pendingLiveLogStart += 1;
+  }
+  if (pendingLiveLogCharacters > LIVE_LOG_PENDING_MAX_CHARACTERS) {
+    const first = pendingLiveLog[pendingLiveLogStart];
+    if (first !== undefined) {
+      const omittedCharacters = pendingLiveLogCharacters - LIVE_LOG_PENDING_MAX_CHARACTERS;
+      pendingLiveLog[pendingLiveLogStart] = first.slice(omittedCharacters);
+      pendingLiveLogCharacters -= omittedCharacters;
+    }
+  }
+  if (pendingLiveLogStart > 128 && pendingLiveLogStart * 2 > pendingLiveLog.length) {
+    pendingLiveLog = pendingLiveLog.slice(pendingLiveLogStart);
+    pendingLiveLogStart = 0;
+  }
+
+  if (liveLogFrame !== undefined) {
+    return;
+  }
+
+  const renderVersion = progressRenderVersion;
+  liveLogFrame = requestAnimationFrame(() => {
+    liveLogFrame = undefined;
+    if (renderVersion !== progressRenderVersion || progress === undefined) {
+      return;
+    }
+
+    liveLog = `${liveLog}${pendingLiveLog.slice(pendingLiveLogStart).join('')}`.slice(
+      -LIVE_LOG_MAX_CHARACTERS,
+    );
+    pendingLiveLog = [];
+    pendingLiveLogStart = 0;
+    pendingLiveLogCharacters = 0;
+    progress.log.textContent = liveLog;
+    progress.log.scrollTop = progress.log.scrollHeight;
+  });
 }
 
 function onRunEvent(event: BridgeEvent): void {
