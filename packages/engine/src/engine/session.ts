@@ -53,8 +53,6 @@ export interface ThemeConfig {
 }
 
 export interface SessionOptions {
-  /** Check that `gui:` asset paths exist — GUI sessions do, headless sessions do not. */
-  readonly checkAssetFiles?: boolean | undefined;
   /** `--values` file paths, in order (layer 2). */
   readonly values?: readonly string[] | undefined;
   /** `--set` key=value pairs, already split (layer 4); `RUNE_INPUT_*` comes from the environment. */
@@ -126,9 +124,7 @@ export class Session {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
     const manifest = parseManifest(absolutePath, {
-      ...(options.checkAssetFiles === undefined
-        ? {}
-        : { checkAssetFiles: options.checkAssetFiles }),
+      checkAssetFiles: options.mode === 'gui',
     });
     const environment = options.environment ?? process.env;
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { hostPlatform } from '../../src/engine/context.js';
-import { Session } from '../../src/engine/session.js';
+import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner } from '../../src/runners/base.js';
 
@@ -64,6 +64,35 @@ describe('opening a session', () => {
     expect(session.allInputs()[0]?.value).toBe(true);
     expect(session.allInputs()[0]?.source).toBe('values');
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
+  });
+
+  it('checks gui assets only for gui sessions', async () => {
+    const path = fixture([...BASE, 'gui:', '  logo: assets/missing.png']);
+
+    await expect(Session.open(path, { environment: {}, mode: 'gui' })).rejects.toThrow(
+      /gui\.logo.*does not exist/,
+    );
+    await expect(Session.open(path, { environment: {} })).resolves.toBeInstanceOf(Session);
+    await expect(
+      Session.open(path, { environment: {}, mode: 'non-interactive' }),
+    ).resolves.toBeInstanceOf(Session);
+  });
+
+  it('does not let legacy asset flags override the session mode', async () => {
+    const path = fixture([...BASE, 'gui:', '  logo: assets/missing.png']);
+    const publicOptionsExcludeLegacyFlag: 'checkAssetFiles' extends keyof SessionOptions
+      ? false
+      : true = true;
+    const guiOptions = { environment: {}, mode: 'gui' as const, checkAssetFiles: false };
+    const headlessOptions = {
+      environment: {},
+      mode: 'non-interactive' as const,
+      checkAssetFiles: true,
+    };
+
+    expect(publicOptionsExcludeLegacyFlag).toBe(true);
+    await expect(Session.open(path, guiOptions)).rejects.toThrow(/gui\.logo.*does not exist/);
+    await expect(Session.open(path, headlessOptions)).resolves.toBeInstanceOf(Session);
   });
 });
 

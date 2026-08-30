@@ -185,7 +185,6 @@ export async function openSession(invocation: ShellInvocation): Promise<Session>
     locale: invocation.locale,
     logFile: invocation.logFile,
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
-    checkAssetFiles: !invocation.nonInteractive,
   });
 }
 
