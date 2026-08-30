@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -281,6 +281,49 @@ describe('rune run', () => {
 
     expect(code).toBe(4);
     expect(io.err.join('\n')).toContain('"__proto__" is not an input of this manifest');
+  });
+
+  it.each([
+    { case: 'without a separator', pair: 'not-a-real-secret-marker' },
+    { case: 'with an empty key', pair: '=not-a-real-secret-marker' },
+  ])('rejects malformed --set $case without echoing it or writing a result', async ({ pair }) => {
+    const path = fixture(MANIFEST);
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--non-interactive', '--set', pair, '--result', resultPath],
+      io,
+    );
+
+    expect(code).toBe(2);
+    expect(io.err.join('\n')).toContain('--set expects key=value');
+    expect(io.err.join('\n')).not.toContain('not-a-real-secret-marker');
+    expect(io.out.join('\n')).not.toContain('not-a-real-secret-marker');
+    expect(existsSync(resultPath)).toBe(false);
+  });
+
+  it('accepts an empty value in a syntactically valid --set pair', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  greeting:',
+      '    type: text',
+      '    required: false',
+      'steps: []',
+    ]);
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--dry-run', '--non-interactive', '--set', 'greeting=', '--result', '-'],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.out.join('\n'))).toMatchObject({ status: 'planned', dryRun: true });
   });
 
   it('exits 1 when a step fails', async () => {
