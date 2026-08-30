@@ -225,15 +225,13 @@ export async function launchGui(
     detached: process.platform !== 'win32',
   });
 
-  // The first Ctrl+C forwards a cancel request to the shell (§9.4); a second force-exits
-  // the CLI while the shell finishes its own cancel.
-  let requested = false;
-  const onSigint = (): void => {
-    if (requested) {
-      interaction.forceExit(6);
-      return;
-    }
-    requested = true;
+  // The first Ctrl+C or SIGTERM forwards one cancel request to the shell (§9.4).
+  // Only a second Ctrl+C force-exits the CLI; repeated SIGTERM remains idempotent.
+  let cancelRequested = false;
+  let receivedSigint = false;
+  const requestCancel = (): void => {
+    if (cancelRequested) return;
+    cancelRequested = true;
     if (child.pid !== undefined) {
       if (process.platform === 'win32') {
         // A close request, not a kill: no /F (§9.4).
@@ -243,7 +241,17 @@ export async function launchGui(
       }
     }
   };
+  const onSigint = (): void => {
+    if (receivedSigint) {
+      interaction.forceExit(6);
+      return;
+    }
+    receivedSigint = true;
+    requestCancel();
+  };
+  const onSigterm = (): void => requestCancel();
   process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
 
   const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
     child.on('error', (cause) => {
@@ -251,7 +259,10 @@ export async function launchGui(
       resolve({ code: null, failed: true });
     });
     child.on('close', (code) => resolve({ code, failed: false }));
-  }).finally(() => process.removeListener('SIGINT', onSigint));
+  }).finally(() => {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  });
 
   // Signal death or an unknown (e.g. Chromium crash) code is an internal error (§9.4).
   const exit =

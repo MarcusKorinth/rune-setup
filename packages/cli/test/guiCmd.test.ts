@@ -382,6 +382,8 @@ describe('rune run --gui shell version handshake', () => {
   });
 
   it('reports a shell spawn error and returns the internal-error exit code', async () => {
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
     spawnMock
       .mockImplementationOnce(() =>
         probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
@@ -394,12 +396,15 @@ describe('rune run --gui shell version handshake', () => {
     });
 
     expect(io.stderr).toHaveBeenCalledWith('could not launch the GUI shell: permission denied');
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });
 
-  it('forwards the first Ctrl+C, force-exits on the second, and removes its listener', async () => {
+  it('forwards the first Ctrl+C, force-exits on the second, and removes its listeners', async () => {
     const shell = waitingProcess(4242);
     const forceExit = vi.fn();
-    const signalListeners = process.listenerCount('SIGINT');
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
     spawnMock
       .mockImplementationOnce(() =>
         probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
@@ -434,7 +439,58 @@ describe('rune run --gui shell version handshake', () => {
       shell.emit('close', 6);
       shellClosed = true;
       await expect(launch).rejects.toMatchObject({ code: 6 });
-      expect(process.listenerCount('SIGINT')).toBe(signalListeners);
+      expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+      expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+    } finally {
+      if (!shellClosed) {
+        shell.emit('close', 6);
+      }
+      await launch.catch(() => undefined);
+    }
+  });
+
+  it('forwards SIGTERM once without force-exiting when it is repeated', async () => {
+    const shell = waitingProcess(4242);
+    const forceExit = vi.fn();
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>);
+
+    const launch = launchGui('installer.yaml', {}, capture(), {
+      ...interaction,
+      forceExit,
+    });
+    let shellClosed = false;
+    try {
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+
+      process.emit('SIGTERM');
+      process.emit('SIGTERM');
+
+      if (process.platform === 'win32') {
+        expect(shell.kill).not.toHaveBeenCalled();
+        expect(spawnMock.mock.calls[2]).toEqual([
+          'taskkill',
+          ['/PID', '4242'],
+          { stdio: 'ignore', shell: false },
+        ]);
+        expect(spawnMock).toHaveBeenCalledTimes(3);
+      } else {
+        expect(shell.kill).toHaveBeenCalledTimes(1);
+        expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(spawnMock).toHaveBeenCalledTimes(2);
+      }
+      expect(forceExit).not.toHaveBeenCalled();
+
+      shell.emit('close', 6);
+      shellClosed = true;
+      await expect(launch).rejects.toMatchObject({ code: 6 });
+      expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+      expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
     } finally {
       if (!shellClosed) {
         shell.emit('close', 6);
