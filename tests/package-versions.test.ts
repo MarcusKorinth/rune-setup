@@ -5,8 +5,8 @@ import { RUNE_VERSION } from '@rune/engine';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The exported version constants are user-visible contract (the CLI banner today, `rune
- * --version` and the result-file provenance of docs/architecture.md §10 later). Nothing in the
+ * The exported version constants are a user-visible contract (the CLI banner, `rune --version`,
+ * and the result-file provenance of docs/architecture.md §10 today). Nothing in the
  * build keeps them in sync with the package manifests — this suite is what does.
  */
 function manifestVersion(relativePath: string): string {
