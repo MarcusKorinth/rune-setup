@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { Session } from '@rune/engine';
+import { InputError, RuneError, Session } from '@rune/engine';
 
 vi.mock('electron', () => ({
   app: {},
@@ -238,6 +238,47 @@ describe('the IPC bridge', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain('super-secret-value');
     }
+  });
+
+  it('includes located RuneError issues once and masks them at the rejection sink', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    const located = new RuneError('RUNE-202', 'invalid value super-secret-value', {
+      location: { file: 'answers.yaml', line: 7, column: 9 },
+    });
+    const aggregate = InputError.fromIssues('RUNE-202', [
+      {
+        code: 'RUNE-202',
+        message: 'first invalid value',
+        location: { file: 'answers.yaml', line: 7, column: 9 },
+      },
+      {
+        code: 'RUNE-202',
+        message: 'second invalid value',
+        location: { file: 'answers.yaml', line: 8, column: 9 },
+      },
+    ]);
+    vi.spyOn(session, 'warnings')
+      .mockImplementationOnce(() => {
+        throw located;
+      })
+      .mockImplementationOnce(() => {
+        throw aggregate;
+      });
+    const bridge = await bridgeOver(session);
+
+    const locatedRejection = await rejectedBy(bridge.call('rune:warnings'));
+    const aggregateRejection = await rejectedBy(bridge.call('rune:warnings'));
+
+    expect(locatedRejection.message).toBe('RUNE-202 (exit 4): answers.yaml:7:9: invalid value ***');
+    expect(locatedRejection.message).not.toContain('super-secret-value');
+    expect(aggregateRejection.message).toBe(
+      'RUNE-202 (exit 4): answers.yaml:7:9: first invalid value\n' +
+        'answers.yaml:8:9: second invalid value',
+    );
   });
 
   it('projects Session.plan exactly once as plain masked plan data', async () => {

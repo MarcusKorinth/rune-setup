@@ -21,6 +21,7 @@ import {
   RuneError,
   Session,
   exitCodeFor,
+  formatIssues,
   writeResult,
   type RunEvent,
   type RunResult,
@@ -280,7 +281,9 @@ export function registerBridge(
 
 function bridgeError(error: unknown, mask: (text: string) => string): Error {
   if (error instanceof RuneError) {
-    return new Error(mask(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`));
+    return new Error(
+      mask(`${error.code} (exit ${exitCodeFor(error)}): ${formatIssues(error.issues)}`),
+    );
   }
   if (error instanceof Error) {
     return new Error(mask(error.message));
