@@ -33,6 +33,20 @@ const unknownChromeKeyIsRejected: UnknownChromeKeyIsRejected = true;
 const compileTimeReadonlyAccessorContract = (strings: StringTable): void => {
   // @ts-expect-error StringTable accessors are readonly public properties.
   strings.chrome = () => '';
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.inputTitle = () => '';
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.inputDescription = () => undefined;
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.patternHint = () => undefined;
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.optionLabel = () => '';
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.stepTitle = () => '';
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.productDescription = () => undefined;
+  // @ts-expect-error StringTable accessors are readonly public properties.
+  strings.windowTitle = () => undefined;
 };
 
 describe('@rune/engine public API', () => {
