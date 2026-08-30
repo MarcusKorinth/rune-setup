@@ -58,16 +58,23 @@ export type RunOutcome =
       };
     }[NonzeroRunStatus];
 
-export interface ResultInput {
+interface ResultInputBody {
   readonly id: string;
-  /** `null` for a secret, always (§10). */
-  readonly value: string | boolean | readonly string[] | null;
   readonly source: ValueSource | null;
-  readonly secret: boolean;
   readonly enabled: boolean;
   /** Present only when a supplied value was discarded because the input is disabled (§10). */
   readonly ignored?: 'input disabled';
 }
+
+/** Secret inputs never carry their value across the result-file sink (§10). */
+export type ResultInput = ResultInputBody &
+  (
+    | { readonly secret: true; readonly value: null }
+    | {
+        readonly secret: false;
+        readonly value: string | boolean | readonly string[];
+      }
+  );
 
 /** One masked line retained from a failed step's combined output tail (§10). */
 export interface ResultOutputLine {

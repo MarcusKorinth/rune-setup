@@ -12,13 +12,17 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { InternalError } from '../../src/errors.js';
 import type { RunResult } from '../../src/results/model.js';
 import { serializeResult, writeResult } from '../../src/results/writer.js';
+
+const RESULT_ID = '123e4567-e89b-42d3-a456-426614174000';
+const SECRET_SENTINEL = 'F-064-plaintext-must-never-escape';
 
 function result(id: string): RunResult {
   return {
     resultSchemaVersion: 1,
-    id,
+    id: RESULT_ID,
     status: 'succeeded',
     exitCode: 0,
     mode: 'non-interactive',
@@ -30,7 +34,7 @@ function result(id: string): RunResult {
     finishedAt: '2026-01-01T00:00:01.000Z',
     durationMs: 1000,
     runeVersion: '0.1.0',
-    product: { name: 'Writer test', version: '1.0.0' },
+    product: { name: `Writer test ${id}`, version: '1.0.0' },
     manifest: { path: '/project/installer.yaml', sha256: null, schemaVersion: 1 },
     stepsTotal: 0,
     stepsExecuted: 0,
@@ -45,6 +49,33 @@ function result(id: string): RunResult {
   };
 }
 
+function forgedPlaintextSecretResult(id: string): RunResult {
+  return {
+    ...result(id),
+    inputs: [
+      {
+        id: 'password',
+        value: SECRET_SENTINEL,
+        source: 'set',
+        secret: true,
+        enabled: true,
+      },
+    ],
+  } as unknown as RunResult;
+}
+
+function expectGenericResultError(caught: unknown): void {
+  expect(caught).toBeInstanceOf(InternalError);
+  const error = caught as InternalError;
+  expect(error.code).toBe('RUNE-500');
+  expect(error.message).toBe(
+    'the run result does not match resultSchemaVersion 1 — this is a bug in RUNE, please report it with the manifest that triggered it',
+  );
+  expect(
+    `${error.name}\n${error.message}\n${String(error.cause)}\n${JSON.stringify(error.issues)}`,
+  ).not.toContain(SECRET_SENTINEL);
+}
+
 function temporaryFiles(directory: string): string[] {
   return readdirSync(directory).filter(
     (name) => name.startsWith('.rune-result-') && name.endsWith('.tmp'),
@@ -52,6 +83,77 @@ function temporaryFiles(directory: string): string[] {
 }
 
 describe('writeResult', () => {
+  it('rejects a forged plaintext secret without exposing schema details', () => {
+    let caught: unknown;
+    try {
+      serializeResult(forgedPlaintextSecretResult('invalid-serialization'));
+    } catch (error) {
+      caught = error;
+    }
+
+    expectGenericResultError(caught);
+  });
+
+  it("serializes the parsed copy without invoking the caller's serialization hooks", () => {
+    const original = result('parsed-copy');
+    Object.defineProperty(original, 'toJSON', {
+      enumerable: false,
+      value: () => ({ secret: SECRET_SENTINEL }),
+    });
+
+    const serialized = serializeResult(original);
+
+    expect(serialized).not.toContain(SECRET_SENTINEL);
+    expect(JSON.parse(serialized)).toMatchObject({
+      resultSchemaVersion: 1,
+      id: RESULT_ID,
+      product: { name: 'Writer test parsed-copy', version: '1.0.0' },
+    });
+  });
+
+  it('rejects an invalid result before creating its destination directory', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destinationDirectory = join(directory, 'must-not-exist');
+    const destination = join(destinationDirectory, 'result.json');
+
+    try {
+      let caught: unknown;
+      try {
+        await writeResult(forgedPlaintextSecretResult('invalid-new-target'), destination);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+      expect(existsSync(destinationDirectory)).toBe(false);
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an invalid result without replacing an existing destination', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destination = join(directory, 'result.json');
+
+    try {
+      writeFileSync(destination, 'preserve this result', 'utf8');
+
+      let caught: unknown;
+      try {
+        await writeResult(forgedPlaintextSecretResult('invalid-existing-target'), destination);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+      expect(readFileSync(destination, 'utf8')).toBe('preserve this result');
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('creates nested directories and writes the complete newline-terminated serialization', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
     const destination = join(directory, 'nested', 'result.json');

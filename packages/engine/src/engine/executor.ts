@@ -390,16 +390,17 @@ function assembleResult(input: {
 
 function resultInput(state: PlanInput, secrets: SecretMasker): ResultInput {
   const value = state.value;
-  const result = {
+  const common = {
     id: state.id,
-    value: state.secret || isSecretString(value) ? null : maskInputValue(value, secrets),
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
     source: state.source ?? state.ignored ?? null,
-    secret: state.secret,
     enabled: state.enabled,
+    ...(state.ignored === undefined ? {} : { ignored: 'input disabled' as const }),
   };
-  return state.ignored === undefined ? result : { ...result, ignored: 'input disabled' };
+  return state.secret || isSecretString(value)
+    ? { ...common, value: null, secret: true }
+    : { ...common, value: maskInputValue(value, secrets), secret: false };
 }
 
 function finishedStep(
@@ -426,7 +427,7 @@ function finishedStep(
 function maskInputValue(
   value: string | boolean | readonly string[],
   secrets: SecretMasker,
-): ResultInput['value'] {
+): string | boolean | readonly string[] {
   if (typeof value === 'string') {
     return secrets.mask(value);
   }

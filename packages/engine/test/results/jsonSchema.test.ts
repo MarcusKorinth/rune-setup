@@ -8,6 +8,7 @@ import {
   EXIT_CODE_BY_STATUS,
   RUN_MODES,
   RUN_STATUSES,
+  type ResultInput,
   type RunResult,
 } from '../../src/results/model.js';
 import { resultV1Schema } from '../../src/results/schema.js';
@@ -15,6 +16,29 @@ import { serializeResult } from '../../src/results/writer.js';
 
 const RESULT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const SHA256 = 'a'.repeat(64);
+
+const _checkResultInputCorrelation = (): void => {
+  const secret: ResultInput = {
+    id: 'secret',
+    value: null,
+    source: 'set',
+    secret: true,
+    enabled: true,
+  };
+  const nonSecret: ResultInput = {
+    id: 'text',
+    value: 'visible',
+    source: 'set',
+    secret: false,
+    enabled: true,
+  };
+  // @ts-expect-error secret result inputs must never contain plaintext
+  const plaintextSecret: ResultInput = { ...secret, value: 'plaintext' };
+  // @ts-expect-error non-secret result inputs must always contain a value
+  const nullNonSecret: ResultInput = { ...nonSecret, value: null };
+  void plaintextSecret;
+  void nullNonSecret;
+};
 
 interface SchemaNode {
   readonly type?: string;
@@ -191,6 +215,31 @@ describe('resultJsonSchema', () => {
     expect(resultV1Schema.safeParse(serialized).success).toBe(true);
   });
 
+  it('enforces the secret discriminator and value correlation', () => {
+    const base = result();
+    const input = {
+      id: 'input',
+      source: 'set',
+      enabled: true,
+    } as const;
+
+    for (const valid of [
+      { ...input, secret: true, value: null },
+      { ...input, secret: false, value: 'text' },
+      { ...input, secret: false, value: true },
+      { ...input, secret: false, value: ['one', 'two'] },
+    ]) {
+      expect(resultV1Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
+    }
+
+    for (const invalid of [
+      { ...input, secret: true, value: 'plaintext' },
+      { ...input, secret: false, value: null },
+    ]) {
+      expect(resultV1Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
+    }
+  });
+
   it('covers every public status, mode, platform, input source, and step state', () => {
     for (const status of RUN_STATUSES) {
       const dryRun = status === 'planned';
@@ -305,7 +354,9 @@ describe('resultJsonSchema', () => {
     expect(
       resultV1Schema.safeParse(
         result({
-          inputs: [{ ...result().inputs[0]!, unknown: true } as RunResult['inputs'][number]],
+          inputs: [
+            { ...result().inputs[0]!, unknown: true } as unknown as RunResult['inputs'][number],
+          ],
         }),
       ).success,
     ).toBe(false);
