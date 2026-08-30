@@ -106,6 +106,10 @@ function downloadedArchive(): string {
   return args[1];
 }
 
+function shellTemporaryDirectories(): readonly string[] {
+  return readdirSync(tmpdir()).filter((entry) => entry.startsWith('rune-shell-'));
+}
+
 describe('rune gui install temporary archive', () => {
   it('uses a private random directory and removes it after success', async () => {
     await guiInstallCommand(capture());
@@ -126,6 +130,56 @@ describe('rune gui install temporary archive', () => {
     await expect(guiInstallCommand(capture())).rejects.toMatchObject({ code: 1 });
 
     expect(existsSync(dirname(downloadedArchive()))).toBe(false);
+  });
+});
+
+describe('rune gui install download failures', () => {
+  it('reports a rejected fetch as an installation failure without invoking tar', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    const before = shellTemporaryDirectories();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Promise.reject(new Error('offline'))),
+    );
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      expect.stringContaining('check your network connection'),
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(shellTemporaryDirectories()).toEqual(before);
+    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+  });
+
+  it('reports a response stream failure as an installation failure without invoking tar', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    const before = shellTemporaryDirectories();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial archive'));
+        controller.error(new Error('connection lost'));
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body)),
+    );
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      expect.stringContaining('check your network connection'),
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(shellTemporaryDirectories()).toEqual(before);
+    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
   });
 });
 

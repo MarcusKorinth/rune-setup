@@ -88,14 +88,42 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
 
   try {
     io.stderr(`fetching ${url}`);
-    const response = await fetch(url);
+    let response: Response;
+    try {
+      response = await fetch(url);
+    } catch {
+      io.stderr(
+        'could not fetch the GUI shell release — check your network connection and try again',
+      );
+      throw new ExitWithCode(1);
+    }
     if (!response.ok || response.body === null) {
       io.stderr(
         `no shell release for engine ${RUNE_VERSION} (${response.status} ${response.statusText})`,
       );
       throw new ExitWithCode(1);
     }
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(archive));
+
+    const download = Readable.fromWeb(response.body);
+    const output = createWriteStream(archive);
+    let firstDownloadError: 'source' | 'output' | undefined;
+    download.once('error', () => {
+      firstDownloadError ??= 'source';
+    });
+    output.once('error', () => {
+      firstDownloadError ??= 'output';
+    });
+    try {
+      await pipeline(download, output);
+    } catch (cause) {
+      if (firstDownloadError === 'source') {
+        io.stderr(
+          'downloading the GUI shell release failed — check your network connection and try again',
+        );
+        throw new ExitWithCode(1);
+      }
+      throw cause;
+    }
 
     const cacheParent = dirname(target);
     mkdirSync(cacheParent, { recursive: true });
