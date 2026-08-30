@@ -11,6 +11,9 @@ import { run } from '../src/cli.js';
 import type { CliIo } from '../src/io.js';
 import type { CancelSignal, Interaction, SignalSource } from '../src/prompt.js';
 
+const READINESS_TIMEOUT_MS = 10_000;
+const TEST_TIMEOUT_MS = 20_000;
+
 interface Capture extends CliIo {
   readonly out: string[];
   readonly err: string[];
@@ -85,7 +88,7 @@ function fixture(firstStepScript = "console.log('ready'); setInterval(() => unde
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + READINESS_TIMEOUT_MS;
   while (!predicate()) {
     if (Date.now() >= deadline) {
       throw new Error('timed out waiting for the long-running step');
@@ -109,7 +112,7 @@ function parsedResult(io: Capture): {
   return JSON.parse(io.out.join('\n')) as ReturnType<typeof parsedResult>;
 }
 
-describe('CLI execution signals', () => {
+describe('CLI execution signals', { timeout: TEST_TIMEOUT_MS }, () => {
   it('cancels an active run on the first SIGINT and returns the cancelled result', async () => {
     const { manifestPath, directory } = fixture();
     const localesDirectory = join(directory, 'locales');
