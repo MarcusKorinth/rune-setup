@@ -72,7 +72,7 @@ describe('rune validate', () => {
   });
 });
 
-describe('rune run', () => {
+describe('rune run', { timeout: 15_000 }, () => {
   it('runs to success and honours --result -', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

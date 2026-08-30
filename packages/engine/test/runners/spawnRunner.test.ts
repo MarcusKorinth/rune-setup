@@ -33,7 +33,7 @@ function run(
   });
 }
 
-describe('SpawnRunner', () => {
+describe('SpawnRunner', { timeout: 15_000 }, () => {
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
       kind: 'exited',

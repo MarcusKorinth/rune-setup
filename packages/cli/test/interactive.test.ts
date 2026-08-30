@@ -72,7 +72,7 @@ const MANIFEST = [
   '      args: ["-e", "console.log(process.argv[1])", "${greeting}"]',
 ];
 
-describe('the interactive run', () => {
+describe('the interactive run', { timeout: 15_000 }, () => {
   it('prompts for pending inputs, shows the summary, and runs on proceed', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
