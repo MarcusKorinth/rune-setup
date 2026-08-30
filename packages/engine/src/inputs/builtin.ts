@@ -202,10 +202,9 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
     let parsed: unknown;
     try {
       parsed = JSON.parse(value);
-    } catch (cause) {
+    } catch {
       return fail(
-        'starts with "[" and is therefore read as a JSON array, but it is not valid JSON: ',
-        cause instanceof Error ? cause.message : String(cause),
+        'starts with "[" and is therefore read as a JSON array, but it is not valid JSON',
       );
     }
     if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {

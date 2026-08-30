@@ -2120,6 +2120,67 @@ describe('secrets', () => {
     expect(collectedSecrets.mask(sentinel)).toBe('***');
   });
 
+  it('never exposes JSON parser excerpts of a registered secret', () => {
+    const prefix = 'F051-MALFORMED-JSON-SECRET-PREFIX';
+    const suffix = 'F051-MALFORMED-JSON-SECRET-SUFFIX';
+    const secret = `${prefix}-${'secret-body-'.repeat(24)}${suffix}`;
+    const malformed = `["${secret}`;
+    const expectedMessage =
+      'tools (from --set tools=…): starts with "[" and is therefore read as a JSON array, but it is not valid JSON';
+    const withInvalidMultiselect = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git]',
+    );
+    const supplied = new Map([
+      ['token', secret],
+      ['tools', malformed],
+    ]);
+
+    const thrownSecrets = new SecretRegistry();
+    thrownSecrets.register(secret);
+    const error = inputError(withInvalidMultiselect, {
+      overrides: supplied,
+      secrets: thrownSecrets,
+    });
+
+    expect(error.message).toBe(expectedMessage);
+    expect(error.issues).toMatchObject([{ code: 'RUNE-202', message: expectedMessage }]);
+    const thrownSurfaces = publicErrorSurfaces(error).join('\n');
+    for (const fragment of [secret, prefix, suffix]) {
+      expect(thrownSurfaces).not.toContain(fragment);
+    }
+    expect(thrownSecrets.mask(secret)).toBe('***');
+
+    const collectedSecrets = new SecretRegistry();
+    collectedSecrets.register(secret);
+    const resolution = resolve(withInvalidMultiselect, {
+      overrides: supplied,
+      invalidValues: 'collect',
+      secrets: collectedSecrets,
+    });
+    const rejection = rejectionFor(resolution, 'tools');
+    const collectedSurfaces = [
+      rejection.issue.message,
+      String(rejection.candidate),
+      JSON.stringify(rejection),
+      inspect(rejection),
+      JSON.stringify(resolution),
+      inspect(resolution),
+    ].join('\n');
+
+    expect(resolution.problems).toMatchObject([{ code: 'RUNE-202', message: expectedMessage }]);
+    expect(rejection.issue).toBe(resolution.problems[0]);
+    expect(rejection.candidate).toBe('["***');
+    for (const fragment of [secret, prefix, suffix]) {
+      expect(collectedSurfaces).not.toContain(fragment);
+    }
+    expect(collectedSecrets.mask(secret)).toBe('***');
+  });
+
   it('masks a control-bearing secret before a non-secret diagnostic is escaped', () => {
     const secret = 'pass\nword"\u001bmore';
     const withInvalidLaterInput = manifestOf(

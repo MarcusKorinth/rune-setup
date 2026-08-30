@@ -438,7 +438,7 @@ describe('safe coercion diagnostics', () => {
     }
   });
 
-  it('escapes controls supplied by the JSON parser reason', () => {
+  it('does not expose the JSON parser reason', () => {
     const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
       throw new SyntaxError(`parser${DIAGNOSTIC_CONTROLS}reason`);
     });
@@ -446,8 +446,9 @@ describe('safe coercion diagnostics', () => {
     try {
       const message = String(from('multiselect', '[', { options: ['git'] }));
 
-      expectSafeDiagnostic(message);
-      expect(message).toContain('not valid JSON: parser\\n\\r');
+      expect(message).toBe(
+        'starts with "[" and is therefore read as a JSON array, but it is not valid JSON',
+      );
     } finally {
       parse.mockRestore();
     }
