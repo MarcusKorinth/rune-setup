@@ -231,7 +231,7 @@ describe('precedence', () => {
     ]);
   });
 
-  it('retains a present undefined answer as a rejected value without resolving a lower secret', () => {
+  it('retains a rejected undefined answer while registering a lower secret candidate', () => {
     const secret = manifestOf('inputs:', '  token:', '    type: secret');
     const secrets = new SecretRegistry();
     const resolution = resolve(secret, {
@@ -249,7 +249,8 @@ describe('precedence', () => {
     expect(resolution.problems).toMatchObject([
       { code: 'RUNE-202', message: 'token (from the answer): the value is not text' },
     ]);
-    expect(secrets.size).toBe(0);
+    expect(secrets.size).toBe(1);
+    expect(secrets.mask('lower-secret')).toBe('***');
   });
 
   it('validates a present undefined override instead of falling back to lower layers', () => {
@@ -676,7 +677,10 @@ describe('keys that name no input', () => {
     const documentCount = 48;
     const ids = Array.from({ length: inputCount }, (_, index) => `input${index}`);
     const supplied = Object.fromEntries(ids.map((id) => [id, `value-${id}`]));
-    const manifest = manifestOf('inputs:', ...ids.flatMap((id) => [`  ${id}:`, '    type: text']));
+    const manifest = manifestOf(
+      'inputs:',
+      ...ids.flatMap((id, index) => [`  ${id}:`, `    type: ${index === 0 ? 'secret' : 'text'}`]),
+    );
     let documentIteratorRequests = 0;
     let valuesIteratorRequests = 0;
     let entryVisits = 0;
@@ -729,10 +733,10 @@ describe('keys that name no input', () => {
     expect(valuesIteratorRequests).toBe(documentCount);
     expect(entryVisits).toBe(documentCount * inputCount);
     expect(includesCalls).toBe(0);
-    expect(resolution?.byId.get('input0')).toMatchObject({
-      value: 'value-input0',
-      source: 'values',
-    });
+    const first = resolution?.byId.get('input0');
+    expect(first?.source).toBe('values');
+    expect(first?.value).toBeInstanceOf(SecretString);
+    expect((first?.value as SecretString).reveal()).toBe('value-input0');
   });
 
   it('refuses a typo rather than letting it do nothing', () => {
@@ -1242,7 +1246,7 @@ describe('secrets', () => {
     expect(second.missing).toEqual([]);
   });
 
-  it('pre-stages the later values-file secret selected by the values index', () => {
+  it('stages every values-file secret while the later value remains the winner', () => {
     const base = 'F046-BASE-VALUES-SECRET';
     const winner = 'F046-OVERLAY-VALUES-SECRET';
     const secrets = new SecretRegistry();
@@ -1254,8 +1258,94 @@ describe('secrets', () => {
     expect(resolution.byId.get('token')?.source).toBe('values');
     expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
     expect(secrets.mask(winner)).toBe('***');
-    expect(secrets.mask(base)).toBe(base);
+    expect(secrets.mask(base)).toBe('***');
+    expect(secrets.size).toBe(2);
   });
+
+  it.each([
+    {
+      layers: 'values → values',
+      options: {
+        values: [
+          values('base.yaml', { token: 'F047-BASE-VALUES' }),
+          values('overlay.yaml', { token: 'F047-OVERLAY-VALUES' }),
+        ],
+      },
+      environment: {},
+      source: 'values',
+      winner: 'F047-OVERLAY-VALUES',
+      candidates: ['F047-BASE-VALUES', 'F047-OVERLAY-VALUES'],
+    },
+    {
+      layers: 'values → environment',
+      options: { values: [values('v.yaml', { token: 'F047-VALUES-BELOW-ENV' })] },
+      environment: { RUNE_INPUT_TOKEN: 'F047-ENV-WINNER' },
+      source: 'environment',
+      winner: 'F047-ENV-WINNER',
+      candidates: ['F047-VALUES-BELOW-ENV', 'F047-ENV-WINNER'],
+    },
+    {
+      layers: 'values → --set',
+      options: {
+        values: [values('v.yaml', { token: 'F047-VALUES-BELOW-SET' })],
+        overrides: new Map([['token', 'F047-SET-WINNER']]),
+      },
+      environment: {},
+      source: 'set',
+      winner: 'F047-SET-WINNER',
+      candidates: ['F047-VALUES-BELOW-SET', 'F047-SET-WINNER'],
+    },
+    {
+      layers: 'values → answer',
+      options: {
+        values: [values('v.yaml', { token: 'F047-VALUES-BELOW-ANSWER' })],
+        answers: new Map([['token', 'F047-ANSWER-WINNER']]),
+      },
+      environment: {},
+      source: 'answer',
+      winner: 'F047-ANSWER-WINNER',
+      candidates: ['F047-VALUES-BELOW-ANSWER', 'F047-ANSWER-WINNER'],
+    },
+    {
+      layers: 'environment → --set',
+      options: { overrides: new Map([['token', 'F047-SET-OVER-ENV']]) },
+      environment: { RUNE_INPUT_TOKEN: 'F047-ENV-BELOW-SET' },
+      source: 'set',
+      winner: 'F047-SET-OVER-ENV',
+      candidates: ['F047-ENV-BELOW-SET', 'F047-SET-OVER-ENV'],
+    },
+    {
+      layers: 'environment → answer',
+      options: { answers: new Map([['token', 'F047-ANSWER-OVER-ENV']]) },
+      environment: { RUNE_INPUT_TOKEN: 'F047-ENV-BELOW-ANSWER' },
+      source: 'answer',
+      winner: 'F047-ANSWER-OVER-ENV',
+      candidates: ['F047-ENV-BELOW-ANSWER', 'F047-ANSWER-OVER-ENV'],
+    },
+    {
+      layers: '--set → answer',
+      options: {
+        overrides: new Map([['token', 'F047-SET-BELOW-ANSWER']]),
+        answers: new Map([['token', 'F047-ANSWER-OVER-SET']]),
+      },
+      environment: {},
+      source: 'answer',
+      winner: 'F047-ANSWER-OVER-SET',
+      candidates: ['F047-SET-BELOW-ANSWER', 'F047-ANSWER-OVER-SET'],
+    },
+  ] as const)(
+    'registers both candidates for $layers without changing precedence',
+    ({ options, environment, source, winner, candidates }) => {
+      const secrets = new SecretRegistry();
+      const resolution = resolve(manifest, { ...options, secrets }, environment);
+      const state = resolution.byId.get('token');
+
+      expect(state?.source).toBe(source);
+      expect((state?.value as SecretString).reveal()).toBe(winner);
+      expect(secrets.size).toBe(candidates.length);
+      expect(secrets.mask(candidates.join('/'))).toBe(candidates.map(() => '***').join('/'));
+    },
+  );
 
   it('takes every other type back as an answer too', () => {
     const typed = manifestOf(
@@ -1830,6 +1920,87 @@ describe('secrets', () => {
     expect(collectedSecrets.mask(`${inherited}/${winner}`)).toBe('***/***');
   });
 
+  it('redacts every shadowed layer from thrown and collected diagnostics', () => {
+    const sentinels = [
+      'F047-BASE-SECRET',
+      'F047-OVERLAY-SECRET',
+      'F047-ENV-SECRET',
+      'F047-SET-SECRET',
+      'F047-ANSWER-SECRET',
+    ];
+    const [base, overlay, inherited, set, answer] = sentinels as [
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    const invalid = sentinels.join('/');
+    const displayName = `${sentinels.join('-')}.yaml`;
+    const withInvalidLaterInput = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const documents = [
+      values('base.yaml', { token: base }),
+      valuesFromFile(`token: ${overlay}\nnote: ${invalid}\n`, displayName),
+    ];
+    const options = {
+      values: documents,
+      overrides: new Map([['token', set]]),
+      answers: new Map([['token', answer]]),
+    };
+    const environment = { RUNE_INPUT_TOKEN: inherited };
+    const expectedMaskedValue = sentinels.map(() => '***').join('/');
+    const expectedMaskedFile = `${sentinels.map(() => '***').join('-')}.yaml`;
+    const thrownSecrets = existingRegistry();
+    const error = inputError(
+      withInvalidLaterInput,
+      { ...options, secrets: thrownSecrets },
+      environment,
+    );
+
+    expect(error.message).toContain(`"${expectedMaskedValue}" does not match x+`);
+    expect(error.issues[0]?.message).toContain(`"${expectedMaskedValue}" does not match x+`);
+    expect(error.location?.file).toBe(expectedMaskedFile);
+    expect(error.issues[0]?.location?.file).toBe(expectedMaskedFile);
+    const thrownSurfaces = [
+      ...publicErrorSurfaces(error),
+      JSON.stringify(error.issues),
+      error.location?.file ?? '',
+    ].join('\n');
+    for (const sentinel of sentinels) {
+      expect(thrownSurfaces).not.toContain(sentinel);
+      expect(thrownSecrets.mask(sentinel)).toBe(sentinel);
+    }
+    expect(thrownSecrets.size).toBe(1);
+
+    const collectedSecrets = new SecretRegistry();
+    const resolution = resolve(
+      withInvalidLaterInput,
+      { ...options, invalidValues: 'collect', secrets: collectedSecrets },
+      environment,
+    );
+    const token = resolution.byId.get('token');
+    const rejection = rejectionFor(resolution, 'note');
+
+    expect(token?.source).toBe('answer');
+    expect((token?.value as SecretString).reveal()).toBe(answer);
+    expect(rejection.source).toBe('values');
+    expect(rejection.candidate).toBe(expectedMaskedValue);
+    expect(rejection.issue).toBe(resolution.problems[0]);
+    expect(rejection.issue.message).toContain(`"${expectedMaskedValue}" does not match x+`);
+    expect(rejection.issue.location?.file).toBe(expectedMaskedFile);
+    expect(inspect(resolution)).not.toContain(invalid);
+    expect(JSON.stringify(resolution)).not.toContain(invalid);
+    expect(collectedSecrets.size).toBe(sentinels.length);
+    expect(collectedSecrets.mask(invalid)).toBe(expectedMaskedValue);
+  });
+
   it.each([
     {
       layer: 'values',
@@ -1913,7 +2084,7 @@ describe('secrets', () => {
     ['undefined', undefined],
     ['invalid object', { nested: 'F038_OBJECT_CONTENT' }],
   ] as const)(
-    'does not expose a lower-layer secret through an explicit higher %s candidate',
+    'keeps an authentic lower-layer secret when a higher %s candidate is not authentic',
     (_name, higher) => {
       const lower = 'F038_LOWER_LAYER_SECRET';
       const secrets = new SecretRegistry();
@@ -1930,21 +2101,44 @@ describe('secrets', () => {
         ignored: 'answer',
       });
       expect(resolution.problems).toEqual([]);
-      expect(secrets.mask(lower)).toBe(lower);
-      expect(secrets.size).toBe(0);
+      expect(secrets.mask(lower)).toBe('***');
+      expect(secrets.size).toBe(1);
     },
   );
 
-  it('replaces stale secrets after success and stays stable on identical re-resolution', () => {
+  it('replaces every winning and shadowed secret on the next successful resolution', () => {
     const secrets = new SecretRegistry();
+    const firstCandidates = [
+      'F047-FIRST-BASE',
+      'F047-FIRST-OVERLAY',
+      'F047-FIRST-ENV',
+      'F047-FIRST-SET',
+      'F047-FIRST-ANSWER',
+    ];
 
-    resolve(manifest, { overrides: new Map([['token', 'first-secret']]), secrets });
-    expect(secrets.size).toBe(1);
-    expect(secrets.mask('first-secret')).toBe('***');
+    resolve(
+      manifest,
+      {
+        values: [
+          values('base.yaml', { token: firstCandidates[0] }),
+          values('overlay.yaml', { token: firstCandidates[1] }),
+        ],
+        overrides: new Map([['token', firstCandidates[3]!]]),
+        answers: new Map([['token', firstCandidates[4]!]]),
+        secrets,
+      },
+      { RUNE_INPUT_TOKEN: firstCandidates[2]! },
+    );
+    expect(secrets.size).toBe(firstCandidates.length);
+    expect(secrets.mask(firstCandidates.join('/'))).toBe(
+      firstCandidates.map(() => '***').join('/'),
+    );
 
     resolve(manifest, { overrides: new Map([['token', 'second-secret']]), secrets });
     expect(secrets.size).toBe(1);
-    expect(secrets.mask('first-secret')).toBe('first-secret');
+    for (const candidate of firstCandidates) {
+      expect(secrets.mask(candidate)).toBe(candidate);
+    }
     expect(secrets.mask('second-secret')).toBe('***');
 
     resolve(manifest, { overrides: new Map([['token', 'second-secret']]), secrets });
@@ -1952,7 +2146,7 @@ describe('secrets', () => {
     expect(secrets.mask('second-secret')).toBe('***');
   });
 
-  it('publishes only accepted secrets when invalid values are collected', () => {
+  it('publishes every safely readable candidate when invalid values are collected', () => {
     const withRejectedSecret = manifestOf(
       'inputs:',
       '  accepted:',
@@ -1962,16 +2156,20 @@ describe('secrets', () => {
     );
     const secrets = existingRegistry();
     const resolution = resolve(withRejectedSecret, {
-      overrides: new Map([['accepted', 'current-secret']]),
+      overrides: new Map([
+        ['accepted', 'current-secret'],
+        ['rejected', 'shadowed-secret'],
+      ]),
       answers: new Map([['rejected', undefined as unknown as InputValue]]),
       invalidValues: 'collect',
       secrets,
     });
 
     expect(resolution.problems).toMatchObject([{ code: 'RUNE-202' }]);
-    expect(secrets.size).toBe(1);
+    expect(secrets.size).toBe(2);
     expect(secrets.mask('existing-secret')).toBe('existing-secret');
     expect(secrets.mask('current-secret')).toBe('***');
+    expect(secrets.mask('shadowed-secret')).toBe('***');
   });
 
   it('registers exactly the stable value returned from an untrusted wrapper', () => {
@@ -1999,6 +2197,77 @@ describe('secrets', () => {
     expect(secrets.mask('decoy alpha-secret')).toBe('decoy alpha-secret');
   });
 
+  it('registers genuine wrappers from shadowed values and --set layers', () => {
+    const valuesSecret = 'F047-WRAPPED-VALUES';
+    const setSecret = 'F047-WRAPPED-SET';
+    const answer = 'F047-STRING-ANSWER';
+    const secrets = new SecretRegistry();
+    const resolution = resolve(manifest, {
+      values: [values('v.yaml', { token: new SecretString(valuesSecret) })],
+      overrides: new Map([['token', new SecretString(setSecret)]]) as unknown as ReadonlyMap<
+        string,
+        string
+      >,
+      answers: new Map([['token', answer]]),
+      secrets,
+    });
+
+    expect(resolution.byId.get('token')?.source).toBe('answer');
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(answer);
+    expect(secrets.size).toBe(3);
+    expect(secrets.mask(`${valuesSecret}/${setSecret}/${answer}`)).toBe('***/***/***');
+  });
+
+  it('does not invoke proxy traps, forged wrappers or accessors while staging candidates', () => {
+    let accessorCalls = 0;
+    let proxyCalls = 0;
+    const accessor = Object.create(null, {
+      reveal: {
+        get: () => {
+          accessorCalls += 1;
+          return () => 'F047-ACCESSOR-DECOY';
+        },
+      },
+      toString: {
+        get: () => {
+          accessorCalls += 1;
+          return () => 'F047-ACCESSOR-STRING-DECOY';
+        },
+      },
+    });
+    const forged = Object.create(SecretString.prototype) as SecretString;
+    const proxied = new Proxy(new SecretString('F047-PROXY-DECOY'), {
+      get: () => {
+        proxyCalls += 1;
+        throw new Error('proxy candidate was inspected');
+      },
+      getPrototypeOf: () => {
+        proxyCalls += 1;
+        throw new Error('proxy candidate prototype was inspected');
+      },
+    });
+    const secrets = new SecretRegistry();
+    const resolution = resolve(disabledSecret, {
+      values: [
+        values('accessor.yaml', { token: accessor }),
+        values('forged.yaml', { token: forged }),
+      ],
+      overrides: new Map([['token', accessor]]) as unknown as ReadonlyMap<string, string>,
+      answers: new Map([['token', proxied]]) as unknown as ReadonlyMap<string, InputValue>,
+      secrets,
+    });
+
+    expect(accessorCalls).toBe(0);
+    expect(proxyCalls).toBe(0);
+    expect(secrets.size).toBe(0);
+    expect(resolution.warnings).toHaveLength(1);
+    expect(resolution.warnings[0]).not.toContain('cannot be masked reliably');
+    expect(resolution.byId.get('token')).toMatchObject({
+      enabled: false,
+      ignored: 'answer',
+    });
+  });
+
   it('warns when a secret is too short to mask reliably', () => {
     const secrets = new SecretRegistry();
     const resolution = resolve(manifest, { overrides: new Map([['token', 'ab']]), secrets });
@@ -2007,6 +2276,36 @@ describe('secrets', () => {
     expect(resolution.warnings).toEqual([
       'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
     ]);
+  });
+
+  it('warns once when several shadowed candidates are partly unmaskable', () => {
+    const maskableLine = 'F047-MASKABLE-LINE';
+    const set = 'F047-RELIABLE-SET';
+    const answer = 'F047-RELIABLE-ANSWER';
+    const secrets = new SecretRegistry();
+    const resolution = resolve(
+      manifest,
+      {
+        values: [
+          values('base.yaml', { token: 'ab' }),
+          values('overlay.yaml', { token: `${maskableLine}\nabc` }),
+        ],
+        overrides: new Map([['token', set]]),
+        answers: new Map([['token', answer]]),
+        secrets,
+      },
+      { RUNE_INPUT_TOKEN: '' },
+    );
+
+    expect(resolution.byId.get('token')?.source).toBe('answer');
+    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(answer);
+    expect(
+      resolution.warnings.filter((warning) => warning.includes('cannot be masked reliably')),
+    ).toEqual([
+      'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
+    ]);
+    expect(secrets.mask(`${maskableLine}/${set}/${answer}`)).toBe('***/***/***');
+    expect(secrets.mask('ab/abc')).toBe('ab/abc');
   });
 
   it.each([

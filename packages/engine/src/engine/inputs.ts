@@ -152,7 +152,7 @@ function resolveInputsStaged(
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
   const valuesLayer = indexValuesLayer(options.values);
-  const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer.byId, stagedSecrets);
+  const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
 
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
@@ -299,16 +299,15 @@ interface StagedSecret {
 }
 
 /**
- * Registers every safely readable winning layer-2–5 secret, plus its layer-3 environment
- * value even when a higher layer wins, before resolution can diagnose anything. The registry
- * remains staged until success, but it can already redact an error raised by an
- * earlier-declared input. Environment values stay registered because child processes inherit
- * them even when input precedence discards them (§10).
+ * Registers every safely readable layer-2–5 candidate for each declared secret before
+ * resolution can diagnose anything. The registry remains staged until success, but it can
+ * already redact an error raised by an earlier-declared input. Candidate registration is
+ * deliberately separate from precedence: the winning value and its provenance are unchanged.
  */
 function stageSuppliedSecrets(
   options: ResolveInputsOptions,
   ids: readonly string[],
-  values: ReadonlyMap<string, SuppliedValue>,
+  values: ValuesLayerIndex,
   stagedSecrets: SecretRegistry,
 ): ReadonlyMap<string, StagedSecret> {
   const suppliedSecrets = new Map<string, StagedSecret>();
@@ -319,31 +318,32 @@ function stageSuppliedSecrets(
       continue;
     }
 
-    const supplied = highestLayer(id, spec, options, values);
-    if (supplied === undefined || supplied.source === 'default') {
+    const fromValues = values.byId.get(id);
+    const fromEnvironment = environmentLayer(id, options);
+    const fromSet = overrideLayer(id, options);
+    const fromAnswer = answerLayer(id, options);
+    const supplied = fromAnswer ?? fromSet ?? fromEnvironment ?? fromValues;
+    if (supplied === undefined) {
       continue;
     }
 
-    const inheritedEnvironment =
-      supplied.source === 'environment'
-        ? supplied
-        : supplied.source === 'set' || supplied.source === 'answer'
-          ? environmentLayer(id, options)
-          : undefined;
     let maskable: boolean | undefined;
-    const candidates =
-      inheritedEnvironment === supplied ? [supplied] : [inheritedEnvironment, supplied];
-    for (const candidate of candidates) {
-      if (candidate === undefined) {
-        continue;
-      }
+    const registerCandidate = (candidate: SuppliedValue | undefined): void => {
+      if (candidate === undefined) return;
       const text = authenticSecretText(candidate.raw);
       if (text === undefined) {
-        continue;
+        return;
       }
       const candidateMaskable = stagedSecrets.register(text);
       maskable = maskable === undefined ? candidateMaskable : maskable && candidateMaskable;
+    };
+
+    for (const candidate of values.candidatesById.get(id) ?? []) {
+      registerCandidate(candidate);
     }
+    registerCandidate(fromEnvironment);
+    registerCandidate(fromSet);
+    registerCandidate(fromAnswer);
 
     suppliedSecrets.set(id, {
       supplied,
@@ -482,31 +482,43 @@ interface ValuesLayerEntry {
   readonly location: Location;
 }
 
+interface ValuesLayerIndex {
+  readonly byId: ReadonlyMap<string, SuppliedValue>;
+  /** Every entry per id in document order, retained for secret candidate staging. */
+  readonly candidatesById: ReadonlyMap<string, readonly SuppliedValue[]>;
+  readonly entries: readonly ValuesLayerEntry[];
+}
+
 /**
  * Folds values files once per resolution. Later documents replace earlier values per input,
  * while the entry list preserves unknown-key diagnostics and their suggestion order.
  */
-function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): {
-  readonly byId: ReadonlyMap<string, SuppliedValue>;
-  readonly entries: readonly ValuesLayerEntry[];
-} {
+function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): ValuesLayerIndex {
   const byId = new Map<string, SuppliedValue>();
+  const candidatesById = new Map<string, SuppliedValue[]>();
   const entries: ValuesLayerEntry[] = [];
 
   for (const document of documents ?? []) {
     for (const [id, raw] of document.values) {
       const location = document.sourceMap.best([id]) ?? startOfFile(document.file);
-      byId.set(id, {
+      const supplied = {
         source: 'values',
         raw,
         location,
         origin: document.file,
-      });
+      } as const;
+      byId.set(id, supplied);
+      const candidates = candidatesById.get(id);
+      if (candidates === undefined) {
+        candidatesById.set(id, [supplied]);
+      } else {
+        candidates.push(supplied);
+      }
       entries.push({ id, origin: document.file, location });
     }
   }
 
-  return { byId, entries };
+  return { byId, candidatesById, entries };
 }
 
 /** The value of the highest layer that supplied one, which is the value that wins (§5). */
@@ -516,14 +528,14 @@ function highestLayer(
   options: ResolveInputsOptions,
   values: ReadonlyMap<string, SuppliedValue>,
 ): SuppliedValue | undefined {
-  if (options.answers?.has(id)) {
-    const answer = options.answers.get(id);
-    return { source: 'answer', raw: answer, location: undefined, origin: SOURCE_NAMES.answer };
+  const answer = answerLayer(id, options);
+  if (answer !== undefined) {
+    return answer;
   }
 
-  if (options.overrides?.has(id)) {
-    const override = options.overrides.get(id);
-    return { source: 'set', raw: override, location: undefined, origin: `--set ${id}=…` };
+  const override = overrideLayer(id, options);
+  if (override !== undefined) {
+    return override;
   }
 
   const fromEnvironment = environmentLayer(id, options);
@@ -548,6 +560,30 @@ function highestLayer(
   }
 
   return undefined;
+}
+
+function answerLayer(id: string, options: ResolveInputsOptions): SuppliedValue | undefined {
+  if (!options.answers?.has(id)) {
+    return undefined;
+  }
+  return {
+    source: 'answer',
+    raw: options.answers.get(id),
+    location: undefined,
+    origin: SOURCE_NAMES.answer,
+  };
+}
+
+function overrideLayer(id: string, options: ResolveInputsOptions): SuppliedValue | undefined {
+  if (!options.overrides?.has(id)) {
+    return undefined;
+  }
+  return {
+    source: 'set',
+    raw: options.overrides.get(id),
+    location: undefined,
+    origin: `--set ${id}=…`,
+  };
 }
 
 function environmentLayer(id: string, options: ResolveInputsOptions): SuppliedValue | undefined {
