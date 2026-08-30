@@ -47,6 +47,10 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
     await expect(page.locator('#logo')).toBeVisible();
     await expect.poll(() => page.locator('#logo').evaluate((logo) => logo.naturalWidth)).toBe(2);
+    await expect(page.locator('.welcome .banner')).toBeVisible();
+    await expect
+      .poll(() => page.locator('.welcome .banner').evaluate((banner) => banner.naturalWidth))
+      .toBe(2);
     await expect
       .poll(() =>
         page.evaluate(() =>

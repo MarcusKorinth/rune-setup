@@ -47,6 +47,7 @@ interface State {
   inputPages: number;
   page: PageName;
   result: BridgeResult | undefined;
+  banner: string | undefined;
   productName: string;
   productVersion: string;
 }
@@ -61,6 +62,7 @@ const state: State = {
   inputPages: 0,
   page: 'welcome',
   result: undefined,
+  banner: undefined,
   productName: '',
   productVersion: '',
 };
@@ -114,6 +116,7 @@ async function boot(): Promise<void> {
     el.logo.src = theme.logo;
     el.logo.hidden = false;
   }
+  state.banner = theme.banner;
   if (theme.theme !== undefined) {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
@@ -245,6 +248,13 @@ function pageInputs(): readonly BridgeInput[] {
 
 function renderWelcome(): void {
   const container = div('welcome');
+  if (state.banner !== undefined) {
+    const banner = document.createElement('img');
+    banner.className = 'banner';
+    banner.src = state.banner;
+    banner.alt = '';
+    container.append(banner);
+  }
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.welcome.title');
   const description = document.createElement('p');

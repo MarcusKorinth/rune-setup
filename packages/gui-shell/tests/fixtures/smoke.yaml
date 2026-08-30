@@ -6,5 +6,6 @@ product:
 gui:
   accentColor: '#d946ef'
   logo: 'logo #1.svg'
+  banner: 'banner #1.svg'
   theme: 'custom #1.css'
 steps: []
