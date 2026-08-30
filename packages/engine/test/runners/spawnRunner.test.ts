@@ -973,6 +973,7 @@ describe('SpawnRunner', () => {
     await expect(
       spawnRunnerTestSeam.terminateProcessGroup(41, {
         signal,
+        exists: vi.fn(() => false),
         probe,
         timings: TEST_TERMINATION_TIMINGS,
       }),
@@ -992,6 +993,7 @@ describe('SpawnRunner', () => {
       await expect(
         spawnRunnerTestSeam.terminateProcessGroup(42, {
           signal,
+          exists: vi.fn(() => false),
           probe,
           timings: TEST_TERMINATION_TIMINGS,
         }),
@@ -1005,9 +1007,11 @@ describe('SpawnRunner', () => {
     vi.useFakeTimers();
     try {
       const signal = vi.fn(() => true);
-      const probe = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const exists = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+      const probe = vi.fn(async () => false);
       const pending = spawnRunnerTestSeam.terminateProcessGroup(43, {
         signal,
+        exists,
         probe,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1016,6 +1020,44 @@ describe('SpawnRunner', () => {
 
       await expect(pending).resolves.toBe(true);
       expect(signal).toHaveBeenCalledExactlyOnceWith(-43, 'SIGTERM');
+      expect(exists).toHaveBeenCalledTimes(2);
+      expect(probe).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not trust a pre-SIGKILL /proc snapshot while the group still exists', async () => {
+    vi.useFakeTimers();
+    try {
+      let firmSignalSent = false;
+      const firmSignalStateAtProbe: boolean[] = [];
+      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
+        firmSignalSent ||= signalName === 'SIGKILL';
+      });
+      const exists = vi.fn(() => true);
+      const probe = vi.fn(async () => {
+        firmSignalStateAtProbe.push(firmSignalSent);
+        return false;
+      });
+      const pending = spawnRunnerTestSeam.terminateProcessGroup(78, {
+        signal,
+        exists,
+        probe,
+        timings: TEST_TERMINATION_TIMINGS,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(pending).resolves.toBe(true);
+      expect(signal.mock.calls).toEqual([
+        [-78, 'SIGTERM'],
+        [-78, 'SIGKILL'],
+      ]);
+      expect(exists).toHaveBeenCalled();
+      expect(probe).toHaveBeenCalledOnce();
+      expect(firmSignalStateAtProbe).toEqual([true]);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -1032,6 +1074,7 @@ describe('SpawnRunner', () => {
       });
       const pending = spawnRunnerTestSeam.terminateProcessGroup(44, {
         signal,
+        exists: () => true,
         probe: async () => true,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1059,6 +1102,7 @@ describe('SpawnRunner', () => {
       });
       const pending = spawnRunnerTestSeam.terminateProcessGroup(45, {
         signal,
+        exists: () => true,
         probe: async () => true,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1093,6 +1137,7 @@ describe('SpawnRunner', () => {
       });
       const pending = spawnRunnerTestSeam.terminateProcessGroup(46, {
         signal,
+        exists: () => true,
         probe,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1116,6 +1161,7 @@ describe('SpawnRunner', () => {
       const signal = vi.fn(() => true);
       const pending = spawnRunnerTestSeam.terminateProcessGroup(47, {
         signal,
+        exists: () => true,
         probe: async () => true,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1133,13 +1179,14 @@ describe('SpawnRunner', () => {
     }
   });
 
-  it('bounds POSIX probes that never settle in either termination phase', async () => {
+  it('bounds a post-SIGKILL /proc probe that never settles', async () => {
     vi.useFakeTimers();
     try {
       const signal = vi.fn(() => true);
       const never = new Promise<boolean>(() => undefined);
       const pending = spawnRunnerTestSeam.terminateProcessGroup(48, {
         signal,
+        exists: () => true,
         probe: () => never,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1157,7 +1204,7 @@ describe('SpawnRunner', () => {
     }
   });
 
-  it('aborts each expired /proc probe before the next termination phase starts', async () => {
+  it('aborts an expired post-SIGKILL /proc probe at the confirmation deadline', async () => {
     vi.useFakeTimers();
     try {
       const signal = vi.fn(() => true);
@@ -1203,6 +1250,7 @@ describe('SpawnRunner', () => {
       };
       const pending = spawnRunnerTestSeam.terminateProcessGroup(77, {
         signal,
+        exists: () => true,
         probe,
         timings: TEST_TERMINATION_TIMINGS,
       });
@@ -1214,18 +1262,18 @@ describe('SpawnRunner', () => {
         [-77, 'SIGTERM'],
         [-77, 'SIGKILL'],
       ]);
-      expect(probeSignals).toHaveLength(2);
+      expect(probeSignals).toHaveLength(1);
       expect(probeSignals.every((probeSignal) => probeSignal.aborted)).toBe(true);
       expect(maximumActiveReads).toBe(4);
       expect(activeReads).toBe(0);
-      expect(readsStarted).toBe(8);
+      expect(readsStarted).toBe(4);
 
       for (const settleLate of lateSettlements) {
         settleLate();
       }
       await Promise.resolve();
       await Promise.resolve();
-      expect(readsStarted).toBe(8);
+      expect(readsStarted).toBe(4);
       expect(signal).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -1233,27 +1281,24 @@ describe('SpawnRunner', () => {
     }
   });
 
-  it('cleans POSIX timers and ignores a late grace probe without another signal', async () => {
+  it('cleans POSIX timers and ignores a late post-SIGKILL probe settlement', async () => {
     vi.useFakeTimers();
     try {
       let resolveLateProbe = (_live: boolean): void => undefined;
       const lateProbe = new Promise<boolean>((resolve) => {
         resolveLateProbe = resolve;
       });
-      let firmSignalSent = false;
-      const signal = vi.fn((_pid: number, signalName: NodeJS.Signals) => {
-        firmSignalSent ||= signalName === 'SIGKILL';
-      });
-      const probe = vi.fn(() => (firmSignalSent ? Promise.resolve(false) : lateProbe));
+      const signal = vi.fn(() => true);
       const pending = spawnRunnerTestSeam.terminateProcessGroup(49, {
         signal,
-        probe,
+        exists: () => true,
+        probe: () => lateProbe,
         timings: TEST_TERMINATION_TIMINGS,
       });
 
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(100);
 
-      await expect(pending).resolves.toBe(true);
+      await expect(pending).resolves.toBe(false);
       expect(signal.mock.calls).toEqual([
         [-49, 'SIGTERM'],
         [-49, 'SIGKILL'],

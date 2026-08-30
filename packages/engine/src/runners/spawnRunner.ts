@@ -52,6 +52,7 @@ type ProcessGroupSignalResult = 'sent' | 'absent' | 'failed';
 
 interface ProcessGroupTerminationDependencies {
   readonly signal: (pid: number, signal: NodeJS.Signals) => unknown;
+  readonly exists: (pid: number) => boolean;
   readonly probe: (pid: number, signal: AbortSignal) => Promise<boolean>;
   readonly timings: {
     readonly graceMs: number;
@@ -384,6 +385,7 @@ async function terminateProcessGroup(
   pid: number,
   dependencies: ProcessGroupTerminationDependencies = {
     signal: (processId, signal) => process.kill(processId, signal),
+    exists: processGroupExists,
     probe: processGroupHasLiveMembers,
     timings: {
       graceMs: KILL_GRACE_MS,
@@ -404,7 +406,10 @@ async function terminateProcessGroup(
       pid,
       dependencies.timings.graceMs,
       dependencies.timings.pollMs,
-      dependencies.probe,
+      async (processId, signal) => {
+        signal.throwIfAborted();
+        return dependencies.exists(processId);
+      },
     )
   ) {
     return true;
@@ -423,6 +428,16 @@ async function terminateProcessGroup(
     dependencies.timings.pollMs,
     dependencies.probe,
   );
+}
+
+/** Before SIGKILL, only kernel-confirmed group absence can safely end the grace phase. */
+function processGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
 }
 
 function signalProcessGroup(
@@ -499,10 +514,8 @@ function waitForProcessGroupExit(
 
 async function processGroupHasLiveMembers(pid: number, signal: AbortSignal): Promise<boolean> {
   signal.throwIfAborted();
-  try {
-    process.kill(-pid, 0);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  if (!processGroupExists(pid)) {
+    return false;
   }
   if (process.platform !== 'linux') {
     return true;
