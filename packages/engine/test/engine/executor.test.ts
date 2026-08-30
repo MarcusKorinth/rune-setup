@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { describePlan, executeRun } from '../../src/engine/executor.js';
+import { describeCancelled, describePlan, executeRun } from '../../src/engine/executor.js';
 import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import { parseManifestText } from '../../src/manifest/index.js';
+import { runResultSchema } from '../../src/results/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 
@@ -380,6 +381,143 @@ describe('skipped steps and the dry run', () => {
 
     expect(JSON.stringify(events)).not.toContain('super-secret-value');
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
+  });
+});
+
+describe('result masking', () => {
+  const resultSetup = (): ReturnType<typeof setup> => {
+    const manifestPath = 'mask-installer.yaml';
+    const manifest = parseManifestText(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: mask product',
+        '  version: mask-version',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  maskToggle:',
+        '    type: boolean',
+        '    default: false',
+        '  maskText:',
+        '    type: text',
+        '    default: mask value',
+        '  maskList:',
+        '    type: multiselect',
+        '    options: [mask-choice]',
+        '    default: [mask-choice]',
+        'steps:',
+        '  - id: mask-skipped',
+        '    title: mask skipped',
+        '    when: "${maskToggle}"',
+        '    run:',
+        '      command: a',
+        '  - id: run-mask',
+        '    title: execute mask',
+        '    run:',
+        '      command: a',
+        '      args: [mask]',
+        '',
+      ].join('\n'),
+      manifestPath,
+    );
+    const context = createRuntimeContext({
+      manifestDir: '/mask-project',
+      product: manifest.product,
+      platform: hostPlatform(),
+      environment: {},
+    });
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      environment: {},
+      overrides: new Map([['token', 'mask']]),
+      secrets,
+    });
+    const plan = buildPlan({ manifest, manifestPath, resolution, context });
+    return { plan, resolution, secrets, product: manifest.product };
+  };
+
+  it('masks variable strings in described, cancelled, and executed results', async () => {
+    const options = resultSetup();
+    const described = describePlan(options);
+    const cancelled = describeCancelled(options);
+    const executed = await executeRun({
+      ...options,
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', 'mask appeared in output');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    for (const result of [described, cancelled, executed]) {
+      expect(result.product).toEqual({ name: '*** product', version: '***-version' });
+      expect(result.manifestPath).toBe('***-installer.yaml');
+      expect(result.inputs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: '***Toggle', value: false }),
+          expect.objectContaining({ id: '***Text', value: '*** value' }),
+          expect.objectContaining({ id: '***List', value: ['***-choice'] }),
+        ]),
+      );
+      expect(result.steps[0]).toMatchObject({
+        id: '***-skipped',
+        title: '*** skipped',
+        skipReason: 'condition false: ${***Toggle}',
+      });
+      expect(result.steps[1]).toMatchObject({ id: 'run-***', title: 'execute ***' });
+    }
+
+    expect(described.steps[1]?.command).toEqual(['a', '***']);
+    expect(cancelled.steps[1]?.command).toEqual(['a', '***']);
+    expect(executed.steps[1]?.command).toEqual(['a', '***']);
+    expect(executed.steps[1]?.outputTail).toEqual([
+      { stream: 'stdout', line: '*** appeared in output' },
+    ]);
+  });
+
+  it('does not mask fixed machine-readable fields on secret collisions', async () => {
+    const options = resultSetup();
+    for (const value of [
+      'planned',
+      'cancelled',
+      'failed',
+      'non-interactive',
+      hostPlatform(),
+      'PENDING',
+      'SKIPPED',
+      'FAILED',
+      'NOT_RUN',
+      'stdout',
+    ]) {
+      options.secrets.register(value);
+    }
+
+    const described = describePlan(options);
+    const cancelled = describeCancelled(options);
+    const executed = await executeRun({
+      ...options,
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', 'failure');
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(described).toMatchObject({
+      status: 'planned',
+      mode: 'non-interactive',
+      platform: hostPlatform(),
+    });
+    expect(described.steps.map((step) => step.state)).toEqual(['SKIPPED', 'PENDING']);
+    expect(cancelled).toMatchObject({ status: 'cancelled', mode: 'non-interactive' });
+    expect(cancelled.steps.map((step) => step.state)).toEqual(['SKIPPED', 'NOT_RUN']);
+    expect(executed).toMatchObject({ status: 'failed', mode: 'non-interactive' });
+    expect(executed.steps.map((step) => step.state)).toEqual(['SKIPPED', 'FAILED']);
+    expect(executed.steps[1]?.outputTail?.[0]?.stream).toBe('stdout');
+    for (const result of [described, cancelled, executed]) {
+      expect(() => runResultSchema.parse(result)).not.toThrow();
+    }
   });
 });
 

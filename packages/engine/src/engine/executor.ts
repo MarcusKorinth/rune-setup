@@ -192,6 +192,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     dryRun: false,
     startedAt,
     finishedAt,
+    secrets,
   });
 
   emit({ kind: 'runFinished', result });
@@ -229,6 +230,7 @@ export function describeCancelled(options: {
     dryRun: false,
     startedAt: now,
     finishedAt: now,
+    secrets: options.secrets,
   });
 }
 
@@ -259,6 +261,7 @@ export function describePlan(options: {
     dryRun: true,
     startedAt: now,
     finishedAt: now,
+    secrets: options.secrets,
   });
 }
 
@@ -273,6 +276,7 @@ function assembleResult(input: {
   readonly dryRun: boolean;
   readonly startedAt: Date;
   readonly finishedAt: Date;
+  readonly secrets: SecretRegistry;
 }): RunResult {
   const { steps } = input;
   const count = (state: StepState): number => steps.filter((step) => step.state === state).length;
@@ -287,15 +291,18 @@ function assembleResult(input: {
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
-    locale: input.plan.locale ?? null,
+    locale: input.plan.locale === undefined ? null : input.secrets.mask(input.plan.locale),
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
     durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
     runeVersion: RUNE_VERSION,
     // Identity only: a manifest's product block may carry more (a description), and the
     // result schema pins exactly these two fields (§10).
-    product: { name: input.product.name, version: input.product.version },
-    manifestPath: input.plan.manifestPath,
+    product: {
+      name: input.secrets.mask(input.product.name),
+      version: input.secrets.mask(input.product.version),
+    },
+    manifestPath: input.secrets.mask(input.plan.manifestPath),
     stepsTotal: steps.length,
     stepsExecuted: executed,
     stepsSucceeded: count('SUCCEEDED'),
@@ -304,24 +311,55 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.resolution.inputs.map(resultInput),
-    steps,
+    inputs: input.resolution.inputs.map((state) => resultInput(state, input.secrets)),
+    steps: steps.map((step) => maskResultStep(step, input.secrets)),
   };
 }
 
-function resultInput(state: InputState): ResultInput {
+function resultInput(state: InputState, secrets: SecretRegistry): ResultInput {
   const handler = state.spec.type === 'secret';
   const value = state.value;
 
   return {
-    id: state.id,
-    value: handler || value instanceof SecretString ? null : (value ?? null),
+    id: secrets.mask(state.id),
+    value: handler || value instanceof SecretString ? null : maskResultValue(value, secrets),
     // Rejected and disabled inputs keep the provenance of the value that could not become
     // effective, even though neither has a validated `value` (§5, §10).
     source: state.source ?? state.rejection?.source ?? state.ignored ?? null,
     secret: handler,
     enabled: state.enabled,
     ignored: state.ignored === undefined ? null : 'input disabled',
+  };
+}
+
+function maskResultValue(
+  value: InputState['value'],
+  secrets: SecretRegistry,
+): ResultInput['value'] {
+  if (value === undefined || value instanceof SecretString) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return secrets.mask(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => secrets.mask(entry));
+  }
+  return value;
+}
+
+function maskResultStep(step: ResultStep, secrets: SecretRegistry): ResultStep {
+  return {
+    ...step,
+    id: secrets.mask(step.id),
+    title: secrets.mask(step.title),
+    command: step.command?.map((entry) => secrets.mask(entry)) ?? null,
+    skipReason: step.skipReason === null ? null : secrets.mask(step.skipReason),
+    outputTail:
+      step.outputTail?.map((entry) => ({
+        stream: entry.stream,
+        line: secrets.mask(entry.line),
+      })) ?? null,
   };
 }
 
