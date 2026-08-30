@@ -39,6 +39,52 @@ describe('parseManifestText', () => {
     });
   });
 
+  it('accepts the largest timeout representable by the runner timer', () => {
+    const manifest = parse(
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: pwsh',
+        '      timeoutSeconds: 2147483',
+        '',
+      ].join('\n'),
+    );
+
+    const step = manifest.steps[0];
+    expect(step && isCommandSpec(step.run) && step.run.timeoutSeconds).toBe(2_147_483);
+  });
+
+  it('rejects a timeout that would overflow the runner timer with a located schema issue', () => {
+    let thrown: unknown;
+    try {
+      parse(
+        [
+          ...HEAD,
+          'steps:',
+          '  - id: install',
+          '    run:',
+          '      command: pwsh',
+          '      timeoutSeconds: 2147484',
+          '',
+        ].join('\n'),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-103');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-103',
+        message: 'steps[0].run.timeoutSeconds must be at most 2147483',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 9, column: 7 }),
+      }),
+    ]);
+  });
+
   it('accepts both run forms: one command, or a mapping of platforms', () => {
     const manifest = parse(
       [
