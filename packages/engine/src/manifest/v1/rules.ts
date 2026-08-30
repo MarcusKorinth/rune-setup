@@ -21,7 +21,13 @@ import {
   type ConditionReference,
   type TypeResolver,
 } from '../../engine/conditions.js';
-import { BUILT_IN_NAMES, resolveReference, typeOfReference } from '../../engine/context.js';
+import {
+  BUILT_IN_NAMES,
+  createInputReferenceIndex,
+  resolveReference,
+  typeOfReference,
+  type InputReferenceIndex,
+} from '../../engine/context.js';
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
@@ -315,13 +321,16 @@ interface ConditionField {
   readonly path: readonly PathSegment[];
   readonly text: string;
   /** The inputs this condition may name; everything else declared is visible but forbidden. */
-  readonly visibleInputs: readonly string[];
+  readonly visibleInputCount: number;
   /** The input this condition belongs to, so a reference back to it can say so. */
   readonly owner: string | undefined;
 }
 
-function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
-  const ids = Object.keys(manifest.inputs);
+function* conditionFields(
+  manifest: ManifestV1,
+  inputIndex: InputReferenceIndex,
+): Generator<ConditionField> {
+  const { orderedIds: ids } = inputIndex;
 
   for (const [index, id] of ids.entries()) {
     const input = manifest.inputs[id];
@@ -331,7 +340,7 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
       yield {
         path: ['inputs', id, 'when'],
         text: input.when,
-        visibleInputs: ids.slice(0, index),
+        visibleInputCount: index,
         owner: id,
       };
     }
@@ -342,7 +351,7 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
       yield {
         path: ['steps', index, 'when'],
         text: step.when,
-        visibleInputs: ids,
+        visibleInputCount: ids.length,
         owner: undefined,
       };
     }
@@ -351,6 +360,7 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
 
 function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
   const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
 
   // What is wrong with a reference depends only on what was written and whether inputs are in
   // scope — never on the field it stands in. A manifest may repeat the same typo in thousands
@@ -370,7 +380,7 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
       }
       const key = `${String(field.mayReferenceInputs)}:${part.reference.text}`;
       if (!explained.has(key)) {
-        explained.set(key, referenceProblem(part.reference, inputIds, field.mayReferenceInputs));
+        explained.set(key, referenceProblem(part.reference, inputIndex, field.mayReferenceInputs));
       }
       const problem = explained.get(key);
       if (problem !== undefined) {
@@ -379,14 +389,14 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
     }
   }
 
-  for (const field of conditionFields(manifest)) {
+  for (const field of conditionFields(manifest, inputIndex)) {
     const parsed = parseCondition(field.text);
     if (!parsed.ok) {
       issues.push(issue(`${formatPath(field.path)}: ${parsed.message}`, field.path, ctx));
       continue;
     }
 
-    const resolver = typeResolver(manifest, field.visibleInputs, field.owner);
+    const resolver = typeResolver(manifest, inputIndex, field.visibleInputCount, field.owner);
     for (const problem of typeCheckCondition(parsed.ast, resolver)) {
       issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
     }
@@ -396,15 +406,19 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
 /** Why a reference cannot stand where it stands, or nothing when it can. */
 function referenceProblem(
   reference: TemplateReference,
-  inputIds: readonly string[],
+  inputIndex: InputReferenceIndex,
   mayReferenceInputs: boolean,
 ): string | undefined {
-  const resolved = resolveReference(reference.segments, mayReferenceInputs ? inputIds : []);
+  const resolved = resolveReference(
+    reference.segments,
+    inputIndex,
+    mayReferenceInputs ? inputIndex.orderedIds.length : 0,
+  );
 
   if (!resolved.ok) {
     // An input default that names an input gets the reason, not "no such variable": the name
     // exists, it just is not available yet.
-    if (!mayReferenceInputs && inputIds.includes(reference.segments[0] ?? '')) {
+    if (!mayReferenceInputs && inputIndex.ordinals.has(reference.segments[0] ?? '')) {
       return `${reference.text} cannot be used in a default — defaults are rendered before the other inputs are known, so they may only use built-in variables and \${env.*}`;
     }
     return resolved.message;
@@ -419,14 +433,14 @@ function referenceProblem(
  */
 function typeResolver(
   manifest: ManifestV1,
-  visibleInputs: readonly string[],
+  inputIndex: InputReferenceIndex,
+  visibleInputCount: number,
   owner: string | undefined,
 ): TypeResolver {
-  const declared = Object.keys(manifest.inputs);
-
   return (reference: ConditionReference) => {
     const head = reference.segments[0] ?? '';
-    if (declared.includes(head) && !visibleInputs.includes(head)) {
+    const ordinal = inputIndex.ordinals.get(head);
+    if (ordinal !== undefined && ordinal >= visibleInputCount) {
       return {
         ok: false,
         message:
@@ -436,7 +450,7 @@ function typeResolver(
       };
     }
 
-    const resolved = resolveReference(reference.segments, visibleInputs);
+    const resolved = resolveReference(reference.segments, inputIndex, visibleInputCount);
     if (!resolved.ok) {
       return resolved;
     }
@@ -467,9 +481,10 @@ export function environmentReferences(
   // walked, and a manifest may repeat references in thousands of arguments — the same reason
   // the reference explanations above are computed per name rather than per occurrence.
   const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
 
   const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
-    const resolved = resolveReference(segments, inputIds);
+    const resolved = resolveReference(segments, inputIndex);
     if (!resolved.ok || resolved.reference.kind !== 'environment') {
       return;
     }
@@ -492,7 +507,7 @@ export function environmentReferences(
     }
   }
 
-  for (const field of conditionFields(manifest)) {
+  for (const field of conditionFields(manifest, inputIndex)) {
     const parsed = parseCondition(field.text);
     if (parsed.ok) {
       for (const reference of referencesIn(parsed.ast)) {

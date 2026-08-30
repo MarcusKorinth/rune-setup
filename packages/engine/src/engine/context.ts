@@ -56,18 +56,32 @@ export type ReferenceResolution =
   | { readonly ok: true; readonly reference: Reference }
   | { readonly ok: false; readonly message: string };
 
+/** Ordered input ids plus their constant-time declaration ordinals. */
+export interface InputReferenceIndex {
+  readonly orderedIds: readonly string[];
+  readonly ordinals: ReadonlyMap<string, number>;
+}
+
+/** Builds the reference authority once for one immutable manifest input order. */
+export function createInputReferenceIndex(inputIds: readonly string[]): InputReferenceIndex {
+  return {
+    orderedIds: inputIds,
+    ordinals: new Map(inputIds.map((id, ordinal) => [id, ordinal])),
+  };
+}
+
 /**
  * Resolves the dotted path of a `${...}` reference against the declared inputs and the
  * built-ins. The message of a failure is the whole error a reader gets, so it says what the
  * name would have to be instead of only that it is wrong.
  *
- * `inputIds` is a list rather than any iterable because this runs once per reference and a
- * manifest may hold thousands: a caller that reads the ids once must not pay to copy them
- * again here.
+ * `visibleInputCount` is an ordinal boundary: valid input membership is constant-time while
+ * the ordered ids remain available for deterministic suggestions on the invalid path.
  */
 export function resolveReference(
   segments: readonly string[],
-  inputIds: readonly string[],
+  inputs: InputReferenceIndex,
+  visibleInputCount = inputs.orderedIds.length,
 ): ReferenceResolution {
   const [head, ...rest] = segments;
   if (head === undefined) {
@@ -117,7 +131,8 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'builtin', name: head } };
   }
 
-  if (inputIds.includes(head)) {
+  const inputOrdinal = inputs.ordinals.get(head);
+  if (inputOrdinal !== undefined && inputOrdinal < visibleInputCount) {
     if (rest.length > 0) {
       return {
         ok: false,
@@ -127,7 +142,11 @@ export function resolveReference(
     return { ok: true, reference: { kind: 'input', id: head } };
   }
 
-  const suggestion = suggest(head, [...inputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
+  const visibleInputIds =
+    visibleInputCount >= inputs.orderedIds.length
+      ? inputs.orderedIds
+      : inputs.orderedIds.slice(0, visibleInputCount);
+  const suggestion = suggest(head, [...visibleInputIds, ...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE]);
   return {
     ok: false,
     message: `\${${segments.join('.')}} is neither a declared input nor a built-in variable${

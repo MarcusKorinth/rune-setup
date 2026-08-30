@@ -35,7 +35,12 @@ import {
   type ConditionReference,
   type ConditionValue,
 } from './conditions.js';
-import { resolveReference, type RuntimeContext } from './context.js';
+import {
+  createInputReferenceIndex,
+  resolveReference,
+  type InputReferenceIndex,
+  type RuntimeContext,
+} from './context.js';
 import { renderTemplate } from './interpolate.js';
 import { SecretRegistry } from './secrets.js';
 
@@ -161,6 +166,7 @@ function resolveInputsStaged(
   const { manifest, context } = options;
   const { stagedSecrets } = attempt;
   const ids = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(ids);
   const valuesLayer = indexValuesLayer(options.values);
   const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
   const redactor = options.secrets.combinedWith(stagedSecrets);
@@ -173,7 +179,7 @@ function resolveInputsStaged(
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
 
-  checkUnknownKeys(options, ids, valuesLayer.entries, issues, redactor);
+  checkUnknownKeys(options, inputIndex, valuesLayer.entries, issues, redactor);
 
   const states = new Map<string, InputState>();
   const order: string[] = [];
@@ -184,7 +190,7 @@ function resolveInputsStaged(
       continue;
     }
     const handler = inputTypes.get(spec.type);
-    const enabled = isEnabled(spec, id, order, states, context);
+    const enabled = isEnabled(spec, id, inputIndex, order.length, states, context);
     const supplied = handler.secret
       ? suppliedSecrets.get(id)?.supplied
       : highestLayer(id, spec, options, valuesLayer.byId);
@@ -234,7 +240,7 @@ function resolveInputsStaged(
       warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
     }
 
-    const coerced = coerce(supplied, spec, id, context, redactor);
+    const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
     if (!coerced.ok) {
       const issue: RuneIssue = {
         code: 'RUNE-202',
@@ -634,6 +640,7 @@ function coerce(
   spec: InputSpec,
   id: string,
   context: RuntimeContext,
+  inputIndex: InputReferenceIndex,
   secrets: SecretRegistry,
 ): CoercionOutcome {
   const handler = inputTypes.get(spec.type);
@@ -643,7 +650,7 @@ function coerce(
   // known before the other inputs are (§6.1). A reference that resolves to nothing is a
   // resolution error and stays one — it is not a value a user got wrong (§7, invariant 9).
   if (supplied.source === 'default' && typeof raw === 'string' && isTemplated(spec)) {
-    raw = renderDefault(raw, id, context);
+    raw = renderDefault(raw, id, context, inputIndex);
   }
 
   const result =
@@ -682,12 +689,17 @@ function isTemplated(spec: InputSpec): boolean {
   return spec.type === 'text' || spec.type === 'file' || spec.type === 'directory';
 }
 
-function renderDefault(text: string, id: string, context: RuntimeContext): string {
+function renderDefault(
+  text: string,
+  id: string,
+  context: RuntimeContext,
+  inputIndex: InputReferenceIndex,
+): string {
   const where = `inputs.${id}.default`;
   return renderTemplate(text, (reference) => {
     // No inputs are in scope: a default is rendered before the other inputs are known, which
     // `validate` already refused to let an author rely on.
-    const resolved = resolveReference(reference.segments, []);
+    const resolved = resolveReference(reference.segments, inputIndex, 0);
     if (!resolved.ok) {
       throw new ResolutionError('RUNE-301', `${where}: ${resolved.message}`);
     }
@@ -706,7 +718,8 @@ function renderDefault(text: string, id: string, context: RuntimeContext): strin
 function isEnabled(
   spec: InputSpec,
   id: string,
-  earlier: readonly string[],
+  inputIndex: InputReferenceIndex,
+  visibleInputCount: number,
   states: ReadonlyMap<string, InputState>,
   context: RuntimeContext,
 ): boolean {
@@ -723,7 +736,7 @@ function isEnabled(
 
   try {
     return evaluateCondition(parsed.ast, (reference) =>
-      lookup(reference, earlier, states, context),
+      lookup(reference, inputIndex, visibleInputCount, states, context),
     );
   } catch (cause) {
     // Without the attribution the message is "the environment variable CI is not set", with
@@ -737,11 +750,12 @@ function isEnabled(
 
 function lookup(
   reference: ConditionReference,
-  visible: readonly string[],
+  inputIndex: InputReferenceIndex,
+  visibleInputCount: number,
   states: ReadonlyMap<string, InputState>,
   context: RuntimeContext,
 ): ConditionValue {
-  const resolved = resolveReference(reference.segments, visible);
+  const resolved = resolveReference(reference.segments, inputIndex, visibleInputCount);
   if (!resolved.ok) {
     throw new InternalError(`the condition names ${reference.text}: ${resolved.message}`);
   }
@@ -763,21 +777,21 @@ function lookup(
 /** A key that names no input is a hard error: a typo that no-ops in a pipeline is worse (§5). */
 function checkUnknownKeys(
   options: ResolveInputsOptions,
-  ids: readonly string[],
+  inputIndex: InputReferenceIndex,
   values: readonly ValuesLayerEntry[],
   issues: RuneIssue[],
   secrets: SecretRegistry,
 ): void {
-  const knownIds = new Set(ids);
-  const candidateWidth = suggestionCandidateWidth(ids);
+  const candidateWidth = suggestionCandidateWidth(inputIndex.orderedIds);
   let remainingSuggestionWork = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET;
 
   const report = (key: string, origin: string, location: Location | undefined): void => {
-    if (knownIds.has(key)) {
+    if (inputIndex.ordinals.has(key)) {
       return;
     }
     const work = suggestionWork(key, candidateWidth);
-    const suggestion = work <= remainingSuggestionWork ? suggest(key, ids) : undefined;
+    const suggestion =
+      work <= remainingSuggestionWork ? suggest(key, inputIndex.orderedIds) : undefined;
     if (work <= remainingSuggestionWork) {
       remainingSuggestionWork -= work;
     }

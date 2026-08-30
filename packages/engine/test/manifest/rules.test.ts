@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -208,6 +208,45 @@ describe('input rules', () => {
       'input id "home" collides with the built-in variable ${home}',
       'inputs.port.patternHint has no effect without inputs.port.pattern',
     ]);
+  });
+
+  it('checks a long valid condition chain without copying or scanning input prefixes', () => {
+    const inputCount = 512;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => {
+      const id = `semantic${index.toString().padStart(4, '0')}`;
+      const previous = `semantic${(index - 1).toString().padStart(4, '0')}`;
+      return [
+        `  ${id}:`,
+        '    type: boolean',
+        '    default: true',
+        ...(index === 0 ? [] : [`    when: "\${${previous}}"`]),
+      ];
+    }).flat();
+    const includes = vi.spyOn(Array.prototype, 'includes');
+    const slice = vi.spyOn(Array.prototype, 'slice');
+    let inputMembershipScans = 0;
+    let inputPrefixCopies = 0;
+
+    try {
+      expect(() =>
+        parseManifestText(
+          [...HEAD, 'inputs:', ...inputs, 'steps: []', ''].join('\n'),
+          'installer.yaml',
+        ),
+      ).not.toThrow();
+      const isInputIdList = (value: unknown): value is string[] =>
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((item) => typeof item === 'string' && /^semantic\d{4}$/.test(item));
+      inputMembershipScans = includes.mock.contexts.filter(isInputIdList).length;
+      inputPrefixCopies = slice.mock.contexts.filter(isInputIdList).length;
+    } finally {
+      includes.mockRestore();
+      slice.mockRestore();
+    }
+
+    expect(inputMembershipScans).toBe(0);
+    expect(inputPrefixCopies).toBe(0);
   });
 });
 

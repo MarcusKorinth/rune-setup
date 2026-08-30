@@ -645,6 +645,39 @@ describe('conditional inputs', () => {
     expect(resolve(conditional).byId.get('databasePort')?.enabled).toBe(false);
     expect(resolve(conditional).missing).toEqual(['installDatabase']);
   });
+
+  it('resolves a long valid condition chain without scanning visible input prefixes', () => {
+    const inputCount = 512;
+    const lines = ['inputs:'];
+    for (let index = 0; index < inputCount; index += 1) {
+      const id = `chain${index.toString().padStart(4, '0')}`;
+      lines.push(`  ${id}:`, '    type: boolean', '    default: true');
+      if (index > 0) {
+        const previous = `chain${(index - 1).toString().padStart(4, '0')}`;
+        lines.push(`    when: "\${${previous}}"`);
+      }
+    }
+    const chained = manifestOf(...lines);
+    const includes = vi.spyOn(Array.prototype, 'includes');
+    let resolution: Resolution;
+    let visiblePrefixScans = 0;
+
+    try {
+      resolution = resolve(chained);
+      visiblePrefixScans = includes.mock.contexts.filter(
+        (value): value is string[] =>
+          Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((item) => typeof item === 'string' && /^chain\d{4}$/.test(item)),
+      ).length;
+    } finally {
+      includes.mockRestore();
+    }
+
+    expect(visiblePrefixScans).toBe(0);
+    expect(resolution.inputs).toHaveLength(inputCount);
+    expect(resolution.byId.get('chain0511')).toMatchObject({ enabled: true, value: true });
+  });
 });
 
 describe('values a type refuses', () => {
