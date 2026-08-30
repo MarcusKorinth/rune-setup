@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { run, type CliIo } from '../src/cli.js';
+import { parseOverrides } from '../src/args.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -73,6 +74,13 @@ describe('rune validate', () => {
 });
 
 describe('rune run', { timeout: 15_000 }, () => {
+  it('keeps prototype-named overrides enumerable and uses the last duplicate value', () => {
+    const overrides = parseOverrides(['__proto__=first', '__proto__=last']);
+
+    expect(Object.entries(overrides)).toEqual([['__proto__', 'last']]);
+    expect(Object.hasOwn(overrides, '__proto__')).toBe(true);
+  });
+
   it('runs to success and honours --result -', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
@@ -113,6 +121,14 @@ describe('rune run', { timeout: 15_000 }, () => {
     expect(io.err.join('\n')).toContain('--set greeting=');
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(written['status']).toBe('input_error');
+  });
+
+  it('exits 4 for an unknown prototype-named override', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--set', '__proto__=x'], io)).toBe(4);
+    expect(io.err.join('\n')).toContain('"__proto__" is not an input');
   });
 
   it('exits 1 when a step fails', async () => {

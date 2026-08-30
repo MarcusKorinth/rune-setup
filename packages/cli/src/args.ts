@@ -3,15 +3,15 @@
 import { UsageError } from '@rune/engine';
 
 export function parseOverrides(pairs: readonly string[]): Record<string, string> {
-  const overrides: Record<string, string> = {};
+  const overrides = new Map<string, string>();
   for (const pair of pairs) {
     const separator = pair.indexOf('=');
     if (separator <= 0) {
       throw new UsageError(`--set expects key=value, got "${pair}"`);
     }
-    overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
+    overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
   }
-  return overrides;
+  return Object.fromEntries(overrides);
 }
 
 export function parsePlatform(raw: string | undefined): 'windows' | 'linux' | undefined {

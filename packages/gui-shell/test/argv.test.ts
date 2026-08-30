@@ -32,6 +32,19 @@ describe('parseShellArgv', () => {
     });
   });
 
+  it('keeps prototype-named overrides enumerable and uses the last duplicate value', () => {
+    const invocation = parseShellArgv([
+      'installer.yaml',
+      '--set',
+      '__proto__=first',
+      '--set',
+      '__proto__=last',
+    ]);
+
+    expect(Object.entries(invocation.overrides)).toEqual([['__proto__', 'last']]);
+    expect(Object.hasOwn(invocation.overrides, '__proto__')).toBe(true);
+  });
+
   it.each([
     [['--unknown'], 'unknown flag --unknown'],
     [['--set'], '--set expects a value'],

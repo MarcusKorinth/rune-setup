@@ -19,7 +19,7 @@ export interface ShellInvocation {
 export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   let manifestPath: string | undefined;
   const values: string[] = [];
-  const overrides: Record<string, string> = {};
+  const overrides = new Map<string, string>();
   let locale: string | undefined;
   let result: string | undefined;
   let logFile: string | undefined;
@@ -42,7 +42,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         if (separator <= 0) {
           throw new UsageError(`--set expects key=value, got "${pair}"`);
         }
-        overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
+        overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
         break;
       }
       case '--values':
@@ -71,5 +71,13 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   if (manifestPath === undefined) {
     throw new UsageError('the shell needs a manifest path');
   }
-  return { manifestPath, values, overrides, locale, result, logFile, nonInteractive };
+  return {
+    manifestPath,
+    values,
+    overrides: Object.fromEntries(overrides),
+    locale,
+    result,
+    logFile,
+    nonInteractive,
+  };
 }
