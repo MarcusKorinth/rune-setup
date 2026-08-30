@@ -105,7 +105,9 @@ function report(error: unknown, io: CliIo): number {
     // 'commander.help', which commander throws for a bare invocation — is CLI misuse (§10).
     return error.code === 'commander.version' || error.code === 'commander.helpDisplayed' ? 0 : 2;
   }
-  io.stderr(`internal error: ${error instanceof Error ? error.message : String(error)}`);
+  // Unknown throwables may contain resolved input or process data. The run driver keeps the
+  // cause internally when it can; this last-resort sink must never echo it verbatim.
+  io.stderr('internal error: an unexpected error occurred');
   return 70;
 }
 

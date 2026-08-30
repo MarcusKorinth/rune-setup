@@ -9,6 +9,7 @@
 import {
   createFailureResult,
   exitCodeFor,
+  InternalError,
   RuneError,
   Session,
   UsageError,
@@ -33,14 +34,16 @@ export interface RunFlags {
 }
 
 export async function runCommand(manifestPath: string, flags: RunFlags, io: CliIo): Promise<void> {
-  if (flags.platform !== undefined && flags.dryRun !== true) {
-    throw new UsageError('--platform previews a plan and combines only with --dry-run');
-  }
-  const platform = parsePlatform(flags.platform);
-
+  let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let plan: ExecutionPlan | undefined;
+  let deliveryStarted = false;
   try {
+    if (flags.platform !== undefined && flags.dryRun !== true) {
+      throw new UsageError('--platform previews a plan and combines only with --dry-run');
+    }
+    platform = parsePlatform(flags.platform);
+
     session = await Session.open(manifestPath, {
       mode: 'non-interactive',
       values: flags.values ?? [],
@@ -60,22 +63,32 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
     }
     renderOutcome(result, session.warnings(), io);
     if (flags.result !== undefined) {
+      deliveryStarted = true;
       deliverResult(result, flags.result, io);
     }
     if (result.exitCode !== 0) {
       throw new ExitWithCode(result.exitCode);
     }
   } catch (error) {
+    // Once delivery starts, its sink owns the failure. Retrying here could write the same
+    // destination or stdout twice, and a broken writer cannot reliably report itself.
+    if (deliveryStarted) {
+      throw error;
+    }
     if (error instanceof ExitWithCode) {
       throw error;
     }
     // The result file is written on every outcome the run owns — manifest, input,
     // resolution, cancellation, internal — only usage errors skip it (§10).
-    if (error instanceof RuneError && !(error instanceof UsageError)) {
-      io.stderr(error.message);
-      const code = exitCodeFor(error);
+    if (!(error instanceof UsageError)) {
+      const failure =
+        error instanceof RuneError
+          ? error
+          : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
+      io.stderr(failure.message);
+      const code = exitCodeFor(failure);
       const result = createFailureResult({
-        error,
+        error: failure,
         manifestPath,
         dryRun: flags.dryRun === true,
         mode: 'non-interactive',
@@ -85,6 +98,7 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
       });
       renderOutcome(result, session?.warnings() ?? [], io);
       if (flags.result !== undefined) {
+        deliveryStarted = true;
         deliverResult(result, flags.result, io);
       }
       throw new ExitWithCode(code);
