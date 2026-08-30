@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -206,6 +206,47 @@ describe('result files for failed outcomes', () => {
     const result = JSON.parse(io.out.join('\n')) as Record<string, unknown>;
     expect(result['status']).toBe('planned');
     expect(result['dryRun']).toBe(true);
+  });
+
+  it('writes an internal_error result when the log file cannot be opened', async () => {
+    const path = fixture(MANIFEST);
+    const directory = join(path, '..');
+    const logTarget = join(directory, 'log-target');
+    const resultPath = join(directory, 'result.json');
+    mkdirSync(logTarget);
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--set',
+        'greeting=hello',
+        '--log-file',
+        logTarget,
+        '--result',
+        resultPath,
+      ],
+      io,
+    );
+
+    expect(code).toBe(70);
+    expect(io.out).toEqual([]);
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+    });
+    expect(readdirSync(directory).filter((name) => name.startsWith('.rune-result-'))).toEqual([]);
   });
 });
 

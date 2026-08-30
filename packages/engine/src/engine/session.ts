@@ -8,7 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { InputError, type RuneIssue } from '../errors.js';
+import { InputError, InternalError, messageOf, type RuneIssue } from '../errors.js';
 import { environmentName, secretArgsWarnings } from '../manifest/v1/rules.js';
 import { parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
@@ -283,7 +283,14 @@ export class Session {
       observer?.(event);
     };
     try {
-      log = this.#logFile === undefined ? undefined : createLogFileSink(this.#logFile);
+      try {
+        log = this.#logFile === undefined ? undefined : createLogFileSink(this.#logFile);
+      } catch (cause) {
+        throw new InternalError(
+          this.#secrets.mask(`could not open log file "${this.#logFile}": ${messageOf(cause)}`),
+          { cause },
+        );
+      }
       return await executeRun({
         plan,
         resolution: this.#resolution,

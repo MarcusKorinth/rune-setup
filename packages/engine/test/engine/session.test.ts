@@ -8,6 +8,7 @@ import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import { InternalError } from '../../src/errors.js';
 import type { Runner } from '../../src/runners/base.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
@@ -169,11 +170,17 @@ describe('planning and executing', () => {
     });
     const cancel = new CancelToken();
 
-    await expect(session.execute(undefined, cancel)).rejects.toThrow();
+    await expect(session.execute(undefined, cancel)).rejects.toMatchObject({
+      name: 'InternalError',
+      code: 'RUNE-500',
+      cause: expect.any(Error),
+    });
     session.cancel();
 
     expect(run).not.toHaveBeenCalled();
     expect(cancel.cancelled).toBe(false);
+    await expect(session.execute()).rejects.toBeInstanceOf(InternalError);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('describes a dry run without executing', async () => {
