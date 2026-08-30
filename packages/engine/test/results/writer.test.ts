@@ -68,6 +68,32 @@ function forgedCounterResult(id: string): RunResult {
   return { ...result(id), stepsExecuted: 99 } as RunResult;
 }
 
+function forgedSucceededWithFailedStepResult(id: string): RunResult {
+  return {
+    ...result(id),
+    stepsTotal: 1,
+    stepsExecuted: 1,
+    stepsSucceeded: 0,
+    stepsFailed: 1,
+    nothingExecuted: false,
+    steps: [
+      {
+        id: 'failed-step',
+        title: 'Failed step',
+        state: 'FAILED',
+        exitCode: 1,
+        durationMs: 1,
+        command: ['tool'],
+        skipReason: null,
+      },
+    ],
+  } as RunResult;
+}
+
+function forgedFailedWithoutFailedStepResult(id: string): RunResult {
+  return { ...result(id), status: 'failed', exitCode: 1 } as RunResult;
+}
+
 function expectGenericResultError(caught: unknown): void {
   expect(caught).toBeInstanceOf(InternalError);
   const error = caught as InternalError;
@@ -96,6 +122,22 @@ describe('writeResult', () => {
     }
 
     expectGenericResultError(caught);
+  });
+
+  it('rejects status and step-state contradictions during serialization', () => {
+    for (const invalid of [
+      forgedSucceededWithFailedStepResult('succeeded-with-failure'),
+      forgedFailedWithoutFailedStepResult('failed-without-failure'),
+    ]) {
+      let caught: unknown;
+      try {
+        serializeResult(invalid);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+    }
   });
 
   it("serializes the parsed copy without invoking the caller's serialization hooks", () => {
@@ -145,6 +187,27 @@ describe('writeResult', () => {
       let caught: unknown;
       try {
         await writeResult(forgedCounterResult('invalid-counters'), destination);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+      expect(existsSync(destinationDirectory)).toBe(false);
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a contradictory status before performing I/O', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destinationDirectory = join(directory, 'must-not-exist');
+    const destination = join(destinationDirectory, 'result.json');
+
+    try {
+      let caught: unknown;
+      try {
+        await writeResult(forgedSucceededWithFailedStepResult('invalid-status'), destination);
       } catch (error) {
         caught = error;
       }

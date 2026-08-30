@@ -165,6 +165,20 @@ function resultWithSingleStepState(state: ResultStep['state']): RunResult {
   } as Partial<RunResult>);
 }
 
+function resultForStatus(status: RunResult['status']): RunResult {
+  if (status === 'planned') {
+    return resultWithSingleStepState('PENDING');
+  }
+  if (status === 'failed') {
+    return resultWithSingleStepState('FAILED');
+  }
+  return result({
+    status,
+    exitCode: EXIT_CODE_BY_STATUS[status],
+    dryRun: false,
+  } as Partial<RunResult>);
+}
+
 describe('resultJsonSchema', () => {
   it('is the strict version-1 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
@@ -318,16 +332,7 @@ describe('resultJsonSchema', () => {
 
   it('covers every public status, mode, platform, input source, and step state', () => {
     for (const status of RUN_STATUSES) {
-      const dryRun = status === 'planned';
-      const base = dryRun ? resultWithSingleStepState('PENDING') : result();
-      expect(
-        resultV1Schema.safeParse({
-          ...base,
-          status,
-          exitCode: EXIT_CODE_BY_STATUS[status],
-          dryRun,
-        }).success,
-      ).toBe(true);
+      expect(resultV1Schema.safeParse(resultForStatus(status)).success).toBe(true);
     }
 
     for (const mode of RUN_MODES) {
@@ -367,10 +372,8 @@ describe('resultJsonSchema', () => {
         if (exitCode !== EXIT_CODE_BY_STATUS[status]) {
           expect(
             resultV1Schema.safeParse({
-              ...result(),
-              status,
+              ...resultForStatus(status),
               exitCode,
-              dryRun: status === 'planned',
             }).success,
           ).toBe(false);
         }
@@ -383,9 +386,7 @@ describe('resultJsonSchema', () => {
       for (const dryRun of [false, true]) {
         expect(
           resultV1Schema.safeParse({
-            ...result(),
-            status,
-            exitCode: EXIT_CODE_BY_STATUS[status],
+            ...resultForStatus(status),
             dryRun,
           }).success,
         ).toBe(true);
@@ -545,6 +546,97 @@ describe('resultJsonSchema', () => {
         dryRun: true,
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts only succeeded or skipped steps for succeeded results', () => {
+    for (const state of ['FAILED', 'CANCELLED', 'NOT_RUN'] as const) {
+      expect(
+        resultV1Schema.safeParse({
+          ...resultWithSingleStepState(state),
+          status: 'succeeded',
+          exitCode: 0,
+          dryRun: false,
+        }).success,
+      ).toBe(false);
+    }
+
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          stepsTotal: 0,
+          stepsExecuted: 0,
+          stepsSucceeded: 0,
+          nothingExecuted: true,
+          steps: [],
+        }),
+      ).success,
+    ).toBe(true);
+    expect(resultV1Schema.safeParse(resultWithSingleStepState('SKIPPED')).success).toBe(true);
+  });
+
+  it('requires a failed result to contain at least one failed step', () => {
+    expect(
+      resultV1Schema.safeParse({
+        ...result(),
+        status: 'failed',
+        exitCode: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('allows a cancelled result to retain an earlier failure and a not-run step', () => {
+    const failed = resultWithSingleStepState('FAILED').steps[0]!;
+    const notRun = resultWithSingleStepState('NOT_RUN').steps[0]!;
+
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          status: 'cancelled',
+          exitCode: 6,
+          stepsTotal: 2,
+          stepsExecuted: 1,
+          stepsSucceeded: 0,
+          stepsFailed: 1,
+          stepsNotRun: 1,
+          steps: [failed, notRun],
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('allows terminal step states on session error results', () => {
+    const steps = [
+      resultWithSingleStepState('SUCCEEDED').steps[0]!,
+      resultWithSingleStepState('FAILED').steps[0]!,
+      resultWithSingleStepState('CANCELLED').steps[0]!,
+      resultWithSingleStepState('SKIPPED').steps[0]!,
+      resultWithSingleStepState('NOT_RUN').steps[0]!,
+    ];
+    const base = result({
+      stepsTotal: 5,
+      stepsExecuted: 3,
+      stepsSucceeded: 1,
+      stepsFailed: 1,
+      stepsCancelled: 1,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      steps,
+    });
+
+    for (const status of [
+      'config_error',
+      'input_error',
+      'resolution_error',
+      'internal_error',
+    ] as const) {
+      expect(
+        resultV1Schema.safeParse({
+          ...base,
+          status,
+          exitCode: EXIT_CODE_BY_STATUS[status],
+        }).success,
+      ).toBe(true);
+    }
   });
 
   it('rejects the formerly accepted RUNNING, non-failed tail, and impossible-counter shapes', () => {

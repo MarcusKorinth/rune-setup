@@ -197,11 +197,15 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
     });
   }
 
-  const invalidStateIndex = result.steps.findIndex((step) =>
-    result.status === 'planned'
-      ? step.state !== 'PENDING' && step.state !== 'SKIPPED'
-      : step.state === 'PENDING',
-  );
+  const invalidStateIndex = result.steps.findIndex((step) => {
+    if (result.status === 'planned') {
+      return step.state !== 'PENDING' && step.state !== 'SKIPPED';
+    }
+    if (result.status === 'succeeded') {
+      return step.state !== 'SUCCEEDED' && step.state !== 'SKIPPED';
+    }
+    return step.state === 'PENDING';
+  });
   if (invalidStateIndex !== -1) {
     context.addIssue({
       code: 'custom',
@@ -209,7 +213,17 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
       message:
         result.status === 'planned'
           ? 'planned results may contain only PENDING or SKIPPED steps'
-          : 'PENDING steps are permitted only in planned results',
+          : result.status === 'succeeded'
+            ? 'succeeded results may contain only SUCCEEDED or SKIPPED steps'
+            : 'PENDING steps are permitted only in planned results',
+    });
+  }
+
+  if (result.status === 'failed' && expectedCounters.stepsFailed === 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'failed results must contain at least one FAILED step',
     });
   }
 });
