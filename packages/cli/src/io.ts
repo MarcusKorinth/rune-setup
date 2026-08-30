@@ -3,12 +3,19 @@
  * program wiring can share them without a cycle.
  */
 
+import type { CancelToken } from '@rune/engine';
+
 /** Minimal I/O seam so the CLI can be exercised in tests without touching process streams. */
 export interface CliIo {
   /** Requested machine output only (§10): result JSON, plans, reports, schemas. */
   stdout(line: string): void;
   /** Progress, prompts, diagnostics, warnings. */
   stderr(line: string): void;
+}
+
+/** Optional process control supplied by the executable host. */
+export interface CliControl {
+  readonly cancel?: CancelToken;
 }
 
 /** Thrown by commands that finished with a known exit code that is not an error to report. */

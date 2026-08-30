@@ -437,7 +437,7 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 | `config_error` | 3 | manifest invalid (RUNE-1xx) |
 | `input_error` | 4 | missing/invalid input, unknown `--set`/values key (RUNE-2xx) |
 | `resolution_error` | 5 | interpolation or condition error (RUNE-3xx) |
-| `cancelled` | 6 | user/system abort (RUNE-601) — during execution (interrupted step `CANCELLED`, rest `NOT_RUN`) or before it (CLI edit-loop `Cancel`, GUI window closed or Cancel before Proceed: all steps `NOT_RUN` if a plan exists, zero counters otherwise) |
+| `cancelled` | 6 | user/system abort (RUNE-601) — during execution (interrupted step `CANCELLED`, rest `NOT_RUN`) or before it (CLI edit-loop `Cancel`, GUI window closed or Cancel before Proceed: live plans preserve `SKIPPED` and project remaining steps to `NOT_RUN`; a cancelled dry-run preserves its `PENDING`/`SKIPPED` topology; zero counters when no plan exists) |
 | `internal_error` | 70 | RUNE bug (RUNE-500) |
 
 Contents:
@@ -451,7 +451,7 @@ Contents:
 - **per input** — `{id, value, source, secret, enabled, ignored?}`: secret values always `null`; `enabled: false` for disabled inputs, whose `value` is the type's empty value; `ignored: "input disabled"` present only when a value was supplied for a disabled input, with `source` naming the layer that supplied it (provenance makes precedence — and what was discarded — auditable after the fact)
 - **per step** — `{id, title, state, exitCode, durationMs, command, skipReason, outputTail?}`: `title` localized, `id` never; command arrays passed through the masker; `outputTail` present **only** for `FAILED` steps — a list of the last 50 `{stream, line}` entries, already masked (§7)
 
-Dry-run writes `"dryRun": true` with per-step `state` `PENDING` or `SKIPPED` (no step ever reaches a running state), enabling plan diffing between commits.
+A successful dry-run writes status `planned`; a pre-cancelled dry-run writes status `cancelled`. Both write `"dryRun": true` with per-step `state` `PENDING` or `SKIPPED` (no step ever reaches a running state), enabling plan diffing between commits.
 
 ### Logging and secret masking
 

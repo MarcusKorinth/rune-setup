@@ -256,8 +256,8 @@ export const runResultSchema = z
         issue(['status'], 'failed results may not contain CANCELLED or PENDING steps');
       }
     }
-    if (result.status === 'cancelled' && states.has('PENDING')) {
-      issue(['status'], 'cancelled results may not contain PENDING steps');
+    if (result.status === 'cancelled' && !result.dryRun && states.has('PENDING')) {
+      issue(['status'], 'live cancelled results may not contain PENDING steps');
     }
 
     if (result.stepsTotal !== result.stepsExecuted + result.stepsSkipped + result.stepsNotRun) {

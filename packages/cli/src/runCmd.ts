@@ -7,6 +7,7 @@
  */
 
 import {
+  CancelledError,
   createFailureResult,
   exitCodeFor,
   InternalError,
@@ -19,7 +20,7 @@ import {
 import type { ExecutionPlan, RunResult } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
-import { ExitWithCode, type CliIo } from './io.js';
+import { ExitWithCode, type CliControl, type CliIo } from './io.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
 
 export interface RunFlags {
@@ -33,7 +34,12 @@ export interface RunFlags {
   readonly platform?: string | undefined;
 }
 
-export async function runCommand(manifestPath: string, flags: RunFlags, io: CliIo): Promise<void> {
+export async function runCommand(
+  manifestPath: string,
+  flags: RunFlags,
+  io: CliIo,
+  control: CliControl = {},
+): Promise<void> {
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let plan: ExecutionPlan | undefined;
@@ -54,8 +60,13 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
     });
 
     plan = session.plan();
+    if (flags.dryRun === true && control.cancel?.cancelled === true) {
+      throw new CancelledError();
+    }
     const result =
-      flags.dryRun === true ? session.describe() : await session.execute(progressObserver(io));
+      flags.dryRun === true
+        ? session.describe()
+        : await session.execute(progressObserver(io), control.cancel);
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {

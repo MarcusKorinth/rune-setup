@@ -266,7 +266,7 @@ describe('the result schema', () => {
   });
 
   it('pins success, failure, and cancellation statuses to safe step-state sets', async () => {
-    const { live, failed } = await producerResults();
+    const { live, planned, failed } = await producerResults();
     const succeededStep = live.steps[0] as Record<string, unknown>;
     const failedStep = failed.steps[0] as Record<string, unknown>;
 
@@ -299,6 +299,12 @@ describe('the result schema', () => {
     expect(() =>
       runResultSchema.parse({ ...failed, status: 'cancelled', exitCode: 6 }),
     ).not.toThrow();
+
+    // A cancellation before dry-run rendering preserves the plan topology. The same
+    // PENDING state is still impossible in a live cancelled result.
+    const cancelledPreview = { ...planned, status: 'cancelled' as const, exitCode: 6 as const };
+    expect(() => runResultSchema.parse(cancelledPreview)).not.toThrow();
+    expect(() => runResultSchema.parse({ ...cancelledPreview, dryRun: false })).toThrow();
   });
 
   it('keeps secret and ignored input projections internally consistent', async () => {

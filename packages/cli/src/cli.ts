@@ -10,7 +10,7 @@ import { Command, CommanderError } from 'commander';
 
 import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
 
-import { ExitWithCode, type CliIo } from './io.js';
+import { ExitWithCode, type CliControl, type CliIo } from './io.js';
 import { runCommand, type RunFlags } from './runCmd.js';
 import { schemaCommand } from './schemaCmd.js';
 import { validateCommand } from './validateCmd.js';
@@ -24,7 +24,7 @@ import { validateCommand } from './validateCmd.js';
 export const RUNE_CLI_VERSION = '0.0.0';
 
 export { ExitWithCode } from './io.js';
-export type { CliIo } from './io.js';
+export type { CliControl, CliIo } from './io.js';
 
 const processIo: CliIo = {
   stdout: (line) => {
@@ -36,7 +36,11 @@ const processIo: CliIo = {
 };
 
 /** Runs the CLI for one argv; returns the process exit code (§10 table). */
-export async function run(argv: readonly string[], io: CliIo = processIo): Promise<number> {
+export async function run(
+  argv: readonly string[],
+  io: CliIo = processIo,
+  control: CliControl = {},
+): Promise<number> {
   const program = new Command('rune');
   program
     .description('One manifest. Guided or automated.')
@@ -79,7 +83,7 @@ export async function run(argv: readonly string[], io: CliIo = processIo): Promi
     .option('--locale <tag>', 'display locale')
     .option('--platform <platform>', 'preview a foreign platform (dry-run only)')
     .action(async (manifest: string, flags: RunFlags) => {
-      await runCommand(manifest, flags, io);
+      await runCommand(manifest, flags, io, control);
     });
 
   try {
