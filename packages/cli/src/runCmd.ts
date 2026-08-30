@@ -82,7 +82,6 @@ export async function runCommand(
     if (prompter !== undefined) {
       await promptForInputs(session, prompter);
       if (flags.dryRun !== true && (await summaryLoop(session, prompter, io)) === 'cancel') {
-        renderWarnings(session.warnings(), strings, io);
         throw new CancelledError(strings.chrome('rune.run.cancelledAtSummary'));
       }
       // The prompt phase is over; the input stream is released before anything executes.
@@ -117,6 +116,11 @@ export async function runCommand(
     if (error instanceof ExitWithCode) {
       throw error;
     }
+    const plannedCancellation =
+      error instanceof RuneError ? cancelledWithPlan(session, error) : undefined;
+    if (plannedCancellation !== undefined && session !== undefined && strings !== undefined) {
+      renderWarnings(session.warnings(), strings, io);
+    }
     // The result file is written on every outcome the run owns — manifest, input,
     // resolution, cancellation, internal — only usage errors skip it (§10).
     if (
@@ -127,8 +131,7 @@ export async function runCommand(
       io.stderr(error.message);
       const code = exitCodeFor(error);
       deliverResult(
-        cancelledWithPlan(session, error) ??
-          failureShell({ session, code, manifestPath, flags, mode }),
+        plannedCancellation ?? failureShell({ session, code, manifestPath, flags, mode }),
         flags.result,
         strings,
         io,

@@ -76,6 +76,34 @@ function scriptedThenEof(answers: readonly string[]): Interaction & { transcript
   };
 }
 
+/** A scripted TTY that sends Ctrl+C when the next question is shown. */
+function scriptedThenCtrlC(answers: readonly string[]): Interaction & { transcript: () => string } {
+  const input = new PassThrough();
+  const queue = [...answers];
+  const written: string[] = [];
+  let sent = false;
+  return {
+    input,
+    isTTY: true,
+    write: (text) => {
+      written.push(text);
+      if (text.endsWith(': ')) {
+        setImmediate(() => {
+          const next = queue.shift();
+          if (next !== undefined) {
+            input.write(`${next}\n`);
+          } else if (!sent) {
+            sent = true;
+            input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+          }
+        });
+      }
+    },
+    forceExit: () => undefined,
+    transcript: () => written.join(''),
+  };
+}
+
 function fixture(lines: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-interactive-'));
   const path = join(dir, 'installer.yaml');
@@ -100,6 +128,29 @@ const MANIFEST = [
   '      args: ["-e", "console.log(process.argv[1])", "${greeting}"]',
 ];
 
+const FINAL_RESOLUTION_WARNING_MANIFEST = [
+  'schemaVersion: 1',
+  'product:',
+  '  name: Example',
+  '  version: "1.0.0"',
+  'inputs:',
+  '  installDatabase:',
+  '    type: boolean',
+  '    default: false',
+  '  databasePort:',
+  '    type: text',
+  '    when: "${installDatabase}"',
+  '  greeting:',
+  '    type: text',
+  '  token:',
+  '    type: secret',
+  'steps:',
+  '  - id: pending',
+  '    run:',
+  '      command: node',
+  '      args: ["-e", "0"]',
+];
+
 const INTERACTIVE_TEST_TIMEOUT_MS = 20_000;
 
 describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => {
@@ -119,11 +170,15 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
   });
 
   it('cancels with a result when EOF follows an early answer', async () => {
-    const path = fixture(MANIFEST);
+    const path = fixture(FINAL_RESOLUTION_WARNING_MANIFEST);
     const io = capture();
     const interaction = scriptedThenEof(['hello']);
 
-    const code = await run(['run', path, '--result', '-'], io, interaction);
+    const code = await run(
+      ['run', path, '--set', 'databasePort=9999', '--result', '-'],
+      io,
+      interaction,
+    );
 
     expect(code).toBe(6);
     const result = JSON.parse(io.out.join('\n')) as {
@@ -133,6 +188,9 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     };
     expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, mode: 'interactive' });
     expect(io.err.join('\n')).toContain('input ended before every question was answered');
+    expect(io.err.join('\n')).not.toContain(
+      'databasePort was set from --set, but its condition is false — the value is ignored',
+    );
     expect(io.err.join('\n')).not.toContain('internal error');
   });
 
@@ -162,29 +220,61 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(io.err.join('\n')).not.toContain('internal error');
   });
 
-  it('cancels the planned run when EOF arrives before the summary action', async () => {
-    const path = fixture(MANIFEST);
-    const io = capture();
-    const secret = 'summary-eof-secret';
-    const interaction = scriptedThenEof(['hello', secret]);
+  it.each([
+    { label: 'EOF with --result', interaction: scriptedThenEof, result: true },
+    { label: 'EOF without --result', interaction: scriptedThenEof, result: false },
+    { label: 'Ctrl+C with --result', interaction: scriptedThenCtrlC, result: true },
+    { label: 'Ctrl+C without --result', interaction: scriptedThenCtrlC, result: false },
+  ])(
+    'cancels the planned run when $label arrives at the summary action',
+    async ({ interaction, result }) => {
+      const path = fixture(FINAL_RESOLUTION_WARNING_MANIFEST);
+      const io = capture();
+      const secret = `summary-cancel-secret-${result ? 'result' : 'no-result'}-${interaction.name}`;
+      const scriptedInteraction = interaction(['hello', secret]);
+      const resultArgs = result ? ['--result', '-'] : [];
 
-    const code = await run(['run', path, '--result', '-'], io, interaction);
+      const code = await run(
+        ['run', path, '--set', 'databasePort=9999', ...resultArgs],
+        io,
+        scriptedInteraction,
+      );
 
-    expect(code).toBe(6);
-    const result = JSON.parse(io.out.join('\n')) as {
-      status: string;
-      exitCode: number;
-      steps: readonly { state: string }[];
-      inputs: readonly { id: string; value: unknown }[];
-    };
-    expect(result.status).toBe('cancelled');
-    expect(result.exitCode).toBe(6);
-    expect(result.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
-    expect(result.inputs.find((input) => input.id === 'token')?.value).toBeNull();
-    expect(interaction.transcript()).not.toContain(secret);
-    expect(io.out.join('\n')).not.toContain(secret);
-    expect(io.err.join('\n')).not.toContain('internal error');
-  });
+      expect(code).toBe(6);
+      const diagnostics = io.err.join('\n');
+      expect(
+        diagnostics.match(
+          /databasePort was set from --set, but its condition is false — the value is ignored/g,
+        ) ?? [],
+      ).toHaveLength(1);
+      expect(diagnostics).not.toContain('No step needed to run.');
+      expect(scriptedInteraction.transcript()).not.toContain(secret);
+      expect(io.out.join('\n')).not.toContain(secret);
+      expect(diagnostics).not.toContain(secret);
+      expect(diagnostics).not.toContain('internal error');
+
+      if (result) {
+        const written = JSON.parse(io.out.join('\n')) as {
+          status: string;
+          exitCode: number;
+          steps: readonly { state: string }[];
+          inputs: readonly { id: string; value: unknown; enabled: boolean; ignored?: string }[];
+        };
+        expect(written).toMatchObject({ status: 'cancelled', exitCode: 6 });
+        expect(written.steps.map((step) => step.state)).toEqual(['NOT_RUN']);
+        expect(written.inputs).toContainEqual(
+          expect.objectContaining({
+            id: 'databasePort',
+            enabled: false,
+            ignored: 'input disabled',
+          }),
+        );
+        expect(written.inputs.find((input) => input.id === 'token')?.value).toBeNull();
+      } else {
+        expect(io.out).toEqual([]);
+      }
+    },
+  );
 
   it('does not restore a secret answer through history navigation', async () => {
     const secret = 'history-sensitive-marker';
