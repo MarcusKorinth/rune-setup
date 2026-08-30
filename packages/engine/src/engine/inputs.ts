@@ -96,8 +96,17 @@ export interface ValuesDocument {
   readonly values: ReadonlyMap<string, unknown>;
   readonly sourceMap?: SourceMap;
   /** Load and shape problems retained until declared secrets are available for redaction. */
-  readonly problems?: readonly RuneIssue[];
+  readonly problems?: readonly DeferredValuesProblem[];
 }
+
+interface DeferredValuesShapeProblem {
+  readonly kind: 'shape';
+  readonly rawKey: string;
+  readonly reason: string;
+  readonly location: Location;
+}
+
+type DeferredValuesProblem = RuneIssue | DeferredValuesShapeProblem;
 
 export interface ResolveInputsOptions {
   readonly manifest: ManifestV1;
@@ -173,7 +182,10 @@ function resolveInputsStaged(
   attempt.redactor = redactor;
 
   if (valuesLayer.problems.length > 0) {
-    throw InputError.fromIssues('RUNE-202', valuesLayer.problems);
+    throw InputError.fromIssues(
+      'RUNE-202',
+      valuesLayer.problems.map((problem) => materializeValuesProblem(problem, redactor)),
+    );
   }
 
   const issues: RuneIssue[] = [];
@@ -512,7 +524,22 @@ interface ValuesLayerIndex {
   /** Every entry per id in document order, retained for secret candidate staging. */
   readonly candidatesById: ReadonlyMap<string, readonly SuppliedValue[]>;
   readonly entries: readonly ValuesLayerEntry[];
-  readonly problems: readonly RuneIssue[];
+  readonly problems: readonly DeferredValuesProblem[];
+}
+
+function materializeValuesProblem(
+  problem: DeferredValuesProblem,
+  redactor: SecretRegistry,
+): RuneIssue {
+  return 'kind' in problem
+    ? {
+        code: 'RUNE-202',
+        message: formatDiagnostic([quotedDiagnostic(problem.rawKey), ' ', problem.reason], (part) =>
+          redactor.mask(part),
+        ),
+        location: problem.location,
+      }
+    : problem;
 }
 
 /**
@@ -523,7 +550,7 @@ function indexValuesLayer(documents: readonly ValuesDocument[] | undefined): Val
   const byId = new Map<string, SuppliedValue>();
   const candidatesById = new Map<string, SuppliedValue[]>();
   const entries: ValuesLayerEntry[] = [];
-  const problems: RuneIssue[] = [];
+  const problems: DeferredValuesProblem[] = [];
 
   for (const document of documents ?? []) {
     problems.push(...(document.problems ?? []));
@@ -869,7 +896,7 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     throw cause;
   }
   const values = new Map<string, unknown>();
-  const issues: RuneIssue[] = [];
+  const issues: DeferredValuesProblem[] = [];
 
   const raw = document.value;
   if (raw === undefined || (raw === null && document.sourceMap.best([]) === undefined)) {
@@ -898,8 +925,9 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
       values.set(key, value);
     } else {
       issues.push({
-        code: 'RUNE-202',
-        message: `${key} ${problem}`,
+        kind: 'shape',
+        rawKey: key,
+        reason: problem,
         location,
       });
     }

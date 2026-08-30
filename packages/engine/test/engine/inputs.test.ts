@@ -3068,6 +3068,8 @@ describe('secrets', () => {
 
 describe('values files', () => {
   const emptyManifest = manifestOf('inputs: {}');
+  const controlledSecret = 'F057 "quoted" \\ path\n\r\u001b\u0085\u2028\u2029';
+  const controlledSecretYaml = '"F057 \\"quoted\\" \\\\ path\\n\\r\\u001b\\u0085\\u2028\\u2029"';
 
   function file(contents: string | Uint8Array): string {
     const directory = mkdtempSync(join(tmpdir(), 'rune-values-'));
@@ -3148,6 +3150,80 @@ describe('values files', () => {
     },
   );
 
+  it.each([
+    { name: 'spaces', yamlKey: '"space key"', quotedKey: '"space key"' },
+    { name: 'quotes', yamlKey: '"quote\\"key"', quotedKey: '"quote\\"key"' },
+    {
+      name: 'backslashes',
+      yamlKey: '"back\\\\slash"',
+      quotedKey: '"back\\\\slash"',
+    },
+    {
+      name: 'C0 controls',
+      yamlKey: '"control\\n\\r\\u001b\\u0007"',
+      quotedKey: '"control\\n\\r\\u001b\\u0007"',
+    },
+    { name: 'C1 controls', yamlKey: '"control\\u0085"', quotedKey: '"control\\u0085"' },
+    {
+      name: 'Unicode line controls',
+      yamlKey: '"control\\u2028\\u2029"',
+      quotedKey: '"control\\u2028\\u2029"',
+    },
+  ])('JSON-quotes shape keys containing $name on one diagnostic line', ({ yamlKey, quotedKey }) => {
+    const error = loadError(`${yamlKey}:\n`);
+    const expected = `${quotedKey} has no value — remove the key, or give it one`;
+
+    expect(error.issues[0]?.message).toBe(expected);
+    expect(error.message).toBe(`values.yaml:1:1: ${expected}`);
+    expect(error.message.split('\n')).toHaveLength(1);
+    expect(hasRawDiagnosticControl(error.message)).toBe(false);
+  });
+
+  it('masks a controlled same-document shape key before quoting it', () => {
+    const document = parseValuesFile(
+      file(`license: ${controlledSecretYaml}\n${controlledSecretYaml}:\n`),
+      controlledSecret,
+    );
+    const secrets = existingRegistry();
+    const error = documentError(document, { secrets }, {}, secretManifest());
+
+    expect(document.values.get('license')).toBe(controlledSecret);
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: '"***" has no value — remove the key, or give it one',
+        location: { file: '***', line: 2, column: 1 },
+      },
+    ]);
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    expect(surfaces).not.toContain(controlledSecret);
+    for (const fragment of ['F057', 'quoted', 'path']) {
+      expect(surfaces).not.toContain(fragment);
+    }
+    expectRegistryUnchanged(secrets, [controlledSecret]);
+  });
+
+  it('masks a controlled cross-document shape key before quoting it', () => {
+    const candidate = parseValuesFile(file(`license: ${controlledSecretYaml}\n`), 'candidate.yaml');
+    const broken = parseValuesFile(file(`${controlledSecretYaml}:\n`), `${controlledSecret}.yaml`);
+    const secrets = existingRegistry();
+    const error = inputError(secretManifest(), { values: [candidate, broken], secrets });
+
+    expect(error.issues).toEqual([
+      {
+        code: 'RUNE-202',
+        message: '"***" has no value — remove the key, or give it one',
+        location: { file: '***.yaml', line: 1, column: 1 },
+      },
+    ]);
+    const surfaces = publicErrorSurfaces(error).join('\n');
+    expect(surfaces).not.toContain(controlledSecret);
+    for (const fragment of ['F057', 'quoted', 'path']) {
+      expect(surfaces).not.toContain(fragment);
+    }
+    expectRegistryUnchanged(secrets, [controlledSecret]);
+  });
+
   it('redacts a same-document secret from deferred shape diagnostics', () => {
     const secret = 'LICENSE.txt';
     const document = parseValuesFile(file(`license: ${secret}\n${secret}:\n`), secret);
@@ -3160,7 +3236,7 @@ describe('values files', () => {
     expect(error.issues).toEqual([
       {
         code: 'RUNE-202',
-        message: '*** has no value — remove the key, or give it one',
+        message: '"***" has no value — remove the key, or give it one',
         location: { file: '***', line: 2, column: 1 },
       },
     ]);
@@ -3181,7 +3257,7 @@ describe('values files', () => {
     expect(error.issues).toEqual([
       {
         code: 'RUNE-202',
-        message: '*** has no value — remove the key, or give it one',
+        message: '"***" has no value — remove the key, or give it one',
         location: { file: '***.yaml', line: 1, column: 1 },
       },
     ]);
@@ -3254,12 +3330,12 @@ describe('values files', () => {
     expect(error.issues).toEqual([
       {
         code: 'RUNE-202',
-        message: '*** has no value — remove the key, or give it one',
+        message: '"***" has no value — remove the key, or give it one',
         location: { file: '***.yaml', line: 2, column: 1 },
       },
       {
         code: 'RUNE-202',
-        message: '*** has no value — remove the key, or give it one',
+        message: '"***" has no value — remove the key, or give it one',
         location: { file: '***.yaml', line: 2, column: 1 },
       },
     ]);
@@ -3385,7 +3461,7 @@ describe('values files', () => {
 
   it('refuses a nested section, because a values file has no sections', () => {
     expect(loadError('database:\n  port: "5432"\n').message).toMatch(
-      /database is a mapping; a values file is one flat mapping/,
+      /"database" is a mapping; a values file is one flat mapping/,
     );
   });
 
@@ -3395,18 +3471,18 @@ describe('values files', () => {
     // This runs before anything knows which input the key belongs to, so it cannot know that
     // the value it would be quoting is a secret — a numeric API key lands here (§10).
     expect(error.message).toContain(
-      'port is a number — write it in quotes so it means exactly what it says',
+      '"port" is a number — write it in quotes so it means exactly what it says',
     );
     expect(error.message).not.toContain('5432');
   });
 
   it('refuses a key with no value at all', () => {
-    expect(loadError('target:\n').message).toMatch(/target has no value/);
+    expect(loadError('target:\n').message).toMatch(/"target" has no value/);
   });
 
   it('refuses a list with an entry that is not a string', () => {
     expect(loadError('tools:\n  - git\n  - 7\n').message).toMatch(
-      /tools is a list with an entry that is not a string/,
+      /"tools" is a list with an entry that is not a string/,
     );
   });
 
