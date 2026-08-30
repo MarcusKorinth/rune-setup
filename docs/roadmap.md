@@ -35,7 +35,7 @@ The complete pipeline behind `rune validate`, `rune schema` and
   SourceMap from node ranges) and zod v1 schema (`.strict()` objects, discriminated
   unions) with located, understandable error messages
 - `rune schema [--output] [--result]` — manifest and result-file JSON Schema generated
-  from the zod schemas via `zod-to-json-schema` (editor autocompletion, no drift)
+  from the zod schemas via zod's built-in `z.toJSONSchema()` (editor autocompletion, no drift)
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
