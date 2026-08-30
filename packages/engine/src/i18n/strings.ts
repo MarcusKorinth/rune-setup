@@ -37,6 +37,50 @@ export interface ResolveStringsOptions {
   readonly overlay?: LocaleOverlay | undefined;
 }
 
+/** A runtime-readonly view: unlike `Object.freeze(new Map())`, it exposes no mutators. */
+class ReadonlyMapView<K, V> implements ReadonlyMap<K, V> {
+  readonly #source: ReadonlyMap<K, V>;
+
+  constructor(source: ReadonlyMap<K, V>) {
+    this.#source = source;
+    Object.freeze(this);
+  }
+
+  get size(): number {
+    return this.#source.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#source.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#source.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#source.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#source.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#source.values();
+  }
+
+  forEach(callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.#source) {
+      callback.call(thisArg, value, key, this);
+    }
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+}
+
 /** Builds the one string table of a session. */
 export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const { manifest, overlay } = options;
@@ -77,11 +121,12 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
   }
 
   const get = (key: string): string | undefined => entries.get(key);
+  const readonlyEntries = new ReadonlyMapView(entries);
 
-  return {
+  const table: StringTable = {
     locale: options.locale ?? overlay?.locale,
     overlayLocale: overlay?.locale,
-    entries,
+    entries: readonlyEntries,
     chrome: (key, values) => formatChrome(get(key) ?? key, values),
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
     inputDescription: (id) => get(`inputs.${id}.description`),
@@ -91,4 +136,5 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     productDescription: () => get('product.description'),
     windowTitle: () => get('gui.windowTitle'),
   };
+  return Object.freeze(table);
 }

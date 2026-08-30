@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
+import type { InputState } from '../../src/engine/inputs.js';
 import { InputError, InternalError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
@@ -235,6 +236,102 @@ describe('strings and theme', () => {
     const theme = themed.getThemeConfig();
     expect(theme.accentColor).toBe('#3355ff');
     expect(theme.logo).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]logo\.png$/);
+  });
+});
+
+describe('facade immutability', () => {
+  it('keeps manifest, input, warning, change, and string projections outside engine authority', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  choice:',
+      '    type: multiselect',
+      '    options:',
+      '      - value: vanilla',
+      '        label: Vanilla',
+      '      - value: chocolate',
+      '        label: Chocolate',
+      '  enableExtra:',
+      '    type: boolean',
+      '    default: false',
+      '  extra:',
+      '    type: text',
+      '    when: "${enableExtra}"',
+      'steps:',
+      '  - id: install',
+      '    title: Trusted step',
+      '    run:',
+      '      command: node',
+      '      args: ["${choice}", "${extra}", "${env.TRUSTED_ENV}"]',
+    ]);
+    const environment = { TRUSTED_ENV: 'trusted' };
+    const session = await Session.open(path, {
+      environment,
+      overrides: { extra: 'trusted' },
+    });
+    environment.TRUSTED_ENV = 'corrupted';
+
+    const mutableManifest = session.manifest as unknown as {
+      inputs: { choice: { options: Array<{ value: string; label: string }> } };
+      steps: Array<{ title: string; run: { args: string[] } }>;
+    };
+    expect(() => {
+      (session as unknown as { manifest: object }).manifest = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      mutableManifest.steps[0]!.title = 'Corrupted step';
+    }).toThrow(TypeError);
+    expect(() => mutableManifest.steps[0]!.run.args.push('corrupted')).toThrow(TypeError);
+
+    const pending = session.pendingInputs();
+    expect(pending.map((state) => state.id)).toEqual(['choice']);
+    expect(() => (pending as InputState[]).pop()).toThrow(TypeError);
+    expect(() => {
+      const spec = pending[0]!.spec as unknown as {
+        options: Array<{ value: string; label: string }>;
+      };
+      spec.options[0]!.value = 'corrupted';
+    }).toThrow(TypeError);
+
+    const warnings = session.warnings();
+    expect(warnings).toHaveLength(1);
+    expect(() => (warnings as string[]).push('corrupted')).toThrow(TypeError);
+
+    const answer = ['vanilla'];
+    session.setValue('choice', answer);
+    answer[0] = 'chocolate';
+
+    const all = session.allInputs();
+    const choice = all.find((state) => state.id === 'choice');
+    expect(() => (all as InputState[]).pop()).toThrow(TypeError);
+    expect(() => (choice!.value as string[]).push('chocolate')).toThrow(TypeError);
+
+    const changes = session.setValue('enableExtra', true);
+    expect(changes).toEqual([{ inputId: 'extra', enabled: true }]);
+    expect(() => {
+      (changes as Array<{ inputId: string; enabled: boolean }>)[0]!.inputId = 'choice';
+    }).toThrow(TypeError);
+    expect(() =>
+      (changes as Array<{ inputId: string; enabled: boolean }>).push({
+        inputId: 'choice',
+        enabled: false,
+      }),
+    ).toThrow(TypeError);
+
+    const strings = session.getStrings();
+    expect(() =>
+      (strings.entries as Map<string, string>).set('steps.install.title', 'Corrupted title'),
+    ).toThrow(TypeError);
+
+    expect(session.plan().steps[0]).toMatchObject({
+      title: 'Trusted step',
+      command: { argv: ['node', 'vanilla', 'trusted', 'trusted'] },
+    });
+    expect(session.getStrings().stepTitle('install')).toBe('Trusted step');
+    expect(session.getStrings().optionLabel('choice', 'vanilla')).toBe('Vanilla');
   });
 });
 

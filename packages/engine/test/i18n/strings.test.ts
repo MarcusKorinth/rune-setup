@@ -76,4 +76,24 @@ describe('the resolved string table', () => {
     );
     expect(formatChrome('no placeholders')).toBe('no placeholders');
   });
+
+  it('does not let callers mutate the resolved entries or method results', () => {
+    const strings = resolveStrings({ manifest: MANIFEST });
+    let mapFromCallback: ReadonlyMap<string, string> | undefined;
+    strings.entries.forEach((_value, _key, map) => {
+      mapFromCallback = map;
+    });
+
+    expect(mapFromCallback).toBe(strings.entries);
+    expect(() =>
+      (strings.entries as Map<string, string>).set('steps.install.title', 'Corrupted'),
+    ).toThrow(TypeError);
+    expect(() =>
+      (mapFromCallback as Map<string, string>).set('rune.button.next', 'Corrupted'),
+    ).toThrow(TypeError);
+
+    expect(strings.entries.get('steps.install.title')).toBe('Install');
+    expect(strings.stepTitle('install')).toBe('Install');
+    expect(strings.chrome('rune.button.next')).toBe('Next');
+  });
 });

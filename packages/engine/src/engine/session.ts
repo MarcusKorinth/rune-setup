@@ -9,6 +9,7 @@
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { InputError, InternalError, type RuneIssue } from '../errors.js';
+import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
@@ -111,9 +112,12 @@ export class Session {
     this.#values = fields.values;
     this.#overrides = fields.overrides;
     this.#environment = fields.environment;
-    this.#resolution = fields.resolution;
+    this.#resolution = freezeResolution(fields.resolution);
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
+    // Public readonly fields and facade methods must be readonly in JavaScript too. Private
+    // slots remain mutable, so answers, resolution, execution, and cancellation still work.
+    Object.freeze(this);
   }
 
   /** Opens a session: load, validate, resolve layers 1–4 — stages 1–3 of the pipeline (§7). */
@@ -121,7 +125,11 @@ export class Session {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
     const manifest = parseManifest(absolutePath);
-    const environment = options.environment ?? process.env;
+    // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
+    // object would let later mutations change input resolution or interpolation after open.
+    const environment: Readonly<Record<string, string | undefined>> = Object.freeze({
+      ...(options.environment ?? process.env),
+    });
 
     const locale = selectLocale({
       flag: options.locale,
@@ -173,7 +181,7 @@ export class Session {
   /** Enabled required inputs still without an answer, in declaration order — what to ask for. */
   pendingInputs(): readonly InputState[] {
     const missing = new Set(this.#resolution.missing);
-    return this.#resolution.inputs.filter((state) => missing.has(state.id));
+    return Object.freeze(this.#resolution.inputs.filter((state) => missing.has(state.id)));
   }
 
   /** Every input with its resolved state — what a GUI prefills (§9.1). */
@@ -198,7 +206,9 @@ export class Session {
     const before = this.#resolution;
     const hadPrevious = this.#answers.has(id);
     const previous = this.#answers.get(id);
-    this.#answers.set(id, raw);
+    // Keep caller-owned arrays outside the engine authority. SecretString and scalar values
+    // pass through unchanged; cloning a SecretString would either break it or expose it.
+    this.#answers.set(id, Array.isArray(raw) ? [...raw] : raw);
     let after: Resolution;
     try {
       after = this.#resolve();
@@ -219,7 +229,7 @@ export class Session {
         changes.push({ inputId: state.id, enabled: state.enabled });
       }
     }
-    return changes;
+    return Object.freeze(changes.map((change) => Object.freeze(change)));
   }
 
   /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
@@ -315,15 +325,17 @@ export class Session {
   }
 
   #resolve(): Resolution {
-    return resolveInputs({
-      manifest: this.manifest,
-      context: this.#context,
-      values: this.#values,
-      environment: this.#environment,
-      overrides: this.#overrides,
-      answers: this.#answers,
-      secrets: this.#secrets,
-    });
+    return freezeResolution(
+      resolveInputs({
+        manifest: this.manifest,
+        context: this.#context,
+        values: this.#values,
+        environment: this.#environment,
+        overrides: this.#overrides,
+        answers: this.#answers,
+        secrets: this.#secrets,
+      }),
+    );
   }
 
   #missingIssue(id: string): RuneIssue {
@@ -334,6 +346,34 @@ export class Session {
       location: startOfFile(this.manifestPath),
     };
   }
+}
+
+/**
+ * Protects the engine-owned resolution while preserving its value semantics. Plain arrays
+ * are copied and frozen; SecretString instances are deliberately retained, never cloned.
+ */
+function freezeResolution(resolution: Resolution): Resolution {
+  const inputs = Object.freeze(
+    resolution.inputs.map((state) =>
+      Object.freeze({
+        ...state,
+        value: freezeInputValue(state.value),
+      }),
+    ),
+  );
+  const byId = new Map(inputs.map((state) => [state.id, state]));
+
+  return Object.freeze({
+    inputs,
+    byId,
+    missing: Object.freeze([...resolution.missing]),
+    warnings: Object.freeze([...resolution.warnings]),
+    problems: Object.freeze([...resolution.problems]),
+  });
+}
+
+function freezeInputValue(value: InputValue | undefined): InputValue | undefined {
+  return Array.isArray(value) ? Object.freeze([...value]) : value;
 }
 
 /** What the operating system reports as its display locale. */
