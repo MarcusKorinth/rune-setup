@@ -13,8 +13,11 @@ const electron = vi.hoisted(() => {
     readonly webContents = { send: vi.fn() };
     readonly listeners = new Map<string, Listener[]>();
     closeCalls = 0;
+    destroyCalls = 0;
+    destroyed = false;
 
     constructor(_options: unknown) {
+      electron.construct();
       electron.windows.push(this);
     }
 
@@ -56,14 +59,26 @@ const electron = vi.hoisted(() => {
       let prevented = false;
       this.emit('close', { preventDefault: () => (prevented = true) });
       if (!prevented) {
+        this.destroyed = true;
         this.emit('closed');
       }
+    }
+
+    isDestroyed(): boolean {
+      return this.destroyed;
+    }
+
+    destroy(): void {
+      this.destroyCalls += 1;
+      this.destroyed = true;
+      this.emit('closed');
     }
   }
 
   return {
     handlers: new Map<string, (...args: unknown[]) => unknown>(),
     windows: [] as TestBrowserWindow[],
+    construct: vi.fn(() => undefined),
     loadFile: vi.fn(async (_path: string) => undefined),
     TestBrowserWindow,
   };
@@ -244,6 +259,8 @@ describe('the IPC bridge', () => {
   beforeEach(() => {
     electron.handlers.clear();
     electron.windows.length = 0;
+    electron.construct.mockReset();
+    electron.construct.mockImplementation(() => undefined);
     electron.loadFile.mockReset();
     electron.loadFile.mockResolvedValue(undefined);
     sigtermListeners = new Set(process.listeners('SIGTERM'));
@@ -284,27 +301,92 @@ describe('the IPC bridge', () => {
     expect(electron.windows).toHaveLength(0);
   });
 
-  it('maps a rejected window load to one internal-error diagnostic and exit 70', async () => {
-    const manifestPath = emptyFixture();
-    const exit = vi.fn();
-    const writeStderr = vi.fn();
-    electron.loadFile.mockRejectedValueOnce(new Error('renderer assets unavailable'));
+  it('contains a rejected window load with one masked result and destroys the window', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { token: 'super-secret-value' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electron.loadFile.mockRejectedValueOnce(
+      new Error('renderer assets unavailable for super-secret-value'),
+    );
 
-    await expect(
-      runShell({
-        argv: ['electron', 'shell.js', manifestPath],
-        packaged: false,
-        exit,
-        writeStderr,
-      }),
-    ).resolves.toBeUndefined();
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
 
-    expect(writeStderr).toHaveBeenCalledTimes(1);
-    expect(writeStderr).toHaveBeenCalledWith('internal shell error: renderer assets unavailable\n');
-    expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(70);
+    expect(code).toBe(70);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ status: 'internal_error', exitCode: 70 });
     expect(electron.windows).toHaveLength(1);
     expect(electron.windows[0]?.closeCalls).toBe(0);
+    expect(electron.windows[0]?.destroyCalls).toBe(1);
+    expect(electron.windows[0]?.destroyed).toBe(true);
+    expect(sigterm.active()).toBe(0);
+    expect(stderr).toHaveBeenCalledWith('renderer assets unavailable for ***\n');
+  });
+
+  it('contains a BrowserWindow constructor rejection with one masked result', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { token: 'super-secret-value' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electron.construct.mockImplementationOnce(() => {
+      throw new Error('window construction failed for super-secret-value');
+    });
+
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(code).toBe(70);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ status: 'internal_error', exitCode: 70 });
+    expect(electron.windows).toHaveLength(0);
+    expect(sigterm.active()).toBe(0);
+    expect(stderr).toHaveBeenCalledWith('window construction failed for ***\n');
+  });
+
+  it('does not retry a rejected-load result when its writer fails', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { token: 'super-secret-value' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electron.loadFile.mockRejectedValueOnce(new Error('renderer failed for super-secret-value'));
+
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      writer: () => {
+        writes += 1;
+        throw new Error('disk denied for super-secret-value');
+      },
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(code).toBe(70);
+    expect(writes).toBe(1);
+    expect(electron.windows[0]?.destroyCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
+    expect(stderr).toHaveBeenCalledWith('renderer failed for ***\n');
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
   });
 
   it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {

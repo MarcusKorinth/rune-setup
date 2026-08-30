@@ -226,18 +226,26 @@ export async function windowedRun(
 ): Promise<number> {
   const relay = cancellation ?? new SigtermRelay();
   const ownsRelay = cancellation === undefined;
-  const window = new BrowserWindow({
-    width: 900,
-    height: 640,
-    show: false,
-    autoHideMenuBar: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
-    },
-  });
+  let window: BrowserWindow;
+  try {
+    window = new BrowserWindow({
+      width: 900,
+      height: 640,
+      show: false,
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
+      },
+    });
+  } catch (error) {
+    if (ownsRelay) {
+      relay.dispose();
+    }
+    return failWith(error, invocation, session, writer);
+  }
   window.once('ready-to-show', () => window.show());
 
   let running = false;
@@ -320,6 +328,12 @@ export async function windowedRun(
       window.close();
     }
     await closed;
+  } catch (error) {
+    const code = failWith(error, invocation, session, writer);
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+    return code;
   } finally {
     disconnectCancellation();
     if (ownsRelay) {
