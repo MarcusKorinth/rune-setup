@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ManifestError, Session } from '@rune/engine';
+import { CancelToken, ManifestError, Session } from '@rune/engine';
 
 const electron = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void;
@@ -643,6 +643,111 @@ describe('the IPC bridge', () => {
     expect(delivered).toHaveLength(1);
     expect(await run).toBe(6);
     expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
+  });
+
+  it('relays one SIGTERM during headless execute through cooperative cancellation', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      overrides: { token: 'provided-token' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const runnerStarted = deferred();
+    let cancelNotifications = 0;
+    const delivered: unknown[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const cancel = vi.spyOn(CancelToken.prototype, 'cancel');
+    const run = runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      open: () =>
+        Session.open(manifestPath, {
+          environment: {},
+          mode: 'non-interactive',
+          overrides: invocation.overrides,
+          runner: {
+            run: async (request) =>
+              new Promise((resolve) => {
+                request.cancel.onCancel(() => {
+                  cancelNotifications += 1;
+                  resolve({ kind: 'cancelled' });
+                });
+                runnerStarted.resolve();
+              }),
+          },
+        }),
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(sigterm.active()).toBe(1);
+    await runnerStarted.promise;
+    expect(sigterm.active()).toBe(1);
+    expect(electron.windows).toHaveLength(0);
+    sigterm.fire();
+    sigterm.fire();
+
+    expect(await run).toBe(6);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancelNotifications).toBe(1);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsExecuted: 1,
+      stepsCancelled: 1,
+      stepsNotRun: 0,
+    });
+    expect(electron.windows).toHaveLength(0);
+    expect(sigterm.active()).toBe(0);
+  });
+
+  it('buffers one headless SIGTERM before readiness and cancels before the runner starts', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      overrides: { token: 'provided-token' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const ready = deferred();
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+    const runner = vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const cancel = vi.spyOn(CancelToken.prototype, 'cancel');
+    const run = runWorkflow(invocation, {
+      whenReady: () => ready.promise,
+      open: () =>
+        Session.open(manifestPath, {
+          environment: {},
+          mode: 'non-interactive',
+          overrides: invocation.overrides,
+          runner: { run: runner },
+        }),
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(sigterm.active()).toBe(1);
+    expect(electron.windows).toHaveLength(0);
+    sigterm.fire();
+    sigterm.fire();
+    ready.resolve();
+
+    expect(await run).toBe(6);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(runner).not.toHaveBeenCalled();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 1,
+      stepsExecuted: 0,
+      stepsCancelled: 0,
+      stepsNotRun: 1,
+    });
+    expect(electron.windows).toHaveLength(0);
     expect(sigterm.active()).toBe(0);
   });
 

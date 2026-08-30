@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { BrowserWindow, app, ipcMain, type WebContents } from 'electron';
 
 import {
+  CancelToken,
   CancelledError,
   RUNE_VERSION,
   RuneError,
@@ -123,11 +124,9 @@ export async function runWorkflow(
   invocation: ShellInvocation,
   options: WorkflowMainOptions = {},
 ): Promise<number> {
-  // Keep the packaged headless entry's existing lifecycle unchanged. The relay belongs to
-  // the windowed shell launched by `rune run --gui` and starts before Electron readiness.
-  const relay = invocation.nonInteractive
-    ? undefined
-    : new SigtermRelay(options.subscribeToSigterm);
+  // Start before Electron readiness/session open so either shell mode can buffer the one
+  // cooperative cancellation request required by §7/§9.4.
+  const relay = new SigtermRelay(options.subscribeToSigterm);
   const writer = options.writer ?? writeResult;
 
   try {
@@ -146,13 +145,14 @@ export async function runWorkflow(
 
     if (invocation.nonInteractive) {
       // The headless path (§9.4): no window, the same engine walk the CLI does.
-      return headlessRun(session, invocation, writer);
+      const code = await headlessRun(session, invocation, writer, relay);
+      return code;
     }
 
     const code = await windowedRun(session, invocation, writer, relay);
     return code;
   } finally {
-    relay?.dispose();
+    relay.dispose();
   }
 }
 
@@ -171,9 +171,14 @@ export async function headlessRun(
   session: Session,
   invocation: ShellInvocation,
   writer: typeof writeResult = writeResult,
+  cancellation?: SigtermRelay,
 ): Promise<number> {
+  const relay = cancellation ?? new SigtermRelay();
+  const ownsRelay = cancellation === undefined;
+  const cancel = new CancelToken();
+  const disconnectCancellation = relay.connect(() => cancel.cancel());
   try {
-    const result = await session.execute();
+    const result = await session.execute(undefined, cancel);
     for (const warning of session.warnings()) {
       process.stderr.write(`warning: ${warning}` + String.fromCharCode(10));
     }
@@ -183,6 +188,11 @@ export async function headlessRun(
     return deliverSafely(result, invocation, writer, session) ? result.exitCode : 70;
   } catch (error) {
     return failWith(error, invocation, session, writer);
+  } finally {
+    disconnectCancellation();
+    if (ownsRelay) {
+      relay.dispose();
+    }
   }
 }
 
