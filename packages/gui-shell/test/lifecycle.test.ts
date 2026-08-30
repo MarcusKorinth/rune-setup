@@ -9,6 +9,7 @@ import { ManifestError, Session } from '@rune/engine';
 vi.mock('electron', () => ({
   app: {
     exit: vi.fn(),
+    getAppPath: vi.fn(() => 'C:\\rune-shell'),
     isPackaged: false,
     whenReady: vi.fn(),
   },
@@ -23,6 +24,7 @@ import {
   headlessRun,
   main,
   withSigtermHandler,
+  windowOptions,
   type SigtermSource,
 } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
@@ -215,6 +217,18 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(3);
     expect(stderr).toHaveBeenCalledWith('the shell manifest is invalid\n');
+  });
+});
+
+describe('the GUI shell native window', () => {
+  it('uses the configured logo as the native window icon', () => {
+    const logo = 'C:\\workspace\\assets\\rune-icon.png';
+
+    expect(windowOptions({ logo }).icon).toBe(logo);
+  });
+
+  it('omits the native window icon when no logo is configured', () => {
+    expect(windowOptions({})).not.toHaveProperty('icon');
   });
 });
 

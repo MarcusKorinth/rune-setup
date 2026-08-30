@@ -7,7 +7,13 @@
 
 import { join } from 'node:path';
 
-import { BrowserWindow, app, ipcMain, type WebContents } from 'electron';
+import {
+  BrowserWindow,
+  app,
+  ipcMain,
+  type BrowserWindowConstructorOptions,
+  type WebContents,
+} from 'electron';
 
 import {
   CancelledError,
@@ -18,6 +24,7 @@ import {
   writeResult,
   type RunEvent,
   type RunResult,
+  type ThemeConfig,
 } from '@rune/engine';
 
 import { parseShellArgv, type ShellInvocation } from './argv.js';
@@ -63,6 +70,22 @@ export async function withSigtermHandler<T>(
 /** SIGTERM in windowed mode enters the ordinary close-window state machine. */
 export function closeWindowOnSigterm(window: Pick<BrowserWindow, 'close'>): () => void {
   return () => window.close();
+}
+
+export function windowOptions(theme: Pick<ThemeConfig, 'logo'>): BrowserWindowConstructorOptions {
+  return {
+    width: 900,
+    height: 640,
+    show: false,
+    autoHideMenuBar: true,
+    ...(theme.logo === undefined ? {} : { icon: theme.logo }),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
+    },
+  };
 }
 
 export async function main(
@@ -123,18 +146,7 @@ async function executeHeadless(session: Session, invocation: ShellInvocation): P
 }
 
 async function windowedRun(session: Session, invocation: ShellInvocation): Promise<number> {
-  const window = new BrowserWindow({
-    width: 900,
-    height: 640,
-    show: false,
-    autoHideMenuBar: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
-    },
-  });
+  const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
   window.once('ready-to-show', () => window.show());
 
   let running = false;
