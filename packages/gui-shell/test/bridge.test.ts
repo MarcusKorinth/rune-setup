@@ -2,17 +2,87 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Session } from '@rune/engine';
 
+const electron = vi.hoisted(() => {
+  type Listener = (...args: unknown[]) => void;
+
+  class TestBrowserWindow {
+    readonly webContents = { send: vi.fn() };
+    readonly listeners = new Map<string, Listener[]>();
+    closeCalls = 0;
+
+    constructor(_options: unknown) {
+      electron.windows.push(this);
+    }
+
+    once(event: string, listener: Listener): void {
+      const onceListener: Listener = (...args) => {
+        this.removeListener(event, onceListener);
+        listener(...args);
+      };
+      this.on(event, onceListener);
+    }
+
+    on(event: string, listener: Listener): void {
+      const listeners = this.listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.listeners.set(event, listeners);
+    }
+
+    removeListener(event: string, listener: Listener): void {
+      this.listeners.set(
+        event,
+        (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener),
+      );
+    }
+
+    emit(event: string, ...args: unknown[]): void {
+      for (const listener of [...(this.listeners.get(event) ?? [])]) {
+        listener(...args);
+      }
+    }
+
+    show(): void {}
+
+    async loadFile(_path: string): Promise<void> {}
+
+    close(): void {
+      this.closeCalls += 1;
+      let prevented = false;
+      this.emit('close', { preventDefault: () => (prevented = true) });
+      if (!prevented) {
+        this.emit('closed');
+      }
+    }
+  }
+
+  return {
+    handlers: new Map<string, (...args: unknown[]) => unknown>(),
+    windows: [] as TestBrowserWindow[],
+    TestBrowserWindow,
+  };
+});
+
 vi.mock('electron', () => ({
-  app: {},
-  BrowserWindow: class {},
-  ipcMain: { handle: vi.fn() },
+  app: { getAppPath: () => process.cwd() },
+  BrowserWindow: electron.TestBrowserWindow,
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) =>
+      electron.handlers.set(channel, handler),
+  },
 }));
 
-import { BRIDGE_CHANNELS, EVENT_CHANNEL, openSession, registerBridge } from '../src/main/index.js';
+import {
+  BRIDGE_CHANNELS,
+  EVENT_CHANNEL,
+  headlessRun,
+  openSession,
+  registerBridge,
+  windowedRun,
+} from '../src/main/index.js';
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
@@ -66,6 +136,25 @@ function missingGuiAssetFixture(): string {
   return path;
 }
 
+function emptyFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-result-delivery-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs: {}',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
 function shellInvocation(manifestPath: string, nonInteractive: boolean) {
   return {
     manifestPath,
@@ -104,6 +193,23 @@ async function bridgeOver(session: Session): Promise<{
 }
 
 describe('the IPC bridge', () => {
+  let sigtermListeners = new Set(process.listeners('SIGTERM'));
+
+  beforeEach(() => {
+    electron.handlers.clear();
+    electron.windows.length = 0;
+    sigtermListeners = new Set(process.listeners('SIGTERM'));
+  });
+
+  afterEach(() => {
+    for (const listener of process.listeners('SIGTERM')) {
+      if (!sigtermListeners.has(listener)) {
+        process.removeListener('SIGTERM', listener);
+      }
+    }
+    vi.restoreAllMocks();
+  });
+
   it('checks GUI assets for windowed sessions but ignores them headlessly', async () => {
     const manifestPath = missingGuiAssetFixture();
 
@@ -127,6 +233,76 @@ describe('the IPC bridge', () => {
 
     await expect(handlers.get('rune:execute')?.()).rejects.toThrow(/token|databasePort/);
     expect(errors).toHaveLength(1);
+  });
+
+  it('ends a headless run with 70 after one masked result-write failure', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      overrides: { token: 'super-secret-value' },
+      runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await headlessRun(session, invocation, () => {
+      writes += 1;
+      throw new Error('disk denied for super-secret-value');
+    });
+
+    expect(code).toBe(70);
+    expect(writes).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
+  });
+
+  it('closes a windowed run with 70 when completed-result delivery fails once', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = windowedRun(session, invocation, () => {
+      writes += 1;
+      throw new Error('disk denied');
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    expect(execute).toBeDefined();
+    await expect(execute?.({})).resolves.toMatchObject({ status: 'succeeded' });
+    await expect(run).resolves.toBe(70);
+
+    expect(writes).toBe(1);
+    expect(electron.windows).toHaveLength(1);
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
+  });
+
+  it('keeps the successful headless result-delivery path unchanged', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const delivered: unknown[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await headlessRun(session, invocation, (result) => delivered.push(result));
+
+    expect(code).toBe(0);
+    expect(delivered).toHaveLength(1);
   });
 
   it('is a 1:1 projection: exactly the pinned channels, nothing else', async () => {

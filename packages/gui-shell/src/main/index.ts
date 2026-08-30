@@ -92,7 +92,11 @@ export async function openSession(invocation: ShellInvocation): Promise<Session>
   });
 }
 
-async function headlessRun(session: Session, invocation: ShellInvocation): Promise<number> {
+export async function headlessRun(
+  session: Session,
+  invocation: ShellInvocation,
+  writer: typeof writeResult = writeResult,
+): Promise<number> {
   try {
     const result = await session.execute();
     for (const warning of session.warnings()) {
@@ -101,14 +105,17 @@ async function headlessRun(session: Session, invocation: ShellInvocation): Promi
     if (result.nothingExecuted) {
       process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
     }
-    deliver(result, invocation);
-    return result.exitCode;
+    return deliverCompletedRun(result, invocation, session, writer) ? result.exitCode : 70;
   } catch (error) {
     return failWith(error, invocation, session);
   }
 }
 
-async function windowedRun(session: Session, invocation: ShellInvocation): Promise<number> {
+export async function windowedRun(
+  session: Session,
+  invocation: ShellInvocation,
+  writer: typeof writeResult = writeResult,
+): Promise<number> {
   const window = new BrowserWindow({
     width: 900,
     height: 640,
@@ -135,9 +142,14 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
       running = true;
     },
     onExecuteEnd: (result) => {
+      if (!deliverCompletedRun(result, invocation, session, writer)) {
+        running = false;
+        fatalCode = 70;
+        window.close();
+        return;
+      }
       running = false;
       outcome = result;
-      deliver(result, invocation);
       if (closeRequested) {
         // The shell finishes its own cancel (§9.4): the close that started it completes.
         window.close();
@@ -263,9 +275,31 @@ export function registerBridge(
   });
 }
 
-function deliver(result: RunResult, invocation: ShellInvocation): void {
+function deliver(
+  result: RunResult,
+  invocation: ShellInvocation,
+  writer: typeof writeResult = writeResult,
+): void {
   if (invocation.result !== undefined) {
-    writeResult(result, invocation.result);
+    writer(result, invocation.result);
+  }
+}
+
+function deliverCompletedRun(
+  result: RunResult,
+  invocation: ShellInvocation,
+  session: Session,
+  writer: typeof writeResult,
+): boolean {
+  try {
+    deliver(result, invocation, writer);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `failed to write result: ${session.mask(message)}` + String.fromCharCode(10),
+    );
+    return false;
   }
 }
 
