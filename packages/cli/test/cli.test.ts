@@ -135,6 +135,20 @@ describe('rune run', () => {
     expect(written['status']).toBe('input_error');
   });
 
+  it('rejects __proto__ as an unknown --set input instead of ignoring it', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--set', '__proto__=boom'], io)).toBe(4);
+    expect(io.err.join('\n')).toContain('"__proto__" is not an input of this manifest');
+  });
+
   it('exits 1 when a step fails', async () => {
     const path = fixture([
       'schemaVersion: 1',

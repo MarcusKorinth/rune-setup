@@ -25,4 +25,29 @@ describe('the shell version probe', () => {
       locale: 'de',
     });
   });
+
+  it('preserves every override name as an own key without a prototype', () => {
+    const { overrides } = parseShellArgv([
+      'installer.yaml',
+      '--set',
+      'greeting=first',
+      '--set',
+      '__proto__=boom',
+      '--set',
+      'constructor=build',
+      '--set',
+      'toString=render',
+      '--set',
+      'greeting=last',
+    ]);
+
+    expect(Object.getPrototypeOf(overrides)).toBeNull();
+    expect(Object.hasOwn(overrides, '__proto__')).toBe(true);
+    expect(Object.hasOwn(overrides, 'constructor')).toBe(true);
+    expect(Object.hasOwn(overrides, 'toString')).toBe(true);
+    expect(overrides['__proto__']).toBe('boom');
+    expect(overrides['constructor']).toBe('build');
+    expect(overrides['toString']).toBe('render');
+    expect(overrides['greeting']).toBe('last');
+  });
 });

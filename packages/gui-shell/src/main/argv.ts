@@ -30,7 +30,7 @@ export interface ShellInvocation {
 export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   let manifestPath: string | undefined;
   const values: string[] = [];
-  const overrides: Record<string, string> = {};
+  const overrides = Object.create(null) as Record<string, string>;
   let locale: string | undefined;
   let result: string | undefined;
   let logFile: string | undefined;
