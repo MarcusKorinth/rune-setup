@@ -16,7 +16,7 @@ import {
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { ExecutionPlan, RunResult } from '@rune/engine';
+import type { ExecutionPlan, RunResult, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliControl, type CliIo } from './io.js';
@@ -41,6 +41,7 @@ export async function runCommand(
 ): Promise<void> {
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
+  let strings: StringTable | undefined;
   let plan: ExecutionPlan | undefined;
   let executionFailureResult: RunResult | undefined;
   let deliveryStarted = false;
@@ -58,12 +59,13 @@ export async function runCommand(
       logFile: flags.logFile,
       ...(platform === undefined ? {} : { platform }),
     });
+    strings = session.getStrings();
 
     plan = session.plan();
     if (flags.dryRun === true && control.cancel?.cancelled === true) {
       throw new CancelledError();
     }
-    const progress = progressObserver(io);
+    const progress = progressObserver(io, strings);
     const result =
       flags.dryRun === true
         ? session.describe()
@@ -83,7 +85,7 @@ export async function runCommand(
     if (flags.dryRun === true && flags.result !== '-') {
       renderPlan(plan, result.product, io);
     }
-    renderOutcome(result, session.warnings(), io);
+    renderOutcome(result, session.warnings(), io, strings);
     if (flags.result !== undefined) {
       deliveryStarted = true;
       deliverResult(result, flags.result, io);
@@ -119,7 +121,7 @@ export async function runCommand(
           ...(session === undefined ? {} : { session }),
           ...(plan === undefined ? {} : { plan }),
         });
-      renderOutcome(result, session?.warnings() ?? [], io);
+      renderOutcome(result, session?.warnings() ?? [], io, strings);
       if (flags.result !== undefined) {
         deliveryStarted = true;
         deliverResult(result, flags.result, io);

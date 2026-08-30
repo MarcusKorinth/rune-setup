@@ -5,7 +5,7 @@
  */
 
 import { isSecretString, MASK } from '@rune/engine';
-import type { ExecutionPlan, RunEvent, RunResult } from '@rune/engine';
+import type { ExecutionPlan, RunEvent, RunResult, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
 
@@ -69,14 +69,20 @@ function maskedValue(value: unknown): unknown {
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */
-export function progressObserver(io: CliIo): (event: RunEvent) => void {
+export function progressObserver(io: CliIo, strings: StringTable): (event: RunEvent) => void {
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
         io.stderr(`running ${event.plan.steps.length} steps on ${event.plan.platform}`);
         break;
       case 'stepStarted':
-        io.stderr(`[${event.index + 1}/${event.total}] ${event.title}`);
+        io.stderr(
+          strings.chrome('rune.progress.step', {
+            index: event.index + 1,
+            total: event.total,
+            title: event.title,
+          }),
+        );
         break;
       case 'stepOutput':
         io.stderr(`  ${event.line}`);
@@ -95,15 +101,44 @@ export function progressObserver(io: CliIo): (event: RunEvent) => void {
 }
 
 /** The closing summary and the §10 warnings, on stderr. */
-export function renderOutcome(result: RunResult, warnings: readonly string[], io: CliIo): void {
+export function renderOutcome(
+  result: RunResult,
+  warnings: readonly string[],
+  io: CliIo,
+  strings?: StringTable,
+): void {
   for (const warning of warnings) {
     io.stderr(`warning: ${warning}`);
   }
+  const resultKey = resultChromeKey(result.status);
+  if (resultKey !== undefined && strings !== undefined) {
+    io.stderr(strings.chrome(resultKey));
+  }
   if (result.status === 'succeeded' && result.nothingExecuted) {
-    io.stderr('warning: nothing was executed — every step was skipped');
+    io.stderr(
+      strings === undefined
+        ? 'warning: nothing was executed — every step was skipped'
+        : `warning: ${strings.chrome('rune.result.nothingExecuted')}`,
+    );
   }
   io.stderr(
     `${result.status}: ${result.stepsSucceeded} succeeded, ${result.stepsFailed} failed, ` +
       `${result.stepsSkipped} skipped, ${result.stepsNotRun} not run (exit ${result.exitCode})`,
   );
+}
+
+/** Chrome keys exist only for user-facing terminal statuses. Other statuses keep evidence raw. */
+function resultChromeKey(status: RunResult['status']): string | undefined {
+  switch (status) {
+    case 'succeeded':
+      return 'rune.result.succeeded';
+    case 'failed':
+      return 'rune.result.failed';
+    case 'cancelled':
+      return 'rune.result.cancelled';
+    case 'planned':
+      return 'rune.result.planned';
+    default:
+      return undefined;
+  }
 }

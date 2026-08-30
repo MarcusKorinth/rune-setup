@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +23,12 @@ function fixture(lines: readonly string[]): string {
   const path = join(dir, 'installer.yaml');
   writeFileSync(path, [...lines, ''].join('\n'), 'utf8');
   return path;
+}
+
+function writeLocaleOverlay(manifestPath: string, lines: readonly string[]): void {
+  const locales = join(manifestPath, '..', 'locales');
+  mkdirSync(locales);
+  writeFileSync(join(locales, 'de.yaml'), [...lines, ''].join('\n'), 'utf8');
 }
 
 const MANIFEST = [
@@ -96,6 +102,90 @@ describe('rune run', () => {
     });
     expect(result).not.toHaveProperty('manifestPath');
     expect(io.err.join('\n')).toContain('hello');
+  });
+
+  it('renders resolved locale chrome while keeping result JSON machine-readable', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: hello',
+      '    title: Hello step',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "console.log(\'child output\')"]',
+    ]);
+    writeLocaleOverlay(path, [
+      'steps.hello.title: Hallo Schritt',
+      'rune.progress.step: "Schritt {index} von {total}: {title}"',
+      'rune.result.succeeded: Einrichtung abgeschlossen.',
+      'rune.result.planned: "Vorschau: Es wurde nichts ausgeführt."',
+    ]);
+
+    const live = capture();
+    expect(
+      await run(['run', path, '--non-interactive', '--locale', 'de-DE', '--result', '-'], live),
+    ).toBe(0);
+
+    const result = JSON.parse(live.out.join('\n')) as Record<string, unknown>;
+    expect(live.out).toHaveLength(1);
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      exitCode: 0,
+      stepsExecuted: 1,
+      steps: [{ id: 'hello', title: 'Hallo Schritt', state: 'SUCCEEDED', exitCode: 0 }],
+    });
+    expect(live.err).toContain('Schritt 1 von 1: Hallo Schritt');
+    expect(live.err).toContain('Einrichtung abgeschlossen.');
+
+    const dryRun = capture();
+    expect(
+      await run(['run', path, '--dry-run', '--non-interactive', '--locale', 'de-DE'], dryRun),
+    ).toBe(0);
+    expect(dryRun.out.join('\n')).toContain('Hallo Schritt');
+    expect(dryRun.err).toContain('Vorschau: Es wurde nichts ausgeführt.');
+  });
+
+  it('uses localized nothing-executed chrome and English fallbacks per key', async () => {
+    const emptyPath = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    writeLocaleOverlay(emptyPath, [
+      'rune.result.succeeded: Einrichtung abgeschlossen.',
+      'rune.result.nothingExecuted: Kein Schritt musste ausgeführt werden.',
+    ]);
+    const empty = capture();
+
+    expect(await run(['run', emptyPath, '--non-interactive', '--locale', 'de-DE'], empty)).toBe(0);
+    expect(empty.err).toContain('Einrichtung abgeschlossen.');
+    expect(empty.err).toContain('warning: Kein Schritt musste ausgeführt werden.');
+    expect(empty.err).toContain('succeeded: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 0)');
+
+    const failedPath = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: fail',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "process.exit(3)"]',
+    ]);
+    writeLocaleOverlay(failedPath, ['rune.progress.step: "Schritt {index} von {total}: {title}"']);
+    const failed = capture();
+
+    expect(await run(['run', failedPath, '--non-interactive', '--locale', 'de-DE'], failed)).toBe(
+      1,
+    );
+    expect(failed.err).toContain('Setup failed.');
+    expect(failed.err).toContain('failed: 0 succeeded, 1 failed, 0 skipped, 0 not run (exit 1)');
   });
 
   it('masks registered bytes in ordinary dry-run values and literal argv', async () => {
