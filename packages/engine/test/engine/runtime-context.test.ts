@@ -36,6 +36,35 @@ describe('the values behind the built-in names', () => {
     expect(context.valueOf({ kind: 'environment', name: 'JAVA_HOME' })).toBe('/opt/java');
   });
 
+  it('uses host casing semantics when previewing the other platform', () => {
+    const other = hostPlatform() === 'windows' ? 'linux' : 'windows';
+    const preview = contextFor(other, { RuNe_MiXeD_CaSe: 'visible' });
+    const mismatchedReference = { kind: 'environment', name: 'rune_mixed_case' } as const;
+
+    expect(preview.valueOf({ kind: 'environment', name: 'RuNe_MiXeD_CaSe' })).toBe('visible');
+    if (process.platform === 'win32') {
+      expect(preview.valueOf(mismatchedReference)).toBe('visible');
+    } else {
+      expect(() => preview.valueOf(mismatchedReference)).toThrow(ResolutionError);
+    }
+  });
+
+  it('keeps Unicode environment names distinct from ASCII names', () => {
+    const environment = {
+      RUNE_REVIEW_SS: 'ascii',
+      RUNE_REVIEW_ß: 'unicode',
+    };
+    const context = contextFor(hostPlatform(), environment);
+
+    expect(context.valueOf({ kind: 'environment', name: 'RUNE_REVIEW_SS' })).toBe('ascii');
+  });
+
+  it('does not inherit phantom values from Object.prototype', () => {
+    expect(() => context.valueOf({ kind: 'environment', name: 'toString' })).toThrow(
+      ResolutionError,
+    );
+  });
+
   it('refuses an environment variable the machine does not have', () => {
     let thrown: unknown;
     try {

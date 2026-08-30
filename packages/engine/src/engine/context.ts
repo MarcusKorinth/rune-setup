@@ -218,6 +218,22 @@ export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
   return trusted;
 }
 
+function environmentNameForLookup(name: string): string {
+  return process.platform === 'win32'
+    ? name.replace(/[a-z]/g, (character) => character.toUpperCase())
+    : name;
+}
+
+function snapshotEnvironment(
+  source: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string | undefined>> {
+  const snapshot = Object.create(null) as Record<string, string | undefined>;
+  for (const [name, value] of Object.entries(source)) {
+    snapshot[environmentNameForLookup(name)] = value;
+  }
+  return Object.freeze(snapshot);
+}
+
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
   const platform = options.platform ?? hostPlatform();
   const preview = platform !== hostPlatform();
@@ -226,7 +242,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
     name: options.product.name,
     version: options.product.version,
   });
-  const environment = Object.freeze({ ...(options.environment ?? process.env) });
+  const environment = snapshotEnvironment(options.environment ?? process.env);
 
   const hostDependent = (name: BuiltInVariable, value: () => string): string =>
     preview ? `<${name}@${platform}>` : value();
@@ -252,7 +268,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
         case 'product':
           return product[reference.field];
         case 'environment': {
-          const value = environment[reference.name];
+          const value = environment[environmentNameForLookup(reference.name)];
           if (value === undefined) {
             throw new ResolutionError(
               'RUNE-301',
