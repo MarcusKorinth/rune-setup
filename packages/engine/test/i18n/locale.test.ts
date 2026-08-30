@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { ManifestError } from '../../src/errors.js';
+import { ManifestError, UsageError } from '../../src/errors.js';
 import {
   discoverOverlays,
   matchOverlay,
@@ -13,19 +13,19 @@ import {
 } from '../../src/i18n/locale.js';
 
 describe('normalizeLocaleTag', () => {
-  it('turns what an OS reports into a tag', () => {
-    expect(normalizeLocaleTag('de_DE.UTF-8')).toBe('de-DE');
+  it('canonicalizes BCP-47-style tags and accepts underscores as separators', () => {
     expect(normalizeLocaleTag('de')).toBe('de');
     expect(normalizeLocaleTag('EN')).toBe('en');
     expect(normalizeLocaleTag('pt_br')).toBe('pt-BR');
     expect(normalizeLocaleTag('SR_latn_rs')).toBe('sr-Latn-RS');
-    expect(normalizeLocaleTag('sr_RS@latin')).toBe('sr-RS');
   });
 
-  it('rejects malformed tags after removing OS-specific suffixes', () => {
+  it('rejects malformed tags without removing OS-specific suffixes', () => {
     expect(normalizeLocaleTag('de-')).toBeUndefined();
     expect(normalizeLocaleTag('de--DE')).toBeUndefined();
     expect(normalizeLocaleTag('de--DE.UTF-8')).toBeUndefined();
+    expect(normalizeLocaleTag('de.backup')).toBeUndefined();
+    expect(normalizeLocaleTag('sr_RS@latin')).toBeUndefined();
   });
 
   it('treats the POSIX pseudo-locales as no preference', () => {
@@ -45,7 +45,9 @@ describe('selectLocale', () => {
       }),
     ).toBe('fr');
     expect(selectLocale({ environment: { RUNE_LOCALE: 'de' }, systemLocale: 'en-US' })).toBe('de');
+    expect(selectLocale({ flag: 'de_DE', environment: {}, systemLocale: 'en-US' })).toBe('de-DE');
     expect(selectLocale({ environment: {}, systemLocale: 'en_US.UTF-8' })).toBe('en-US');
+    expect(selectLocale({ environment: {}, systemLocale: 'sr_RS@latin' })).toBe('sr-RS');
     expect(selectLocale({ environment: {} })).toBeUndefined();
   });
 
@@ -54,13 +56,49 @@ describe('selectLocale', () => {
     expect(
       selectLocale({ environment: { RUNE_LOCALE: 'POSIX' }, systemLocale: 'de-DE' }),
     ).toBeUndefined();
-    expect(
-      selectLocale({
-        flag: 'de--DE',
-        environment: { RUNE_LOCALE: 'de' },
-        systemLocale: 'en-US',
-      }),
-    ).toBeUndefined();
+    expect(selectLocale({ flag: ' c ', environment: { RUNE_LOCALE: 'de' } })).toBeUndefined();
+    expect(selectLocale({ environment: {}, systemLocale: 'C.UTF-8' })).toBeUndefined();
+  });
+
+  it.each(['de--DE', 'de.backup', '   '])(
+    'rejects invalid explicit flag locale %j without falling back',
+    (flag) => {
+      let thrown: unknown;
+      try {
+        selectLocale({
+          flag,
+          environment: { RUNE_LOCALE: 'de' },
+          systemLocale: 'en-US',
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UsageError);
+      const error = thrown as UsageError;
+      expect(error.code).toBe('RUNE-001');
+      expect(error.message).toContain(`invalid locale ${JSON.stringify(flag)} from --locale`);
+      expect(error.message).toContain('C/POSIX');
+    },
+  );
+
+  it('rejects an invalid explicit environment locale without falling back', () => {
+    let thrown: unknown;
+    try {
+      selectLocale({ environment: { RUNE_LOCALE: 'de@backup' }, systemLocale: 'en-US' });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UsageError);
+    const error = thrown as UsageError;
+    expect(error.code).toBe('RUNE-001');
+    expect(error.message).toContain('invalid locale "de@backup" from RUNE_LOCALE');
+    expect(error.message).toContain('C/POSIX');
+  });
+
+  it('silently ignores an invalid system locale', () => {
+    expect(selectLocale({ environment: {}, systemLocale: 'de--DE.UTF-8' })).toBeUndefined();
   });
 });
 

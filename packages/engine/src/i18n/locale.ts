@@ -8,7 +8,7 @@
 import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { ManifestError, messageOf } from '../errors.js';
+import { ManifestError, UsageError, messageOf } from '../errors.js';
 
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
@@ -21,26 +21,42 @@ function canonicalizeLocaleTag(tag: string): string | undefined {
   }
 }
 
-/**
- * Normalizes what a flag, an environment variable, or the OS reports to a BCP-47-style tag:
- * `de_DE.UTF-8` → `de-DE`, `EN` → `en`. The POSIX pseudo-locales mean "no preference".
- */
+/** Normalizes a BCP-47-style tag, accepting underscores as locale separators. */
 export function normalizeLocaleTag(raw: string): string | undefined {
-  const bare = raw.split('.')[0]?.split('@')[0]?.replace(/_/g, '-').trim() ?? '';
-  if (bare === '' || /^(c|posix)$/i.test(bare)) {
-    return undefined;
-  }
-
-  return canonicalizeLocaleTag(bare);
-}
-
-function normalizeOverlayLocaleClaim(raw: string): string | undefined {
   const tag = raw.replace(/_/g, '-');
   if (tag === '' || /^(c|posix)$/i.test(tag)) {
     return undefined;
   }
 
   return canonicalizeLocaleTag(tag);
+}
+
+function normalizeOverlayLocaleClaim(raw: string): string | undefined {
+  return normalizeLocaleTag(raw);
+}
+
+function normalizeExplicitLocale(
+  raw: string,
+  source: '--locale' | 'RUNE_LOCALE',
+): string | undefined {
+  const value = raw.trim();
+  if (/^(c|posix)$/i.test(value)) {
+    return undefined;
+  }
+
+  const tag = normalizeLocaleTag(value);
+  if (tag === undefined) {
+    throw new UsageError(
+      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a BCP 47 locale tag such as "de-DE", or C/POSIX for the built-in defaults`,
+    );
+  }
+  return tag;
+}
+
+function normalizeSystemLocale(raw: string): string | undefined {
+  // POSIX system locale names may add an encoding and modifier around the locale tag.
+  const bare = raw.split('.')[0]?.split('@')[0]?.trim() ?? '';
+  return normalizeLocaleTag(bare);
 }
 
 export interface LocaleSelectionOptions {
@@ -53,14 +69,18 @@ export interface LocaleSelectionOptions {
 
 /** The display locale for a session, or `undefined` for the built-in defaults (§6.3). */
 export function selectLocale(options: LocaleSelectionOptions): string | undefined {
-  for (const candidate of [options.flag, options.environment['RUNE_LOCALE']]) {
-    if (candidate !== undefined && candidate !== '') {
-      // An explicit choice terminates the chain: `--locale C` asks for the built-in
-      // defaults, never for whatever the next source would have said.
-      return normalizeLocaleTag(candidate);
-    }
+  if (options.flag !== undefined && options.flag !== '') {
+    // An explicit choice terminates the chain: `--locale C` asks for the built-in
+    // defaults, never for whatever the next source would have said.
+    return normalizeExplicitLocale(options.flag, '--locale');
   }
-  return options.systemLocale === undefined ? undefined : normalizeLocaleTag(options.systemLocale);
+  const environmentLocale = options.environment['RUNE_LOCALE'];
+  if (environmentLocale !== undefined && environmentLocale !== '') {
+    return normalizeExplicitLocale(environmentLocale, 'RUNE_LOCALE');
+  }
+  return options.systemLocale === undefined
+    ? undefined
+    : normalizeSystemLocale(options.systemLocale);
 }
 
 export interface DiscoveredOverlay {
