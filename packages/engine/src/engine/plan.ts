@@ -44,7 +44,11 @@ import {
 } from './inputs.js';
 import type { SecretMasker } from './secrets.js';
 import { deepFreeze } from './freeze.js';
-import { resolveTargetPathFrom } from './paths.js';
+import {
+  isWindowsRootRelativePath,
+  resolveTargetPathFrom,
+  WINDOWS_ROOT_RELATIVE_PATH_PATTERN,
+} from './paths.js';
 
 /** The independently versioned public shape of an execution plan (§7). */
 export const PLAN_SCHEMA_VERSION = 1;
@@ -425,6 +429,15 @@ function resolveCommand(
 
   const manifestDir = context.manifestDir;
   const renderedCommand = render(spec.command);
+  if (
+    context.platform === 'windows' &&
+    !context.preview &&
+    isWindowsRootRelativeValue(renderedCommand)
+  ) {
+    const commandShown = isSecretString(renderedCommand) ? MASK : renderedCommand;
+    const message = `step "${stepId}" uses Windows root-relative command "${commandShown}", whose drive depends on the caller's current drive — use a fully qualified path or a manifest-relative path`;
+    throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
+  }
   const driveRelative =
     context.platform === 'windows' &&
     (isSecretString(renderedCommand)
@@ -450,10 +463,20 @@ function resolveCommand(
     throw new ExecutionError('RUNE-405', resolution.secrets.mask(message));
   }
 
-  const cwd =
-    spec.cwd === undefined
-      ? context.manifestDir
-      : anchorPathValue(render(spec.cwd), manifestDir, context.platform, secrets);
+  let cwd: string | SecretString = context.manifestDir;
+  if (spec.cwd !== undefined) {
+    const renderedCwd = render(spec.cwd);
+    if (
+      context.platform === 'windows' &&
+      !context.preview &&
+      isWindowsRootRelativeValue(renderedCwd)
+    ) {
+      const cwdShown = isSecretString(renderedCwd) ? MASK : renderedCwd;
+      const message = `step "${stepId}" uses Windows root-relative cwd "${cwdShown}", whose drive depends on the caller's current drive — use a fully qualified path or a manifest-relative path`;
+      throw new ExecutionError('RUNE-404', resolution.secrets.mask(message));
+    }
+    cwd = anchorPathValue(renderedCwd, manifestDir, context.platform, secrets);
+  }
 
   const env: Record<string, string | SecretString> = {};
   for (const [name, value] of Object.entries(spec.env)) {
@@ -467,6 +490,12 @@ function resolveCommand(
     timeoutSeconds: spec.timeoutSeconds,
     successExitCodes: [...spec.successExitCodes],
   };
+}
+
+function isWindowsRootRelativeValue(value: string | SecretString): boolean {
+  return isSecretString(value)
+    ? secretMatches(value, WINDOWS_ROOT_RELATIVE_PATH_PATTERN)
+    : isWindowsRootRelativePath(value);
 }
 
 function anchorCommandValue(

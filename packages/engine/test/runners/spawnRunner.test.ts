@@ -1,7 +1,8 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import type { spawn as spawnChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -881,6 +882,53 @@ describe('SpawnRunner', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(['\\Windows', '/Windows'])(
+    'rejects root-relative Windows SystemRoot %s without spawning taskkill',
+    async (systemRoot) => {
+      const spawnTaskkill = vi.fn();
+
+      await expect(
+        spawnRunnerTestSeam.runTaskkill(
+          123,
+          { SystemRoot: systemRoot },
+          spawnTaskkill as unknown as typeof spawnChildProcess,
+        ),
+      ).resolves.toBe(false);
+      expect(spawnTaskkill).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['C:\\Windows', '\\\\server\\share\\Windows'])(
+    'accepts fully qualified Windows SystemRoot %s for taskkill',
+    async (systemRoot) => {
+      const helper = new EventEmitter() as EventEmitter & {
+        kill: ReturnType<typeof vi.fn>;
+      };
+      helper.kill = vi.fn(() => true);
+      const spawnTaskkill = vi.fn(() => {
+        queueMicrotask(() => helper.emit('close', 0));
+        return helper;
+      });
+
+      await expect(
+        spawnRunnerTestSeam.runTaskkill(
+          123,
+          { SystemRoot: systemRoot },
+          spawnTaskkill as unknown as typeof spawnChildProcess,
+        ),
+      ).resolves.toBe(true);
+      expect(spawnTaskkill).toHaveBeenCalledExactlyOnceWith(
+        win32.join(systemRoot, 'System32', 'taskkill.exe'),
+        ['/PID', '123', '/T', '/F'],
+        {
+          env: { SystemRoot: systemRoot },
+          stdio: 'ignore',
+          shell: false,
+        },
+      );
+    },
+  );
 
   it('bounds /proc stat reads to four workers while fully checking zombies and foreign groups', async () => {
     const processIds = Array.from({ length: 100 }, (_, index) => String(index + 1));

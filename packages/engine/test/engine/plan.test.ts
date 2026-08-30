@@ -399,6 +399,146 @@ describe('interpolation into the command', () => {
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
   });
 
+  it.runIf(process.platform === 'win32').each(['\\tools\\setup.exe', '/tools/setup.exe'])(
+    'refuses the native Windows root-relative command %s before anchoring',
+    (command) => {
+      const error = executionError(() =>
+        planFor(['steps:', '  - id: install', '    run:', `      command: '${command}'`], {
+          platform: 'windows',
+        }),
+      );
+
+      expect(error.code).toBe('RUNE-401');
+      expect(error.message).toContain(command);
+      expect(error.message).toContain("depends on the caller's current drive");
+      expect(error.message).toContain('fully qualified path or a manifest-relative path');
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each(['\\private\\setup.exe', '/private/setup.exe'])(
+    'refuses the opaque native Windows root-relative command %s without exposing it',
+    (command) => {
+      const error = executionError(() =>
+        planFor(
+          [
+            'inputs:',
+            '  command:',
+            '    type: secret',
+            'steps:',
+            '  - id: install',
+            '    run:',
+            '      command: "${command}"',
+          ],
+          { platform: 'windows', overrides: new Map([['command', command]]) },
+        ),
+      );
+      const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+      expect(error.code).toBe('RUNE-401');
+      expect(error.message).toContain(MASK);
+      expect(diagnostic).not.toContain(command);
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each(['\\private\\work', '/private/work'])(
+    'refuses the native Windows root-relative cwd %s before anchoring',
+    (cwd) => {
+      const error = executionError(() =>
+        planFor(
+          ['steps:', '  - id: install', '    run:', '      command: node', `      cwd: '${cwd}'`],
+          { platform: 'windows' },
+        ),
+      );
+
+      expect(error.code).toBe('RUNE-404');
+      expect(error.message).toContain(cwd);
+      expect(error.message).toContain("depends on the caller's current drive");
+      expect(error.message).toContain('fully qualified path or a manifest-relative path');
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each(['\\private\\work', '/private/work'])(
+    'refuses the opaque native Windows root-relative cwd %s without exposing it',
+    (cwd) => {
+      const error = executionError(() =>
+        planFor(
+          [
+            'inputs:',
+            '  cwd:',
+            '    type: secret',
+            'steps:',
+            '  - id: install',
+            '    run:',
+            '      command: node',
+            '      cwd: "${cwd}"',
+          ],
+          { platform: 'windows', overrides: new Map([['cwd', cwd]]) },
+        ),
+      );
+      const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+      expect(error.code).toBe('RUNE-404');
+      expect(error.message).toContain(MASK);
+      expect(diagnostic).not.toContain(cwd);
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each([
+    ['C:\\tools\\setup.exe', 'C:\\work'],
+    ['\\\\server\\share\\setup.exe', '\\\\server\\share\\work'],
+  ] as const)(
+    'keeps native Windows fully qualified command %s and cwd byte-identical',
+    (command, cwd) => {
+      const { plan } = planFor(
+        [
+          'steps:',
+          '  - id: install',
+          '    run:',
+          `      command: '${command}'`,
+          `      cwd: '${cwd}'`,
+        ],
+        { platform: 'windows' },
+      );
+      const step = plan.steps[0];
+
+      expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
+      expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'continues to anchor a Windows drive-relative cwd instead of rejecting it',
+    () => {
+      const { plan } = planFor(
+        ['steps:', '  - id: install', '    run:', '      command: node', "      cwd: 'C:work'"],
+        { platform: 'windows' },
+      );
+
+      expect(plan.steps[0]?.state).toBe('PENDING');
+    },
+  );
+
+  it.runIf(process.platform === 'linux').each(['\\tools\\setup.exe', '/tools/setup.exe'])(
+    'preserves Windows root-relative values in a foreign preview for %s',
+    (value) => {
+      const { plan } = planFor(
+        [
+          'steps:',
+          '  - id: install',
+          '    run:',
+          `      command: '${value}'`,
+          `      cwd: '${value}'`,
+        ],
+        { platform: 'windows' },
+      );
+      const step = plan.steps[0];
+
+      expect(plan.preview).toBe(true);
+      expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(value);
+      expect(step?.state === 'PENDING' && step.command.cwd).toBe(value);
+    },
+  );
+
   it.each(['C:tool.exe', 'D:tools\\install.exe'])(
     'refuses the Windows drive-relative command %s at plan time',
     (command) => {

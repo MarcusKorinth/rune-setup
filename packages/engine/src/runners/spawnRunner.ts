@@ -11,6 +11,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { win32 } from 'node:path';
 
+import { isWindowsRootRelativePath } from '../engine/paths.js';
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest, StartFailureReason } from './base.js';
 
@@ -47,6 +48,8 @@ interface TaskkillProcess {
   readonly once: ChildProcess['once'];
   readonly kill: ChildProcess['kill'];
 }
+
+type TaskkillSpawner = typeof spawn;
 
 type ProcessGroupSignalResult = 'sent' | 'absent' | 'failed';
 
@@ -298,15 +301,21 @@ async function terminateTree(
 function runTaskkill(
   pid: number,
   parentEnv: Readonly<Record<string, string | undefined>>,
+  spawnTaskkill: TaskkillSpawner = spawn,
 ): Promise<boolean> {
   const systemRoot = windowsEnvironmentValue(parentEnv, 'SystemRoot');
-  if (systemRoot === undefined || systemRoot.length === 0 || !win32.isAbsolute(systemRoot)) {
+  if (
+    systemRoot === undefined ||
+    systemRoot.length === 0 ||
+    !win32.isAbsolute(systemRoot) ||
+    isWindowsRootRelativePath(systemRoot)
+  ) {
     return Promise.resolve(false);
   }
 
   let taskkill: ChildProcess;
   try {
-    taskkill = spawn(
+    taskkill = spawnTaskkill(
       win32.join(systemRoot, 'System32', 'taskkill.exe'),
       ['/PID', String(pid), '/T', '/F'],
       {
@@ -644,6 +653,7 @@ function waitForCompletion(completion: Promise<void>, timeoutMs: number): Promis
  * watchdog. It is intentionally not exported from the package root.
  */
 export const spawnRunnerTestSeam = Object.freeze({
+  runTaskkill,
   scanProcProcessGroup,
   terminateProcessGroup,
   waitForCompletion,
