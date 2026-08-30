@@ -17,7 +17,7 @@ import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink, type LogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
-import type { RunMode, RunResult } from '../results/model.js';
+import { EXIT_CODE_BY_STATUS, type RunMode, type RunResult } from '../results/model.js';
 import { CancelToken } from './cancel.js';
 import {
   createRuntimeContext,
@@ -87,6 +87,7 @@ export class Session {
   readonly #runner: Runner | undefined;
   readonly #mode: RunMode;
   readonly #staticWarnings: readonly string[];
+  readonly #runtimeWarnings: string[] = [];
   #resolution: Resolution;
   #cancel: CancelToken | undefined;
 
@@ -189,7 +190,7 @@ export class Session {
 
   /** Warnings a frontend should say out loud but not fail over (§4.3, §5, §10). */
   warnings(): readonly string[] {
-    return [...this.#staticWarnings, ...this.#resolution.warnings];
+    return [...this.#staticWarnings, ...this.#resolution.warnings, ...this.#runtimeWarnings];
   }
 
   /**
@@ -274,13 +275,18 @@ export class Session {
 
   /** Stages 5 and 6: runs the plan; resolves with the result when the run is over. */
   async execute(observer?: EngineObserver, cancel?: CancelToken): Promise<RunResult> {
+    this.#runtimeWarnings.length = 0;
     const plan = this.plan();
     const token = cancel ?? new CancelToken();
     this.#cancel = token;
     let log: LogFileSink | undefined;
     const observers: EngineObserver = (event) => {
       log?.observer(event);
-      observer?.(event);
+      // Log finalization can still change the run's overall status. Keep the executor's
+      // final event internal until close settles, then publish the one truthful result.
+      if (event.kind !== 'runFinished') {
+        observer?.(event);
+      }
     };
     try {
       try {
@@ -291,19 +297,58 @@ export class Session {
           { cause },
         );
       }
-      return await executeRun({
-        plan,
-        resolution: this.#resolution,
-        product: this.manifest.product,
-        secrets: this.#secrets,
-        observer: observers,
-        cancel: token,
-        mode: this.#mode,
-        ...(this.#runner === undefined ? {} : { runner: this.#runner }),
-      });
+      let outcome:
+        | { readonly ok: true; readonly result: RunResult }
+        | { readonly ok: false; readonly error: unknown };
+      try {
+        outcome = {
+          ok: true,
+          result: await executeRun({
+            plan,
+            resolution: this.#resolution,
+            product: this.manifest.product,
+            secrets: this.#secrets,
+            observer: observers,
+            cancel: token,
+            mode: this.#mode,
+            ...(this.#runner === undefined ? {} : { runner: this.#runner }),
+          }),
+        };
+      } catch (error) {
+        outcome = { ok: false, error };
+      }
+
+      let closeError: unknown;
+      try {
+        await log?.close();
+      } catch (error) {
+        closeError = error;
+        this.#runtimeWarnings.push(
+          this.#secrets.mask(`could not finalize log file "${this.#logFile}": ${messageOf(error)}`),
+        );
+      }
+
+      // A secondary sink failure must never erase the primary engine exception.
+      if (!outcome.ok) {
+        throw outcome.error;
+      }
+
+      const result =
+        closeError === undefined
+          ? outcome.result
+          : {
+              ...outcome.result,
+              status: 'internal_error' as const,
+              exitCode: EXIT_CODE_BY_STATUS.internal_error,
+            };
+      try {
+        observer?.({ kind: 'runFinished', result });
+      } catch {
+        // A broken renderer must never corrupt a completed run (§9.1).
+      }
+      return result;
     } finally {
       this.#cancel = undefined;
-      await log?.close();
     }
   }
 
