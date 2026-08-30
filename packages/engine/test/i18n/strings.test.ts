@@ -12,10 +12,18 @@ const MANIFEST = parseManifestText(
     'product:',
     '  name: Example',
     '  version: "1.0.0"',
+    '  description: An example product',
+    'gui:',
+    '  windowTitle: Example setup',
     'inputs:',
     '  target:',
     '    type: directory',
     '    title: Install directory',
+    '    description: Where to install',
+    '  port:',
+    '    type: text',
+    "    pattern: '[0-9]+'",
+    '    patternHint: Enter a port number',
     '  environment:',
     '    type: select',
     '    options: [production, staging]',
@@ -32,12 +40,34 @@ const MANIFEST = parseManifestText(
   'installer.yaml',
 );
 
+const MANIFEST_WITHOUT_OPTIONAL_FALLBACKS = parseManifestText(
+  [
+    'schemaVersion: 1',
+    'product:',
+    '  name: Minimal',
+    '  version: "1.0.0"',
+    'inputs:',
+    '  target:',
+    '    type: text',
+    'steps:',
+    '  - id: install',
+    '    run:',
+    '      command: node',
+    '',
+  ].join('\n'),
+  'installer.yaml',
+);
+
 describe('the resolved string table', () => {
   it('serves the defaults when no overlay is loaded', () => {
     const strings = resolveStrings({ manifest: MANIFEST });
 
     expect(strings.locale).toBeUndefined();
+    expect(strings.productDescription()).toBe('An example product');
+    expect(strings.windowTitle()).toBe('Example setup');
     expect(strings.inputTitle('target')).toBe('Install directory');
+    expect(strings.inputDescription('target')).toBe('Where to install');
+    expect(strings.patternHint('port')).toBe('Enter a port number');
     expect(strings.inputTitle('environment')).toBe('environment');
     expect(strings.optionLabel('environment', 'production')).toBe('production');
     expect(strings.stepTitle('install')).toBe('Install');
@@ -48,6 +78,10 @@ describe('the resolved string table', () => {
   it('overrides per key and fills the gaps from the defaults', () => {
     const overlay = loadOverlayText(
       [
+        'product.description: Ein Beispielprodukt',
+        'inputs.target.description: Installationsort',
+        'inputs.port.patternHint: Portnummer eingeben',
+        'gui.windowTitle: Beispiel-Setup',
         'steps.install.title: Installieren',
         'inputs.target.title: Installationsverzeichnis',
         'rune.button.next: Weiter',
@@ -61,12 +95,25 @@ describe('the resolved string table', () => {
 
     expect(strings.locale).toBe('de-DE');
     expect(strings.overlayLocale).toBe('de');
+    expect(strings.productDescription()).toBe('Ein Beispielprodukt');
+    expect(strings.windowTitle()).toBe('Beispiel-Setup');
+    expect(strings.inputDescription('target')).toBe('Installationsort');
+    expect(strings.patternHint('port')).toBe('Portnummer eingeben');
     expect(strings.stepTitle('install')).toBe('Installieren');
     expect(strings.inputTitle('target')).toBe('Installationsverzeichnis');
     expect(strings.chrome('rune.button.next')).toBe('Weiter');
     expect(strings.chrome('rune.button.back')).toBe('Back');
     expect(strings.stepTitle('cleanup')).toBe('cleanup');
     expect(strings.entries['steps.install.title']).toBe('Installieren');
+  });
+
+  it('returns undefined for optional texts without manifest fallbacks', () => {
+    const strings = resolveStrings({ manifest: MANIFEST_WITHOUT_OPTIONAL_FALLBACKS });
+
+    expect(strings.productDescription()).toBeUndefined();
+    expect(strings.inputDescription('target')).toBeUndefined();
+    expect(strings.patternHint('target')).toBeUndefined();
+    expect(strings.windowTitle()).toBeUndefined();
   });
 
   it('keeps the table and its entry snapshot immutable at runtime', () => {
