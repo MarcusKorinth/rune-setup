@@ -81,6 +81,7 @@ describe('the resolved string table', () => {
         'product.description: Ein Beispielprodukt',
         'inputs.target.description: Installationsort',
         'inputs.port.patternHint: Portnummer eingeben',
+        'inputs.environment.options.production.label: Produktivumgebung',
         'gui.windowTitle: Beispiel-Setup',
         'steps.install.title: Installieren',
         'inputs.target.title: Installationsverzeichnis',
@@ -99,6 +100,7 @@ describe('the resolved string table', () => {
     expect(strings.windowTitle()).toBe('Beispiel-Setup');
     expect(strings.inputDescription('target')).toBe('Installationsort');
     expect(strings.patternHint('port')).toBe('Portnummer eingeben');
+    expect(strings.optionLabel('environment', 'production')).toBe('Produktivumgebung');
     expect(strings.stepTitle('install')).toBe('Installieren');
     expect(strings.inputTitle('target')).toBe('Installationsverzeichnis');
     expect(strings.chrome('rune.button.next')).toBe('Weiter');
