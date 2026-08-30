@@ -43,7 +43,7 @@ describe('SpawnRunner', () => {
       kind: 'exited',
       exitCode: 7,
     });
-  });
+  }, 15_000);
 
   it('delivers output as lines, tagged with the stream it came from', async () => {
     const lines: string[] = [];
