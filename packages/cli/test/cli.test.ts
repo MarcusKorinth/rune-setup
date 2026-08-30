@@ -12,5 +12,7 @@ describe('rune CLI skeleton', () => {
     expect(lines[0]).toMatch(/^rune \d+\.\d+\.\d+ \(engine \d+\.\d+\.\d+\)/);
     // The banner leads with the CLI's own version, not the engine's.
     expect(lines[0]).toContain(`rune ${RUNE_CLI_VERSION} (engine `);
+    expect(lines[0]).toContain('milestone 1 in progress; commands are not implemented yet');
+    expect(lines[0]).not.toContain('milestone 0 skeleton');
   });
 });

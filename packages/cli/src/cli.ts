@@ -23,13 +23,13 @@ const processIo: CliIo = {
 /**
  * Entry point of the `rune` command line (docs/architecture.md §4.1).
  *
- * Milestone 0 skeleton: prints the version and returns exit code 0; the verbs
- * (`validate`, `run`, `schema`, `gui install`) arrive with milestone 1.
+ * Milestone 1 is in progress: this package remains a skeleton and its commands are not
+ * implemented yet.
  * Returns the process exit code — `main.ts` is the only place that applies it.
  */
 export function run(_argv: readonly string[], io: CliIo = processIo): number {
   io.stderr(
-    `rune ${RUNE_CLI_VERSION} (engine ${RUNE_VERSION}) — milestone 0 skeleton; commands arrive with milestone 1`,
+    `rune ${RUNE_CLI_VERSION} (engine ${RUNE_VERSION}) — milestone 1 in progress; commands are not implemented yet`,
   );
   return 0;
 }
