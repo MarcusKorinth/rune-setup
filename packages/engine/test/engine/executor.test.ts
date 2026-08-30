@@ -353,6 +353,55 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 
+  it('masks registered secret text in every string-shaped input result value', () => {
+    const secret = 'overlap-secret-value';
+    const { plan, resolution, secrets, product } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  exact:',
+        '    type: text',
+        '  embedded:',
+        '    type: text',
+        '  items:',
+        '    type: multiselect',
+        '    options:',
+        '      - safe',
+        `      - ${secret}`,
+        `      - prefix-${secret}-suffix`,
+        '  unchanged:',
+        '    type: text',
+        '  enabled:',
+        '    type: boolean',
+        'steps: []',
+      ],
+      {
+        overrides: new Map([
+          ['token', secret],
+          ['exact', secret],
+          ['embedded', `prefix-${secret}-suffix`],
+          ['items', JSON.stringify(['safe', secret, `prefix-${secret}-suffix`])],
+          ['unchanged', 'ordinary'],
+          ['enabled', 'true'],
+        ]),
+      },
+    );
+
+    const result = describePlan({ plan, resolution, product, secrets });
+    const values = Object.fromEntries(result.inputs.map((input) => [input.id, input.value]));
+
+    expect(values).toEqual({
+      token: null,
+      exact: '***',
+      embedded: 'prefix-***-suffix',
+      items: ['safe', '***', 'prefix-***-suffix'],
+      unchanged: 'ordinary',
+      enabled: true,
+    });
+    expect(JSON.stringify(result.inputs)).not.toContain(secret);
+  });
+
   it('never lets a secret reach an observer, not even inside RunStarted', async () => {
     const { plan, resolution, secrets, product } = setup(
       [

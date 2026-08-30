@@ -602,6 +602,91 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(interaction.transcript()).not.toContain(secret);
   });
 
+  it.each(['stdout', 'file'] as const)(
+    'masks secret-overlapping summary values and the cancelled %s result',
+    async (destination) => {
+      const secret = 'overlap-secret-value';
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  exact:',
+        '    type: text',
+        '  embedded:',
+        '    type: text',
+        '  items:',
+        '    type: multiselect',
+        '    options:',
+        '      - safe',
+        `      - ${secret}`,
+        `      - prefix-${secret}-suffix`,
+        '  unchanged:',
+        '    type: text',
+        '  enabled:',
+        '    type: boolean',
+        'steps: []',
+      ]);
+      const resultPath = join(path, '..', 'overlap-result.json');
+      const io = capture();
+      const interaction = scripted(['c']);
+
+      const code = await run(
+        [
+          'run',
+          path,
+          '--set',
+          `token=${secret}`,
+          '--set',
+          `exact=${secret}`,
+          '--set',
+          `embedded=prefix-${secret}-suffix`,
+          '--set',
+          `items=${JSON.stringify(['safe', secret, `prefix-${secret}-suffix`])}`,
+          '--set',
+          'unchanged=ordinary',
+          '--set',
+          'enabled=true',
+          '--result',
+          destination === 'stdout' ? '-' : resultPath,
+        ],
+        io,
+        interaction,
+      );
+
+      expect(code).toBe(6);
+      const diagnostics = io.err.join('\n');
+      const stdout = io.out.join('\n');
+      const resultJson = destination === 'stdout' ? stdout : readFileSync(resultPath, 'utf8');
+      const result = JSON.parse(resultJson) as {
+        inputs: readonly { id: string; value: unknown }[];
+      };
+      const values = Object.fromEntries(result.inputs.map((input) => [input.id, input.value]));
+
+      expect(diagnostics).toMatch(/^ {2}1\) token = \*\*\*$/m);
+      expect(diagnostics).toMatch(/^ {2}2\) exact = \*\*\*$/m);
+      expect(diagnostics).toMatch(/^ {2}3\) embedded = prefix-\*\*\*-suffix$/m);
+      expect(diagnostics).toMatch(/^ {2}4\) items = safe, \*\*\*, prefix-\*\*\*-suffix$/m);
+      expect(diagnostics).toMatch(/^ {2}5\) unchanged = ordinary$/m);
+      expect(diagnostics).toMatch(/^ {2}6\) enabled = true$/m);
+      expect(values).toEqual({
+        token: null,
+        exact: '***',
+        embedded: 'prefix-***-suffix',
+        items: ['safe', '***', 'prefix-***-suffix'],
+        unchanged: 'ordinary',
+        enabled: true,
+      });
+      expect(interaction.transcript()).not.toContain(secret);
+      expect(diagnostics).not.toContain(secret);
+      expect(stdout).not.toContain(secret);
+      expect(resultJson).not.toContain(secret);
+    },
+  );
+
   it.each([
     { label: 'with a result', result: true },
     { label: 'without a result', result: false },

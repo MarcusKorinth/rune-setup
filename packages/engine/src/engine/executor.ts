@@ -186,6 +186,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan,
     resolution: options.resolution,
     product: options.product,
+    secrets,
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
     mode: options.mode ?? 'non-interactive',
@@ -223,6 +224,7 @@ export function describeCancelled(options: {
     plan: options.plan,
     resolution: options.resolution,
     product: options.product,
+    secrets: options.secrets,
     steps,
     status: 'cancelled',
     mode: options.mode ?? 'non-interactive',
@@ -253,6 +255,7 @@ export function describePlan(options: {
     plan: options.plan,
     resolution: options.resolution,
     product: options.product,
+    secrets: options.secrets,
     steps,
     status: 'planned',
     mode: options.mode ?? 'non-interactive',
@@ -267,6 +270,7 @@ function assembleResult(input: {
   readonly plan: ExecutionPlan;
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
+  readonly secrets: SecretRegistry;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
   readonly mode: RunMode;
@@ -304,22 +308,33 @@ function assembleResult(input: {
     stepsSkipped: count('SKIPPED'),
     stepsNotRun: count('NOT_RUN') + count('PENDING'),
     nothingExecuted: executed === 0,
-    inputs: input.resolution.inputs.map(resultInput),
+    inputs: input.resolution.inputs.map((state) => resultInput(state, input.secrets)),
     steps,
   };
 }
 
-function resultInput(state: InputState): ResultInput {
-  const handler = state.spec.type === 'secret';
+function resultInput(state: InputState, secrets: SecretRegistry): ResultInput {
+  const secretInput = state.spec.type === 'secret';
   const value = state.value;
+  let projectedValue: ResultInput['value'];
+
+  if (secretInput || value instanceof SecretString) {
+    projectedValue = null;
+  } else if (typeof value === 'string') {
+    projectedValue = secrets.mask(value);
+  } else if (Array.isArray(value)) {
+    projectedValue = value.map((entry) => secrets.mask(entry));
+  } else {
+    projectedValue = value ?? null;
+  }
 
   return {
     id: state.id,
-    value: handler || value instanceof SecretString ? null : (value ?? null),
+    value: projectedValue,
     // A disabled input's discarded value keeps its provenance: the layer that supplied it
     // lives in `ignored`, and the result records it as the source (§5, §10).
     source: state.source ?? state.ignored ?? null,
-    secret: handler,
+    secret: secretInput,
     enabled: state.enabled,
     ignored: state.ignored === undefined ? null : 'input disabled',
   };

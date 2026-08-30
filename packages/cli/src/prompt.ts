@@ -11,10 +11,11 @@ import {
   CancelledError,
   InputError,
   InternalError,
+  MASK,
   normalizeSummaryChoice,
   SUMMARY_ACTIONS,
 } from '@rune/engine';
-import type { InputState, InputType, Session, StringTable } from '@rune/engine';
+import type { InputState, InputType, ResultInput, Session, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
 import { renderPlan } from './render.js';
@@ -259,11 +260,17 @@ export async function summaryLoop(
   for (;;) {
     io.stderr('');
     io.stderr(strings.chrome('rune.summary.heading'));
-    renderPlan(session.describe(), strings, stderrOnly);
+    const described = session.describe();
+    renderPlan(described, strings, stderrOnly);
+    const projectedInputs = new Map(described.inputs.map((input) => [input.id, input]));
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
+      const projected = projectedInputs.get(state.id);
+      if (projected === undefined) {
+        throw new InternalError(`the result projection omitted input "${state.id}"`);
+      }
       io.stderr(
-        `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(state, strings)}`,
+        `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(projected, strings)}`,
       );
     });
 
@@ -324,14 +331,16 @@ async function askUntilAccepted(
   }
 }
 
-function displayValue(state: InputState, strings: StringTable): string {
-  const value = state.value;
-  if (value === undefined) {
-    return strings.chrome('rune.summary.notSet');
+function displayValue(projected: ResultInput, strings: StringTable): string {
+  if (projected.secret) {
+    return MASK;
   }
+  const value = projected.value;
   if (Array.isArray(value)) {
     return value.join(', ');
   }
-  // A SecretString renders itself as *** — exactly what a summary should show.
+  if (value === null) {
+    return strings.chrome('rune.summary.notSet');
+  }
   return String(value);
 }
