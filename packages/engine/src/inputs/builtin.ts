@@ -62,9 +62,11 @@ function optionValues(spec: InputSpec): readonly string[] {
 }
 
 function listOptions(spec: InputSpec): string {
-  return optionValues(spec)
-    .map((value) => `"${value}"`)
-    .join(', ');
+  return listOptionValues(optionValues(spec));
+}
+
+function listOptionValues(values: readonly string[]): string {
+  return values.map((value) => `"${value}"`).join(', ');
 }
 
 /** Free text, optionally constrained by a pattern the manifest author wrote. */
@@ -198,14 +200,15 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
 
 /** The one sentence a value outside the options gets, wherever it was written. */
 function membership(entries: readonly string[], spec: InputSpec): Coercion {
-  const known = optionValues(spec);
-  const unknown = entries.filter((entry) => !known.includes(entry));
+  const values = optionValues(spec);
+  const known = new Set(values);
+  const unknown = entries.filter((entry) => !known.has(entry));
   if (unknown.length === 0) {
     return ok(Object.freeze([...entries]));
   }
   const named = unknown.map((entry) => `"${entry}"`).join(', ');
   return fail(
-    `${named} ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (${listOptions(spec)})`,
+    `${named} ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (${listOptionValues(values)})`,
   );
 }
 

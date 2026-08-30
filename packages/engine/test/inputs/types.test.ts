@@ -396,6 +396,49 @@ describe('multiselect', () => {
     );
   });
 
+  it('keeps unknown entries and declared option values in their written order', () => {
+    const result = from('multiselect', 'missing-last,stable,missing-first', {
+      options: [
+        { value: 'first', label: 'First option' },
+        'stable',
+        { value: 'last', label: 'Last option' },
+      ],
+    });
+
+    expect(result).toBe(
+      '"missing-last", "missing-first" are not option values ("first", "stable", "last")',
+    );
+  });
+
+  it('retains duplicate native selections in their written order as a frozen snapshot', () => {
+    const written = ['docker', 'git', 'docker'];
+    const result = handler('multiselect').fromNative(written, spec('multiselect', options));
+    const selection = result.ok ? (result.value as readonly string[]) : [];
+
+    expect(selection).toEqual(written);
+    expect(selection).not.toBe(written);
+    expect(Object.isFrozen(selection)).toBe(true);
+  });
+
+  it('validates large native selections without a quadratic membership scan', () => {
+    const count = 50_000;
+    const values = Array.from({ length: count }, (_unused, index) => `option-${index}`);
+    const selection = [...values].reverse();
+    const started = Date.now();
+
+    const result = handler('multiselect').fromNative(
+      selection,
+      spec('multiselect', { options: values }),
+    );
+
+    // Both the manifest-sized option list and a native values-file selection are valid. A
+    // linear lookup remains comfortably below this generous guard; scanning the full option
+    // list for every selection used to take multiple seconds on this shape.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result).toEqual({ ok: true, value: selection });
+    expect(Object.isFrozen(result.ok ? result.value : undefined)).toBe(true);
+  });
+
   it('takes a YAML list of strings as an immutable snapshot', () => {
     const written = ['git'];
     const result = handler('multiselect').fromNative(written, spec('multiselect', options));
