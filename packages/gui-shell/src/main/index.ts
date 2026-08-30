@@ -46,6 +46,64 @@ export const BRIDGE_CHANNELS = [
 
 export const EVENT_CHANNEL = 'rune:event';
 
+type ResultWriter = typeof writeResult;
+type SigtermSubscriber = (listener: () => void) => () => void;
+
+interface WorkflowMainOptions {
+  readonly whenReady?: () => Promise<void>;
+  readonly open?: (invocation: ShellInvocation) => Promise<Session>;
+  readonly writer?: ResultWriter;
+  readonly subscribeToSigterm?: SigtermSubscriber;
+}
+
+/** Buffers the one §9.4 cancel request until the window/session lifecycle can receive it. */
+class SigtermRelay {
+  readonly #unsubscribe: () => void;
+  #requested = false;
+  #delivered = false;
+  #target: (() => void) | undefined;
+
+  constructor(subscribe: SigtermSubscriber = subscribeToSigterm) {
+    this.#unsubscribe = subscribe(() => this.#request());
+  }
+
+  connect(target: () => void): () => void {
+    this.#target = target;
+    this.#deliver();
+    return () => {
+      if (this.#target === target) {
+        this.#target = undefined;
+      }
+    };
+  }
+
+  dispose(): void {
+    this.#target = undefined;
+    this.#unsubscribe();
+  }
+
+  #request(): void {
+    if (this.#requested) {
+      return;
+    }
+    this.#requested = true;
+    this.#deliver();
+  }
+
+  #deliver(): void {
+    if (!this.#requested || this.#delivered || this.#target === undefined) {
+      return;
+    }
+    this.#delivered = true;
+    this.#target();
+  }
+}
+
+function subscribeToSigterm(listener: () => void): () => void {
+  process.on('SIGTERM', listener);
+  return () => process.removeListener('SIGTERM', listener);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(app.isPackaged ? 1 : 2);
   if (isShellVersionProbe(argv)) {
@@ -57,28 +115,46 @@ async function main(): Promise<void> {
   }
   const invocation = parseShellArgv(argv);
 
-  await app.whenReady();
+  app.exit(await runWorkflow(invocation));
+}
 
-  let session: Session;
+/** Runs one ordinary shell invocation; the standalone version probe never enters here. */
+export async function runWorkflow(
+  invocation: ShellInvocation,
+  options: WorkflowMainOptions = {},
+): Promise<number> {
+  // Keep the packaged headless entry's existing lifecycle unchanged. The relay belongs to
+  // the windowed shell launched by `rune run --gui` and starts before Electron readiness.
+  const relay = invocation.nonInteractive
+    ? undefined
+    : new SigtermRelay(options.subscribeToSigterm);
+  const writer = options.writer ?? writeResult;
+
   try {
-    session = await openSession(invocation);
-  } catch (error) {
-    // A manifest or input error before any window exists: named on stderr, exit code from
-    // the one table, and the §10 zero-counter result file — both hosts write it.
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    const code = error instanceof RuneError ? exitCodeFor(error) : 70;
-    deliverFailure(code, invocation);
-    app.exit(code);
-    return;
-  }
+    await (options.whenReady ?? (() => app.whenReady()))();
 
-  if (invocation.nonInteractive) {
-    // The headless path (§9.4): no window, the same engine walk the CLI does.
-    app.exit(await headlessRun(session, invocation));
-    return;
-  }
+    let session: Session;
+    try {
+      session = await (options.open ?? openSession)(invocation);
+    } catch (error) {
+      // A manifest or input error before any window exists: named on stderr, exit code from
+      // the one table, and the §10 zero-counter result file — both hosts write it.
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      const code = error instanceof RuneError ? exitCodeFor(error) : 70;
+      deliverFailure(code, invocation);
+      return code;
+    }
 
-  app.exit(await windowedRun(session, invocation));
+    if (invocation.nonInteractive) {
+      // The headless path (§9.4): no window, the same engine walk the CLI does.
+      return headlessRun(session, invocation, writer);
+    }
+
+    const code = await windowedRun(session, invocation, writer, relay);
+    return code;
+  } finally {
+    relay?.dispose();
+  }
 }
 
 export async function openSession(invocation: ShellInvocation): Promise<Session> {
@@ -115,7 +191,10 @@ export async function windowedRun(
   session: Session,
   invocation: ShellInvocation,
   writer: typeof writeResult = writeResult,
+  cancellation?: SigtermRelay,
 ): Promise<number> {
+  const relay = cancellation ?? new SigtermRelay();
+  const ownsRelay = cancellation === undefined;
   const window = new BrowserWindow({
     width: 900,
     height: 640,
@@ -135,6 +214,7 @@ export async function windowedRun(
   let outcome: RunResult | undefined;
   let fatalCode: number | undefined;
   let renderedDone = false;
+  let windowLoaded = false;
 
   registerBridge(session, {
     events: window.webContents,
@@ -171,13 +251,15 @@ export async function windowedRun(
     },
   });
 
-  // SIGTERM is the §9.4 cancel request from `rune run --gui`: during a run it fires the
-  // CancelToken; before one it is the close-window path.
-  process.on('SIGTERM', () => {
+  // A relayed SIGTERM keeps the existing §9.4 behavior: running means CancelToken;
+  // otherwise it is the close-window path. Before load completes, defer only the close.
+  const disconnectCancellation = relay.connect(() => {
     if (running) {
       session.cancel();
-    } else {
+    } else if (windowLoaded) {
       window.close();
+    } else {
+      closeRequested = true;
     }
   });
   window.on('close', (event) => {
@@ -199,8 +281,20 @@ export async function windowedRun(
     }
   });
 
-  await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-  await new Promise<void>((resolve) => window.on('closed', () => resolve()));
+  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
+  try {
+    await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+    windowLoaded = true;
+    if (closeRequested) {
+      window.close();
+    }
+    await closed;
+  } finally {
+    disconnectCancellation();
+    if (ownsRelay) {
+      relay.dispose();
+    }
+  }
 
   if (fatalCode !== undefined) {
     return fatalCode;

@@ -82,6 +82,7 @@ import {
   headlessRun,
   openSession,
   registerBridge,
+  runWorkflow,
   windowedRun,
 } from '../src/main/index.js';
 
@@ -165,6 +166,46 @@ function shellInvocation(manifestPath: string, nonInteractive: boolean) {
     result: undefined,
     logFile: undefined,
     nonInteractive,
+  };
+}
+
+function sigtermHarness(): {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly fire: () => void;
+  readonly active: () => number;
+} {
+  let listener: (() => void) | undefined;
+  return {
+    subscribe: (next) => {
+      listener = next;
+      let subscribed = true;
+      return () => {
+        if (subscribed) {
+          subscribed = false;
+          listener = undefined;
+        }
+      };
+    },
+    fire: () => {
+      if (listener === undefined) {
+        throw new Error('SIGTERM listener is not active');
+      }
+      listener();
+    },
+    active: () => (listener === undefined ? 0 : 1),
+  };
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: () => {
+      resolvePromise?.();
+    },
   };
 }
 
@@ -349,12 +390,15 @@ describe('the IPC bridge', () => {
       result: join(tmpdir(), 'result.json'),
     };
     const delivered: unknown[] = [];
+    const listenersBefore = process.listenerCount('SIGTERM');
     const run = windowedRun(session, invocation, (result) => delivered.push(result));
 
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(process.listenerCount('SIGTERM')).toBe(listenersBefore + 1);
     electron.windows[0]?.close();
 
     expect(await run).toBe(6);
+    expect(process.listenerCount('SIGTERM')).toBe(listenersBefore);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({
       status: 'cancelled',
@@ -384,6 +428,153 @@ describe('the IPC bridge', () => {
 
     expect(await run).toBe(70);
     expect(writes).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
+  });
+
+  it('buffers one SIGTERM before app readiness and closes with one cancelled result', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const ready = deferred();
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+
+    const run = runWorkflow(invocation, {
+      whenReady: () => ready.promise,
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(sigterm.active()).toBe(1);
+    expect(electron.windows).toHaveLength(0);
+    sigterm.fire();
+    sigterm.fire();
+    ready.resolve();
+
+    expect(await run).toBe(6);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsNotRun: 0,
+    });
+    expect(electron.windows).toHaveLength(1);
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
+  });
+
+  it('relays one SIGTERM after window readiness through the plan-based close path', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { token: 'provided-token' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+    const run = runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(electron.windows).toHaveLength(1);
+    sigterm.fire();
+    sigterm.fire();
+
+    expect(await run).toBe(6);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 1,
+      stepsExecuted: 0,
+      stepsNotRun: 1,
+    });
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
+  });
+
+  it('relays one SIGTERM during execute to the Session cancel token', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { token: 'provided-token' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const runnerStarted = deferred();
+    let cancelNotifications = 0;
+    const delivered: unknown[] = [];
+    const run = runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      open: () =>
+        Session.open(manifestPath, {
+          environment: {},
+          mode: 'gui',
+          overrides: invocation.overrides,
+          runner: {
+            run: async (request) =>
+              new Promise((resolve) => {
+                request.cancel.onCancel(() => {
+                  cancelNotifications += 1;
+                  resolve({ kind: 'cancelled' });
+                });
+                runnerStarted.resolve();
+              }),
+          },
+        }),
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    const execution = execute?.({});
+    await runnerStarted.promise;
+    sigterm.fire();
+    sigterm.fire();
+
+    await expect(execution).resolves.toMatchObject({ status: 'cancelled', exitCode: 6 });
+    expect(cancelNotifications).toBe(1);
+    expect(delivered).toHaveLength(1);
+    await electron.handlers.get('rune:done')?.({});
+    expect(await run).toBe(6);
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
+  });
+
+  it('maps an early-cancel result writer failure to 70 and removes the listener', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const ready = deferred();
+    const sigterm = sigtermHarness();
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = runWorkflow(invocation, {
+      whenReady: () => ready.promise,
+      writer: () => {
+        writes += 1;
+        throw new Error('disk denied');
+      },
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    sigterm.fire();
+    ready.resolve();
+
+    expect(await run).toBe(70);
+    expect(writes).toBe(1);
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(sigterm.active()).toBe(0);
     expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
   });
 
