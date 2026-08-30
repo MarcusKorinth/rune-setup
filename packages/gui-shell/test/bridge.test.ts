@@ -9,8 +9,44 @@ import { CancelToken, ManifestError, Session } from '@rune/engine';
 const electron = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void;
 
+  class TestWebContents {
+    readonly send = vi.fn();
+    readonly listeners = new Map<string, Listener[]>();
+
+    once(event: string, listener: Listener): void {
+      const onceListener: Listener = (...args) => {
+        this.removeListener(event, onceListener);
+        listener(...args);
+      };
+      this.on(event, onceListener);
+    }
+
+    on(event: string, listener: Listener): void {
+      const listeners = this.listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.listeners.set(event, listeners);
+    }
+
+    removeListener(event: string, listener: Listener): void {
+      this.listeners.set(
+        event,
+        (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener),
+      );
+    }
+
+    emit(event: string, ...args: unknown[]): void {
+      for (const listener of [...(this.listeners.get(event) ?? [])]) {
+        listener(...args);
+      }
+    }
+
+    listenerCount(event: string): number {
+      return this.listeners.get(event)?.length ?? 0;
+    }
+  }
+
   class TestBrowserWindow {
-    readonly webContents = { send: vi.fn() };
+    readonly webContents = new TestWebContents();
     readonly listeners = new Map<string, Listener[]>();
     closeCalls = 0;
     destroyCalls = 0;
@@ -228,6 +264,20 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
   };
 }
 
+function rejectingDeferred(): {
+  readonly promise: Promise<undefined>;
+  readonly reject: (error: Error) => void;
+} {
+  let rejectPromise: ((error: Error) => void) | undefined;
+  const promise = new Promise<undefined>((_resolve, reject) => {
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    reject: (error) => rejectPromise?.(error),
+  };
+}
+
 async function bridgeOver(session: Session): Promise<{
   channels: string[];
   call: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -413,6 +463,119 @@ describe('the IPC bridge', () => {
     expect(sigterm.active()).toBe(0);
     expect(stderr).toHaveBeenCalledWith('renderer failed for ***\n');
     expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
+  });
+
+  it('treats renderer loss while idle as a hard crash without a result', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const writer = vi.fn();
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    expect(window.webContents.listenerCount('render-process-gone')).toBe(1);
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    await expect(run).resolves.toBe(70);
+    expect(writer).not.toHaveBeenCalled();
+    expect(window.closeCalls).toBe(0);
+    expect(window.destroyCalls).toBe(1);
+    expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
+  });
+
+  it('cancels and finishes active runner cleanup before ending a renderer crash', async () => {
+    const manifestPath = fixture();
+    const runnerStarted = deferred();
+    const finishCleanup = deferred();
+    let cancelNotifications = 0;
+    let cleanupFinished = false;
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'provided-token' },
+      runner: {
+        run: async (request) => {
+          const cancelled = new Promise<void>((resolve) => {
+            request.cancel.onCancel(() => {
+              cancelNotifications += 1;
+              resolve();
+            });
+          });
+          runnerStarted.resolve();
+          await cancelled;
+          await finishCleanup.promise;
+          cleanupFinished = true;
+          return { kind: 'cancelled' as const };
+        },
+      },
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const writer = vi.fn();
+    const cancel = vi.spyOn(session, 'cancel');
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    if (execute === undefined) {
+      throw new Error('execute handler was not registered');
+    }
+    const execution = execute({});
+    await runnerStarted.promise;
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancelNotifications).toBe(1);
+    expect(window.destroyCalls).toBe(0);
+    expect(writer).not.toHaveBeenCalled();
+
+    finishCleanup.resolve();
+    await expect(execution).resolves.toMatchObject({ status: 'cancelled', exitCode: 6 });
+    await expect(run).resolves.toBe(70);
+    expect(cleanupFinished).toBe(true);
+    expect(writer).not.toHaveBeenCalled();
+    expect(window.closeCalls).toBe(0);
+    expect(window.destroyCalls).toBe(1);
+    expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
+  });
+
+  it('does not write a load error result after renderer loss wins the load race', async () => {
+    const manifestPath = emptyFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const load = rejectingDeferred();
+    electron.loadFile.mockImplementationOnce(() => load.promise);
+    const writer = vi.fn();
+    const run = windowedRun(session, invocation, writer);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const window = electron.windows[0];
+    if (window === undefined) {
+      throw new Error('window was not created');
+    }
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1 });
+    load.reject(new Error('renderer load failed after process loss'));
+
+    await expect(run).resolves.toBe(70);
+    expect(writer).not.toHaveBeenCalled();
+    expect(window.destroyCalls).toBe(1);
+    expect(window.webContents.listenerCount('render-process-gone')).toBe(0);
   });
 
   it('reports a rejected execute through onExecuteError — fatal in main, never a wedge', async () => {

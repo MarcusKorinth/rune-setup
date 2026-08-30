@@ -256,12 +256,40 @@ export async function windowedRun(
   }
   window.once('ready-to-show', () => window.show());
 
+  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
+
   let running = false;
   let closeRequested = false;
   let outcome: RunResult | undefined;
   let fatalCode: number | undefined;
   let renderedDone = false;
   let windowLoaded = false;
+  let rendererLost = false;
+  let resolveRendererLost: (() => void) | undefined;
+  const rendererLostSignal = new Promise<void>((resolve) => {
+    resolveRendererLost = resolve;
+  });
+
+  const destroyAfterRendererLoss = (): void => {
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+  };
+
+  const onRendererLost = (): void => {
+    if (rendererLost) {
+      return;
+    }
+    rendererLost = true;
+    fatalCode = 70;
+    resolveRendererLost?.();
+    if (running) {
+      session.cancel();
+    } else {
+      destroyAfterRendererLoss();
+    }
+  };
+  window.webContents.on('render-process-gone', onRendererLost);
 
   registerBridge(session, {
     events: window.webContents,
@@ -269,6 +297,11 @@ export async function windowedRun(
       running = true;
     },
     onExecuteEnd: (result) => {
+      if (rendererLost) {
+        running = false;
+        destroyAfterRendererLoss();
+        return;
+      }
       if (!deliverSafely(result, invocation, writer, session)) {
         running = false;
         fatalCode = 70;
@@ -285,6 +318,10 @@ export async function windowedRun(
     onExecuteError: (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
+      if (rendererLost) {
+        destroyAfterRendererLoss();
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(session.mask(message) + String.fromCharCode(10));
       const code = error instanceof RuneError ? exitCodeFor(error) : 70;
@@ -328,21 +365,28 @@ export async function windowedRun(
     }
   });
 
-  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
   try {
-    await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-    windowLoaded = true;
-    if (closeRequested) {
-      window.close();
+    const loaded = window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+    await Promise.race([loaded, rendererLostSignal]);
+    if (!rendererLost) {
+      windowLoaded = true;
+      if (closeRequested) {
+        window.close();
+      }
     }
     await closed;
   } catch (error) {
+    if (rendererLost) {
+      await closed;
+      return 70;
+    }
     const code = failWith(error, invocation, session, writer);
     if (!window.isDestroyed()) {
       window.destroy();
     }
     return code;
   } finally {
+    window.webContents.removeListener('render-process-gone', onRendererLost);
     disconnectCancellation();
     if (ownsRelay) {
       relay.dispose();
