@@ -58,8 +58,9 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const runId = randomUUID();
 
   const emit = (event: RunEvent): void => {
+    const masked = maskEvent(event, secrets);
     try {
-      observer(event);
+      observer(masked);
     } catch {
       // A broken renderer must never corrupt a run (§9.1).
     }
@@ -390,4 +391,98 @@ function maskArgv(step: PlannedStep, secrets: SecretRegistry): readonly string[]
   return step.command.argv.map((entry) =>
     entry instanceof SecretString ? MASK : secrets.mask(entry),
   );
+}
+
+/**
+ * Projects every run event at the engine boundary, so every observer receives only masked
+ * plain data. Machine-readable discriminants and enums stay byte-identical even when a
+ * secret happens to equal one of them.
+ */
+function maskEvent(event: RunEvent, secrets: SecretRegistry): RunEvent {
+  switch (event.kind) {
+    case 'runStarted':
+      return Object.freeze({ kind: event.kind, plan: maskPlan(event.plan, secrets) });
+    case 'stepStarted':
+      return Object.freeze({
+        kind: event.kind,
+        stepId: secrets.mask(event.stepId),
+        index: event.index,
+        total: event.total,
+        title: secrets.mask(event.title),
+      });
+    case 'stepOutput':
+      return Object.freeze({
+        kind: event.kind,
+        stepId: secrets.mask(event.stepId),
+        stream: event.stream,
+        line: secrets.mask(event.line),
+      });
+    case 'stepFinished':
+      return Object.freeze({
+        kind: event.kind,
+        stepId: secrets.mask(event.stepId),
+        state: event.state,
+        exitCode: event.exitCode,
+        durationMs: event.durationMs,
+      });
+    case 'runFinished':
+      // assembleResult() already owns the result's field-aware masking. Reuse that projection
+      // rather than applying a blanket string transform that would corrupt its enums.
+      return Object.freeze({ kind: event.kind, result: event.result });
+  }
+}
+
+function maskPlan(plan: ExecutionPlan, secrets: SecretRegistry): ExecutionPlan {
+  return deepFreeze({
+    manifestPath: secrets.mask(plan.manifestPath),
+    locale: plan.locale === undefined ? undefined : secrets.mask(plan.locale),
+    platform: plan.platform,
+    preview: plan.preview,
+    failFast: plan.failFast,
+    logFile: plan.logFile === undefined ? undefined : secrets.mask(plan.logFile),
+    steps: plan.steps.map((step): PlannedStep => {
+      const common = {
+        id: secrets.mask(step.id),
+        title: secrets.mask(step.title),
+      };
+      if (step.state === 'SKIPPED') {
+        return {
+          ...common,
+          state: step.state,
+          skipReason: secrets.mask(step.skipReason),
+        };
+      }
+      return {
+        ...common,
+        state: step.state,
+        command: {
+          argv: step.command.argv.map((entry) => maskPlanText(entry, secrets)),
+          cwd: maskPlanText(step.command.cwd, secrets),
+          env: Object.fromEntries(
+            Object.entries(step.command.env).map(([name, value]) => [
+              secrets.mask(name),
+              maskPlanText(value, secrets),
+            ]),
+          ),
+          timeoutSeconds: step.command.timeoutSeconds,
+          successExitCodes: [...step.command.successExitCodes],
+        },
+      };
+    }),
+  });
+}
+
+function maskPlanText(value: string | SecretString, secrets: SecretRegistry): string {
+  return value instanceof SecretString ? MASK : secrets.mask(value);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(entry);
+  }
+  return value;
 }

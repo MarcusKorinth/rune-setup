@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
@@ -7,6 +11,7 @@ import { resolveInputs, type Resolution } from '../../src/engine/inputs.js';
 import { buildPlan, type ExecutionPlan } from '../../src/engine/plan.js';
 import { SecretRegistry } from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import { createLogFileSink } from '../../src/logs/logFile.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 import { runResultSchema } from '../../src/results/schema.js';
@@ -65,6 +70,44 @@ const TWO_STEPS = [
   '    run:',
   '      command: b',
 ];
+
+function eventMaskingSetup(): ReturnType<typeof setup> {
+  const options = setup(
+    [
+      'inputs:',
+      '  maskToken:',
+      '    type: secret',
+      '  maskToggle:',
+      '    type: boolean',
+      '    default: false',
+      'execution:',
+      '  logFile: mask/run-mask.log',
+      'steps:',
+      '  - id: mask-skipped',
+      '    title: mask skipped',
+      '    when: "${maskToggle}"',
+      '    run:',
+      '      command: mask-command',
+      '  - id: run-mask',
+      '    title: run mask',
+      '    run:',
+      '      command: mask-command',
+      '      args: [mask-arg, "${maskToken}"]',
+      '      cwd: mask/cwd',
+      '      env:',
+      '        mask_name: mask-value',
+    ],
+    { overrides: new Map([['maskToken', 'mask']]) },
+  );
+  return {
+    ...options,
+    plan: {
+      ...options.plan,
+      manifestPath: '/project/mask-installer.yaml',
+      locale: 'mask-locale',
+    },
+  };
+}
 
 describe('a run that succeeds', () => {
   it('walks every step, emits the event bracket, and counts what happened', async () => {
@@ -354,20 +397,26 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 
-  it('never lets a secret reach an observer, not even inside RunStarted', async () => {
-    const { plan, resolution, secrets, product } = setup(
-      [
-        'inputs:',
-        '  token:',
-        '    type: secret',
-        'steps:',
-        '  - id: use',
-        '    run:',
-        '      command: a',
-        '      args: ["${token}"]',
-      ],
-      { overrides: new Map([['token', 'super-secret-value']]) },
-    );
+  it('masks every variable event string without changing machine-readable fields', async () => {
+    const { plan, resolution, secrets, product } = eventMaskingSetup();
+    for (const value of [
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+      'PENDING',
+      'SKIPPED',
+      'SUCCEEDED',
+      'stdout',
+      'succeeded',
+      'non-interactive',
+      'default',
+      'set',
+      hostPlatform(),
+    ]) {
+      secrets.register(value);
+    }
     const events: RunEvent[] = [];
 
     const result = await executeRun({
@@ -376,11 +425,92 @@ describe('skipped steps and the dry run', () => {
       product,
       secrets,
       observer: (event) => events.push(event),
-      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', 'mask output');
+        return { kind: 'exited', exitCode: 0 };
+      }),
     });
 
-    expect(JSON.stringify(events)).not.toContain('super-secret-value');
-    expect(JSON.stringify(result)).not.toContain('super-secret-value');
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepFinished',
+      'stepStarted',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    const started = events[0];
+    if (started?.kind !== 'runStarted') {
+      throw new Error('the first event was not RunStarted');
+    }
+    expect(started.plan).toMatchObject({
+      manifestPath: '/project/***-installer.yaml',
+      locale: '***-locale',
+      platform: hostPlatform(),
+      logFile: '***/run-***.log',
+    });
+    expect(started.plan).not.toBe(plan);
+    expect(started.plan.steps[0]).toMatchObject({
+      id: '***-skipped',
+      title: '*** skipped',
+      state: 'SKIPPED',
+      skipReason: 'condition false: ${***Toggle}',
+    });
+    const pending = started.plan.steps[1];
+    if (pending?.state !== 'PENDING') {
+      throw new Error('the second step was not pending');
+    }
+    expect(pending).toMatchObject({ id: 'run-***', title: 'run ***', state: 'PENDING' });
+    expect(pending.command.argv).toEqual(['***-command', '***-arg', '***']);
+    expect(pending.command.cwd).toContain('***');
+    expect(pending.command.env).toEqual({ '***_name': '***-value' });
+    expect(Object.isFrozen(started)).toBe(true);
+    expect(Object.isFrozen(started.plan)).toBe(true);
+    expect(Object.isFrozen(started.plan.steps)).toBe(true);
+    expect(Object.isFrozen(pending.command.argv)).toBe(true);
+
+    const output = events.find((event) => event.kind === 'stepOutput');
+    expect(output).toMatchObject({ stepId: 'run-***', stream: 'stdout', line: '*** output' });
+    expect(
+      events.filter((event) => event.kind === 'stepFinished').map((event) => event.state),
+    ).toEqual(['SKIPPED', 'SUCCEEDED']);
+    const finished = events.at(-1);
+    expect(finished).toMatchObject({
+      kind: 'runFinished',
+      result: { status: 'succeeded', mode: 'non-interactive', platform: hostPlatform() },
+    });
+    expect(Object.isFrozen(finished)).toBe(true);
+    if (finished?.kind !== 'runFinished') {
+      throw new Error('the final event was not RunFinished');
+    }
+    expect(finished.result.inputs.map((input) => input.source)).toEqual(['set', 'default']);
+    expect(JSON.stringify(events)).not.toContain('mask');
+    expect(JSON.stringify(result)).not.toContain('mask');
+  });
+
+  it('delivers the same masked variable fields to the real log-file sink', async () => {
+    const options = eventMaskingSetup();
+    const logFile = join(mkdtempSync(join(tmpdir(), 'rune-event-mask-')), 'run.log');
+    const log = createLogFileSink(logFile);
+
+    try {
+      await executeRun({
+        ...options,
+        observer: log.observer,
+        runner: stubRunner((request) => {
+          request.onOutput('stdout', 'mask output');
+          return { kind: 'exited', exitCode: 0 };
+        }),
+      });
+    } finally {
+      await log.close();
+    }
+
+    const text = readFileSync(logFile, 'utf8');
+    expect(text).not.toContain('mask');
+    expect(text).toContain('[***-skipped] SKIPPED');
+    expect(text).toContain('[run-***] started (2/2): run ***');
+    expect(text).toContain('[run-***:stdout] *** output');
   });
 });
 
