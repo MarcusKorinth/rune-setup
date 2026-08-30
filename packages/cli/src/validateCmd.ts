@@ -20,22 +20,35 @@ export async function validateCommand(
   parsePlatform(flags.platform);
   const absolute = resolve(manifestPath);
   const report = validateManifest(absolute, { locale: flags.locale });
-  const { locales, manifest } = report;
+  const { locales, manifest, strings } = report;
 
   io.stdout(
-    `${manifestPath} is valid (schemaVersion ${manifest.schemaVersion}, ` +
-      `product ${manifest.product.name} ${manifest.product.version})`,
+    strings.chrome('rune.validate.valid', {
+      path: manifestPath,
+      schemaVersion: manifest.schemaVersion,
+      productName: manifest.product.name,
+      productVersion: manifest.product.version,
+    }),
   );
-  io.stdout(locales.length === 0 ? 'locales: none' : `locales: ${locales.join(', ')}`);
+  io.stdout(
+    locales.length === 0
+      ? strings.chrome('rune.validate.locales.none')
+      : strings.chrome('rune.validate.locales.list', { locales: locales.join(', ') }),
+  );
 
   if (report.environment.length === 0) {
-    io.stdout('environment variables read: none');
+    io.stdout(strings.chrome('rune.validate.environment.none'));
     return;
   }
-  io.stdout('environment variables read:');
+  io.stdout(strings.chrome('rune.validate.environment.heading'));
   for (const use of report.environment) {
     for (const location of use.locations) {
-      io.stdout(`  ${use.name} — ${formatLocation(location)}`);
+      io.stdout(
+        strings.chrome('rune.validate.environment.entry', {
+          name: use.name,
+          location: formatLocation(location),
+        }),
+      );
     }
   }
 }

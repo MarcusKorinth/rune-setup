@@ -11,8 +11,9 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { ManifestError } from '../errors.js';
-import { discoverOverlays, selectLocale } from '../i18n/locale.js';
+import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay } from '../i18n/overlay.js';
+import { resolveStrings, type StringTable } from '../i18n/strings.js';
 import {
   loadYamlFile,
   loadYamlFileWithMetadata,
@@ -43,6 +44,10 @@ export interface ParseManifestOptions {
 export interface ValidateManifestOptions extends ParseManifestOptions {
   /** An explicit `--locale` value to validate through the engine-owned selection path. */
   readonly locale?: string | undefined;
+  /** Defaults to this process's environment; injected so hosts and tests own precedence. */
+  readonly environment?: Readonly<Record<string, string | undefined>> | undefined;
+  /** What the operating system reports; defaults to `Intl`. Injected for hosts and tests. */
+  readonly systemLocale?: string | undefined;
 }
 
 interface ParseContext {
@@ -88,6 +93,8 @@ export function parseManifestText(
 /** What `rune validate` reports: the accepted manifest, overlays, and environment reads. */
 export interface ValidationReport {
   readonly manifest: Manifest;
+  /** Fully resolved display strings for the selected validate locale. */
+  readonly strings: StringTable;
   /** Every valid locale overlay found beside the manifest, in deterministic order. */
   readonly locales: readonly string[];
   /** Every environment variable the manifest reads, with the places that read it (§4.3). */
@@ -106,20 +113,39 @@ export function validateManifest(
 ): ValidationReport {
   const document = loadYamlFile(file);
   const manifest = parseDocument(document, file, { checkAssetFiles: true, ...options });
-  selectLocale({ flag: options.locale, environment: {} });
+  const locale = selectLocale({
+    flag: options.locale,
+    environment: options.environment ?? process.env,
+    systemLocale: options.systemLocale ?? systemLocale(),
+  });
   const manifestDir = options.manifestDir ?? dirname(resolve(file));
   const overlays = discoverOverlays(manifestDir);
-  for (const overlay of overlays) {
-    loadOverlay(overlay.path, overlay.locale, manifest);
-  }
+  const loadedOverlays = overlays.map((overlay) =>
+    loadOverlay(overlay.path, overlay.locale, manifest),
+  );
+  const selectedOverlay = locale === undefined ? undefined : matchOverlay(locale, overlays);
+  const overlay =
+    selectedOverlay === undefined
+      ? undefined
+      : loadedOverlays.find((candidate) => candidate.file === selectedOverlay.path);
   return {
     manifest,
+    strings: resolveStrings({ manifest, locale, overlay }),
     locales: Object.freeze(overlays.map((overlay) => overlay.locale)),
     environment: environmentReferences(manifest, {
       file: document.file,
       sourceMap: document.sourceMap,
     }),
   };
+}
+
+/** What the operating system reports as its display locale. */
+function systemLocale(): string | undefined {
+  try {
+    return new Intl.DateTimeFormat().resolvedOptions().locale;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The JSON Schema of the current manifest version, for editor integration (`rune schema`). */

@@ -29,6 +29,13 @@ export const CHROME_CATALOG = Object.freeze({
   'rune.result.cancelled': 'Setup was cancelled.',
   'rune.result.planned': 'Dry run: nothing was executed.',
   'rune.result.nothingExecuted': 'No step needed to run.',
+  'rune.validate.valid':
+    '{path} is valid (schemaVersion {schemaVersion}, product {productName} {productVersion})',
+  'rune.validate.locales.none': 'locales: none',
+  'rune.validate.locales.list': 'locales: {locales}',
+  'rune.validate.environment.none': 'environment variables read: none',
+  'rune.validate.environment.heading': 'environment variables read:',
+  'rune.validate.environment.entry': '  {name} — {location}',
 } as const satisfies Readonly<Record<string, string>>);
 
 export type ChromeKey = keyof typeof CHROME_CATALOG;

@@ -80,6 +80,39 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).toContain('locales: de');
   });
 
+  it('renders the complete validate report in the explicitly selected locale', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  target:',
+      '    type: directory',
+      '    default: "${env.RUNE_VALIDATE_TARGET}"',
+      'steps: []',
+    ]);
+    writeLocaleOverlay(path, [
+      'rune.validate.valid: "{path} ist gültig (Schema {schemaVersion}, Produkt {productName} {productVersion})"',
+      'rune.validate.locales.none: "Sprachdateien: keine"',
+      'rune.validate.locales.list: "Sprachdateien: {locales}"',
+      'rune.validate.environment.none: "Gelesene Umgebungsvariablen: keine"',
+      'rune.validate.environment.heading: "Gelesene Umgebungsvariablen:"',
+      'rune.validate.environment.entry: "  {name} bei {location}"',
+    ]);
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', 'de-DE'], io)).toBe(0);
+
+    expect(io.out).toHaveLength(4);
+    expect(io.out[0]).toBe(`${path} ist gültig (Schema 1, Produkt Example 1.0.0)`);
+    expect(io.out[1]).toBe('Sprachdateien: de');
+    expect(io.out[2]).toBe('Gelesene Umgebungsvariablen:');
+    expect(io.out[3]).toMatch(/^ {2}RUNE_VALIDATE_TARGET bei /);
+    expect(io.out[3]).toContain(`${path}:8:`);
+    expect(io.err).toEqual([]);
+  });
+
   it('exits 3 for an invalid manifest', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const io = capture();
