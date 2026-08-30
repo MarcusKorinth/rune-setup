@@ -1,4 +1,12 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -71,6 +79,30 @@ describe('writeResult', () => {
       expect(temporaryFiles(directory)).toEqual([]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.sequential('anchors a relative destination to the cwd at call time', async () => {
+    const firstDirectory = mkdtempSync(join(tmpdir(), 'rune-result-writer-cwd-a-'));
+    const secondDirectory = mkdtempSync(join(tmpdir(), 'rune-result-writer-cwd-b-'));
+    const originalCwd = process.cwd();
+    const relativeDestination = 'result.json';
+    const expected = serializeResult(result('original-cwd'));
+
+    try {
+      process.chdir(firstDirectory);
+      const write = writeResult(result('original-cwd'), relativeDestination);
+      process.chdir(secondDirectory);
+      await write;
+
+      expect(readFileSync(join(firstDirectory, relativeDestination), 'utf8')).toBe(expected);
+      expect(existsSync(join(secondDirectory, relativeDestination))).toBe(false);
+      expect(temporaryFiles(firstDirectory)).toEqual([]);
+      expect(temporaryFiles(secondDirectory)).toEqual([]);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(firstDirectory, { recursive: true, force: true });
+      rmSync(secondDirectory, { recursive: true, force: true });
     }
   });
 

@@ -14,8 +14,7 @@ import type { RunResult } from './model.js';
 const renameQueues = new Map<string, Promise<void>>();
 
 function renameQueueKey(path: string): string {
-  const absolute = resolve(path);
-  return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+  return process.platform === 'win32' ? path.toLowerCase() : path;
 }
 
 async function renameForTarget(temporary: string, path: string): Promise<void> {
@@ -45,7 +44,8 @@ export function serializeResult(result: RunResult): string {
 
 /** Writes the result to `path`, creating the directory it lives in when needed. */
 export async function writeResult(result: RunResult, path: string): Promise<void> {
-  const directory = dirname(path);
+  const destination = resolve(path);
+  const directory = dirname(destination);
   await mkdir(directory, { recursive: true });
 
   const temporary = join(directory, `.rune-result-${randomUUID()}.tmp`);
@@ -58,7 +58,7 @@ export async function writeResult(result: RunResult, path: string): Promise<void
     await handle.writeFile(serializeResult(result), 'utf8');
     await handle.close();
     handle = undefined;
-    await renameForTarget(temporary, path);
+    await renameForTarget(temporary, destination);
     created = false;
   } catch (error) {
     if (handle !== undefined) {
