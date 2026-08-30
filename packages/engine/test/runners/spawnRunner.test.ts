@@ -194,6 +194,33 @@ describe('SpawnRunner', () => {
     });
   });
 
+  it('preserves argument boundaries and contents in a real child process', async () => {
+    const args = [
+      '',
+      'two words',
+      'embedded "double quotes"',
+      'C:\\Program Files\\RUNE\\',
+      '$HOME & echo | pipe; semi',
+      'ümlaut 🚀 日本語',
+    ];
+    const lines: string[] = [];
+
+    await run(
+      nodeCommand('console.log(JSON.stringify(process.argv.slice(1)))', {
+        argv: [
+          process.execPath,
+          '-e',
+          'console.log(JSON.stringify(process.argv.slice(1)))',
+          ...args,
+        ],
+      }),
+      { onOutput: (_stream, line) => lines.push(line) },
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual(args);
+  });
+
   it('delivers output as lines, tagged with the stream it came from', async () => {
     const lines: string[] = [];
 
