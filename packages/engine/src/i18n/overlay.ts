@@ -41,12 +41,13 @@ function fromDocument(
   manifest: ManifestV1,
 ): LocaleOverlay {
   const { file, value, sourceMap } = document;
-  if (value === null || value === undefined) {
+  const rootLocation = sourceMap.location([]);
+  if ((value === null || value === undefined) && rootLocation === undefined) {
     return Object.freeze({ locale, file, entries: Object.freeze({}) });
   }
-  if (typeof value !== 'object' || Array.isArray(value)) {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
     throw new ManifestError('RUNE-104', 'a locale overlay must be a mapping of key to text', {
-      location: startOfFile(file),
+      location: rootLocation ?? startOfFile(file),
     });
   }
 

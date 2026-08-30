@@ -111,4 +111,28 @@ describe('loading an overlay', () => {
     expect(Object.isFrozen(overlay)).toBe(true);
     expect(Object.isFrozen(overlay.entries)).toBe(true);
   });
+
+  it('treats a comment-only file as an empty overlay', () => {
+    const overlay = loadOverlayText('# German translations\n', 'locales/de.yaml', 'de', MANIFEST);
+    expect(Object.keys(overlay.entries)).toHaveLength(0);
+  });
+
+  it.each([
+    ['null', 'null\n'],
+    ['~', '~\n'],
+  ])('rejects an explicit %s scalar as a non-mapping', (_name, text) => {
+    let problem: unknown;
+    try {
+      loadOverlayText(text, 'locales/de.yaml', 'de', MANIFEST);
+    } catch (cause) {
+      problem = cause;
+    }
+
+    expect(problem).toBeInstanceOf(ManifestError);
+    expect(problem).toMatchObject({
+      code: 'RUNE-104',
+      message: 'a locale overlay must be a mapping of key to text',
+      location: { file: 'locales/de.yaml', line: 1, column: 1 },
+    });
+  });
 });
