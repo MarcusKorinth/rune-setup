@@ -357,6 +357,26 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, 'installer.yaml']);
   });
 
+  it('normalizes a relative development-directory shell before probing and launching', async () => {
+    const relativeShellDirectory = join('packages', 'gui-shell');
+    const shellDirectory = join(process.cwd(), relativeShellDirectory);
+    process.env['RUNE_GUI_SHELL'] = relativeShellDirectory;
+    expect(locateShell()).toEqual({ kind: 'dev', dir: shellDirectory });
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('installer.yaml', {}, capture(), interaction);
+
+    const electron = createRequire(join(shellDirectory, 'package.json'))('electron') as string;
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, 'installer.yaml']);
+  });
+
   it.each([
     ['mismatched', JSON.stringify({ protocolVersion: 1, runeVersion: '0.0.0' }), 0],
     ['unsupported', '', 2],

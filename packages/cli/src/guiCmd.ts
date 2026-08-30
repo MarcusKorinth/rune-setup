@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -68,9 +68,10 @@ export function locateShell(
 ): ShellLocation | undefined {
   const override = environment['RUNE_GUI_SHELL'];
   if (override !== undefined && override !== '') {
-    return statSync(override, { throwIfNoEntry: false })?.isDirectory() === true
-      ? { kind: 'dev', dir: override }
-      : { kind: 'binary', path: override };
+    const location = resolve(override);
+    return statSync(location, { throwIfNoEntry: false })?.isDirectory() === true
+      ? { kind: 'dev', dir: location }
+      : { kind: 'binary', path: location };
   }
   const cached = join(shellCacheDir(), SHELL_BINARY);
   return existsSync(cached) ? { kind: 'binary', path: cached } : undefined;
