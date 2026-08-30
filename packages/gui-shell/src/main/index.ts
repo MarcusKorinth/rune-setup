@@ -153,7 +153,15 @@ export async function runWorkflow(
   const writer = options.writer ?? writeResult;
 
   try {
-    await (options.whenReady ?? (() => app.whenReady()))();
+    try {
+      await (options.whenReady ?? (() => app.whenReady()))();
+    } catch (error) {
+      // Electron failed before a session or window exists. This is still an ordinary
+      // internal-error outcome for a configured invocation (§10).
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      deliverFailure(70, invocation, writer);
+      return 70;
+    }
 
     let session: Session;
     try {

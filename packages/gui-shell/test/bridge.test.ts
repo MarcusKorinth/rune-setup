@@ -301,6 +301,32 @@ describe('the IPC bridge', () => {
     expect(electron.windows).toHaveLength(0);
   });
 
+  it('contains a rejected app readiness with one internal-error result and disposes SIGTERM', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const sigterm = sigtermHarness();
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => {
+        throw new Error('Electron startup unavailable');
+      },
+      writer: (result) => delivered.push(result),
+      subscribeToSigterm: sigterm.subscribe,
+    });
+
+    expect(code).toBe(70);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ status: 'internal_error', exitCode: 70 });
+    expect(electron.windows).toHaveLength(0);
+    expect(sigterm.active()).toBe(0);
+    expect(stderr).toHaveBeenCalledWith('Electron startup unavailable\n');
+  });
+
   it('contains a rejected window load with one masked result and destroys the window', async () => {
     const manifestPath = fixture();
     const invocation = {
