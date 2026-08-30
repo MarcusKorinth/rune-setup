@@ -85,11 +85,11 @@ export async function runCommand(
     if (flags.dryRun === true && flags.result !== '-') {
       renderPlan(plan, result.product, io);
     }
-    renderOutcome(result, session.warnings(), io, strings);
     if (flags.result !== undefined) {
       deliveryStarted = true;
       deliverResult(result, flags.result, io);
     }
+    renderOutcome(result, session.warnings(), io, strings);
     if (result.exitCode !== 0) {
       throw new ExitWithCode(result.exitCode);
     }
@@ -121,11 +121,11 @@ export async function runCommand(
           ...(session === undefined ? {} : { session }),
           ...(plan === undefined ? {} : { plan }),
         });
-      renderOutcome(result, session?.warnings() ?? [], io, strings);
       if (flags.result !== undefined) {
         deliveryStarted = true;
         deliverResult(result, flags.result, io);
       }
+      renderOutcome(result, session?.warnings() ?? [], io, strings);
       throw new ExitWithCode(result.exitCode);
     }
     throw error;

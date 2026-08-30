@@ -30,7 +30,7 @@ vi.mock('@rune/engine', async (importOriginal) => {
   };
 });
 
-import { Session, type RunResult } from '@rune/engine';
+import { RuneError, Session, type RunResult } from '@rune/engine';
 import { run, type CliIo } from '@rune/cli';
 import { runResultSchema } from '../packages/engine/src/results/schema.js';
 
@@ -135,6 +135,8 @@ describe('CLI internal-error boundary', () => {
     expect(engineMock.failureErrors).toEqual([]);
     expect(io.err.join('\n')).toContain('internal error: an unexpected error occurred');
     expect(io.err.join('\n')).not.toContain(writerSecret);
+    expect(io.err.join('\n')).not.toContain('Dry run: nothing was executed.');
+    expect(io.err.join('\n')).not.toContain('planned:');
   });
 
   it('keeps the RuneError result path intact', async () => {
@@ -149,6 +151,25 @@ describe('CLI internal-error boundary', () => {
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
     expect(() => runResultSchema.parse(result)).not.toThrow();
     expect(result.status).toBe('config_error');
+  });
+
+  it('does not render a config-error outcome when its result delivery fails', async () => {
+    const writerSecret = 'config-writer-secret-message';
+    engineMock.writeFailure = new Error(writerSecret);
+    const manifestPath = fixture(['schemaVersion: 1', 'product:', '  name: Invalid']);
+    const resultPath = join(manifestPath, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(['run', manifestPath, '--result', resultPath], io);
+
+    expect(code).toBe(70);
+    expect(engineMock.writeCalls).toHaveLength(1);
+    expect(engineMock.failureErrors).toHaveLength(1);
+    expect(engineMock.failureErrors[0]).toBeInstanceOf(RuneError);
+    expect(engineMock.failureErrors[0]).toMatchObject({ code: 'RUNE-103' });
+    expect(io.err.join('\n')).toContain('internal error: an unexpected error occurred');
+    expect(io.err.join('\n')).not.toContain(writerSecret);
+    expect(io.err.join('\n')).not.toContain('config_error:');
   });
 
   it('keeps usage errors outside result delivery', async () => {
