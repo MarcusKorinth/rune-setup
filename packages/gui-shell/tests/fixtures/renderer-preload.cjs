@@ -74,12 +74,27 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
       line,
     });
   },
+  emitStepStarted: (index, total) => {
+    eventListener?.({
+      kind: 'stepStarted',
+      stepId: 'test-step',
+      index,
+      total,
+      title: 'test step',
+    });
+  },
   emitFinished: () => {
     eventListener?.({
       kind: 'stepFinished',
       stepId: 'test-step',
       state: 'SUCCEEDED',
       durationMs: 1,
+    });
+  },
+  emitRunFinished: () => {
+    eventListener?.({
+      kind: 'runFinished',
+      result: {},
     });
   },
 });

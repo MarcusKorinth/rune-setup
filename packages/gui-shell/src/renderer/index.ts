@@ -475,20 +475,21 @@ async function renderSummary(version: number): Promise<void> {
   }
 }
 
-let progress: { fill: HTMLElement; title: HTMLElement; log: HTMLElement } | undefined;
+let progress: { bar: HTMLProgressElement; title: HTMLElement; log: HTMLElement } | undefined;
 let liveLog = '';
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
   heading.className = 'result-heading';
   heading.textContent = text('rune.page.progress.title');
-  const track = div('progress-track');
-  const fill = div('progress-fill');
-  track.append(fill);
+  const bar = document.createElement('progress');
+  bar.className = 'progress-track';
+  bar.max = 1;
+  bar.value = 0;
   const title = div('progress-title');
   const log = div('log');
-  el.page.append(heading, track, title, log);
-  progress = { fill, title, log };
+  el.page.append(heading, bar, title, log);
+  progress = { bar, title, log };
   liveLog = '';
 }
 
@@ -511,7 +512,8 @@ function onRunEvent(event: BridgeEvent): void {
       total: event.total,
       title: event.title,
     });
-    progress.fill.style.width = `${(event.index / event.total) * 100}%`;
+    const fraction = event.total > 0 ? event.index / event.total : 0;
+    progress.bar.value = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
   }
   if (event.kind === 'stepOutput') {
     appendLiveLog(event.line);
@@ -520,7 +522,7 @@ function onRunEvent(event: BridgeEvent): void {
     appendLiveLog(`-- ${event.stepId}: ${event.state}`);
   }
   if (event.kind === 'runFinished') {
-    progress.fill.style.width = '100%';
+    progress.bar.value = progress.bar.max;
   }
 }
 

@@ -20,7 +20,9 @@ interface SummaryTestControl {
   planCount(): number;
   resolvePlan(index: number, title: string): void;
   emitOutput(line: string): void;
+  emitStepStarted(index: number, total: number): void;
   emitFinished(): void;
+  emitRunFinished(): void;
 }
 
 test('launches the real Node 22 shell and renders Welcome', async () => {
@@ -191,6 +193,62 @@ test('bounds the live Progress log while retaining its newest output', async () 
     expect(log).not.toContain('discard-this-old-head');
     expect(log).toContain('-- test-step: SUCCEEDED');
     expect(log.length).toBeLessThanOrEqual(liveLogCap);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('advances Progress without CSP-blocked inline styles', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'progress plan'),
+    );
+    await expect(install).toBeEnabled();
+    await install.click();
+
+    const progress = page.locator('progress.progress-track');
+    await expect(progress).toHaveJSProperty('value', 0);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.emitStepStarted(1, 0),
+    );
+    await expect(progress).toHaveJSProperty('value', 0);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.emitStepStarted(1, 2),
+    );
+    await expect(progress).toHaveJSProperty('value', 0.5);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.emitRunFinished(),
+    );
+    await expect(progress).toHaveJSProperty('value', 1);
+    await expect(progress).not.toHaveAttribute('style');
   } finally {
     await application?.close();
   }

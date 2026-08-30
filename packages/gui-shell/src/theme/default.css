@@ -244,17 +244,30 @@ body {
 }
 
 .progress-track {
+  display: block;
+  width: 100%;
   max-width: 640px;
   margin: 0 auto 16px;
   height: 8px;
+  border: 0;
   border-radius: 4px;
   background: var(--rune-border);
   overflow: hidden;
+  appearance: none;
 }
 
-.progress-fill {
-  height: 100%;
-  width: 0;
+.progress-track::-webkit-progress-bar {
+  background: var(--rune-border);
+  border-radius: 4px;
+}
+
+.progress-track::-webkit-progress-value {
+  background: var(--rune-accent);
+  border-radius: 4px;
+  transition: width 300ms ease;
+}
+
+.progress-track::-moz-progress-bar {
   background: var(--rune-accent);
   border-radius: 4px;
   transition: width 300ms ease;
