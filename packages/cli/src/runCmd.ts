@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CHROME_CATALOG,
   CancelledError,
   EXIT_CODE_BY_STATUS,
   exitCodeFor,
@@ -16,10 +17,11 @@ import {
   RuneError,
   Session,
   UsageError,
+  formatChrome,
   serializeResult,
   writeResult,
 } from '@rune/engine';
-import type { RunMode, RunResult, RunStatus } from '@rune/engine';
+import type { RunMode, RunResult, RunStatus, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
@@ -54,6 +56,7 @@ export async function runCommand(
   const prompter = interactive ? new Prompter(interaction) : undefined;
 
   let session: Session | undefined;
+  let strings: StringTable | undefined;
   try {
     session = await Session.open(manifestPath, {
       values: flags.values ?? [],
@@ -63,11 +66,12 @@ export async function runCommand(
       mode,
       ...(platform === undefined ? {} : { platform }),
     });
+    strings = session.getStrings();
 
     if (prompter !== undefined) {
       await promptForInputs(session, prompter);
       if (flags.dryRun !== true && (await summaryLoop(session, prompter, io)) === 'cancel') {
-        throw new CancelledError('cancelled at the summary');
+        throw new CancelledError(strings.chrome('rune.run.cancelledAtSummary'));
       }
       // The prompt phase is over; the input stream is released before anything executes.
       prompter.close();
@@ -76,15 +80,15 @@ export async function runCommand(
     const result =
       flags.dryRun === true
         ? session.describe()
-        : await executeWithCancel(session, io, interaction);
+        : await executeWithCancel(session, strings, io, interaction);
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
-      renderPlan(result, io);
+      renderPlan(result, strings, io);
     }
-    renderOutcome(result, session.warnings(), io);
+    renderOutcome(result, session.warnings(), strings, io);
     if (flags.result !== undefined) {
-      deliverResult(result, flags.result, io);
+      deliverResult(result, flags.result, strings, io);
     }
     if (result.exitCode !== 0) {
       throw new ExitWithCode(result.exitCode);
@@ -106,6 +110,7 @@ export async function runCommand(
         cancelledWithPlan(session, error) ??
           failureShell({ session, code, manifestPath, flags, mode }),
         flags.result,
+        strings,
         io,
       );
       throw new ExitWithCode(code);
@@ -123,6 +128,7 @@ export async function runCommand(
  */
 async function executeWithCancel(
   session: Session,
+  strings: StringTable,
   io: CliIo,
   interaction: Interaction,
 ): Promise<RunResult> {
@@ -135,7 +141,7 @@ async function executeWithCancel(
       return;
     }
     cancellationRequested = true;
-    io.stderr(session.getStrings().chrome('rune.run.cancelling'));
+    io.stderr(strings.chrome('rune.run.cancelling'));
     session.cancel();
   };
   const onSigint = (): void => {
@@ -153,7 +159,7 @@ async function executeWithCancel(
   signalSource.on('SIGINT', onSigint);
   signalSource.on('SIGTERM', onSigterm);
   try {
-    return await session.execute(progressObserver(io));
+    return await session.execute(progressObserver(strings, io));
   } finally {
     signalSource.removeListener('SIGINT', onSigint);
     signalSource.removeListener('SIGTERM', onSigterm);
@@ -161,13 +167,25 @@ async function executeWithCancel(
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */
-function deliverResult(result: RunResult, destination: string, io: CliIo): void {
+function deliverResult(
+  result: RunResult,
+  destination: string,
+  strings: StringTable | undefined,
+  io: CliIo,
+): void {
   if (destination === '-') {
     io.stdout(serializeResult(result).replace(/\n$/, ''));
     return;
   }
   writeResult(result, destination);
-  io.stderr(`result written to ${destination}`);
+  if (strings === undefined) {
+    const template = CHROME_CATALOG.get('rune.result.written');
+    if (template !== undefined) {
+      io.stderr(formatChrome(template, { path: destination }));
+    }
+    return;
+  }
+  io.stderr(strings.chrome('rune.result.written', { path: destination }));
 }
 
 /**

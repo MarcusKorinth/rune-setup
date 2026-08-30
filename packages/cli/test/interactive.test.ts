@@ -317,6 +317,50 @@ describe('the interactive run', () => {
     expect(written.inputs.map((input) => input.id)).toEqual(['greeting', 'token']);
   });
 
+  it('uses locale chrome for the interactive summary and summary cancellation', async () => {
+    const path = fixture(MANIFEST);
+    const resultPath = join(path, '..', 'result.json');
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      [
+        'rune.summary.heading: PRUEFUNG',
+        'rune.summary.proceed: WEITER',
+        'rune.summary.proceedToken: weiter',
+        'rune.summary.change: AENDERN',
+        'rune.summary.cancel: ABBRECHEN',
+        'rune.summary.cancelToken: abbrechen',
+        'rune.plan.heading: PLAN::{product}::{version}::{path}::{platform}{preview}',
+        'rune.plan.step: SCHRITT::{number}::{title}',
+        'rune.plan.command: BEFEHL::{command}',
+        'rune.run.cancelledAtSummary: ZUSAMMENFASSUNG_ABGEBROCHEN',
+        'rune.result.written: GESCHRIEBEN::{path}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const io = capture();
+    const interaction = scripted(['hello', 'super-secret-value', 'abbrechen']);
+
+    expect(
+      await run(['run', path, '--locale', 'de', '--result', resultPath], io, interaction),
+    ).toBe(6);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics).toContain('PRUEFUNG');
+    expect(diagnostics).toContain('PLAN::Example::1.0.0');
+    expect(diagnostics).toContain('SCHRITT::1. ::hello');
+    expect(diagnostics).toContain('BEFEHL::node -e');
+    expect(diagnostics).toContain('ZUSAMMENFASSUNG_ABGEBROCHEN');
+    expect(diagnostics).toContain(`GESCHRIEBEN::${resultPath}`);
+    expect(interaction.transcript()).toContain(
+      'WEITER (weiter) / AENDERN <n> / ABBRECHEN (abbrechen)',
+    );
+    expect(diagnostics).not.toContain('Plan for');
+    expect(diagnostics).not.toContain('cancelled at the summary');
+    expect(diagnostics).not.toContain('result written to');
+  });
+
   it('uses locale-overridden summary tokens for prompts, validation, and actions', async () => {
     const path = fixture(MANIFEST);
     const localesDirectory = join(path, '..', 'locales');

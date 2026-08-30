@@ -150,7 +150,7 @@ export async function summaryLoop(
   for (;;) {
     io.stderr('');
     io.stderr(strings.chrome('rune.summary.heading'));
-    renderPlan(session.describe(), stderrOnly);
+    renderPlan(session.describe(), strings, stderrOnly);
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
       io.stderr(

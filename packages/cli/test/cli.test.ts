@@ -134,6 +134,150 @@ describe('rune run', () => {
     expect(io.out.join('\n')).toContain('node -e');
   });
 
+  it('uses locale chrome for the dry-run plan', async () => {
+    const previewPlatform = process.platform === 'win32' ? 'linux' : 'windows';
+    const unavailablePlatform = previewPlatform === 'windows' ? 'linux' : 'windows';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: hello',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+      '  - id: skipped',
+      '    run:',
+      `      ${unavailablePlatform}:`,
+      '        command: node',
+    ]);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      [
+        'rune.plan.heading: PLAN::{product}::{version}::{path}::{platform}{preview}',
+        'rune.plan.crossPlatformPreview: ::VORSCHAU',
+        'rune.plan.step: SCHRITT::{number}::{title}',
+        'rune.plan.skipped: UEBERSPRUNGEN::{number}::{title}::{state}::{reason}',
+        'rune.plan.command: BEFEHL::{command}',
+        'rune.result.planned: GEPLANT',
+        'rune.result.summary: BILANZ::{succeeded}::{failed}::{skipped}::{notrun}::{exit}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--locale',
+          'de',
+          '--platform',
+          previewPlatform,
+        ],
+        io,
+      ),
+    ).toBe(0);
+    expect(io.out.join('\n')).toContain('PLAN::Example::1.0.0');
+    expect(io.out.join('\n')).toContain(`::${previewPlatform}::VORSCHAU`);
+    expect(io.out.join('\n')).toContain('SCHRITT::1. ::hello');
+    expect(io.out.join('\n')).toContain('BEFEHL::node -e 0');
+    expect(io.out.join('\n')).toContain('UEBERSPRUNGEN::2. ::skipped::SKIPPED::');
+    expect(io.err.join('\n')).toContain('GEPLANT');
+    expect(io.err.join('\n')).toContain('BILANZ::0::0::1::1::0');
+    expect(io.out.join('\n')).not.toContain('Plan for');
+    expect(io.err.join('\n')).not.toContain('Dry run: nothing was executed.');
+  });
+
+  it('uses locale chrome for progress, outcome, and result delivery', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const resultPath = join(path, '..', 'result.json');
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      [
+        'rune.progress.running: LAUF::{total}::{platform}',
+        'rune.warning.message: HINWEIS::{warning}',
+        'rune.result.succeeded: ERFOLG',
+        'rune.result.nothingExecuted: LEER',
+        'rune.result.summary: BILANZ::{succeeded}::{failed}::{skipped}::{notrun}::{exit}',
+        'rune.result.written: GESCHRIEBEN::{path}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const io = capture();
+
+    expect(
+      await run(['run', path, '--non-interactive', '--locale', 'de', '--result', resultPath], io),
+    ).toBe(0);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics).toContain('LAUF::0::');
+    expect(diagnostics).toContain('ERFOLG');
+    expect(diagnostics).toContain('HINWEIS::LEER');
+    expect(diagnostics).toContain('BILANZ::0::0::0::0::0');
+    expect(diagnostics).toContain(`GESCHRIEBEN::${resultPath}`);
+    expect(diagnostics).not.toContain('running 0 steps on');
+    expect(diagnostics).not.toContain('warning:');
+    expect(diagnostics).not.toContain('Setup completed successfully.');
+    expect(diagnostics).not.toContain('result written to');
+  });
+
+  it('uses locale chrome for every live-step progress message', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: hello',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "console.log(\'hello\')"]',
+    ]);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      [
+        'rune.progress.running: LAUF::{total}::{platform}',
+        'rune.progress.step: SCHRITT::{index}::{total}::{title}',
+        'rune.progress.output: AUSGABE::{line}',
+        'rune.progress.finished: ENDE::{state}{exit}{duration}',
+        'rune.progress.exit: AUSGANG::{code}',
+        'rune.progress.duration: ZEIT::{duration}',
+        'rune.result.succeeded: ERFOLG',
+        'rune.result.summary: BILANZ::{succeeded}::{failed}::{skipped}::{notrun}::{exit}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--locale', 'de'], io)).toBe(0);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics).toContain('LAUF::1::');
+    expect(diagnostics).toContain('SCHRITT::1::1::hello');
+    expect(diagnostics).toContain('AUSGABE::hello');
+    expect(diagnostics).toContain('ENDE::SUCCEEDEDAUSGANG::0ZEIT::');
+    expect(diagnostics).not.toContain('Step 1 of 1');
+    expect(diagnostics).not.toContain(' after ');
+  });
+
   it('exits 4 listing every missing input, and still writes the result file', async () => {
     const path = fixture(MANIFEST);
     const resultPath = join(path, '..', 'result.json');
@@ -189,6 +333,7 @@ describe('result files for failed outcomes', () => {
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(written['status']).toBe('config_error');
     expect(written['exitCode']).toBe(3);
+    expect(io.err.join('\n')).toContain(`result written to ${resultPath}`);
   });
 
   it('keeps stdout pure JSON under --dry-run --result -', async () => {
