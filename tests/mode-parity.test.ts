@@ -10,6 +10,7 @@ import type { CliIo } from '@rune/cli';
 import {
   Session,
   writeResult,
+  type ExecutionPlan,
   type InputStateChanged,
   type RunEvent,
   type RunResult,
@@ -36,6 +37,8 @@ const ANSWERS = {
   environment: 'production',
   token: 'super-secret-value',
 } as const satisfies Record<string, string | boolean>;
+
+const MASK = '***';
 
 // The interactive flow starts with the pending values, then enables databasePort from the
 // summary edit loop. The GUI client follows that same facade-call sequence.
@@ -129,7 +132,7 @@ function fixture(): string {
       '    title: Configure',
       '    run:',
       '      command: node',
-      '      args: ["-e", "console.log(process.argv[1], process.argv[2])", "${databasePort}", "${environment}"]',
+      '      args: ["-e", "console.log(process.argv[1], process.argv[2], process.argv[3])", "${databasePort}", "${environment}", "${token}"]',
       '  - id: skipped-elsewhere',
       '    when: "${environment} == \'staging\'"',
       '    run:',
@@ -177,9 +180,45 @@ function normalizeEvents(events: readonly RunEvent[]): unknown[] {
   });
 }
 
-function silentIo(): CliIo & { out: string[] } {
+/** Only locale and titles are display data; every other serialized field is a machine contract. */
+function normalizePlanForLocale(plan: ExecutionPlan): unknown {
+  return JSON.parse(
+    JSON.stringify({
+      ...plan,
+      locale: '<locale>',
+      steps: plan.steps.map((step) => ({ ...step, title: '<title>' })),
+    }),
+  ) as unknown;
+}
+
+function expectClearSecretAbsent(serialized: string): void {
+  // Check booleans so a masking regression cannot echo the clear test secret in a failure.
+  expect(serialized.includes(ANSWERS.token)).toBe(false);
+}
+
+function expectMasked(serialized: string): void {
+  expectClearSecretAbsent(serialized);
+  expect(serialized.includes(MASK)).toBe(true);
+}
+
+function expectPlanSecretRedacted(plan: ExecutionPlan): void {
+  const serialized = JSON.stringify(plan);
+  expectClearSecretAbsent(serialized);
+  const projected = JSON.parse(serialized) as {
+    readonly steps?: readonly { readonly command?: { readonly argv?: readonly unknown[] } }[];
+  };
+  expect(projected.steps?.[0]?.command?.argv?.at(-1)).toBeNull();
+}
+
+function silentIo(): CliIo & { out: string[]; err: string[] } {
   const out: string[] = [];
-  return { out, stdout: (line) => out.push(line), stderr: () => undefined };
+  const err: string[] = [];
+  return {
+    out,
+    err,
+    stdout: (line) => out.push(line),
+    stderr: (line) => err.push(line),
+  };
 }
 
 interface CapturedLeg<T> {
@@ -244,13 +283,18 @@ async function nonInteractiveLeg(manifest: string, locale?: string): Promise<Run
     argv.push('--set', `${id}=${String(value)}`);
   }
   expect(await run(argv, io)).toBe(0);
-  return JSON.parse(io.out.join('\n')) as RunResult;
+  const result = JSON.parse(io.out.join('\n')) as RunResult;
+  expect(io.err.some((line) => line.includes('process listings'))).toBe(true);
+  expectClearSecretAbsent(io.err.join('\n'));
+  expectMasked(JSON.stringify(result));
+  return result;
 }
 
 async function interactiveLeg(manifest: string, locale?: string): Promise<RunResult> {
   const io = silentIo();
   const resultPath = join(manifest, '..', 'result-interactive.json');
   const input = new PassThrough();
+  const promptOutput: string[] = [];
   // Only environment and token are pending (installDatabase has a default and
   // databasePort is disabled); the rest flows through the summary edit loop — change
   // value 1 (installDatabase), answer the databasePort it enables, proceed.
@@ -266,6 +310,7 @@ async function interactiveLeg(manifest: string, locale?: string): Promise<RunRes
     input,
     isTTY: true,
     write: (text: string): void => {
+      promptOutput.push(text);
       if (text.endsWith(': ')) {
         setImmediate(() => {
           const next = answers.shift();
@@ -282,7 +327,13 @@ async function interactiveLeg(manifest: string, locale?: string): Promise<RunRes
     argv.push('--locale', locale);
   }
   expect(await run(argv, io, interaction)).toBe(0);
-  return JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
+  const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
+  const transcript = [...promptOutput, ...io.err].join('\n');
+  expect(transcript.includes('Production (production)')).toBe(true);
+  expect(transcript.includes('process listings')).toBe(true);
+  expectMasked(transcript);
+  expectMasked(JSON.stringify(result));
+  return result;
 }
 
 /** Exactly the call sequence the Electron main process makes over the facade (§9.2). */
@@ -306,6 +357,14 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
   ]);
   expect(session.pendingInputs().map((input) => input.id)).toEqual(['environment', 'token']);
   expect(session.getThemeConfig()).toEqual({});
+  const environment = session.allInputs().find((input) => input.id === 'environment');
+  expect(environment?.spec).toMatchObject({
+    type: 'select',
+    options: [
+      { value: 'production', label: 'Production' },
+      { value: 'staging', label: 'Staging' },
+    ],
+  });
 
   // The renderer refreshes both projections after each `rune.setValue`; the refreshed pending
   // list and enabled state are what controls its Next button and disabled field treatment.
@@ -326,6 +385,7 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
     { databasePortEnabled: true, pending: ['databasePort'] },
     { databasePortEnabled: true, pending: [] },
   ]);
+  expect(session.allInputs().find((input) => input.id === 'environment')?.value).toBe('production');
 
   // `rune.plan` maps to Session.describe() in Electron main; it is the masked summary the
   // renderer presents before starting execution.
@@ -335,7 +395,7 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
   expect(described.steps[0]?.title).toBe(configureTitle);
 
   const result = await session.execute();
-  expect(session.warnings()).toEqual([]);
+  expect(session.warnings().some((warning) => warning.includes('process listings'))).toBe(true);
 
   // Electron main delivers GUI results through the engine's atomic writer. Read that file back
   // so the parity assertion uses the same persisted result representation as the other legs.
@@ -343,6 +403,7 @@ async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
   writeResult(result, resultPath);
   const persisted = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
   expect(persisted).toEqual(result);
+  expectMasked(JSON.stringify(persisted));
   return persisted;
 }
 
@@ -391,7 +452,18 @@ describe('mode parity', () => {
     expect(normalize(interactive.value)).toEqual(normalize(nonInteractive.value));
     expect(normalize(gui.value)).toEqual(normalize(nonInteractive.value));
     expect(nonInteractive.value.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SKIPPED']);
-    expect(JSON.stringify(nonInteractive.value)).not.toContain('super-secret-value');
+
+    for (const leg of [nonInteractive, interactive, gui]) {
+      expectMasked(JSON.stringify(leg.value));
+      expectPlanSecretRedacted(planFrom(leg.events));
+      expectMasked(JSON.stringify(normalizeEvents(leg.events)));
+      const output = leg.events.find((event) => event.kind === 'stepOutput');
+      expect(output?.kind === 'stepOutput').toBe(true);
+      if (output?.kind === 'stepOutput') {
+        expect(output.line.includes(ANSWERS.token)).toBe(false);
+        expect(output.line === `5432 production ${MASK}`).toBe(true);
+      }
+    }
 
     expect(JSON.stringify(planFrom(interactive.events))).toBe(
       JSON.stringify(planFrom(nonInteractive.events)),
@@ -423,33 +495,15 @@ describe('mode parity', () => {
     for (const leg of [defaults.nonInteractive, defaults.interactive, defaults.gui]) {
       expect(leg.value.steps[0]?.title).toBe('Configure');
     }
-    // Locale resolution changes display text only; IDs and command arrays stay exact across
-    // all three real legs and between the default and `de` locales (§6.3, §14).
-    expect(interactive.value.steps.map((step) => step.id)).toEqual(
-      nonInteractive.value.steps.map((step) => step.id),
-    );
-    expect(gui.value.steps.map((step) => step.id)).toEqual(
-      nonInteractive.value.steps.map((step) => step.id),
-    );
-    expect(interactive.value.steps.map((step) => step.command)).toEqual(
-      nonInteractive.value.steps.map((step) => step.command),
-    );
-    expect(gui.value.steps.map((step) => step.command)).toEqual(
-      nonInteractive.value.steps.map((step) => step.command),
-    );
-    for (const leg of [
-      defaults.nonInteractive,
-      defaults.interactive,
-      defaults.gui,
-      nonInteractive,
-      interactive,
-      gui,
-    ]) {
-      expect(leg.value.steps.map((step) => step.id)).toEqual(
-        defaults.nonInteractive.value.steps.map((step) => step.id),
-      );
-      expect(leg.value.steps.map((step) => step.command)).toEqual(
-        defaults.nonInteractive.value.steps.map((step) => step.command),
+    // Locale resolution changes only display data. This retains every machine-relevant plan
+    // field — IDs, state, argv, cwd, env, timeouts, success codes, and skip reasons (§6.3, §14).
+    for (const [defaultLeg, germanLeg] of [
+      [defaults.nonInteractive, nonInteractive],
+      [defaults.interactive, interactive],
+      [defaults.gui, gui],
+    ] as const) {
+      expect(normalizePlanForLocale(planFrom(germanLeg.events))).toEqual(
+        normalizePlanForLocale(planFrom(defaultLeg.events)),
       );
     }
   });
