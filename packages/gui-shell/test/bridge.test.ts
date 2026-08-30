@@ -590,7 +590,7 @@ describe('the IPC bridge', () => {
     expect(sigterm.active()).toBe(0);
   });
 
-  it('relays one SIGTERM during execute to the Session cancel token', async () => {
+  it('relays one SIGTERM during execute through cancel and the close lifecycle', async () => {
     const manifestPath = fixture();
     const invocation = {
       ...shellInvocation(manifestPath, false),
@@ -600,11 +600,12 @@ describe('the IPC bridge', () => {
     const sigterm = sigtermHarness();
     const runnerStarted = deferred();
     let cancelNotifications = 0;
+    let session: Session | undefined;
     const delivered: unknown[] = [];
     const run = runWorkflow(invocation, {
       whenReady: async () => undefined,
-      open: () =>
-        Session.open(manifestPath, {
+      open: async () => {
+        session = await Session.open(manifestPath, {
           environment: {},
           mode: 'gui',
           overrides: invocation.overrides,
@@ -618,7 +619,9 @@ describe('the IPC bridge', () => {
                 runnerStarted.resolve();
               }),
           },
-        }),
+        });
+        return session;
+      },
       writer: (result) => delivered.push(result),
       subscribeToSigterm: sigterm.subscribe,
     });
@@ -627,13 +630,17 @@ describe('the IPC bridge', () => {
     const execute = electron.handlers.get('rune:execute');
     const execution = execute?.({});
     await runnerStarted.promise;
+    if (session === undefined) {
+      throw new Error('session did not open');
+    }
+    const cancel = vi.spyOn(session, 'cancel');
     sigterm.fire();
     sigterm.fire();
 
     await expect(execution).resolves.toMatchObject({ status: 'cancelled', exitCode: 6 });
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(cancelNotifications).toBe(1);
     expect(delivered).toHaveLength(1);
-    await electron.handlers.get('rune:done')?.({});
     expect(await run).toBe(6);
     expect(electron.windows[0]?.closeCalls).toBe(1);
     expect(sigterm.active()).toBe(0);

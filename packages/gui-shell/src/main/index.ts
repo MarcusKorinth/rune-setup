@@ -254,6 +254,7 @@ export async function windowedRun(
   // otherwise it is the close-window path. Before load completes, defer only the close.
   const disconnectCancellation = relay.connect(() => {
     if (running) {
+      closeRequested = true;
       session.cancel();
     } else if (windowLoaded) {
       window.close();
