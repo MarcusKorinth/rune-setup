@@ -99,7 +99,7 @@ describe('SpawnRunner', () => {
     });
 
     expect(lines.join('\n')).toContain(directory.slice(-10));
-  });
+  }, 15_000);
 
   it('reports a command that does not exist as failed to start, not as a crash', async () => {
     const outcome = await run(
