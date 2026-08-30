@@ -233,6 +233,8 @@ RUNE's own UI strings ("chrome": wizard buttons such as Next/Back/Cancel/Install
 
 **Locale selection:** `--locale TAG` > `RUNE_LOCALE` environment variable > system locale. `C` and `POSIX` explicitly select the built-in defaults; a non-empty `--locale` or `RUNE_LOCALE` choice therefore terminates the chain even when it selects those defaults. The system locale is normalized to a tag (`de_DE.UTF-8` → `de-DE`); if no `locales/de-DE.yaml` exists, the language-only overlay `locales/de.yaml` is tried. The selected locale is recorded in the result file.
 
+`StringTable.locale` is the selected tag (`de-DE`, or `undefined` for the built-in defaults); `StringTable.overlayLocale` is the matched overlay file tag (`de`, or `undefined` when none matched) and may therefore be the language fallback.
+
 **Fallback chain, per string:** requested locale overlay → the manifest's own text (for manifest strings) / the English built-in (for chrome strings). Fallback is per key, never per file: a partial overlay is valid and fills the gaps from the defaults.
 
 **What the engine emits.** Localized titles are what appear in events (`StepStarted.title`), prompts, dry-run output, the GUI, and `result.json`; the result file additionally carries the never-localized input and step **ids**, so machine consumers never depend on a locale. `getStrings()` on the `Session` facade (§9.1) returns the fully resolved string table for the session's locale — the one table every frontend renders; there is no per-call locale, so no frontend can mix locales.
