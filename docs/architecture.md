@@ -71,7 +71,7 @@ locales/<lang>.yaml ──▶ i18n/locale ──▶ overlay ──▶ strings �
 Engine, CLI, and GUI shell live in one repository and one language: `@rune/engine` (the library, `packages/engine`), `rune` (the CLI, `packages/cli`), and the Electron GUI shell (`packages/gui-shell`). Dependency directions (enforced by an import-boundary test, §14):
 
 - `@rune/engine` — `manifest`, `inputs`, `i18n`, `engine`, `runners`, `results`, `logs`, `errors` — never imports `cli` or `gui-shell`. It is a plain library: no CLI parsing, no Electron, no process-global side effects.
-- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `StringTable`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `envReferences()` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
+- `cli` imports the engine only through its curated public API: it drives runs through `Session` plus `EngineObserver`, validates through `validateManifest` (including the environment-variable audit report), emits schemas through `manifestJsonSchema()`/`resultJsonSchema()`, and uses the published error, result, and value types plus result serialization/writing (§10). i18n runtime helpers and the status-to-exit-code table remain internal.
 - `gui-shell/src/main` (Electron main process) imports `@rune/engine` the same way the CLI does and hosts it in-process; `gui-shell/src/preload` exposes the IPC bridge (§9.2) — a 1:1 projection of that same facade and event stream — through `contextBridge`; `gui-shell/src/renderer` never imports the engine (only the bridge's type declarations) and never reads the manifest, `locales/`, or values files itself. There is no GUI-only engine surface and no engine sidecar process: the engine package never depends on the shell, and core, CLI, and CI never see Electron.
 - Everything downstream of the `ExecutionPlan` is frontend-agnostic; dry-run is "build the plan, project it safely, render it, stop" — the projection is derived from the one canonical plan without interpolation or planning, so every non-sensitive value dry-run shows is what run would execute.
 
@@ -296,7 +296,7 @@ RuneError
 
 ## 8) Runner layer
 
-Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner` interface (`spawn(ResolvedCommand): RunningProcess`). No per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv spawn, and interpreter-selection magic would reintroduce implicit command interpretation against the spec's own security rule.
+Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner` interface (`run(request: SpawnRequest): Promise<SpawnOutcome>`). A request carries the `ResolvedCommand`, reserved environment, output callback, and cancellation token; an outcome is `exited`, `timedOut`, `cancelled`, or `failedToStart`. No per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv spawn, and interpreter-selection magic would reintroduce implicit command interpretation against the spec's own security rule.
 
 Process contract:
 
@@ -476,10 +476,11 @@ packages/
 ├── engine/                        # @rune/engine — the library; no CLI parsing, no Electron
 │   ├── package.json
 │   └── src/
-│       ├── index.ts               # curated public API: Session, events, errors, value types, version,
-│       │                          #   manifestJsonSchema/resultJsonSchema, envReferences, writeResult
+│       ├── index.ts               # curated public API: Session, events, errors, types, version,
+│       │                          #   manifest validation/schema and result serialization/writing
 │       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
 │       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
+│       ├── environment.ts         # immutable environment snapshots and host-appropriate variable lookup
 │       ├── manifest/
 │       │   ├── index.ts           # parseManifest()/validateManifest() facade, schemaVersion registry dispatch
 │       │   ├── loader.ts          # `yaml` core schema, key checks, SourceMap build (also overlays/values)
@@ -500,7 +501,7 @@ packages/
 │       │   └── strings.ts          # per-key fallback resolution into the engine-owned StringTable
 │       ├── engine/
 │       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
-│       │   ├── context.ts         # built-in variable table and reference resolution; later: platform detection, placeholders, run id
+│       │   ├── context.ts         # built-ins, reference resolution, platform, and preview placeholders
 │       │   ├── inputs.ts          # 5-layer merge, provenance, coercion via inputs/registry, input when:
 │       │   ├── interpolate.ts     # ${...} scanner/renderer; single-pass, no eval
 │       │   ├── conditions.ts      # when: lexer, parser, AST, typed evaluator (steps and inputs)
@@ -514,19 +515,22 @@ packages/
 │       │   ├── base.ts            # Runner interface
 │       │   └── spawnRunner.ts     # child_process.spawn (shell:false), stream line-splitting, process-tree kill
 │       ├── results/
-│       │   ├── model.ts           # RunResult/StepResult (resultSchemaVersion 1): counters, outputTail, provenance
+│       │   ├── model.ts           # RunResult/ResultStep (resultSchemaVersion 1): counters, outputTail, provenance
+│       │   ├── schema.ts          # JSON Schema for resultSchemaVersion 1
 │       │   └── writer.ts          # atomic write, always-on-outcome
 │       └── logs/
-│           ├── setup.ts           # sink wiring from flags + execution.logFile
-│           └── masking.ts         # masking filter over SecretRegistry
+│           └── logFile.ts         # append-only event-log sink; receives already-masked output
 ├── cli/                           # `rune` — bin "rune"; depends on @rune/engine only through its public API
 │   ├── package.json
 │   └── src/
-│       ├── main.ts                # commander wiring (exitOverride), single process.exit site (uses errors.exitCodeFor)
-│       ├── runCmd.ts, validateCmd.ts   # validateCmd also prints the env-variable audit report
+│       ├── args.ts                # shared flag parsing and validation
+│       ├── cli.ts                 # commander wiring (exitOverride), CLI execution and error-to-exit-code mapping
+│       ├── io.ts                  # I/O and process-control seams
+│       ├── main.ts                # executable entry point and the single process.exit site
+│       ├── runCmd.ts              # non-interactive execution and dry-run orchestration
 │       ├── schemaCmd.ts           # `rune schema [--output] [--result]` from the zod schemas
-│       ├── guiCmd.ts              # `rune gui install` (GitHub Releases -> per-user cache) + --gui launch/exit-code forwarding
-│       ├── prompt.ts              # readline prompter over pendingInputs()/setValue() (muted echo for secrets) + summary edit loop
+│       ├── signals.ts             # cooperative first signal, forced cancellation on the second
+│       ├── validateCmd.ts         # validation and environment-variable audit report
 │       └── render.ts              # shared plan/progress/result rendering (also dry-run)
 └── gui-shell/                     # Electron GUI shell — separate prebuilt artifact; never inside the CLI npm package
     ├── package.json               # electron, electron-builder (shell lane only)
