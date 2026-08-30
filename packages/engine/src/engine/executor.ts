@@ -3,7 +3,8 @@
  *
  * A sequential walk: at most one step runs at a time, every step reaches exactly one
  * terminal state, and everything a frontend or a file learns about the run comes out of the
- * one event stream — pre-masked, so a secret is gone before anyone can render it.
+ * one event stream. `RunStarted` carries the opaque execution plan itself; fields intended
+ * for rendering are masked before they reach their sink.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -100,7 +101,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan.resolvedInputs.map((input) => input.id),
     process.platform,
   );
-  emit({ kind: 'runStarted', plan: planForObserver(plan, secrets) });
+  emit({ kind: 'runStarted', plan });
   wasCancelled = cancel.isCancelled;
 
   for (const [index, step] of plan.steps.entries()) {
@@ -415,57 +416,6 @@ function finishedStep(
   return state === 'FAILED' ? { ...result, outputTail } : result;
 }
 
-/** A clone-safe projection: observers never receive the opaque values used for spawning. */
-function planForObserver(plan: ExecutionPlan, secrets: SecretMasker): ExecutionPlan {
-  return deepFreeze({
-    planSchemaVersion: plan.planSchemaVersion,
-    manifestPath: plan.manifestPath,
-    manifestSha256: plan.manifestSha256,
-    platform: plan.platform,
-    locale: plan.locale,
-    preview: plan.preview,
-    resolvedInputs: plan.resolvedInputs.map((input): PlanInput => ({
-      id: input.id,
-      value: maskPlanInputValue(input, secrets),
-      source: input.source,
-      secret: input.secret,
-      enabled: input.enabled,
-      ignored: input.ignored,
-    })),
-    executionOptions: {
-      failFast: plan.executionOptions.failFast,
-      logFile: plan.executionOptions.logFile,
-    },
-    steps: plan.steps.map((step): PlannedStep => {
-      if (step.state === 'SKIPPED') {
-        return {
-          id: step.id,
-          title: secrets.mask(step.title),
-          state: step.state,
-          skipReason: secrets.mask(step.skipReason),
-        };
-      }
-      return {
-        id: step.id,
-        title: secrets.mask(step.title),
-        state: step.state,
-        command: {
-          argv: step.command.argv.map((entry) => maskCommandValue(entry, secrets)),
-          cwd: maskCommandValue(step.command.cwd, secrets),
-          env: Object.fromEntries(
-            Object.entries(step.command.env).map(([name, value]) => [
-              name,
-              maskCommandValue(value, secrets),
-            ]),
-          ),
-          timeoutSeconds: step.command.timeoutSeconds,
-          successExitCodes: [...step.command.successExitCodes],
-        },
-      };
-    }),
-  });
-}
-
 function maskInputValue(
   value: string | boolean | readonly string[],
   secrets: SecretMasker,
@@ -477,19 +427,6 @@ function maskInputValue(
     return value.map((entry) => secrets.mask(entry));
   }
   return value;
-}
-
-function maskPlanInputValue(input: PlanInput, secrets: SecretMasker): PlanInput['value'] {
-  if (input.secret || isSecretString(input.value)) {
-    return MASK;
-  }
-  if (typeof input.value === 'string') {
-    return secrets.mask(input.value);
-  }
-  if (Array.isArray(input.value)) {
-    return input.value.map((entry) => secrets.mask(entry));
-  }
-  return input.value;
 }
 
 function maskCommandValue(value: string | SecretString, secrets: SecretMasker): string {

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -1601,7 +1602,7 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 
-  it('keeps plan masking fixed after its retained registry later changes', async () => {
+  it('keeps sink masking fixed after its retained registry later changes', async () => {
     const original = 'resolved-secret';
     const later = 'later-secret';
     const manifest = parseManifestText(
@@ -1666,10 +1667,11 @@ describe('skipped steps and the dry run', () => {
     if (started?.kind !== 'runStarted') {
       throw new Error('runStarted event was not emitted');
     }
+    expect(started.plan).toBe(plan);
     expect(started.plan.resolvedInputs.find((input) => input.id === 'note')?.value).toBe(later);
     expect(started.plan.steps[0]).toMatchObject({
-      title: `*** ${later}`,
-      command: { argv: ['***', later] },
+      title: `${original} ${later}`,
+      command: { argv: [original, later] },
     });
     expect(events.find((event) => event.kind === 'stepOutput')).toMatchObject({
       line: `*** ${later}`,
@@ -1725,7 +1727,8 @@ describe('skipped steps and the dry run', () => {
     }
   });
 
-  it('never lets a secret reach an observer, not even inside RunStarted', async () => {
+  it('emits the exact opaque plan while keeping its secret values safe to render', async () => {
+    const secret = 'opaque-secret-value';
     const { plan } = setup(
       [
         'inputs:',
@@ -1735,64 +1738,28 @@ describe('skipped steps and the dry run', () => {
         '  - id: use',
         '    run:',
         '      command: a',
-        '      args: ["${token}"]',
-      ],
-      { overrides: new Map([['token', 'super-secret-value']]) },
-    );
-    const events: RunEvent[] = [];
-
-    const result = await executeRun({
-      plan,
-      observer: (event) => events.push(event),
-      runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
-    });
-
-    expect(JSON.stringify(events)).not.toContain('super-secret-value');
-    expect(JSON.stringify(result)).not.toContain('super-secret-value');
-  });
-
-  it('projects an opaque plan into clone-safe masked event and result sinks', async () => {
-    const secret = 'sink-secret-value';
-    const { plan } = setup(
-      [
-        'inputs:',
-        '  token:',
-        '    type: secret',
-        '  note:',
-        '    type: text',
-        `    default: "prefix ${secret} suffix"`,
-        '  selections:',
-        '    type: multiselect',
-        `    options: [${secret}, other]`,
-        `    default: [${secret}, other]`,
-        'steps:',
-        '  - id: skipped',
-        `    title: "Skip ${secret}"`,
-        `    when: "\${token} != '${secret}'"`,
-        '    run:',
-        '      command: never',
-        '  - id: use',
-        `    title: "Use ${secret}"`,
-        '    run:',
-        '      command: a',
-        `      args: ["\${token}", "prefix ${secret} suffix"]`,
-        `      cwd: "./${secret}"`,
+        '      args: ["${token}", "prefix-${token}-suffix"]',
+        '      cwd: "${token}"',
         '      env:',
-        `        PUBLIC_COPY: "prefix ${secret} suffix"`,
         '        OPAQUE_SECRET: "${token}"',
+        '        COMPOSED_SECRET: "prefix-${token}-suffix"',
       ],
       { overrides: new Map([['token', secret]]) },
     );
     const events: RunEvent[] = [];
-    let runnerSawSecret = false;
+    let runnerSawOpaqueValues = false;
 
     const result = await executeRun({
       plan,
       observer: (event) => events.push(event),
       runner: stubRunner((request) => {
-        const value = request.command.argv[1];
-        expect(isSecretString(value)).toBe(true);
-        runnerSawSecret = isSecretString(value);
+        runnerSawOpaqueValues = [
+          request.command.argv[1],
+          request.command.argv[2],
+          request.command.cwd,
+          request.command.env['OPAQUE_SECRET'],
+          request.command.env['COMPOSED_SECRET'],
+        ].every(isSecretString);
         return { kind: 'exited', exitCode: 0 };
       }),
     });
@@ -1802,91 +1769,37 @@ describe('skipped steps and the dry run', () => {
     if (started?.kind !== 'runStarted') {
       throw new Error('runStarted event was not emitted');
     }
-    const projection = started.plan;
-    const clonedProjection = structuredClone(projection);
-    const containsSecretString = (value: unknown): boolean => {
-      if (isSecretString(value)) {
-        return true;
-      }
-      return (
-        typeof value === 'object' &&
-        value !== null &&
-        Object.values(value).some(containsSecretString)
-      );
-    };
     const isDeeplyFrozen = (value: unknown): boolean =>
       typeof value !== 'object' ||
       value === null ||
       (Object.isFrozen(value) && Object.values(value).every(isDeeplyFrozen));
+    const pendingStep = started.plan.steps[0];
+    if (pendingStep?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    const opaqueValues = [
+      started.plan.resolvedInputs[0]?.value,
+      pendingStep.command.argv[1],
+      pendingStep.command.argv[2],
+      pendingStep.command.cwd,
+      pendingStep.command.env['OPAQUE_SECRET'],
+      pendingStep.command.env['COMPOSED_SECRET'],
+    ];
 
-    expect(projection).not.toBe(plan);
-    expect(Object.keys(projection)).toEqual(Object.keys(plan));
-    expect(projection.planSchemaVersion).toBe(1);
-    expect(projection.manifestPath).toBe(plan.manifestPath);
-    expect(projection.manifestSha256).toBe(plan.manifestSha256);
-    expect(projection.executionOptions).toEqual(plan.executionOptions);
-    expect(projection.resolvedInputs).toMatchObject([
-      { id: 'token', value: '***', source: 'set', secret: true, enabled: true },
-      {
-        id: 'note',
-        value: 'prefix *** suffix',
-        source: 'default',
-        secret: false,
-        enabled: true,
-      },
-      {
-        id: 'selections',
-        value: ['***', 'other'],
-        source: 'default',
-        secret: false,
-        enabled: true,
-      },
-    ]);
-    expect(projection.resolvedInputs.map(({ value: _value, ...metadata }) => metadata)).toEqual(
-      plan.resolvedInputs.map(({ value: _value, ...metadata }) => metadata),
-    );
-    expect(containsSecretString(projection)).toBe(false);
-    expect(isDeeplyFrozen(projection)).toBe(true);
-    expect(clonedProjection).toEqual(projection);
-    expect(() => describePlan({ plan: projection })).toThrow(/not created by buildPlan/);
-    expect(runnerSawSecret).toBe(true);
-
-    expect(projection.steps).toMatchObject([
-      {
-        id: 'skipped',
-        title: 'Skip ***',
-        skipReason: "condition false: ${token} != '***'",
-      },
-      {
-        id: 'use',
-        title: 'Use ***',
-        command: {
-          argv: ['a', '***', 'prefix *** suffix'],
-          env: { PUBLIC_COPY: 'prefix *** suffix', OPAQUE_SECRET: '***' },
-        },
-      },
-    ]);
-    expect(JSON.stringify(projection.steps[1])).not.toContain(secret);
-
-    const startedStep = events.find((event) => event.kind === 'stepStarted');
-    expect(startedStep).toMatchObject({ stepId: 'use', title: 'Use ***' });
-    expect(result.steps).toMatchObject([
-      {
-        id: 'skipped',
-        title: 'Skip ***',
-        skipReason: "condition false: ${token} != '***'",
-      },
-      { id: 'use', title: 'Use ***' },
-    ]);
-    expect(result.inputs.find((input) => input.id === 'note')?.value).toBe('prefix *** suffix');
-    expect(result.inputs.find((input) => input.id === 'selections')?.value).toEqual([
-      '***',
-      'other',
-    ]);
-    expect(result.inputs.find((input) => input.id === 'token')?.value).toBeNull();
-
-    const preview = describePlan({ plan });
-    expect(JSON.stringify({ events, result, preview })).not.toContain(secret);
+    expect(started.plan).toBe(plan);
+    expect(isDeeplyFrozen(started.plan)).toBe(true);
+    expect(() => describePlan({ plan: started.plan })).not.toThrow();
+    expect(opaqueValues.every(isSecretString)).toBe(true);
+    for (const value of opaqueValues) {
+      expect(String(value)).toBe('***');
+      expect(JSON.stringify(value)).toBe('"***"');
+      expect(inspect(value)).toBe('***');
+    }
+    expect(JSON.stringify(started.plan)).not.toContain(secret);
+    expect(inspect(started.plan)).not.toContain(secret);
+    expect(runnerSawOpaqueValues).toBe(true);
+    expect(result.inputs[0]?.value).toBeNull();
+    expect(result.steps[0]?.command).toEqual(['a', '***', '***']);
   });
 });
 

@@ -1,9 +1,10 @@
 /**
  * Run events (docs/architecture.md §9.1).
  *
- * The one stream every frontend renders: the CLI prints it, the GUI's progress page is
- * driven by it, and the log file is written from it. Delivery is synchronous and in order;
- * `RunStarted` is first, `RunFinished` is last, exactly once each.
+ * Engine events are in-process objects consumed by frontends and downstream sinks. A
+ * transport such as the Electron IPC bridge projects them at its own serialization boundary.
+ * Delivery is synchronous and in order; `RunStarted` is first, `RunFinished` is last,
+ * exactly once each.
  */
 
 import type { StepState } from './state.js';
