@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Session } from '@rune/engine';
+import { ManifestError, Session } from '@rune/engine';
 
 const electron = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void;
@@ -294,6 +294,96 @@ describe('the IPC bridge', () => {
 
     expect(result.product).toEqual({ name: '', version: '' });
     expect(result.locale).toBeNull();
+  });
+
+  it('maps an open-failure result writer failure to 70 after one diagnostic', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      open: async () => {
+        throw new ManifestError('RUNE-103', 'manifest rejected');
+      },
+      writer: () => {
+        writes += 1;
+        throw new Error('disk denied');
+      },
+    });
+
+    expect(code).toBe(70);
+    expect(writes).toBe(1);
+    expect(electron.windows).toHaveLength(0);
+    expect(stderr).toHaveBeenCalledWith('manifest rejected\n');
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
+  });
+
+  it('closes a window with 70 when execute-failure result delivery fails once', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      overrides: { installDatabase: 'true', token: 'super-secret-value' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      open: () =>
+        Session.open(manifestPath, {
+          environment: {},
+          mode: 'gui',
+          overrides: invocation.overrides,
+        }),
+      writer: () => {
+        writes += 1;
+        throw new Error('disk denied for super-secret-value');
+      },
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const execute = electron.handlers.get('rune:execute');
+    await expect(execute?.({})).rejects.toThrow(/databasePort/);
+
+    expect(await run).toBe(70);
+    expect(writes).toBe(1);
+    expect(electron.windows[0]?.closeCalls).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
+  });
+
+  it('maps a headless failure result writer failure to 70 after one masked diagnostic', async () => {
+    const manifestPath = fixture();
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      overrides: { installDatabase: 'true', token: 'super-secret-value' },
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await runWorkflow(invocation, {
+      whenReady: async () => undefined,
+      open: () =>
+        Session.open(manifestPath, {
+          environment: {},
+          mode: 'non-interactive',
+          overrides: invocation.overrides,
+        }),
+      writer: () => {
+        writes += 1;
+        throw new Error('disk denied for super-secret-value');
+      },
+    });
+
+    expect(code).toBe(70);
+    expect(writes).toBe(1);
+    expect(electron.windows).toHaveLength(0);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied for ***\n');
   });
 
   it('ends a headless run with 70 after one masked result-write failure', async () => {

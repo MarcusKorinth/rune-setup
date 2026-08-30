@@ -141,8 +141,7 @@ export async function runWorkflow(
       // the one table, and the §10 zero-counter result file — both hosts write it.
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       const code = error instanceof RuneError ? exitCodeFor(error) : 70;
-      deliverFailure(code, invocation);
-      return code;
+      return deliverFailure(code, invocation, writer) ? code : 70;
     }
 
     if (invocation.nonInteractive) {
@@ -181,9 +180,9 @@ export async function headlessRun(
     if (result.nothingExecuted) {
       process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
     }
-    return deliverCompletedRun(result, invocation, session, writer) ? result.exitCode : 70;
+    return deliverSafely(result, invocation, writer, session) ? result.exitCode : 70;
   } catch (error) {
-    return failWith(error, invocation, session);
+    return failWith(error, invocation, session, writer);
   }
 }
 
@@ -222,7 +221,7 @@ export async function windowedRun(
       running = true;
     },
     onExecuteEnd: (result) => {
-      if (!deliverCompletedRun(result, invocation, session, writer)) {
+      if (!deliverSafely(result, invocation, writer, session)) {
         running = false;
         fatalCode = 70;
         window.close();
@@ -241,8 +240,8 @@ export async function windowedRun(
       process.stderr.write(
         `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
       );
-      fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
-      deliverFailure(fatalCode, invocation, session);
+      const code = error instanceof RuneError ? exitCodeFor(error) : 70;
+      fatalCode = deliverFailure(code, invocation, writer, session) ? code : 70;
       window.close();
     },
     onRendererDone: () => {
@@ -273,7 +272,7 @@ export async function windowedRun(
       // Closed before Proceed: use the plan when one exists, otherwise the honest
       // zero-counter cancellation shell (§10).
       const cancelled = tryDescribeCancelled(session) ?? failureResultFor(6, invocation, session);
-      if (deliverCompletedRun(cancelled, invocation, session, writer)) {
+      if (deliverSafely(cancelled, invocation, writer, session)) {
         outcome = cancelled;
       } else {
         fatalCode = 70;
@@ -382,11 +381,11 @@ function deliver(
   }
 }
 
-function deliverCompletedRun(
+function deliverSafely(
   result: RunResult,
   invocation: ShellInvocation,
-  session: Session,
   writer: typeof writeResult,
+  session?: Session,
 ): boolean {
   try {
     deliver(result, invocation, writer);
@@ -394,17 +393,24 @@ function deliverCompletedRun(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(
-      `failed to write result: ${session.mask(message)}` + String.fromCharCode(10),
+      `failed to write result: ${session?.mask(message) ?? message}` + String.fromCharCode(10),
     );
     return false;
   }
 }
 
-function deliverFailure(exitCode: number, invocation: ShellInvocation, session?: Session): void {
-  if (invocation.result === undefined) {
-    return;
-  }
-  writeResult(failureResultFor(exitCode, invocation, session), invocation.result);
+function deliverFailure(
+  exitCode: number,
+  invocation: ShellInvocation,
+  writer: typeof writeResult,
+  session?: Session,
+): boolean {
+  return deliverSafely(
+    failureResultFor(exitCode, invocation, session),
+    invocation,
+    writer,
+    session,
+  );
 }
 
 /** Builds the §10 zero-counter result, retaining metadata available from an opened session. */
@@ -425,18 +431,21 @@ export function failureResultFor(
   });
 }
 
-function failWith(error: unknown, invocation: ShellInvocation, session: Session): number {
+function failWith(
+  error: unknown,
+  invocation: ShellInvocation,
+  session: Session,
+  writer: typeof writeResult,
+): number {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   const code = error instanceof RuneError ? exitCodeFor(error) : 70;
   if (error instanceof CancelledError) {
     const cancelled = tryDescribeCancelled(session);
     if (cancelled !== undefined) {
-      deliver(cancelled, invocation);
-      return code;
+      return deliverSafely(cancelled, invocation, writer, session) ? code : 70;
     }
   }
-  deliverFailure(code, invocation, session);
-  return code;
+  return deliverFailure(code, invocation, writer, session) ? code : 70;
 }
 
 function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
