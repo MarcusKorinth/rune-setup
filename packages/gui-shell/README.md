@@ -5,7 +5,9 @@ owns the Session, while the renderer is a pure renderer behind the `contextBridg
 see [docs/architecture.md](../../docs/architecture.md) §9.
 
 The package is private: it is never published to npm and never part of the `@rune/cli` package.
-It ships as prebuilt per-OS artifacts (`rune gui install`, `rune package`) under the MIT license
-in [LICENSE](LICENSE).
+It will ship as prebuilt per-OS artifacts (`rune gui install`, `rune package`) under the MIT
+license in [LICENSE](LICENSE).
 
-Milestone 0: package skeleton only. See [docs/roadmap.md](../../docs/roadmap.md).
+The current package contains the source/package skeleton only. A usable Electron shell,
+`rune gui install`, and GUI execution are planned for Milestone 3. The architecture above
+describes the intended shell and IPC boundaries. See [docs/roadmap.md](../../docs/roadmap.md).
