@@ -400,7 +400,13 @@ async function verifyShellVersion(
 
 /** Development launch: the electron binary resolved from the shell package's own tree. */
 function devElectron(shellDir: string): string {
-  const resolve = createRequire(join(shellDir, 'package.json'));
-  // The electron npm package's export IS the path to the binary.
-  return resolve('electron') as string;
+  try {
+    const resolve = createRequire(join(shellDir, 'package.json'));
+    // The electron npm package's export IS the path to the binary.
+    return resolve('electron') as string;
+  } catch {
+    throw new UsageError(
+      `RUNE_GUI_SHELL directory "${shellDir}" has no usable electron; point it to a shell package directory with electron installed, or unset it to use the cached shell`,
+    );
+  }
 }

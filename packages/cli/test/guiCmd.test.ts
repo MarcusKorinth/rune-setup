@@ -404,6 +404,23 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, '--', 'installer.yaml']);
   });
 
+  it('rejects a development-directory override without electron before spawning', async () => {
+    const shellDirectory = join(testDirectory, 'missing-electron');
+    mkdirSync(shellDirectory);
+    process.env['RUNE_GUI_SHELL'] = shellDirectory;
+
+    const error = await launchGui('installer.yaml', {}, capture(), interaction).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(UsageError);
+    expect(exitCodeFor(error as UsageError)).toBe(2);
+    expect((error as UsageError).message).toContain('RUNE_GUI_SHELL directory');
+    expect((error as UsageError).message).toContain(shellDirectory);
+    expect((error as UsageError).message).toContain('electron');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('delimits a manifest name beginning with -- for the shell', async () => {
     spawnMock
       .mockImplementationOnce(() =>
