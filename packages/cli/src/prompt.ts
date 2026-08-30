@@ -317,6 +317,9 @@ async function askUntilAccepted(
   for (const line of presentation.lines) {
     prompter.say(line);
   }
+  if (state.invalid !== undefined) {
+    prompter.say(state.invalid.issue.message);
+  }
   for (;;) {
     const raw = await prompter.ask(presentation.question, presentation.muted);
     try {

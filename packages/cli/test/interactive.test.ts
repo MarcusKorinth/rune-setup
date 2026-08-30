@@ -346,7 +346,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
   });
 
   it.each(['set', 'values'] as const)(
-    'prompts to correct an invalid %s seed instead of aborting',
+    'shows the engine diagnostic and prompts to correct an invalid %s seed',
     async (source) => {
       const path = fixture([
         'schemaVersion: 1',
@@ -357,6 +357,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
         '  name:',
         '    type: text',
         '    pattern: "[a-z]+"',
+        '    patternHint: lower-case letters only',
         'steps: []',
       ]);
       const sourceArgs =
@@ -370,9 +371,76 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
       const code = await run(['run', path, '--dry-run', ...sourceArgs], io, interaction);
 
       expect(code).toBe(0);
-      expect(interaction.transcript()).toContain('name');
+      const transcript = interaction.transcript();
+      expect(transcript).toContain('name');
+      expect(transcript).toContain('BAD1');
+      expect(transcript).toContain('lower-case letters only');
     },
   );
+
+  it('renders a locale-resolved initial seed diagnostic exactly once before its correction prompt', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      '    patternHint: lower-case letters only',
+      'steps: []',
+    ]);
+    const localesDirectory = join(path, '..', 'locales');
+    mkdirSync(localesDirectory);
+    writeFileSync(
+      join(localesDirectory, 'de.yaml'),
+      'inputs.name.patternHint: Nur Kleinbuchstaben verwenden\n',
+      'utf8',
+    );
+    const io = capture();
+    const interaction = scripted(['good']);
+
+    const code = await run(
+      ['run', path, '--dry-run', '--locale', 'de', '--set', 'name=BAD1'],
+      io,
+      interaction,
+    );
+
+    expect(code).toBe(0);
+    const transcript = interaction.transcript();
+    const diagnostic = 'name (from --set name=…): "BAD1": Nur Kleinbuchstaben verwenden';
+    expect(transcript).toContain(diagnostic);
+    expect(transcript.indexOf(diagnostic)).toBeLessThan(
+      transcript.indexOf('Enter a value for name: '),
+    );
+    expect(transcript.split('Nur Kleinbuchstaben verwenden')).toHaveLength(2);
+    expect(transcript).not.toContain('lower-case letters only');
+  });
+
+  it('does not render an invalid secret seed candidate while prompting for its correction', async () => {
+    const secret = 'top-secret-invalid-candidate';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const valuesPath = join(path, '..', 'values.yaml');
+    writeFileSync(valuesPath, `token: [${secret}]\n`, 'utf8');
+    const io = capture();
+    const interaction = scripted(['correct-secret']);
+
+    const code = await run(['run', path, '--dry-run', '--values', valuesPath], io, interaction);
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+  });
 
   it('prompts to correct an explicitly invalid optional seed', async () => {
     const path = fixture([
