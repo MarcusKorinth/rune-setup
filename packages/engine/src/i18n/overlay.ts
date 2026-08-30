@@ -146,6 +146,9 @@ function summaryTokenProblem(
   token: string,
   oppositeAlias: string,
 ): string | undefined {
+  if (/[\r\n]/u.test(token)) {
+    return `${key} must be a single line`;
+  }
   if (token.length === 0) {
     return `${key} must not be empty or whitespace`;
   }

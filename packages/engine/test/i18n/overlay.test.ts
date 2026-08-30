@@ -99,6 +99,32 @@ describe('loading an overlay', () => {
     );
   });
 
+  it.each([
+    ['rune.summary.proceedToken', '"weiter\\njetzt"'],
+    ['rune.summary.proceedToken', '"weiter\\rjetzt"'],
+    ['rune.summary.cancelToken', '"abbrechen\\njetzt"'],
+    ['rune.summary.cancelToken', '"abbrechen\\rjetzt"'],
+  ])('rejects escaped line breaks in %s', (key, value) => {
+    const error = overlayError([`${key}: ${value}`]);
+
+    expect(error.code).toBe('RUNE-104');
+    expect(formatIssues(error.issues)).toBe(`locales/de.yaml:1:1: ${key} must be a single line`);
+  });
+
+  it('rejects a YAML multiline summary token with an internal line break', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: |-',
+      '  weiter',
+      '  jetzt',
+      'rune.summary.cancelToken: abbrechen',
+    ]);
+
+    expect(error.code).toBe('RUNE-104');
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must be a single line',
+    );
+  });
+
   it('rejects numeric summary tokens because numbers select values to change', () => {
     const error = overlayError([
       'rune.summary.proceedToken: "1"',
