@@ -375,7 +375,12 @@ describe('a run that fails', () => {
         const json = JSON.stringify(events);
         const parsed = JSON.parse(json) as unknown;
         expect(JSON.stringify(parsed)).toBe(json);
-        expect(json).not.toContain(String(invalidExitCode));
+        const exitCodes = [
+          ...finished.map((event) => event.exitCode),
+          terminal.result.exitCode,
+          ...terminal.result.steps.map((step) => step.exitCode),
+        ];
+        expect(exitCodes.some((exitCode) => Object.is(exitCode, invalidExitCode))).toBe(false);
       }
     },
   );
