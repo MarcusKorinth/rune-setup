@@ -181,6 +181,59 @@ describe('answering inputs', () => {
     expect(session.pendingInputs()).toEqual([]);
   });
 
+  it('rolls back secret registration when a later input rejects an edit', async () => {
+    const marker = 'candidate-secret-marker';
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  token:',
+        '    type: secret',
+        '    when: "${enabled}"',
+        '  choice:',
+        '    type: select',
+        '    options: [accepted]',
+        '    when: "${enabled}"',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        `      args: ["${marker}"]`,
+      ]),
+      { environment: {}, overrides: { choice: marker } },
+    );
+    session.setValue('token', marker);
+    const inputs = session.allInputs();
+    const plan = session.plan();
+
+    let rejection: unknown;
+    try {
+      session.setValue('enabled', true);
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(InputError);
+    expect(rejection).toMatchObject({ message: expect.not.stringContaining(marker) });
+    expect((rejection as InputError).message).toContain('***');
+    expect(JSON.stringify((rejection as InputError).issues)).not.toContain(marker);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.allInputs().find((input) => input.id === 'enabled')).toMatchObject({
+      value: false,
+      source: 'default',
+    });
+    expect(session.plan()).toBe(plan);
+    expect(session.plan().steps[0]).toMatchObject({
+      command: { argv: ['node', marker] },
+    });
+  });
+
   it('rejects an undefined answer without falling back to a default', async () => {
     const session = await Session.open(fixture(BASE), { environment: {} });
     session.setValue('installDatabase', true);

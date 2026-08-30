@@ -93,7 +93,7 @@ export class Session {
   readonly platform: Platform;
   readonly preview: boolean;
   readonly #context: RuntimeContext;
-  readonly #secrets: SecretRegistry;
+  #secrets: SecretRegistry;
   readonly #strings: StringTable;
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
@@ -242,9 +242,10 @@ export class Session {
     // Keep caller-owned arrays outside the engine authority. SecretString and scalar values
     // pass through unchanged; cloning a SecretString would either break it or expose it.
     this.#answers.set(id, Array.isArray(raw) ? [...raw] : raw);
+    const candidateSecrets = new SecretRegistry();
     let after: Resolution;
     try {
-      after = this.#resolve();
+      after = this.#resolve(candidateSecrets);
     } catch (error) {
       // Restore, never delete: a rejected edit must not discard an earlier accepted answer.
       if (hadPrevious) {
@@ -252,9 +253,10 @@ export class Session {
       } else {
         this.#answers.delete(id);
       }
-      throw this.#projectError(error);
+      throw this.#projectError(error, candidateSecrets);
     }
     this.#resolution = after;
+    this.#secrets = candidateSecrets;
     this.#plan = undefined;
 
     const changes: InputStateChanged[] = [];
@@ -417,13 +419,13 @@ export class Session {
     }
   }
 
-  #projectError(error: unknown): unknown {
+  #projectError(error: unknown, secrets: SecretRegistry = this.#secrets): unknown {
     return error instanceof RuneError
-      ? projectRuneError(error, (text) => this.#secrets.mask(text))
+      ? projectRuneError(error, (text) => secrets.mask(text))
       : error;
   }
 
-  #resolve(): Resolution {
+  #resolve(secrets: SecretRegistry): Resolution {
     return freezeResolution(
       resolveInputs({
         manifest: this.manifest,
@@ -432,7 +434,7 @@ export class Session {
         environment: this.#environment,
         overrides: this.#overrides,
         answers: this.#answers,
-        secrets: this.#secrets,
+        secrets,
       }),
     );
   }
