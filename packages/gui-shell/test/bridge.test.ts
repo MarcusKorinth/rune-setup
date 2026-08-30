@@ -306,6 +306,87 @@ describe('the IPC bridge', () => {
     expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
   });
 
+  it('writes one zero-counter cancelled result when closed before Proceed with inputs missing', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const delivered: unknown[] = [];
+    const run = windowedRun(session, invocation, (result) => delivered.push(result));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    electron.windows[0]?.close();
+
+    expect(await run).toBe(6);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      product: { name: 'Example', version: '1.0.0' },
+      locale: session.getStrings().locale,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+    });
+  });
+
+  it('keeps the plan-based cancelled result when closed before Proceed', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'provided-token' },
+    });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    const delivered: unknown[] = [];
+    const run = windowedRun(session, invocation, (result) => delivered.push(result));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    electron.windows[0]?.close();
+
+    expect(await run).toBe(6);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 1,
+      stepsExecuted: 0,
+      stepsNotRun: 1,
+    });
+  });
+
+  it('ends with 70 when early-close result delivery fails once', async () => {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const invocation = {
+      ...shellInvocation(manifestPath, false),
+      result: join(tmpdir(), 'result.json'),
+    };
+    let writes = 0;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = windowedRun(session, invocation, () => {
+      writes += 1;
+      throw new Error('disk denied');
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    electron.windows[0]?.close();
+
+    expect(await run).toBe(70);
+    expect(writes).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('failed to write result: disk denied\n');
+  });
+
   it('keeps the successful headless result-delivery path unchanged', async () => {
     const manifestPath = emptyFixture();
     const session = await Session.open(manifestPath, {

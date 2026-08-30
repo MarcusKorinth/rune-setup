@@ -188,10 +188,13 @@ export async function windowedRun(
       return;
     }
     if (outcome === undefined && fatalCode === undefined && !renderedDone) {
-      // Closed before Proceed: a cancelled result over the plan when one exists (§10).
-      outcome = tryDescribeCancelled(session);
-      if (outcome !== undefined) {
-        deliver(outcome, invocation);
+      // Closed before Proceed: use the plan when one exists, otherwise the honest
+      // zero-counter cancellation shell (§10).
+      const cancelled = tryDescribeCancelled(session) ?? failureResultFor(6, invocation, session);
+      if (deliverCompletedRun(cancelled, invocation, session, writer)) {
+        outcome = cancelled;
+      } else {
+        fatalCode = 70;
       }
     }
   });
