@@ -351,6 +351,72 @@ describe('interpolation into the command', () => {
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(cwd);
   });
 
+  it.each(['C:tool.exe', 'D:tools\\install.exe'])(
+    'refuses the Windows drive-relative command %s at plan time',
+    (command) => {
+      const error = executionError(() =>
+        planFor(['steps:', '  - id: install', '    run:', `      command: '${command}'`], {
+          platform: 'windows',
+        }),
+      );
+
+      expect(error.code).toBe('RUNE-401');
+      expect(error.message).toContain(command);
+      expect(error.message).toContain('use an absolute path or a manifest-relative path');
+    },
+  );
+
+  it('refuses an opaque drive-relative command without exposing its value', () => {
+    const secret = 'C:private-tool.exe';
+    const error = executionError(() =>
+      planFor(
+        [
+          'inputs:',
+          '  command:',
+          '    type: secret',
+          'steps:',
+          '  - id: install',
+          '    run:',
+          '      command: "${command}"',
+        ],
+        { platform: 'windows', overrides: new Map([['command', secret]]) },
+      ),
+    );
+    const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+    expect(error.code).toBe('RUNE-401');
+    expect(error.message).toContain(MASK);
+    expect(diagnostic).not.toContain(secret);
+  });
+
+  it('preserves accepted Windows command forms', () => {
+    const commands = [
+      'node',
+      'C:\\tools\\install.exe',
+      'C:/tools/install.exe',
+      '\\\\server\\share\\install.exe',
+    ];
+
+    for (const command of commands) {
+      const { plan } = planFor(
+        ['steps:', '  - id: install', '    run:', `      command: '${command}'`],
+        { platform: 'windows' },
+      );
+      const step = plan.steps[0];
+
+      expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
+    }
+
+    const { plan } = planFor(
+      ['steps:', '  - id: install', '    run:', "      command: '.\\tools\\install.exe'"],
+      { platform: 'windows' },
+    );
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && step.command.argv[0]).toMatch(
+      /^([A-Za-z]:)?[\\/]project[\\/]tools[\\/]install\.exe$/,
+    );
+  });
+
   it('keeps Linux target absolute command and cwd paths byte-identical', () => {
     const command = '/opt/tools/install';
     const cwd = '/var/lib/example';

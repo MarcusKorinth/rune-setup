@@ -368,7 +368,19 @@ function resolveCommand(
   };
 
   const manifestDir = context.manifestDir;
-  const command = anchorCommandValue(render(spec.command), manifestDir, context.platform);
+  const renderedCommand = render(spec.command);
+  const driveRelative =
+    context.platform === 'windows' &&
+    (isSecretString(renderedCommand)
+      ? secretMatches(renderedCommand, /^[A-Za-z]:(?![\\/])/)
+      : /^[A-Za-z]:(?![\\/])/.test(renderedCommand));
+  if (driveRelative) {
+    const commandShown = isSecretString(renderedCommand) ? MASK : renderedCommand;
+    const message = `step "${stepId}" uses Windows drive-relative command "${commandShown}", which depends on the caller's per-drive current directory — use an absolute path or a manifest-relative path`;
+    throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
+  }
+
+  const command = anchorCommandValue(renderedCommand, manifestDir, context.platform);
   const commandShown = isSecretString(command) ? MASK : command;
 
   // The Windows honesty rule, applied to the final interpolated command so dry-run surfaces
