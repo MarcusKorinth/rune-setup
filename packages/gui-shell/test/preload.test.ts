@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { BridgeEvent } from '../src/preload/types.js';
+
 const { electron, restoreElectronRequire } = vi.hoisted(() => {
   const electron = {
     contextBridge: { exposeInMainWorld: vi.fn() },
@@ -70,7 +72,17 @@ describe('the preload bridge', () => {
     api.onEvent((event) => seen.push(event));
     expect(ipc.on).toHaveBeenCalledWith('rune:event', expect.any(Function));
     const listener = ipc.on.mock.calls[0]?.[1] as (event: unknown, payload: unknown) => void;
-    listener(undefined, { kind: 'runStarted' });
-    expect(seen).toEqual([{ kind: 'runStarted' }]);
+    const runStarted = {
+      kind: 'runStarted',
+      plan: {
+        manifestPath: 'installer.yaml',
+        platform: 'linux',
+        preview: false,
+        failFast: true,
+        steps: [],
+      },
+    } satisfies BridgeEvent;
+    listener(undefined, runStarted);
+    expect(seen).toEqual([runStarted]);
   });
 });

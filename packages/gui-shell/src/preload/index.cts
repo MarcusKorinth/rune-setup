@@ -14,6 +14,7 @@ import type * as ElectronModule from 'electron';
 import type {
   BridgeEvent,
   BridgeInput,
+  BridgeInputType,
   BridgePlan,
   BridgeResult,
   BridgeTheme,
@@ -40,7 +41,7 @@ export function buildBridge(ipc: BridgeIpc): RuneBridge {
     open: () =>
       ipc.invoke('rune:open') as Promise<{
         runeVersion: string;
-        inputTypes: readonly string[];
+        inputTypes: readonly BridgeInputType[];
         product: { readonly name: string; readonly version: string };
       }>,
     pendingInputs: () => ipc.invoke('rune:pendingInputs') as Promise<readonly BridgeInput[]>,

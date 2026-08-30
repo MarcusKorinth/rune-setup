@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
 }));
 
 import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
+import type { BridgeEvent, BridgeInput, BridgePlan } from '../src/preload/types.js';
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
@@ -186,6 +187,31 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
   });
 
+  it('preserves absent unanswered fields and disabled-input provenance', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { databasePort: '5432' },
+    });
+    const bridge = await bridgeOver(session);
+
+    const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const unanswered = inputs.find((input) => input.id === 'token');
+    const disabled = inputs.find((input) => input.id === 'databasePort');
+
+    expect(unanswered).toMatchObject({ id: 'token', enabled: true, spec: { type: 'secret' } });
+    expect(unanswered).not.toHaveProperty('value');
+    expect(unanswered).not.toHaveProperty('source');
+    expect(unanswered).not.toHaveProperty('ignored');
+    expect(disabled).toMatchObject({
+      id: 'databasePort',
+      enabled: false,
+      value: '',
+      ignored: 'set',
+    });
+    expect(disabled).not.toHaveProperty('source');
+  });
+
   it('masks and normalizes every rejection through the injectable registration sink', async () => {
     const session = await Session.open(fixture(), {
       environment: {},
@@ -224,15 +250,10 @@ describe('the IPC bridge', () => {
     const describeSpy = vi.spyOn(session, 'describe');
     const bridge = await bridgeOver(session);
 
-    const inputs = (await bridge.call('rune:allInputs')) as readonly {
-      id: string;
-      value: unknown;
-    }[];
+    const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     expect(inputs.find((input) => input.id === 'token')?.value).toBeNull();
 
-    const plan = (await bridge.call('rune:plan')) as Record<string, unknown> & {
-      steps: readonly Record<string, unknown>[];
-    };
+    const plan = (await bridge.call('rune:plan')) as BridgePlan;
 
     expect(planSpy).toHaveBeenCalledTimes(1);
     expect(describeSpy).not.toHaveBeenCalled();
@@ -305,12 +326,33 @@ describe('the IPC bridge', () => {
     });
     session.setValue('installDatabase', false);
     const bridge = await bridgeOver(session);
+    const plan = (await bridge.call('rune:plan')) as BridgePlan;
 
     const result = (await bridge.call('rune:execute')) as { status: string; mode: string };
 
     expect(result.status).toBe('succeeded');
     expect(result.mode).toBe('gui');
     expect(bridge.sent.length).toBeGreaterThan(0);
+    expect(bridge.sent[0]).toEqual({
+      channel: EVENT_CHANNEL,
+      payload: { kind: 'runStarted', plan },
+    });
+    const started = bridge.sent[0]?.payload as BridgeEvent | undefined;
+    if (started?.kind !== 'runStarted') {
+      throw new Error('the first event was not runStarted');
+    }
+    const use = started.plan.steps[0];
+    if (use?.state !== 'PENDING') {
+      throw new Error('the first planned step was not pending');
+    }
+    expect(use.command).toEqual({
+      argv: ['***', '--token', '***', '***'],
+      cwd: '***',
+      env: { TOKEN: '***', LITERAL: '***' },
+      timeoutSeconds: null,
+      successExitCodes: [0],
+    });
+    expect(use.command.argv).not.toContain(null);
     for (const { channel, payload } of bridge.sent) {
       expect(channel).toBe(EVENT_CHANNEL);
       // JSON-safe plain data only — a raw engine object would not survive this round trip.

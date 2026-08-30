@@ -13,10 +13,12 @@ import {
   isSecretString,
   type ExecutionPlan,
   type ResolvedCommand,
+  type RunEvent,
   type ThemeConfig,
 } from '@rune/engine';
 
 import type {
+  BridgeEvent,
   BridgePlan,
   BridgePlannedCommand,
   BridgePlannedStep,
@@ -63,6 +65,14 @@ export function projectPlan(plan: ExecutionPlan, mask: (text: string) => string)
 
   // project() keeps the ordinary-string masking belt and proves the return is plain JSON data.
   return project(projected, mask) as BridgePlan;
+}
+
+/** Projects one run event, routing its plan through the same masked plan contract. */
+export function projectEvent(event: RunEvent, mask: (text: string) => string): BridgeEvent {
+  if (event.kind === 'runStarted') {
+    return { kind: event.kind, plan: projectPlan(event.plan, mask) };
+  }
+  return project(event, mask) as BridgeEvent;
 }
 
 /** Keeps the engine path-based while giving the sandboxed renderer canonical asset URLs. */
