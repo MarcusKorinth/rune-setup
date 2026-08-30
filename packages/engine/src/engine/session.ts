@@ -243,13 +243,24 @@ export class Session {
   }
 
   /**
-   * The result of cancelling after the plan existed but before anything ran — the CLI
-   * edit-loop Cancel, the GUI window closed before Proceed (§10): every pending step
-   * NOT_RUN, inputs listed, status `cancelled`.
+   * The result of cancelling before anything ran — the CLI edit-loop Cancel, the GUI
+   * window closed before Proceed (§10). When the inputs are complete, every pending step
+   * is NOT_RUN and plan-time skips are kept. When required inputs are still missing, no
+   * truthful plan exists, so the result has zero steps and retains the resolved inputs.
    */
   describeCancelled(): RunResult {
+    const plan =
+      this.#resolution.missing.length === 0
+        ? this.plan()
+        : buildPlan({
+            manifest: { ...this.manifest, steps: [] },
+            manifestPath: this.manifestPath,
+            resolution: this.#resolution,
+            context: this.#context,
+            strings: this.#strings,
+          });
     return describeCancelled({
-      plan: this.plan(),
+      plan,
       resolution: this.#resolution,
       product: this.manifest.product,
       secrets: this.#secrets,

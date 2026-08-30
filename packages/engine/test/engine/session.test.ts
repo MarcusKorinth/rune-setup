@@ -8,6 +8,7 @@ import { hostPlatform } from '../../src/engine/context.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner } from '../../src/runners/base.js';
+import { runResultSchema } from '../../src/results/schema.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
 
@@ -135,6 +136,91 @@ describe('planning and executing', () => {
     expect(result.status).toBe('planned');
     expect(result.dryRun).toBe(true);
     expect(result.steps[0]?.state).toBe('PENDING');
+  });
+
+  it('describes cancellation before missing required inputs allow a plan', async () => {
+    const path = fixture(BASE);
+    const session = await Session.open(path, {
+      environment: {},
+      locale: 'de-DE',
+      mode: 'gui',
+      overrides: { installDatabase: 'true' },
+    });
+
+    const result = session.describeCancelled();
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'gui',
+      dryRun: false,
+      platform: hostPlatform(),
+      locale: 'de-DE',
+      product: { name: 'Example', version: '1.0.0' },
+      manifestPath: path,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: true,
+      steps: [],
+    });
+    expect(result.inputs).toEqual([
+      {
+        id: 'installDatabase',
+        value: true,
+        source: 'set',
+        secret: false,
+        enabled: true,
+        ignored: null,
+      },
+      {
+        id: 'databasePort',
+        value: null,
+        source: null,
+        secret: false,
+        enabled: true,
+        ignored: null,
+      },
+    ]);
+    expect(() => runResultSchema.parse(result)).not.toThrow();
+  });
+
+  it('keeps planned step states when cancellation happens after planning', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs: {}',
+        'steps:',
+        '  - id: pending',
+        '    run:',
+        '      command: node',
+        '  - id: skipped',
+        '    when: "false"',
+        '    run:',
+        '      command: node',
+      ]),
+      { environment: {}, mode: 'gui' },
+    );
+
+    const result = session.describeCancelled();
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['NOT_RUN', 'SKIPPED']);
   });
 });
 
