@@ -480,8 +480,8 @@ packages/
 │       │       ├── rules.ts       # cross-field semantic checks, static ref/type checks, input-when acyclicity
 │       │       └── present.ts     # zod issue path -> file:line:col error presenter
 │       ├── inputs/
-│       │   ├── base.ts            # InputType interface: validate(), fromString(), isSecret()
-│       │   ├── registry.ts        # name -> InputType map; duplicate registration is an error
+│       │   ├── base.ts            # InputTypeHandler: name, secret, empty/isAbsent, fromString/fromNative, render/compare
+│       │   ├── registry.ts        # name -> InputTypeHandler map; duplicate registration is an error
 │       │   ├── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
 │       │   └── snapshot.ts        # safe immutable snapshots of native string arrays
 │       ├── i18n/
@@ -544,7 +544,7 @@ Each package additionally has a `test/` directory of vitest unit tests (collecte
 
 ## 13) Extension points
 
-**Now (MVP):** plain name→object registries — `inputs/registry.ts` for the seven input types (validation + string coercion, incl. `pattern` and option membership — the engine-side authority) with mirrored presentation registries per frontend (`cli/prompt` prompters; the shell's field renderers keyed by input-type name in `gui-shell/src/renderer/`), and the `Runner` interface with the single spawn runner. Duplicate registration is an error. Adding an input type = register an `InputType`, a prompter, and a renderer field component; frontends fail fast on types they cannot render. All coercion/validation/rendering routes through the registry — the zod schema validates *shape*, the registry owns *type behavior* — so a later plugin system is additive, not a core refactor.
+**Now (MVP):** plain name→object registries — `inputs/registry.ts` for the seven `InputTypeHandler`s, which own empty/absence behavior, text/native coercion and validation, rendering, and condition comparison (including `pattern` and option membership — the engine-side authority), with mirrored presentation registries per frontend (`cli/prompt` prompters; the shell's field renderers keyed by input-type name in `gui-shell/src/renderer/`), and the `Runner` interface with the single spawn runner. Duplicate registration is an error. Adding an input type = register an `InputTypeHandler`, a prompter, and a renderer field component; frontends fail fast on types they cannot render. The zod schema validates *shape*; the registry owns type behavior, so a later plugin system is additive, not a core refactor.
 
 **Theming seam:** the CSS custom-property contract of the default theme plus `gui.theme` (§9.4). New looks are CSS, not code; RUNE guarantees the property names.
 
