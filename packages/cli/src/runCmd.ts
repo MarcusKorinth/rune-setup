@@ -48,7 +48,23 @@ export async function runCommand(
     // Malformed --set is the same CLI misuse in every mode: exit 2 here, never a shell
     // crash there.
     parseOverrides(flags.set ?? []);
-    await launchGui(manifestPath, flags, io, interaction);
+    try {
+      await launchGui(manifestPath, flags, io, interaction);
+    } catch (error) {
+      if (!(error instanceof CancelledError)) {
+        throw error;
+      }
+      // The shell owns every result after its workflow process starts. Before that point,
+      // the CLI is the only host that can persist the configured cancellation outcome.
+      if (flags.result !== undefined) {
+        deliverResult(
+          failureShell({ session: undefined, code: 6, manifestPath, flags, mode: 'gui' }),
+          flags.result,
+          io,
+        );
+      }
+      throw new ExitWithCode(6);
+    }
     return;
   }
 

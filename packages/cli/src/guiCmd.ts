@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { RUNE_VERSION, UsageError } from '@rune/engine';
+import { CancelledError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
@@ -292,12 +292,12 @@ export async function launchGui(
       });
     } catch (cause) {
       if (cancelRequested) {
-        throw new ExitWithCode(6);
+        throw new CancelledError('cancelled before the GUI shell started');
       }
       throw cause;
     }
     if (cancelRequested) {
-      throw new ExitWithCode(6);
+      throw new CancelledError('cancelled before the GUI shell started');
     }
 
     const [command, args] = shellCommand(location, argv);

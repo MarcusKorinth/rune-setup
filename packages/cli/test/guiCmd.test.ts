@@ -18,7 +18,7 @@ import type * as Fs from 'node:fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
+import { CancelledError, RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
 
 import { guiInstallCommand, launchGui, locateShell, shellCacheDir } from '../src/guiCmd.js';
 
@@ -554,7 +554,7 @@ describe('rune run --gui shell version handshake', () => {
 
       probe.close('', null);
       probeClosed = true;
-      await expect(launch).rejects.toMatchObject({ code: 6 });
+      await expect(launch).rejects.toBeInstanceOf(CancelledError);
       expect(spawnMock.mock.calls.filter(([command]) => command !== 'taskkill')).toHaveLength(1);
       expect(probe.events.listenerCount('error')).toBe(0);
       expect(probe.events.listenerCount('close')).toBe(0);
@@ -611,7 +611,7 @@ describe('rune run --gui shell version handshake', () => {
 
       probe.close('', null);
       probeClosed = true;
-      await expect(launch).rejects.toMatchObject({ code: 6 });
+      await expect(launch).rejects.toBeInstanceOf(CancelledError);
       expect(spawnMock.mock.calls.filter(([command]) => command !== 'taskkill')).toHaveLength(1);
       expect(probe.events.listenerCount('error')).toBe(0);
       expect(probe.events.listenerCount('close')).toBe(0);
@@ -643,7 +643,7 @@ describe('rune run --gui shell version handshake', () => {
 
       expect(() => taskkill.emit('error', new Error('taskkill unavailable'))).not.toThrow();
       probe.close('', null);
-      await expect(launch).rejects.toMatchObject({ code: 6 });
+      await expect(launch).rejects.toBeInstanceOf(CancelledError);
     },
   );
 
@@ -663,7 +663,7 @@ describe('rune run --gui shell version handshake', () => {
     probe.close(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }));
     process.emit('SIGTERM');
 
-    await expect(launch).rejects.toMatchObject({ code: 6 });
+    await expect(launch).rejects.toBeInstanceOf(CancelledError);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(forceExit).not.toHaveBeenCalled();
     expect(probe.events.listenerCount('error')).toBe(0);
