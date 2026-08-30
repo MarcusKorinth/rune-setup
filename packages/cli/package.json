@@ -1,7 +1,7 @@
 {
   "name": "@rune/cli",
   "version": "0.1.0",
-  "description": "rune — the RUNE command line (interactive and non-interactive runs, validate, schema)",
+  "description": "rune — interactive, non-interactive, and GUI runs; GUI shell install, manifest validation, and schema inspection",
   "license": "MIT",
   "type": "module",
   "engines": {
