@@ -427,6 +427,170 @@ describe('SecretRegistry', () => {
     expect(target.mask('later-secret')).toBe('later-secret');
   });
 
+  it('keeps combined registries independent from later source mutations', () => {
+    const left = new SecretRegistry();
+    left.register('left-secret');
+    const right = new SecretRegistry();
+    right.register('right-secret');
+
+    const combined = left.combinedWith(right);
+    left.register('new-left-value');
+    right.replaceWith(new SecretRegistry());
+
+    expect(combined.size).toBe(2);
+    expect(combined.mask('left-secret/right-secret')).toBe('***/***');
+    expect(combined.mask('new-left-value')).toBe('new-left-value');
+    expect(left.mask('new-left-value')).toBe(MASK);
+    expect(right.mask('right-secret')).toBe('right-secret');
+  });
+
+  it('caches one immutable matcher per registry snapshot', () => {
+    const registry = new SecretRegistry();
+    registry.register('abcdef');
+    registry.register('***ghi');
+    const transitionWrite = vi.spyOn(Map.prototype, 'set');
+    const measuredMask = (target: SecretRegistry, text: string): readonly [string, number] => {
+      const before = transitionWrite.mock.calls.length;
+      const result = target.mask(text);
+      return [result, transitionWrite.mock.calls.length - before];
+    };
+
+    try {
+      const [empty, emptyWrites] = measuredMask(new SecretRegistry(), 'empty snapshot');
+      expect(empty).toBe('empty snapshot');
+      expect(emptyWrites).toBe(0);
+
+      const [primed, initialWrites] = measuredMask(registry, 'no match here');
+      expect(primed).toBe('no match here');
+      expect(initialWrites).toBeGreaterThan(0);
+
+      const [collision, collisionWrites] = measuredMask(registry, 'abcdefghi');
+      expect(collision).toBe(MASK);
+      expect(collisionWrites).toBe(0);
+
+      registry.register('abcdef');
+      const [duplicate, duplicateWrites] = measuredMask(registry, 'abcdef');
+      expect(duplicate).toBe(MASK);
+      expect(duplicateWrites).toBe(0);
+
+      registry.register('unique-secret');
+      const [unique, rebuiltWrites] = measuredMask(registry, 'unique-secret');
+      expect(unique).toBe(MASK);
+      expect(rebuiltWrites).toBeGreaterThan(0);
+
+      const replacement = new SecretRegistry();
+      replacement.register('replacement-secret');
+      replacement.mask('prime replacement snapshot');
+      registry.replaceWith(replacement);
+      const [replaced, replacementWrites] = measuredMask(registry, 'replacement-secret');
+      expect(replaced).toBe(MASK);
+      expect(replacementWrites).toBe(0);
+
+      replacement.register('independent-later-value');
+      expect(registry.mask('independent-later-value')).toBe('independent-later-value');
+    } finally {
+      transitionWrite.mockRestore();
+    }
+  });
+
+  it('matches an obvious reference across deterministic overlap and collision cases', () => {
+    const cases: { readonly patterns: readonly string[]; readonly texts: readonly string[] }[] = [
+      {
+        patterns: ['abcd', 'bcde', 'cdef', 'defg'],
+        texts: ['zabcdefgz', 'abcdbcdecdefdefg', 'nothing'],
+      },
+      {
+        patterns: ['abcde', 'bcde', 'cdefg'],
+        texts: ['abcde', 'zabcdefg', 'abcdebcde'],
+      },
+      {
+        patterns: ['abcd', 'efgh', 'cdef'],
+        texts: ['abcdefgh', 'abcdefghabcd', 'abcd-efgh'],
+      },
+      {
+        patterns: ['aaaa', 'aaaab', 'baaaa'],
+        texts: ['aaaaa', 'baaaab', 'aaaaaaaaaaaa'],
+      },
+      {
+        patterns: ['🔑🔑🔑🔑', 'a🔑b🔑', 'a\ud83db\udc00'],
+        texts: ['x🔑🔑🔑🔑y', 'a🔑b🔑a\ud83db\udc00', '\ud83da\ud83db\udc00\udc00'],
+      },
+      {
+        patterns: ['abcdef', 'ghijkl', '***ghi', 'ghi***', '***middle***'],
+        texts: ['abcdefghi', 'ghiabcdef', 'abcdefmiddleghijkl'],
+      },
+    ];
+
+    for (let seed = 0; seed < 32; seed += 1) {
+      const patterns = [
+        deterministicText(seed * 3 + 1, 4),
+        deterministicText(seed * 5 + 2, 5),
+        deterministicText(seed * 7 + 3, 6),
+      ];
+      cases.push({
+        patterns,
+        texts: [
+          deterministicText(seed * 11, 18),
+          `x${patterns[0]}${patterns[1]}y`,
+          `${patterns[2]}-${patterns[0]}-${patterns[2]}`,
+          patterns[0]!.slice(0, 3) + patterns[1] + patterns[0]!.slice(3),
+        ],
+      });
+    }
+
+    for (const { patterns, texts } of cases) {
+      const registry = new SecretRegistry();
+      for (const pattern of patterns) {
+        registry.register(pattern);
+      }
+      for (const text of texts) {
+        expect(registry.mask(text), `${JSON.stringify(patterns)} in ${JSON.stringify(text)}`).toBe(
+          referenceMask(text, patterns),
+        );
+      }
+    }
+  });
+
+  it('scans 10k diagnostics independently of a 10k-secret registry', () => {
+    const registry = new SecretRegistry();
+    for (let index = 0; index < 10_000; index += 1) {
+      registry.register(`F050-${index.toString().padStart(5, '0')}-value`);
+    }
+    registry.mask('prime the cached matcher');
+
+    const diagnostics = Array.from(
+      { length: 10_000 },
+      (_, index) => `warning: disabled input ${index.toString().padStart(5, '0')}`,
+    );
+    const expectedCodeUnits = diagnostics.reduce(
+      (total, diagnostic) => total + diagnostic.length,
+      0,
+    );
+    const charCodeAt = vi.spyOn(String.prototype, 'charCodeAt');
+    const indexOf = vi.spyOn(String.prototype, 'indexOf').mockImplementation(() => {
+      throw new Error('masking must not search once per registered secret');
+    });
+    const charCodeAtBefore = charCodeAt.mock.calls.length;
+    let allUnchanged = true;
+    let indexOfCalls = 0;
+    let charCodeAtCalls = 0;
+
+    try {
+      for (const diagnostic of diagnostics) {
+        allUnchanged &&= registry.mask(diagnostic) === diagnostic;
+      }
+      indexOfCalls = indexOf.mock.calls.length;
+      charCodeAtCalls = charCodeAt.mock.calls.length - charCodeAtBefore;
+    } finally {
+      indexOf.mockRestore();
+      charCodeAt.mockRestore();
+    }
+
+    expect(allUnchanged).toBe(true);
+    expect(indexOfCalls).toBe(0);
+    expect(charCodeAtCalls).toBe(expectedCodeUnits);
+  });
+
   it('sorts registered secrets only before masking after the set changes', () => {
     const registry = new SecretRegistry();
     const sort = vi.spyOn(Array.prototype, 'sort');
@@ -501,4 +665,59 @@ function typeScriptFiles(directory: string): readonly string[] {
     }
     return entry.isFile() && entry.name.endsWith('.ts') ? [path] : [];
   });
+}
+
+function deterministicText(seed: number, length: number): string {
+  const alphabet = ['a', 'b', 'c', 'd'] as const;
+  let state = seed >>> 0;
+  let text = '';
+  for (let index = 0; index < length; index += 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    text += alphabet[state % alphabet.length];
+  }
+  return text;
+}
+
+/** Small, intentionally direct oracle used only for differential tests. */
+function referenceMask(text: string, patterns: readonly string[]): string {
+  let masked = text;
+  for (let pass = 0; pass < 16; pass += 1) {
+    const next = referenceMaskOnce(masked, patterns);
+    if (next === masked) {
+      return masked;
+    }
+    masked = next;
+  }
+  return MASK;
+}
+
+function referenceMaskOnce(text: string, patterns: readonly string[]): string {
+  const matches: [number, number][] = [];
+  for (const pattern of new Set(patterns)) {
+    let start = text.indexOf(pattern);
+    while (start !== -1) {
+      matches.push([start, start + pattern.length]);
+      start = text.indexOf(pattern, start + 1);
+    }
+  }
+  matches.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  if (matches.length === 0) {
+    return text;
+  }
+
+  let out = '';
+  let cursor = 0;
+  let matchStart = matches[0]![0];
+  let matchEnd = matches[0]![1];
+  for (const [start, end] of matches.slice(1)) {
+    if (start < matchEnd) {
+      matchEnd = Math.max(matchEnd, end);
+    } else {
+      out += text.slice(cursor, matchStart) + MASK;
+      cursor = matchEnd;
+      matchStart = start;
+      matchEnd = end;
+    }
+  }
+  return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
 }

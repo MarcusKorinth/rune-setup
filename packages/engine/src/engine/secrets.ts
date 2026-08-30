@@ -126,145 +126,151 @@ export function secretValueIn(needle: unknown, haystack: readonly string[]): boo
   return secret === undefined ? undefined : haystack.includes(secret);
 }
 
-interface SecretMatchStream {
-  readonly secret: string;
-  start: number;
-  end: number;
-  searchFrom: number;
-  pendingStart: number | undefined;
+interface MatcherNode {
+  readonly transitions: Map<number, number>;
+  failure: number;
+  longestMatchLength: number;
 }
 
-function compareMatches(left: SecretMatchStream, right: SecretMatchStream): number {
-  return left.start - right.start || left.end - right.end;
-}
+/**
+ * An immutable Aho-Corasick matcher for one registry snapshot.
+ *
+ * JavaScript string offsets are UTF-16 code-unit offsets, as are `String.indexOf` offsets.
+ * Building and scanning by `charCodeAt` therefore preserves the old matching semantics for
+ * astral characters and unpaired surrogates. Only the longest match ending at a state is
+ * needed: every shorter match with the same end is contained in that interval.
+ */
+class SecretMatcher {
+  readonly #nodes: readonly MatcherNode[];
+  readonly #maximumPatternLength: number;
 
-function pushMatch(heap: SecretMatchStream[], match: SecretMatchStream): void {
-  heap.push(match);
-  let index = heap.length - 1;
+  constructor(patterns: readonly string[]) {
+    const nodes: MatcherNode[] = [createMatcherNode()];
+    let maximumPatternLength = 0;
 
-  while (index > 0) {
-    const parent = Math.floor((index - 1) / 2);
-    if (compareMatches(heap[parent]!, match) <= 0) {
-      break;
-    }
-    heap[index] = heap[parent]!;
-    index = parent;
-  }
+    for (const pattern of patterns) {
+      let state = 0;
+      maximumPatternLength = Math.max(maximumPatternLength, pattern.length);
 
-  heap[index] = match;
-}
+      for (let index = 0; index < pattern.length; index += 1) {
+        const codeUnit = pattern.charCodeAt(index);
+        const transition = nodes[state]!.transitions.get(codeUnit);
+        if (transition !== undefined) {
+          state = transition;
+          continue;
+        }
 
-function popMatch(heap: SecretMatchStream[]): SecretMatchStream {
-  const first = heap[0]!;
-  const last = heap.pop()!;
-  if (heap.length === 0) {
-    return first;
-  }
+        const parentState = state;
+        state = nodes.length;
+        nodes.push(createMatcherNode());
+        nodes[parentState]!.transitions.set(codeUnit, state);
+      }
 
-  let index = 0;
-  while (true) {
-    const left = index * 2 + 1;
-    if (left >= heap.length) {
-      break;
-    }
-
-    const right = left + 1;
-    const child =
-      right < heap.length && compareMatches(heap[right]!, heap[left]!) < 0 ? right : left;
-    if (compareMatches(last, heap[child]!) <= 0) {
-      break;
+      nodes[state]!.longestMatchLength = Math.max(nodes[state]!.longestMatchLength, pattern.length);
     }
 
-    heap[index] = heap[child]!;
-    index = child;
-  }
-
-  heap[index] = last;
-  return first;
-}
-
-/** Advances one secret's stream to its next self-overlap-compressed match. */
-function advanceMatch(text: string, match: SecretMatchStream): boolean {
-  const start = match.pendingStart ?? text.indexOf(match.secret, match.searchFrom);
-  if (start === -1) {
-    return false;
-  }
-
-  match.pendingStart = undefined;
-  let end = start + match.secret.length;
-  let searchFrom = start + 1;
-
-  while (true) {
-    const next = text.indexOf(match.secret, searchFrom);
-    if (next === -1) {
-      match.searchFrom = text.length + 1;
-      break;
-    }
-    if (next >= end) {
-      match.pendingStart = next;
-      match.searchFrom = next + 1;
-      break;
+    const queue: number[] = [];
+    for (const state of nodes[0]!.transitions.values()) {
+      queue.push(state);
     }
 
-    end = Math.max(end, next + match.secret.length);
-    searchFrom = next + 1;
+    for (let head = 0; head < queue.length; head += 1) {
+      const state = queue[head]!;
+      const node = nodes[state]!;
+
+      for (const [codeUnit, childState] of node.transitions) {
+        let failureState = node.failure;
+        let failureTransition = nodes[failureState]!.transitions.get(codeUnit);
+        while (failureTransition === undefined && failureState !== 0) {
+          failureState = nodes[failureState]!.failure;
+          failureTransition = nodes[failureState]!.transitions.get(codeUnit);
+        }
+
+        const child = nodes[childState]!;
+        child.failure = failureTransition ?? 0;
+        child.longestMatchLength = Math.max(
+          child.longestMatchLength,
+          nodes[child.failure]!.longestMatchLength,
+        );
+        queue.push(childState);
+      }
+    }
+
+    this.#nodes = nodes;
+    this.#maximumPatternLength = maximumPatternLength;
   }
 
-  match.start = start;
-  match.end = end;
-  return true;
-}
+  /** Replaces every range containing a secret found in this version of `text`. */
+  maskOnce(text: string): string {
+    if (this.#maximumPatternLength === 0 || text.length === 0) {
+      return text;
+    }
 
-/** Replaces every range containing a secret found in this version of `text`. */
-function maskOnce(text: string, orderedSecrets: readonly string[]): string {
-  // The heap owns one reusable stream per registered secret, rather than one object per
-  // occurrence. Its size is therefore independent of how often secrets appear in the text.
-  const matchHeap: SecretMatchStream[] = [];
-  for (const secret of orderedSecrets) {
-    const match: SecretMatchStream = {
-      secret,
-      start: 0,
-      end: 0,
-      searchFrom: 0,
-      pendingStart: undefined,
+    // Matches arrive in end-position order. Pending connected components are a numeric
+    // stack, not an object per occurrence. A component is emitted only after the maximum
+    // pattern length proves that no later match can overlap it; adjacent matches remain
+    // separate because the overlap comparison is strict.
+    const pendingStarts: number[] = [];
+    const pendingEnds: number[] = [];
+    let pendingHead = 0;
+    let state = 0;
+    let out = '';
+    let cursor = 0;
+
+    const flushThrough = (safeStart: number): void => {
+      while (pendingHead < pendingEnds.length && pendingEnds[pendingHead]! <= safeStart) {
+        out += text.slice(cursor, pendingStarts[pendingHead]!) + MASK;
+        cursor = pendingEnds[pendingHead]!;
+        pendingHead += 1;
+      }
+
+      if (pendingHead === pendingEnds.length) {
+        pendingStarts.length = 0;
+        pendingEnds.length = 0;
+        pendingHead = 0;
+      } else if (pendingHead >= 1_024 && pendingHead * 2 >= pendingEnds.length) {
+        pendingStarts.copyWithin(0, pendingHead);
+        pendingEnds.copyWithin(0, pendingHead);
+        pendingStarts.length -= pendingHead;
+        pendingEnds.length -= pendingHead;
+        pendingHead = 0;
+      }
     };
-    if (advanceMatch(text, match)) {
-      pushMatch(matchHeap, match);
+
+    for (let index = 0; index < text.length; index += 1) {
+      const codeUnit = text.charCodeAt(index);
+      let transition = this.#nodes[state]!.transitions.get(codeUnit);
+      while (transition === undefined && state !== 0) {
+        state = this.#nodes[state]!.failure;
+        transition = this.#nodes[state]!.transitions.get(codeUnit);
+      }
+      state = transition ?? 0;
+
+      const end = index + 1;
+      const matchLength = this.#nodes[state]!.longestMatchLength;
+      if (matchLength > 0) {
+        let start = end - matchLength;
+        let mergedEnd = end;
+
+        while (pendingEnds.length > pendingHead && pendingEnds[pendingEnds.length - 1]! > start) {
+          start = Math.min(start, pendingStarts.pop()!);
+          mergedEnd = Math.max(mergedEnd, pendingEnds.pop()!);
+        }
+
+        pendingStarts.push(start);
+        pendingEnds.push(mergedEnd);
+      }
+
+      flushThrough(end + 1 - this.#maximumPatternLength);
     }
+
+    flushThrough(Number.POSITIVE_INFINITY);
+    return cursor === 0 ? text : out + text.slice(cursor);
   }
+}
 
-  if (matchHeap.length === 0) {
-    return text;
-  }
-
-  let out = '';
-  let cursor = 0;
-  const first = popMatch(matchHeap);
-  let matchStart = first.start;
-  let matchEnd = first.end;
-  if (advanceMatch(text, first)) {
-    pushMatch(matchHeap, first);
-  }
-
-  while (matchHeap.length > 0) {
-    const match = popMatch(matchHeap);
-    const start = match.start;
-    const end = match.end;
-    if (advanceMatch(text, match)) {
-      pushMatch(matchHeap, match);
-    }
-
-    if (start < matchEnd) {
-      matchEnd = Math.max(matchEnd, end);
-    } else {
-      out += text.slice(cursor, matchStart) + MASK;
-      cursor = matchEnd;
-      matchStart = start;
-      matchEnd = end;
-    }
-  }
-
-  return out + text.slice(cursor, matchStart) + MASK + text.slice(matchEnd);
+function createMatcherNode(): MatcherNode {
+  return { transitions: new Map(), failure: 0, longestMatchLength: 0 };
 }
 
 /**
@@ -275,9 +281,8 @@ function maskOnce(text: string, orderedSecrets: readonly string[]): string {
  */
 export class SecretRegistry {
   readonly #values = new Set<string>();
-  /** Registered secrets in deterministic longest-first order. */
-  #ordered: readonly string[] = [];
-  #orderedDirty = false;
+  /** Immutable matcher for the current value-set snapshot. */
+  #matcher: SecretMatcher | undefined;
 
   /**
    * Registers every maskable part of a secret. Returns false when any content line is too
@@ -298,7 +303,7 @@ export class SecretRegistry {
         const size = this.#values.size;
         this.#values.add(part);
         if (this.#values.size !== size) {
-          this.#orderedDirty = true;
+          this.#matcher = undefined;
         }
       }
     }
@@ -331,34 +336,47 @@ export class SecretRegistry {
     for (const value of source.#values) {
       combined.#values.add(value);
     }
-    combined.#orderedDirty = combined.#values.size > 0;
+    if (combined.#values.size === this.#values.size) {
+      combined.#matcher = this.#matcher;
+    } else if (combined.#values.size === source.#values.size) {
+      combined.#matcher = source.#matcher;
+    }
     return combined;
   }
 
   /** Replaces this registry with the completed secret set of one successful resolution. */
   replaceWith(source: SecretRegistry): void {
+    if (setsEqual(this.#values, source.#values)) {
+      return;
+    }
+
     const values = new Set(source.#values);
-    const ordered = [...source.#ordered];
-    const orderedDirty = source.#orderedDirty;
 
     this.#values.clear();
     for (const value of values) {
       this.#values.add(value);
     }
-    this.#ordered = ordered;
-    this.#orderedDirty = orderedDirty;
+    // The matcher is immutable, so sharing this snapshot remains safe when either registry
+    // later changes its own set and invalidates its reference.
+    this.#matcher = source.#matcher;
   }
 
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
-    if (this.#orderedDirty) {
-      this.#ordered = [...this.#values].sort((a, b) => b.length - a.length);
-      this.#orderedDirty = false;
+    if (this.#values.size === 0) {
+      return text;
     }
 
+    // Stable ordering makes the cached snapshot deterministic even though matching behavior
+    // itself is independent of registration order.
+    const matcher = (this.#matcher ??= new SecretMatcher(
+      [...this.#values].sort(
+        (left, right) => right.length - left.length || (left < right ? -1 : left === right ? 0 : 1),
+      ),
+    ));
     let masked = text;
     for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
-      const next = maskOnce(masked, this.#ordered);
+      const next = matcher.maskOnce(masked);
       if (next === masked) {
         return masked;
       }
@@ -371,4 +389,16 @@ export class SecretRegistry {
     // the extra masking is limited to this pathological budget-exhaustion path.
     return MASK;
   }
+}
+
+function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
 }
