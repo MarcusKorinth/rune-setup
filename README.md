@@ -11,10 +11,11 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is in its **bootstrap phase**: the architectural contract is complete — see
-[docs/architecture.md](docs/architecture.md) — and the monorepo scaffold exists; engine and
-CLI functionality begin with Milestone 1. [docs/roadmap.md](docs/roadmap.md) tracks the MVP
-scope and what comes after.
+RUNE's **v0.1 core (Milestones 0–2)** is implemented: the engine,
+validation/schema and non-interactive execution, the interactive CLI, the `Session` facade,
+and the mode-parity contract suite. [docs/roadmap.md](docs/roadmap.md) tracks the remaining
+MVP scope and what comes after. The Milestone 3 GUI shell and its `rune gui install` /
+`rune run --gui` commands are planned, not currently implemented.
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
@@ -76,8 +77,7 @@ steps:
         args: [scripts/install-database.sh, "${databasePort}"]
 ```
 
-The same manifest, three ways (the graphical shell is fetched once with
-`rune gui install`):
+The same manifest, three ways (the graphical mode is planned for Milestone 3):
 
 ```bash
 rune run installer.yaml
@@ -91,24 +91,23 @@ rune run installer.yaml --gui
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 
-## The graphical wizard
+## The planned graphical wizard (Milestone 3)
 
-The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
-on the target machine, runs without admin rights, and looks identical on every platform
-because it ships its own rendering engine. Its main process hosts the RUNE engine
-in-process; its window is a pure renderer that reaches the engine only through an IPC
-bridge — all planning, validation and execution happen in the engine, exactly as in the
-two CLI modes.
+The planned wizard is a bundled, self-contained, Electron-based app. It will need nothing
+installed on the target machine, run without admin rights, and look identical on every
+platform because it ships its own rendering engine. Its main process will host the RUNE
+engine in-process; its window will be a pure renderer that reaches the engine only through
+an IPC bridge — all planning, validation and execution will happen in the engine, exactly
+as in the two CLI modes.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — `rune gui install` fetches the prebuilt shell for your OS into a
-  per-user cache (no admin rights; run once before `rune run --gui`); `rune package`
-  (roadmap milestone 4) bundles shell, engine and manifest into one portable end-user
-  artifact that needs nothing installed
+- **Author tooling** — planned `rune gui install` will fetch the prebuilt shell for your OS
+  into a per-user cache; `rune package` (roadmap milestone 4) will bundle shell, engine and
+  manifest into one portable end-user artifact that needs nothing installed
 
 ## Design principles
 
