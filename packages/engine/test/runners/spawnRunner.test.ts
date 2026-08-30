@@ -190,6 +190,40 @@ describe('SpawnRunner', () => {
     expect(outcome.kind).toBe('failedToStart');
   });
 
+  it.runIf(process.platform === 'win32')(
+    'refuses injected batch commands at spawn time without exposing the command',
+    async () => {
+      const secretMarker = 'runner-backstop-secret';
+
+      for (const extension of ['.bat', '.CmD']) {
+        const outcome = await run(
+          nodeCommand('', {
+            argv: [new SecretString(`C:\\missing\\${secretMarker}${extension}`)],
+          }),
+        );
+
+        expect(outcome).toEqual({
+          kind: 'failedToStart',
+          message:
+            'RUNE-405: Windows batch commands require an explicit shell; write command: cmd, args: ["/c", ...]',
+        });
+        expect(JSON.stringify(outcome)).not.toContain(secretMarker);
+      }
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'leaves batch-suffixed commands to the POSIX spawn contract',
+    async () => {
+      const outcome = await run(
+        nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere.CmD'] }),
+      );
+
+      expect(outcome.kind).toBe('failedToStart');
+      expect(outcome.kind === 'failedToStart' && outcome.message).not.toContain('RUNE-405');
+    },
+  );
+
   it('settles a synchronous spawn validation error without exposing its secret value', async () => {
     const secretMarker = 'nul-secret-value';
     const secret = `${secretMarker}\0suffix`;

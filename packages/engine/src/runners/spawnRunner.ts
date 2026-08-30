@@ -50,8 +50,17 @@ export class SpawnRunner implements Runner {
       }
 
       let child: ReturnType<typeof spawn>;
+      const executableValue = reveal(executable ?? '');
+      if (process.platform === 'win32' && /\.(?:bat|cmd)$/i.test(executableValue)) {
+        resolve({
+          kind: 'failedToStart',
+          message:
+            'RUNE-405: Windows batch commands require an explicit shell; write command: cmd, args: ["/c", ...]',
+        });
+        return;
+      }
       try {
-        child = spawn(reveal(executable ?? ''), args.map(reveal), {
+        child = spawn(executableValue, args.map(reveal), {
           cwd: reveal(command.cwd),
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
