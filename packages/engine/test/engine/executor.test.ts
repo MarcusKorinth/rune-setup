@@ -20,7 +20,12 @@ import {
   type ExecutionPlan,
   type PlanOptions,
 } from '../../src/engine/plan.js';
-import { isSecretString, MASK, SecretRegistry } from '../../src/engine/secrets.js';
+import {
+  isSecretString,
+  MASK,
+  SecretRegistry,
+  secretValuesEqual,
+} from '../../src/engine/secrets.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
@@ -1817,6 +1822,159 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain('super-secret-value');
   });
 
+  it('keeps byte-colliding public inputs masked while a custom runner receives wrappers', async () => {
+    const secret = 'credential-value';
+    const substring = `prefix-${secret}-suffix`;
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        `    title: "Use ${substring}"`,
+        '    run:',
+        '      command: "${mirror}"',
+        '      args: ["${mirror}"]',
+        '      env:',
+        '        MIRROR: "${mirror}"',
+      ],
+      {
+        overrides: new Map([
+          ['token', secret],
+          ['mirror', substring],
+        ]),
+      },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        for (const value of [
+          request.command.argv[0],
+          request.command.argv[1],
+          request.command.env['MIRROR'],
+        ]) {
+          expect(isSecretString(value)).toBe(true);
+          expect(secretValuesEqual(value, substring)).toBe(true);
+        }
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    const started = events.find((event) => event.kind === 'runStarted');
+    expect(started?.kind).toBe('runStarted');
+    if (started?.kind !== 'runStarted') {
+      throw new Error('runStarted event was not emitted');
+    }
+    expect(started.plan).toBe(plan);
+    expect(started.plan.resolvedInputs).toMatchObject([
+      { id: 'token', secret: true },
+      { id: 'mirror', value: 'prefix-***-suffix', secret: false },
+    ]);
+    expect(started.plan.steps[0]?.title).toBe('Use prefix-***-suffix');
+    expect(JSON.stringify(started.plan)).not.toContain(secret);
+    expect(inspect(started.plan)).not.toContain(secret);
+    expect(result.inputs).toMatchObject([
+      { id: 'token', value: null, secret: true },
+      { id: 'mirror', value: 'prefix-***-suffix', secret: false },
+    ]);
+    expect(result.steps[0]).toMatchObject({
+      title: 'Use prefix-***-suffix',
+      command: ['***', '***'],
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it('reveals colliding command, argv, cwd and env bytes only to a real spawned process', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-plan-collision-'));
+    const payload = 'credential-value';
+    const script =
+      'process.exit(process.argv[1] === process.env.EXPECTED_PAYLOAD && process.cwd() === process.env.EXPECTED_CWD ? 0 : 9)';
+    try {
+      const { plan } = setup(
+        [
+          'inputs:',
+          '  secretCommand:',
+          '    type: secret',
+          '  mirrorCommand:',
+          '    type: text',
+          '  secretCwd:',
+          '    type: secret',
+          '  mirrorCwd:',
+          '    type: directory',
+          '  secretPayload:',
+          '    type: secret',
+          '  mirrorPayload:',
+          '    type: text',
+          'steps:',
+          '  - id: use',
+          '    run:',
+          '      command: "${mirrorCommand}"',
+          `      args: ["-e", ${JSON.stringify(script)}, "\${mirrorPayload}"]`,
+          '      cwd: "${mirrorCwd}"',
+          '      env:',
+          '        EXPECTED_PAYLOAD: "${mirrorPayload}"',
+          '        EXPECTED_CWD: "${mirrorCwd}"',
+        ],
+        {
+          overrides: new Map([
+            ['secretCommand', process.execPath],
+            ['mirrorCommand', process.execPath],
+            ['secretCwd', directory],
+            ['mirrorCwd', directory],
+            ['secretPayload', payload],
+            ['mirrorPayload', payload],
+          ]),
+        },
+      );
+      const step = plan.steps[0];
+      if (step?.state !== 'PENDING') {
+        throw new Error('expected a pending step');
+      }
+      expect(isSecretString(step.command.argv[0])).toBe(true);
+      expect(isSecretString(step.command.argv[3])).toBe(true);
+      expect(isSecretString(step.command.cwd)).toBe(true);
+      expect(isSecretString(step.command.env['EXPECTED_PAYLOAD'])).toBe(true);
+      expect(isSecretString(step.command.env['EXPECTED_CWD'])).toBe(true);
+
+      const result = await executeRun({ plan });
+
+      expect(result.status).toBe('succeeded');
+      expect(result.steps[0]?.exitCode).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps product and run-status identities byte-exact when they collide with secrets', async () => {
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  productIdentity:',
+        '    type: secret',
+        '  statusIdentity:',
+        '    type: secret',
+        'steps: []',
+      ],
+      {
+        overrides: new Map([
+          ['productIdentity', 'Example'],
+          ['statusIdentity', 'succeeded'],
+        ]),
+      },
+    );
+
+    const result = await executeRun({ plan });
+
+    expect(result.product).toMatchObject({ name: 'Example' });
+    expect(result.status).toBe('succeeded');
+  });
+
   it('keeps sink masking fixed after its retained registry later changes', async () => {
     const original = 'resolved-secret';
     const later = 'later-secret';
@@ -1883,10 +2041,16 @@ describe('skipped steps and the dry run', () => {
     }
     expect(started.plan).toBe(plan);
     expect(started.plan.resolvedInputs.find((input) => input.id === 'note')?.value).toBe(later);
-    expect(started.plan.steps[0]).toMatchObject({
-      title: `${original} ${later}`,
-      command: { argv: [original, later] },
-    });
+    expect(started.plan.steps[0]).toMatchObject({ title: `*** ${later}` });
+    const startedStep = started.plan.steps[0];
+    expect(startedStep?.state).toBe('PENDING');
+    expect(startedStep?.state === 'PENDING' && isSecretString(startedStep.command.argv[0])).toBe(
+      true,
+    );
+    expect(
+      startedStep?.state === 'PENDING' && secretValuesEqual(startedStep.command.argv[0], original),
+    ).toBe(true);
+    expect(startedStep?.state === 'PENDING' && startedStep.command.argv[1]).toBe(later);
     expect(events.find((event) => event.kind === 'stepOutput')).toMatchObject({
       line: `*** ${later}`,
     });

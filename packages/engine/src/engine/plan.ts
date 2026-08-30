@@ -20,6 +20,7 @@ import {
 } from '../manifest/index.js';
 import {
   composeSecretString,
+  createSecretString,
   isSecretString,
   MASK,
   registryFromSecretMasker,
@@ -148,10 +149,9 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   }
   rejectUnboundContext(manifest, manifestDescriptor, trustedContext);
   rejectIncompleteResolution(resolved);
-  const resolvedInputs = resolved.inputs.map(snapshotInput);
   const planSecrets = registryFromSecretMasker(resolved.secrets);
 
-  const steps = manifest.steps.map((step): PlannedStep => {
+  const interpolatedSteps = manifest.steps.map((step): PlannedStep => {
     const title = step.title ?? step.id;
 
     const command = commandFor(step.run, trustedContext);
@@ -180,6 +180,12 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
       command: resolveCommand(command, step.id, resolved, trustedContext, planSecrets),
     };
   });
+  // Secret path anchoring above can add derived values to the plan-local registry. Only now
+  // is the complete immutable masking view known. Use it both for public plan fields and to
+  // make any byte-colliding execution values opaque without growing the registry again.
+  const secrets = planSecrets.snapshot();
+  const resolvedInputs = resolved.inputs.map((state) => snapshotInput(state, secrets));
+  const steps = interpolatedSteps.map((step) => protectStep(step, secrets));
 
   const plan: ExecutionPlan = deepFreeze({
     planSchemaVersion: PLAN_SCHEMA_VERSION,
@@ -195,10 +201,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     },
     steps,
   });
-  executionContexts.set(
-    plan,
-    snapshotExecutionContext(manifest, manifestDescriptor, planSecrets.snapshot()),
-  );
+  executionContexts.set(plan, snapshotExecutionContext(manifest, manifestDescriptor, secrets));
   return plan;
 }
 
@@ -242,7 +245,7 @@ function snapshotExecutionContext(
   });
 }
 
-function snapshotInput(state: InputState): PlanInput {
+function snapshotInput(state: InputState, secrets: SecretMasker): PlanInput {
   if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value after resolution was accepted`);
   }
@@ -250,7 +253,7 @@ function snapshotInput(state: InputState): PlanInput {
     throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
   }
   const secret = state.spec.type === 'secret' || isSecretString(state.value);
-  const value = Array.isArray(state.value) ? [...state.value] : state.value;
+  const value = maskPublicInputValue(state.value, secrets);
 
   return {
     id: state.id,
@@ -260,6 +263,56 @@ function snapshotInput(state: InputState): PlanInput {
     enabled: state.enabled,
     ignored: state.ignored,
   };
+}
+
+function maskPublicInputValue(
+  value: string | boolean | readonly string[] | SecretString,
+  secrets: SecretMasker,
+): string | boolean | readonly string[] | SecretString {
+  if (isSecretString(value) || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return secrets.mask(value);
+  }
+  return value.map((entry) => secrets.mask(entry));
+}
+
+function protectStep(step: PlannedStep, secrets: SecretMasker): PlannedStep {
+  const title = secrets.mask(step.title);
+  if (step.state === 'SKIPPED') {
+    return {
+      id: step.id,
+      title,
+      state: step.state,
+      skipReason: secrets.mask(step.skipReason),
+    };
+  }
+
+  const env: Record<string, string | SecretString> = {};
+  for (const [name, value] of Object.entries(step.command.env)) {
+    env[name] = protectExecutionValue(value, secrets);
+  }
+  return {
+    id: step.id,
+    title,
+    state: step.state,
+    command: {
+      argv: step.command.argv.map((value) => protectExecutionValue(value, secrets)),
+      cwd: protectExecutionValue(step.command.cwd, secrets),
+      env,
+      timeoutSeconds: step.command.timeoutSeconds,
+      successExitCodes: [...step.command.successExitCodes],
+    },
+  };
+}
+
+/** Keeps colliding execution bytes authentic while making every public rendering opaque. */
+function protectExecutionValue(
+  value: string | SecretString,
+  secrets: SecretMasker,
+): string | SecretString {
+  return isSecretString(value) || secrets.mask(value) === value ? value : createSecretString(value);
 }
 
 /** Planning is the last gate before execution, so incomplete frontend state fails closed. */

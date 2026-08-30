@@ -12,7 +12,12 @@ import {
   type ExecutionPlan,
   type PlanOptions,
 } from '../../src/engine/plan.js';
-import { isSecretString, MASK, secretValuesEqual } from '../../src/engine/secrets.js';
+import {
+  isSecretString,
+  MASK,
+  MAX_SECRET_REGISTRY_CODE_UNITS,
+  secretValuesEqual,
+} from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
@@ -552,19 +557,30 @@ describe('secrets in the plan', () => {
         'inputs:',
         '  token:',
         '    type: secret',
+        '  mirror:',
+        '    type: text',
         'steps:',
         '  - id: use',
         '    run:',
         '      command: deploy',
-        '      args: ["${token}"]',
+        '      args: ["${token}", "${mirror}"]',
       ],
-      { overrides: new Map([['token', 'abc']]) },
+      {
+        overrides: new Map([
+          ['token', 'abc'],
+          ['mirror', 'abc'],
+        ]),
+      },
     );
 
     expect(resolution.warnings).toEqual([
       'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
     ]);
-    expect(plan.steps[0]?.state).toBe('PENDING');
+    expect(plan.resolvedInputs[1]).toMatchObject({ value: 'abc', secret: false });
+    const step = plan.steps[0];
+    expect(step?.state).toBe('PENDING');
+    expect(step?.state === 'PENDING' && step.command.argv[2]).toBe('abc');
+    expect(step?.state === 'PENDING' && isSecretString(step.command.argv[2])).toBe(false);
   });
 
   it('keeps the warning policy for an unchanged absolute secret cwd', () => {
@@ -658,6 +674,206 @@ describe('secrets in the plan', () => {
       expect(value).not.toHaveProperty('compose');
       expect(value).not.toHaveProperty('length');
     }
+  });
+
+  it('masks public input collisions and makes every colliding execution value opaque', () => {
+    const secret = 'credential-value';
+    const substring = `prefix-${secret}-suffix`;
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        '  mirrors:',
+        '    type: multiselect',
+        `    options: [${secret}, ${substring}]`,
+        'steps:',
+        '  - id: use',
+        `    title: "Deploy ${substring}"`,
+        '    run:',
+        '      command: "${mirror}"',
+        '      args: ["${mirror}"]',
+        '      cwd: "${mirror}"',
+        '      env:',
+        '        PUBLIC_NAME: "${mirror}"',
+      ],
+      {
+        overrides: new Map([
+          ['token', secret],
+          ['mirror', substring],
+          ['mirrors', JSON.stringify([secret, substring])],
+        ]),
+      },
+    );
+
+    expect(plan.resolvedInputs).toMatchObject([
+      { id: 'token', secret: true },
+      { id: 'mirror', value: 'prefix-***-suffix', secret: false },
+      { id: 'mirrors', value: ['***', 'prefix-***-suffix'], secret: false },
+    ]);
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    expect(step.title).toBe('Deploy prefix-***-suffix');
+    expect(
+      [
+        step.command.argv[0],
+        step.command.argv[1],
+        step.command.cwd,
+        step.command.env['PUBLIC_NAME'],
+      ].every(isSecretString),
+    ).toBe(true);
+    for (const value of [
+      step.command.argv[0],
+      step.command.argv[1],
+      step.command.env['PUBLIC_NAME'],
+    ]) {
+      expect(secretValuesEqual(value, substring)).toBe(true);
+    }
+    expect(secretValuesEqual(step.command.cwd, resolvePath('/project', substring))).toBe(true);
+    expect(JSON.stringify(plan)).not.toContain(secret);
+  });
+
+  it('masks colliding skipped-step display fields without changing ids', () => {
+    const secret = 'credential-value';
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: keep-this-id',
+        `    title: "Skip ${secret}"`,
+        `    when: "'${secret}' == 'different-value'"`,
+        '    run:',
+        '      command: deploy',
+      ],
+      { overrides: new Map([['token', secret]]) },
+    );
+
+    expect(plan.steps[0]).toEqual({
+      id: 'keep-this-id',
+      title: 'Skip ***',
+      state: 'SKIPPED',
+      skipReason: "condition false: '***' == 'different-value'",
+    });
+  });
+
+  it('does not spend registry capacity on complete colliding execution values', () => {
+    const secret = 's'.repeat(MAX_SECRET_REGISTRY_CODE_UNITS);
+    const collision = `x${secret}x`;
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: "${mirror}"',
+      ],
+      {
+        overrides: new Map([
+          ['token', secret],
+          ['mirror', collision],
+        ]),
+      },
+    );
+
+    const step = plan.steps[0];
+    expect(step?.state).toBe('PENDING');
+    expect(step?.state === 'PENDING' && isSecretString(step.command.argv[0])).toBe(true);
+    expect(step?.state === 'PENDING' && secretValuesEqual(step.command.argv[0], collision)).toBe(
+      true,
+    );
+  });
+
+  it('uses derived secrets from every command in the one final plan snapshot', () => {
+    const relativeSecret = 'private-directory';
+    const derived = resolvePath('/project', relativeSecret);
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  secretPath:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: earlier',
+        '    run:',
+        '      command: "${mirror}"',
+        '  - id: derive-later',
+        '    run:',
+        '      command: deploy',
+        '      cwd: "${secretPath}"',
+      ],
+      {
+        platform: hostPlatform(),
+        overrides: new Map([
+          ['secretPath', relativeSecret],
+          ['mirror', derived],
+        ]),
+      },
+    );
+
+    expect(plan.resolvedInputs[1]).toMatchObject({ value: MASK, secret: false });
+    const earlier = plan.steps[0];
+    expect(earlier?.state).toBe('PENDING');
+    expect(earlier?.state === 'PENDING' && isSecretString(earlier.command.argv[0])).toBe(true);
+    expect(
+      earlier?.state === 'PENDING' && secretValuesEqual(earlier.command.argv[0], derived),
+    ).toBe(true);
+  });
+
+  it('does not mask identity, key or log-path fields that collide with registered secrets', () => {
+    const { plan } = planFor(
+      [
+        'inputs:',
+        '  manifestIdentity:',
+        '    type: secret',
+        '  platformIdentity:',
+        '    type: secret',
+        '  localeIdentity:',
+        '    type: secret',
+        '  stepIdentity:',
+        '    type: secret',
+        '  envKeyIdentity:',
+        '    type: secret',
+        '  logIdentity:',
+        '    type: secret',
+        'execution:',
+        '  logFile: identity-log',
+        'steps:',
+        '  - id: identity-step',
+        '    run:',
+        '      command: deploy',
+        '      env:',
+        '        identity-env: public-value',
+      ],
+      {
+        overrides: new Map([
+          ['manifestIdentity', 'installer.yaml'],
+          ['platformIdentity', 'linux'],
+          ['localeIdentity', TEST_LOCALE],
+          ['stepIdentity', 'identity-step'],
+          ['envKeyIdentity', 'identity-env'],
+          ['logIdentity', 'identity-log'],
+        ]),
+      },
+    );
+
+    expect(plan.manifestPath).toBe('installer.yaml');
+    expect(plan.platform).toBe('linux');
+    expect(plan.locale).toBe(TEST_LOCALE);
+    expect(plan.executionOptions.logFile).toBe('identity-log');
+    expect(plan.steps[0]?.id).toBe('identity-step');
+    const step = plan.steps[0];
+    expect(step?.state === 'PENDING' && Object.keys(step.command.env)).toEqual(['identity-env']);
   });
 
   it('freezes a resolved secret state before planning without exposing its value', () => {
