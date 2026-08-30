@@ -18,6 +18,7 @@ interface SummaryTestControl {
 test('launches the real Node 22 shell and renders Welcome', async () => {
   let application: ElectronApplication | undefined;
   const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
 
   try {
     application = await electron.launch({
@@ -35,12 +36,25 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
 
     const page = await application.firstWindow();
     page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') {
+        consoleErrors.push(message.text());
+      }
+    });
 
     await expect(page.locator('#product-name')).toHaveText('RUNE Shell Smoke');
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--rune-accent').trim(),
+        ),
+      )
+      .toBe('#d946ef');
     console.log('[shell-smoke] Welcome rendered for RUNE Shell Smoke');
     expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
   } finally {
     await application?.close();
   }
