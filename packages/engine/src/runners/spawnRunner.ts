@@ -20,6 +20,22 @@ function reveal(value: string | SecretString): string {
   return value instanceof SecretString ? value.reveal() : value;
 }
 
+function setEnvironmentValue(
+  environment: Record<string, string | undefined>,
+  name: string,
+  value: string,
+): void {
+  if (process.platform === 'win32') {
+    const normalizedName = name.toUpperCase();
+    for (const existingName of Object.keys(environment)) {
+      if (existingName.toUpperCase() === normalizedName) {
+        delete environment[existingName];
+      }
+    }
+  }
+  environment[name] = value;
+}
+
 export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
     return new Promise((resolve) => {
@@ -27,14 +43,17 @@ export class SpawnRunner implements Runner {
       const [executable, ...args] = command.argv;
       const env: Record<string, string | undefined> = { ...process.env };
       for (const [name, value] of Object.entries(command.env)) {
-        env[name] = reveal(value);
+        setEnvironmentValue(env, name, reveal(value));
+      }
+      for (const [name, value] of Object.entries(request.extraEnv)) {
+        setEnvironmentValue(env, name, value);
       }
 
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(reveal(executable ?? ''), args.map(reveal), {
           cwd: reveal(command.cwd),
-          env: { ...env, ...request.extraEnv },
+          env,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: false,
           // Its own process group on POSIX, so the kill path can address the whole tree.

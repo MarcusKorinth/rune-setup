@@ -33,6 +33,38 @@ function run(
   });
 }
 
+async function withInheritedEnvironment(
+  name: string,
+  value: string,
+  runWithEnvironment: () => Promise<void>,
+): Promise<void> {
+  const matchesName = (candidate: string): boolean =>
+    process.platform === 'win32'
+      ? candidate.toUpperCase() === name.toUpperCase()
+      : candidate === name;
+  const previousEntries = Object.entries(process.env).filter(([candidate]) =>
+    matchesName(candidate),
+  );
+
+  for (const [candidate] of previousEntries) {
+    delete process.env[candidate];
+  }
+  process.env[name] = value;
+
+  try {
+    await runWithEnvironment();
+  } finally {
+    for (const candidate of Object.keys(process.env)) {
+      if (matchesName(candidate)) {
+        delete process.env[candidate];
+      }
+    }
+    for (const [candidate, previousValue] of previousEntries) {
+      process.env[candidate] = previousValue;
+    }
+  }
+}
+
 describe('SpawnRunner', () => {
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
@@ -69,6 +101,55 @@ describe('SpawnRunner', () => {
 
     expect(lines).toContain('hello step');
   });
+
+  it.runIf(process.platform === 'win32')(
+    'replaces inherited environment names case-insensitively and reserves RUNE variables',
+    async () => {
+      const lines: string[] = [];
+
+      await withInheritedEnvironment('RUNE_SPAWN_RUNNER_CASE_MARKER', 'parent', async () => {
+        await run(
+          nodeCommand(
+            'console.log(process.env.rune_spawn_runner_case_marker, process.env.RUNE_RUN_ID, process.env.RUNE_STEP_ID)',
+            {
+              env: {
+                rune_spawn_runner_case_marker: 'overlay',
+                rune_run_id: 'manifest-run',
+                Rune_Step_Id: 'manifest-step',
+              },
+            },
+          ),
+          { onOutput: (_stream, line) => lines.push(line) },
+        );
+      });
+
+      expect(lines).toContain('overlay run step');
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps environment names case-sensitive on POSIX',
+    async () => {
+      const lines: string[] = [];
+
+      await withInheritedEnvironment('RUNE_SPAWN_RUNNER_CASE_MARKER', 'parent', async () => {
+        await run(
+          nodeCommand(
+            'console.log(process.env.RUNE_SPAWN_RUNNER_CASE_MARKER, process.env.rune_spawn_runner_case_marker, process.env.RUNE_RUN_ID, process.env.rune_run_id)',
+            {
+              env: {
+                rune_spawn_runner_case_marker: 'overlay',
+                rune_run_id: 'manifest-run',
+              },
+            },
+          ),
+          { onOutput: (_stream, line) => lines.push(line) },
+        );
+      });
+
+      expect(lines).toContain('parent overlay run manifest-run');
+    },
+  );
 
   it('unwraps a secret-wrapped argument and env value only for the child', async () => {
     const lines: string[] = [];
