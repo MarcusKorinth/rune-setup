@@ -64,6 +64,9 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         if (argument.startsWith('--')) {
           throw new UsageError(`unknown flag ${argument}`);
         }
+        if (manifestPath !== undefined) {
+          throw new UsageError('the shell accepts exactly one manifest path');
+        }
         manifestPath = argument;
     }
   }

@@ -46,6 +46,23 @@ describe('parseShellArgv', () => {
   });
 
   it.each([
+    [['first.yaml', 'second.yaml']],
+    [['first.yaml', '--locale', 'de-DE', 'second.yaml']],
+  ] as const)('rejects multiple manifest paths: %s', (argv) => {
+    try {
+      parseShellArgv(argv);
+      throw new Error('expected parsing to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UsageError);
+      expect(error).toMatchObject({
+        code: 'RUNE-001',
+        message: 'the shell accepts exactly one manifest path',
+      });
+      expect(exitCodeFor(error)).toBe(2);
+    }
+  });
+
+  it.each([
     [['installer.yaml', '--result', '-'], '--result - requires --non-interactive in the GUI shell'],
     [
       ['installer.yaml', '--result', '-', '--set', 'port=8080'],
