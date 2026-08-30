@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
@@ -126,6 +126,38 @@ describe('a run that succeeds', () => {
     });
 
     expect(seen).toEqual(['first', 'second']);
+  });
+
+  it('keeps elapsed durations non-negative when the wall clock moves backwards', async () => {
+    const { plan } = setup(['steps:', '  - id: first', '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+    const startedAt = new Date('2030-01-01T00:00:00.000Z');
+    const finishedAt = new Date('2029-12-31T23:59:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(startedAt);
+
+    try {
+      const result = await executeRun({
+        plan,
+        observer: (event) => events.push(event),
+        runner: stubRunner(() => {
+          vi.setSystemTime(finishedAt);
+          return { kind: 'exited', exitCode: 0 };
+        }),
+      });
+      const stepFinished = events.find((event) => event.kind === 'stepFinished');
+
+      expect(result.startedAt).toBe(startedAt.toISOString());
+      expect(result.finishedAt).toBe(finishedAt.toISOString());
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      expect(result.steps[0]?.durationMs).toBeGreaterThanOrEqual(0);
+      expect(stepFinished).toMatchObject({
+        kind: 'stepFinished',
+        durationMs: result.steps[0]?.durationMs,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shares one frozen parent-environment snapshot across the complete run', async () => {
@@ -1347,6 +1379,9 @@ describe('skipped steps and the dry run', () => {
     const result = describePlan({ plan });
 
     expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
+    expect(result.startedAt).toBe(result.finishedAt);
+    expect(result.durationMs).toBe(0);
+    expect(result.steps.every((step) => step.durationMs === 0)).toBe(true);
     expect(result.steps.map((step) => step.state)).toEqual(['PENDING', 'PENDING']);
     expect(result.steps[0]?.command).toEqual(['a']);
   });

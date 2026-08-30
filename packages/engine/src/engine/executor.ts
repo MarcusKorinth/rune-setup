@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import { InternalError } from '../errors.js';
 import { RUNE_VERSION } from '../version.js';
@@ -68,6 +69,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   };
 
   const startedAt = new Date();
+  const runStartedAt = performance.now();
   const steps: ResultStep[] = [];
   let failed = false;
   let wasCancelled = false;
@@ -130,7 +132,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
         tail.shift();
       }
     };
-    const stepStart = Date.now();
+    const stepStartedAt = performance.now();
 
     let acceptingOutput = true;
     let outcome: Awaited<ReturnType<Runner['run']>>;
@@ -169,7 +171,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       outcome = { kind: 'failedToStart', reason: 'other' };
     }
 
-    const durationMs = Date.now() - stepStart;
+    const durationMs = Math.max(0, performance.now() - stepStartedAt);
     let state: StepState;
     let exitCode: number | null = null;
     let diagnostic: string | undefined;
@@ -240,6 +242,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   }
 
   const finishedAt = new Date();
+  const durationMs = Math.max(0, performance.now() - runStartedAt);
   const result = assembleResult({
     runId,
     plan,
@@ -255,6 +258,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     dryRun: false,
     startedAt,
     finishedAt,
+    durationMs,
   });
 
   emit({ kind: 'runFinished', result });
@@ -302,6 +306,7 @@ export function describePlan(options: { readonly plan: ExecutionPlan }): RunResu
     dryRun: true,
     startedAt: now,
     finishedAt: now,
+    durationMs: 0,
   });
 }
 
@@ -314,6 +319,7 @@ function assembleResult(input: {
   readonly dryRun: boolean;
   readonly startedAt: Date;
   readonly finishedAt: Date;
+  readonly durationMs: number;
 }): RunResult {
   const { steps } = input;
   const count = (state: StepState): number => steps.filter((step) => step.state === state).length;
@@ -329,7 +335,7 @@ function assembleResult(input: {
     platform: input.plan.platform,
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
-    durationMs: input.finishedAt.getTime() - input.startedAt.getTime(),
+    durationMs: input.durationMs,
     runeVersion: RUNE_VERSION,
     product: input.executionContext.product,
     manifest: input.executionContext.manifest,
