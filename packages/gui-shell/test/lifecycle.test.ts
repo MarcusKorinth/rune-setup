@@ -134,6 +134,7 @@ describe('the GUI shell SIGTERM lifecycle', () => {
       },
     });
     const cancel = vi.spyOn(session, 'cancel');
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const signals = new FakeSigtermSource();
     const invocation: ShellInvocation = {
       manifestPath,

@@ -135,6 +135,7 @@ describe('the IPC bridge', () => {
   });
 
   it('reports a rejected execute completion through the same fatal boundary', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
@@ -171,6 +172,7 @@ describe('the IPC bridge', () => {
     expect(onExecuteEnd).toHaveBeenCalledTimes(1);
     expect(onExecuteError).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['start', 'end', 'error']);
+    stderr.mockRestore();
   });
 
   it('is a 1:1 projection: exactly the pinned channels, nothing else', async () => {
@@ -447,6 +449,7 @@ describe('the IPC bridge', () => {
   });
 
   it('pushes every run event through the serializer, pre-masked', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
@@ -494,6 +497,14 @@ describe('the IPC bridge', () => {
     }
     expect(JSON.stringify(bridge.sent)).not.toContain('super-secret-value');
     expect(JSON.stringify(bridge.sent)).toContain('***');
+    const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostics).toMatch(/^running 2 steps on \w+\r?\n/);
+    expect(diagnostics).toContain('[1/2] use\n');
+    expect(diagnostics).toContain('  the token is ***\n');
+    expect(diagnostics).toMatch(/ {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n/);
+    expect(diagnostics).toMatch(/ {2}-> SKIPPED after \d+ms\r?\n$/);
+    expect(diagnostics).not.toContain('super-secret-value');
+    stderr.mockRestore();
   });
 });
 

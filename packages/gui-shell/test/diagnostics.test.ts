@@ -88,6 +88,48 @@ beforeEach(() => {
 });
 
 describe('the GUI shell stderr diagnostics', () => {
+  it('renders masked headless progress without contaminating result stdout', async () => {
+    const secret = 'console-secret';
+    const manifestPath = manifest([
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: report',
+      `    title: "Report ${secret}"`,
+      '    run:',
+      '      command: report',
+    ]);
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      overrides: { token: secret },
+      runner: {
+        run: async (request) => {
+          request.onOutput('stdout', `stdout ${secret}`);
+          request.onOutput('stderr', `stderr ${secret}`);
+          return { kind: 'exited', exitCode: 0 };
+        },
+      },
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await expect(headlessRun(session, { ...invocation(manifestPath), result: '-' })).resolves.toBe(
+      0,
+    );
+
+    const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
+    const resultText = stdout.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostics).toMatch(
+      /^running 1 steps on \w+\r?\n\[1\/1\] Report \*\*\*\r?\n {2}stdout \*\*\*\r?\n {2}stderr \*\*\*\r?\n {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n$/,
+    );
+    expect(diagnostics).not.toContain(secret);
+    expect(JSON.parse(resultText)).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    expect(resultText).not.toContain('running 1 steps');
+    expect(resultText).not.toContain(secret);
+  });
+
   it('masks registered secrets in headless warnings', async () => {
     const manifestPath = manifest([
       'inputs:',

@@ -179,7 +179,7 @@ async function executeHeadless(
   cancel: CancelToken,
 ): Promise<number> {
   try {
-    const result = await session.execute(undefined, cancel);
+    const result = await session.execute(shellProgressObserver(session), cancel);
     for (const warning of session.warnings()) {
       writeSessionDiagnostic(session, `warning: ${warning}`);
     }
@@ -334,8 +334,15 @@ export function registerBridge(
   handle('rune:execute', async () => {
     hooks.onExecuteStart?.();
     try {
+      const consoleObserver = shellProgressObserver(session);
       const result = await session.execute((event: RunEvent) => {
-        hooks.events.send(EVENT_CHANNEL, projectEvent(event, mask));
+        // Keep the terminal sink independent of renderer delivery. The engine owns the
+        // observer exception boundary, so neither sink can corrupt the run.
+        try {
+          consoleObserver(event);
+        } finally {
+          hooks.events.send(EVENT_CHANNEL, projectEvent(event, mask));
+        }
       });
       hooks.onExecuteEnd?.(result);
       return result;
@@ -393,6 +400,36 @@ function failWith(error: unknown, invocation: ShellInvocation, session: Session)
 /** Writes one shell-owned diagnostic only after applying the active Session's mask. */
 function writeSessionDiagnostic(session: Session, message: string): void {
   process.stderr.write(`${session.mask(message)}\n`);
+}
+
+/** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
+function shellProgressObserver(session: Session): (event: RunEvent) => void {
+  return (event) => {
+    switch (event.kind) {
+      case 'runStarted':
+        writeSessionDiagnostic(
+          session,
+          `running ${event.plan.steps.length} steps on ${event.plan.platform}`,
+        );
+        break;
+      case 'stepStarted':
+        writeSessionDiagnostic(session, `[${event.index + 1}/${event.total}] ${event.title}`);
+        break;
+      case 'stepOutput':
+        writeSessionDiagnostic(session, `  ${event.line}`);
+        break;
+      case 'stepFinished':
+        writeSessionDiagnostic(
+          session,
+          `  -> ${event.state}` +
+            (event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`) +
+            ` after ${event.durationMs}ms`,
+        );
+        break;
+      case 'runFinished':
+        break;
+    }
+  };
 }
 
 function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
