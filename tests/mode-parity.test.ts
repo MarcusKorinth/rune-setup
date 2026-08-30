@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { run } from '@rune/cli';
 import type { CliIo } from '@rune/cli';
@@ -59,6 +59,8 @@ const EMPTY_RUNE_ENVIRONMENT: RuneEnvironment = {
   RUNE_INPUT_TOKEN: undefined,
 };
 
+const fixtureDirectories = new Set<string>();
+
 async function withRuneEnvironment<T>(
   environment: RuneEnvironment,
   run: () => Promise<T>,
@@ -91,6 +93,7 @@ async function withRuneEnvironment<T>(
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-parity-'));
+  fixtureDirectories.add(dir);
   writeFileSync(
     join(dir, 'installer.yaml'),
     [
@@ -315,6 +318,13 @@ function planFrom(events: readonly RunEvent[]) {
 }
 
 describe('mode parity', () => {
+  afterAll(() => {
+    for (const directory of fixtureDirectories) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    fixtureDirectories.clear();
+  });
+
   slowIt('produces one result across non-interactive, interactive, and the GUI leg', async () => {
     const manifest = fixture();
 
