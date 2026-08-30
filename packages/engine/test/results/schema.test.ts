@@ -278,7 +278,28 @@ describe('the result schema', () => {
         stepsFailed: 1,
       }),
     ).toThrow();
-    expect(() => runResultSchema.parse({ ...live, status: 'failed', exitCode: 1 })).toThrow();
+    // A late run-level log failure preserves the completed SUCCEEDED topology.
+    expect(() => runResultSchema.parse({ ...live, status: 'failed', exitCode: 1 })).not.toThrow();
+
+    // A log-open failure occurs before the runner and projects executable steps to NOT_RUN.
+    const notRunStep = {
+      ...succeededStep,
+      state: 'NOT_RUN',
+      exitCode: null,
+      durationMs: 0,
+    };
+    expect(() =>
+      runResultSchema.parse({
+        ...live,
+        status: 'failed',
+        exitCode: 1,
+        steps: [notRunStep],
+        stepsExecuted: 0,
+        stepsSucceeded: 0,
+        stepsNotRun: 1,
+        nothingExecuted: true,
+      }),
+    ).not.toThrow();
 
     const cancelledStep = {
       ...succeededStep,
@@ -293,6 +314,10 @@ describe('the result schema', () => {
         stepsCancelled: 1,
       }),
     ).toThrow();
+
+    expect(() => runResultSchema.parse({ ...planned, status: 'failed', exitCode: 1 })).toThrow(
+      /failed results may not contain CANCELLED or PENDING steps/,
+    );
 
     // Cancellation has priority over prior failures and can happen between steps, so no
     // CANCELLED step is required.

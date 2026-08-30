@@ -550,7 +550,7 @@ describe('result files for failed outcomes', () => {
     expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
   });
 
-  it('passes a completed plan to failure-result construction', async () => {
+  it('preserves the completed plan when log opening fails', async () => {
     const marker = 'log-open-shared-secret';
     const path = fixture([
       'schemaVersion: 1',
@@ -596,10 +596,11 @@ describe('result files for failed outcomes', () => {
       io,
     );
 
-    expect(code).toBe(70);
+    expect(code).toBe(1);
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(written).toMatchObject({
-      status: 'internal_error',
+      status: 'failed',
+      exitCode: 1,
       stepsTotal: 2,
       stepsExecuted: 0,
       stepsSkipped: 1,

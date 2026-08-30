@@ -249,9 +249,8 @@ export const runResultSchema = z
       issue(['status'], 'succeeded results may contain only SUCCEEDED or SKIPPED steps');
     }
     if (result.status === 'failed') {
-      if (result.steps.length > 0 && !states.has('FAILED')) {
-        issue(['status'], 'failed results must contain at least one FAILED step');
-      }
+      // RUNE-406 is a run-level failure: opening the log may leave steps NOT_RUN, while
+      // writing or closing it may fail after every executed step already SUCCEEDED.
       if (states.has('CANCELLED') || states.has('PENDING')) {
         issue(['status'], 'failed results may not contain CANCELLED or PENDING steps');
       }

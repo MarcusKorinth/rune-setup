@@ -54,7 +54,7 @@ describe('createFailureResult', () => {
     const plan = session.plan();
 
     const result = createFailureResult({
-      error: new InternalError('the log sink failed'),
+      error: new ExecutionError('RUNE-406', 'the log sink failed'),
       manifestPath: path,
       dryRun: false,
       session,
@@ -63,8 +63,8 @@ describe('createFailureResult', () => {
 
     expect(() => runResultSchema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
-      status: 'internal_error',
-      exitCode: 70,
+      status: 'failed',
+      exitCode: 1,
       stepsTotal: 2,
       stepsExecuted: 0,
       stepsSkipped: 1,
@@ -246,17 +246,6 @@ describe('createFailureResult', () => {
         plan,
       }),
     ).toThrow(/pre-execution failure result cannot carry a completed plan/);
-
-    const nonEmptyWithoutFailure = createFailureResult({
-      error: new InternalError('failure after planning'),
-      manifestPath: runnablePath,
-      dryRun: false,
-      session: runnableSession,
-      plan,
-    });
-    expect(() =>
-      runResultSchema.parse({ ...nonEmptyWithoutFailure, status: 'failed', exitCode: 1 }),
-    ).toThrow(/failed results must contain at least one FAILED step/);
   });
 
   it('uses honest empty identity before a session has opened', () => {

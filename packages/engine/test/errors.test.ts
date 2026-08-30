@@ -37,6 +37,7 @@ const EXPECTED_EXIT_CODES: ReadonlyArray<readonly [RuneCode, number]> = [
   ['RUNE-403', 1],
   ['RUNE-404', 1],
   ['RUNE-405', 1],
+  ['RUNE-406', 1],
   ['RUNE-500', 70],
   ['RUNE-601', 6],
 ];

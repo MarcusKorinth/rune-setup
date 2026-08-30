@@ -63,7 +63,11 @@ describe('log-file sink failures', () => {
       line: 'failed',
     });
 
-    await expect(sink.close()).rejects.toMatchObject({ code: 'RUNE-500' });
+    await expect(sink.close()).rejects.toMatchObject({
+      code: 'RUNE-406',
+      name: 'ExecutionError',
+      cause: expect.any(Error),
+    });
   });
 
   it('settles with a controlled error when finalizing the stream fails', async () => {
@@ -79,7 +83,11 @@ describe('log-file sink failures', () => {
       });
     const sink = await createLogFileSink(path);
 
-    await expect(sink.close()).rejects.toMatchObject({ code: 'RUNE-500' });
+    await expect(sink.close()).rejects.toMatchObject({
+      code: 'RUNE-406',
+      name: 'ExecutionError',
+      cause: expect.any(Error),
+    });
   });
 
   it('publishes one failure terminal with the actual topology after a late close failure', async () => {
@@ -123,7 +131,9 @@ describe('log-file sink failures', () => {
     const events: RunEvent[] = [];
 
     await expect(session.execute((event) => events.push(event))).rejects.toMatchObject({
-      code: 'RUNE-500',
+      code: 'RUNE-406',
+      name: 'ExecutionError',
+      cause: expect.any(Error),
     });
 
     expect(events.map((event) => event.kind)).toEqual([
@@ -137,8 +147,8 @@ describe('log-file sink failures', () => {
     expect(terminals).toHaveLength(1);
     const result = terminals[0]?.result;
     expect(result).toMatchObject({
-      status: 'internal_error',
-      exitCode: 70,
+      status: 'failed',
+      exitCode: 1,
       stepsTotal: 1,
       stepsExecuted: 1,
       stepsSucceeded: 1,

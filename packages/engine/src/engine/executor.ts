@@ -308,7 +308,11 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   if (options.plan !== undefined && options.session === undefined) {
     throw new InternalError('a failure result with a plan requires its opened session');
   }
-  if (options.plan !== undefined && options.error instanceof ExecutionError) {
+  if (
+    options.plan !== undefined &&
+    options.error instanceof ExecutionError &&
+    options.error.code !== 'RUNE-406'
+  ) {
     throw new InternalError('a pre-execution failure result cannot carry a completed plan');
   }
 

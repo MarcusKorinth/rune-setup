@@ -85,11 +85,11 @@ describe('late log finalization failure', () => {
       io,
     );
 
-    expect(code).toBe(70);
+    expect(code).toBe(1);
     const result = JSON.parse(fs.readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(result).toMatchObject({
-      status: 'internal_error',
-      exitCode: 70,
+      status: 'failed',
+      exitCode: 1,
       stepsTotal: 1,
       stepsExecuted: 1,
       stepsSucceeded: 1,
@@ -99,7 +99,7 @@ describe('late log finalization failure', () => {
       nothingExecuted: false,
       steps: [{ id: 'install', state: 'SUCCEEDED' }],
     });
-    expect(stderr.join('\n')).toContain('internal_error: 1 succeeded');
+    expect(stderr.join('\n')).toContain('failed: 1 succeeded');
     expect(stdout).toEqual([]);
   });
 });

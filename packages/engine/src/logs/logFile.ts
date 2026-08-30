@@ -9,7 +9,7 @@ import { dirname } from 'node:path';
 import { finished } from 'node:stream/promises';
 
 import type { EngineObserver, RunEvent } from '../engine/events.js';
-import { InternalError, messageOf } from '../errors.js';
+import { ExecutionError, messageOf } from '../errors.js';
 
 export interface LogFileSink {
   readonly observer: EngineObserver;
@@ -33,7 +33,7 @@ export async function createLogFileSink(path: string): Promise<LogFileSink> {
   }
 
   let phase: 'opening' | 'writing' | 'closing' = 'opening';
-  let failure: InternalError | undefined;
+  let failure: ExecutionError | undefined;
   const rememberFailure = (action: 'open' | 'write to' | 'close', cause: unknown): void => {
     failure ??= logError(action, path, cause);
   };
@@ -146,10 +146,14 @@ function logError(
   action: 'prepare the directory for' | 'open' | 'write to' | 'close',
   path: string,
   cause: unknown,
-): InternalError {
-  return new InternalError(`could not ${action} log file "${path}": ${messageOf(cause)}`, {
-    cause,
-  });
+): ExecutionError {
+  return new ExecutionError(
+    'RUNE-406',
+    `could not ${action} log file "${path}": ${messageOf(cause)}`,
+    {
+      cause,
+    },
+  );
 }
 
 function describe(event: RunEvent): string {

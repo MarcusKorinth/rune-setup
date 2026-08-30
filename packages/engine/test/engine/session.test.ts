@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import type { InputState } from '../../src/engine/inputs.js';
-import { InputError, InternalError } from '../../src/errors.js';
+import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
@@ -381,8 +381,9 @@ describe('planning and executing', () => {
     const session = await Session.open(path, { environment: {}, logFile, runner: { run } });
 
     await expect(session.execute()).rejects.toMatchObject({
-      code: 'RUNE-500',
-      name: InternalError.name,
+      code: 'RUNE-406',
+      name: ExecutionError.name,
+      cause: expect.any(Error),
     });
     expect(run).not.toHaveBeenCalled();
     expect(session.setValue('installDatabase', false)).toEqual([]);

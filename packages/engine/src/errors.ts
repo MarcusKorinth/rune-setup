@@ -34,6 +34,7 @@ export type RuneCode =
   | 'RUNE-403' // command not found
   | 'RUNE-404' // invalid working directory
   | 'RUNE-405' // shell-required command refused
+  | 'RUNE-406' // operational log-file I/O
   | 'RUNE-500' // internal error
   | 'RUNE-601'; // cancelled
 
@@ -117,7 +118,8 @@ export type ManifestCode = 'RUNE-101' | 'RUNE-102' | 'RUNE-103' | 'RUNE-104';
 export type InputCode = 'RUNE-201' | 'RUNE-202' | 'RUNE-203';
 export type ResolutionCode = 'RUNE-301' | 'RUNE-302';
 export type ConditionCode = 'RUNE-311' | 'RUNE-312';
-export type ExecutionCode = 'RUNE-401' | 'RUNE-402' | 'RUNE-403' | 'RUNE-404' | 'RUNE-405';
+export type ExecutionCode =
+  'RUNE-401' | 'RUNE-402' | 'RUNE-403' | 'RUNE-404' | 'RUNE-405' | 'RUNE-406';
 
 /** The command line was used wrongly (exit 2). */
 export class UsageError extends RuneError {
@@ -182,7 +184,7 @@ export class ConditionError extends RuneError {
   }
 }
 
-/** A step failed, timed out, or could not be started (exit 1). */
+/** Execution failed at a step, policy boundary, or operational run sink (exit 1). */
 export class ExecutionError extends RuneError {
   constructor(code: ExecutionCode, message: string, options?: RuneErrorOptions) {
     super(code, message, options);
@@ -319,6 +321,7 @@ const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
   'RUNE-403': 1,
   'RUNE-404': 1,
   'RUNE-405': 1,
+  'RUNE-406': 1,
   'RUNE-500': 70,
   'RUNE-601': 6,
 };
