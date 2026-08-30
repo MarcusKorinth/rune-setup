@@ -435,6 +435,20 @@ describe('keys that name no input', () => {
       problems(manifestOf(...SIMPLE), { values: [values('v.yaml', { nope: 'x' })] })[0],
     ).toContain('(set from v.yaml)');
   });
+
+  it('still throws RUNE-203 when bad values are otherwise being collected', () => {
+    let thrown: unknown;
+    try {
+      resolve(manifestOf(...SIMPLE), {
+        overrides: new Map([['nope', 'x']]),
+        invalidValues: 'collect',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as InputError).code).toBe('RUNE-203');
+  });
 });
 
 describe('what counts as an answer', () => {
@@ -487,7 +501,69 @@ describe('a frontend that can ask again', () => {
       'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
     ]);
     expect(resolution.byId.get('port')?.value).toBeUndefined();
+    expect(resolution.byId.get('port')?.rejection).toEqual({
+      source: 'set',
+      problem: {
+        code: 'RUNE-202',
+        message: 'port (from --set port=…): "eighty" does not match [0-9]{2,5}',
+        location: undefined,
+      },
+      candidate: 'eighty',
+    });
     expect(resolution.missing).toEqual(['port']);
+  });
+
+  it('retains the rendered text candidate for an invalid templated default', () => {
+    const templated = manifestOf(
+      'inputs:',
+      '  port:',
+      '    type: text',
+      '    default: "${env.PORT_PREFIX}-bad"',
+      '    pattern: "[0-9]+"',
+    );
+
+    const resolution = resolve(templated, { invalidValues: 'collect' }, { PORT_PREFIX: 'dev' });
+
+    expect(resolution.byId.get('port')?.rejection).toMatchObject({
+      source: 'default',
+      candidate: 'dev-bad',
+    });
+  });
+
+  it('clones a plain list candidate instead of retaining caller-owned data', () => {
+    const withTools = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git]',
+    );
+    const candidate = ['git', 'podman'];
+    const resolution = resolve(withTools, {
+      values: [values('v.yaml', { tools: candidate })],
+      invalidValues: 'collect',
+    });
+
+    candidate[0] = 'changed';
+    expect(resolution.byId.get('tools')?.rejection?.candidate).toEqual(['git', 'podman']);
+  });
+
+  it('compares an invalid controller through its type-empty value until corrected', () => {
+    const conditional = manifestOf(
+      'inputs:',
+      '  channel:',
+      '    type: text',
+      '    default: bad',
+      '    pattern: "[A-Z]+"',
+      '  fallback:',
+      '    type: text',
+      '    required: false',
+      '    when: "${channel} == \'\'"',
+    );
+
+    const resolution = resolve(conditional, { invalidValues: 'collect' });
+
+    expect(resolution.byId.get('channel')?.rejection).toBeDefined();
+    expect(resolution.byId.get('fallback')?.enabled).toBe(true);
   });
 
   it('throws by default, which is what a pipeline needs', () => {
@@ -553,6 +629,18 @@ describe('secrets', () => {
 
     expect(secrets.size).toBe(0);
     expect(resolution.warnings[0]).toContain('too short to mask reliably');
+  });
+
+  it('never retains a rejected secret candidate in recoverable state', () => {
+    const resolution = resolve(manifest, {
+      values: [values('v.yaml', { token: 12345 })],
+      invalidValues: 'collect',
+    });
+    const rejection = resolution.byId.get('token')?.rejection;
+
+    expect(rejection).toMatchObject({ source: 'values', problem: { code: 'RUNE-202' } });
+    expect(rejection).not.toHaveProperty('candidate');
+    expect(JSON.stringify(resolution.inputs)).not.toContain('12345');
   });
 });
 

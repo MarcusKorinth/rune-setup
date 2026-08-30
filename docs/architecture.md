@@ -325,14 +325,14 @@ export class Session {
     runner?: Runner;                       // the §13 seam; the default is the real spawn runner
   }): Promise<Session>;
   readonly manifest: Manifest;
-  pendingInputs(): readonly InputState[];        // unresolved AND enabled, declaration order
-  allInputs(): readonly InputState[];            // {id, spec, value, enabled, source} — GUI prefill
+  pendingInputs(): readonly InputState[];        // missing/rejected AND enabled, declaration order
+  allInputs(): readonly InputState[];            // accepted value plus optional rejection — GUI prefill
   warnings(): readonly string[];                 // §5/§10 warnings a frontend says out loud
   setValue(id: string, raw: unknown): readonly InputStateChanged[];
                                                  // an answer is always layer 5; registry-validated
                                                  // (type, options, pattern); a rejected value throws
                                                  // and changes nothing; re-evaluates input when:
-  plan(): ExecutionPlan;                         // throws listing ALL missing inputs
+  plan(): ExecutionPlan;                         // throws original invalid issues, else ALL missing inputs
   describe(): RunResult;                         // the dry run: status `planned`, nothing executed
   execute(observer?: EngineObserver, cancel?: CancelToken): Promise<RunResult>;
                                                  // async; resolves when the run is over
@@ -344,6 +344,8 @@ export class Session {
 ```
 
 The engine is **asynchronous**: `Session.open()` and `execute()` return Promises and run on the Node event loop (child processes and streams are awaited, nothing blocks). Whoever hosts the engine — the CLI process or the Electron main process — stays responsive without threads.
+
+`InputState.value` and `source` describe only a registry-validated value. In GUI and interactive sessions, an invalid layers 1–4 value instead adds a readonly `rejection: { source, problem, candidate? }`: `problem` is the original RUNE-202 `RuneIssue`, and `candidate` is present only for plain JSON-safe non-secret data (with arrays copied). A rendered templated text default is retained as that candidate; a rejected secret candidate is never retained or projected. An enabled rejection is pending even for an optional input, and `plan()` rethrows its original issue before considering generic RUNE-201 missing-input errors. A layer-5 rejection from `setValue()` still throws and leaves the preceding accepted state unchanged.
 
 Events are frozen plain objects (`readonly` types, `Object.freeze`d). **Run events**, delivered through `EngineObserver` during `execute()`: `RunStarted(plan)`, `StepStarted(stepId, index, total, title)`, `StepOutput(stepId, stream, line)` (pre-masked), `StepFinished(stepId, state, exitCode, durationMs)`, `RunFinished(result)` — durations are milliseconds everywhere (events, IPC payloads, result file `durationMs`). Plan-time `SKIPPED` steps emit exactly one `StepFinished(state=SKIPPED)` and no `StepStarted`/`StepOutput`; `total` counts all planned steps including skipped ones — progress renderers and the mode-parity suite rely on both rules. `title` is the localized title (§6.3); `stepId` is never localized.
 
@@ -365,8 +367,8 @@ The IPC bridge is how the GUI shell's renderer drives the engine. The engine run
 ### 9.3 Per-frontend behavior
 
 - **Non-interactive driver** (`cli`): no prompts ever; missing required *enabled* inputs → exit 4 listing every missing input with its accepted sources; disabled inputs are not required and a value supplied for one is warned about and ignored (§5); `pattern` mismatches and malformed `--set` JSON arrays are input errors (exit 4) before any step runs; plan → execute → result file. This is the parity anchor.
-- **Interactive CLI**: Node `readline` prompts (stdlib — no prompt library) with a muted-echo helper for `secret` inputs, for `pendingInputs()` only — enabled, still-missing inputs in declaration order; select/multiselect prompts display option **labels** and accept option **values**; a `pattern` mismatch re-prompts showing `patternHint`; disabled inputs are skipped. Then the summary: the plan rendered with the same renderer dry-run uses, followed by the **edit loop** `Proceed / Change value <n> / Cancel` — any enabled input, seeded or answered, can be changed (an ordinary layer-5 `setValue`); a change that enables further missing inputs prompts for them before re-rendering the summary. `Proceed` awaits `execute()` on the same event loop; first `Ctrl+C` → CancelToken; second force-exits. Chrome strings come from `getStrings()` (§6.3).
-- **GUI** (Electron shell, §9.4): pages generated from the engine's view of the manifest — Welcome, auto-chunked input pages, Summary (renders the bridge projection of the same `ExecutionPlan`, secrets masked — §9.2), Progress, Result. The renderer renders `rune.allInputs()` with fields pre-filled from layers 1–4; disabled inputs are **greyed out** (visible, not editable) and flip live on the `InputStateChanged` list resolved by `rune.setValue`; select/multiselect fields display labels and submit values; a `text` field whose `rune.setValue` rejects on `pattern` is marked red with `patternHint` and `Next` stays disabled until valid — no abort, no renderer-side regex. Engine validation via `setValue` is the only authority; widgets are UX sugar. Cancel → `rune.cancel` → `Session.cancel()` → CancelToken.
+- **Interactive CLI**: Node `readline` prompts (stdlib — no prompt library) with a muted-echo helper for `secret` inputs, for `pendingInputs()` only — enabled missing or rejected inputs in declaration order; select/multiselect prompts display option **labels** and accept option **values**; a `pattern` mismatch re-prompts showing `patternHint`; disabled inputs are skipped. Then the summary: the plan rendered with the same renderer dry-run uses, followed by the **edit loop** `Proceed / Change value <n> / Cancel` — any enabled input, seeded or answered, can be changed (an ordinary layer-5 `setValue`); a change that enables further missing inputs prompts for them before re-rendering the summary. `Proceed` awaits `execute()` on the same event loop; first `Ctrl+C` → CancelToken; second force-exits. Chrome strings come from `getStrings()` (§6.3).
+- **GUI** (Electron shell, §9.4): pages generated from the engine's view of the manifest — Welcome, auto-chunked input pages, Summary (renders the bridge projection of the same `ExecutionPlan`, secrets masked — §9.2), Progress, Result. The renderer renders `rune.allInputs()` with fields pre-filled from layers 1–4, including a safe text candidate from an opening rejection; disabled inputs are **greyed out** (visible, not editable) and flip live on the `InputStateChanged` list resolved by `rune.setValue`; select/multiselect fields display labels and submit values; a rejected `text` pattern value — seeded or submitted through `rune.setValue` — is marked red with `patternHint` and `Next` stays disabled until valid — no abort, no renderer-side regex. Engine validation via `setValue` is the only authority; widgets are UX sugar. Cancel → `rune.cancel` → `Session.cancel()` → CancelToken.
 
 Every frontend asserts at session open that it can render every input type the manifest uses (the renderer from the `inputTypes` resolved by `rune.open()`), and fails fast with a named error — no silent fallback.
 

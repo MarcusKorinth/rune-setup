@@ -1,0 +1,12 @@
+schemaVersion: 1
+product:
+  name: Invalid seed smoke
+  version: 1.0.0
+inputs:
+  code:
+    type: text
+    title: Code
+    default: bad-value
+    pattern: '[A-Z]+'
+    patternHint: Use uppercase letters
+steps: []

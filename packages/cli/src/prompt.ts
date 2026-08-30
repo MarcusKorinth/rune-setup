@@ -107,8 +107,8 @@ export class Prompter {
 }
 
 /**
- * Prompts for every pending input, in declaration order, until nothing is missing. A
- * rejected value re-prompts with the message and the input's `patternHint` (§9.3).
+ * Prompts for every pending input, in declaration order, until nothing is missing or
+ * rejected. A rejected answer re-prompts with the message and `patternHint` (§9.3).
  */
 export async function promptForInputs(session: Session, prompter: Prompter): Promise<void> {
   const strings = session.getStrings();

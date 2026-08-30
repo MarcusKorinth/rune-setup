@@ -27,6 +27,16 @@ import { SecretString, type SecretRegistry } from './secrets.js';
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
 export type ValueSource = (typeof VALUE_SOURCES)[number];
 
+/** Plain, non-secret data a frontend may safely put back into an input control. */
+export type RejectedInputCandidate = string | boolean | readonly string[];
+
+/** A supplied value that failed registry validation without becoming the resolved value. */
+export interface InputRejection {
+  readonly source: ValueSource;
+  readonly problem: RuneIssue;
+  readonly candidate?: RejectedInputCandidate;
+}
+
 /** How a source is named in a message, so a reader knows where to go and change it. */
 const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
   default: 'the manifest default',
@@ -44,6 +54,8 @@ export interface InputState {
   /** The resolved value, or nothing when a required enabled input is still unanswered. */
   readonly value: InputValue | undefined;
   readonly source: ValueSource | undefined;
+  /** A recoverable layers 1–4 failure, kept separate from the validated `value`. */
+  readonly rejection?: InputRejection;
   /** The layer whose value was discarded because the input turned out to be disabled. */
   readonly ignored: ValueSource | undefined;
 }
@@ -95,19 +107,23 @@ export interface Resolution {
 /**
  * Merges the layers for every input of a manifest.
  *
- * Throws {@link InputError} listing *every* problem: a value no type accepts, a key that
- * names no input. Missing values are not a failure here — a frontend is allowed to ask —
- * they are reported in {@link Resolution.missing}.
+ * Unknown keys always throw {@link InputError}. Invalid known values throw by default, or
+ * become per-input rejections when `invalidValues` is `collect`. Missing values are not a
+ * failure here — a frontend is allowed to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
   const { manifest, context } = options;
   const ids = Object.keys(manifest.inputs);
   const environment = options.environment ?? process.env;
 
+  const unknownKeys = unknownKeyIssues(options, ids);
+  if (unknownKeys.length > 0) {
+    // Recoverable frontends may collect bad values, never typos in caller-supplied keys.
+    throw InputError.fromIssues('RUNE-203', unknownKeys);
+  }
+
   const issues: RuneIssue[] = [];
   const warnings: string[] = [];
-
-  checkUnknownKeys(options, ids, issues);
 
   const states = new Map<string, InputState>();
   const order: string[] = [];
@@ -161,13 +177,19 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
 
     const coerced = coerce(supplied, spec, id, context);
     if (!coerced.ok) {
-      issues.push({ code: 'RUNE-202', message: coerced.message, location: supplied.location });
+      const problem = inputProblem(coerced.message, supplied.location);
+      issues.push(problem);
       states.set(id, {
         id,
         spec,
         enabled: true,
         value: undefined,
         source: undefined,
+        rejection: {
+          source: supplied.source,
+          problem,
+          ...(coerced.candidate === undefined ? {} : { candidate: coerced.candidate }),
+        },
         ignored: undefined,
       });
       order.push(id);
@@ -197,10 +219,7 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   }
 
   if (issues.length > 0 && (options.invalidValues ?? 'throw') === 'throw') {
-    // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
-    // the values (§7).
-    const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-    throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+    throw InputError.fromIssues('RUNE-202', issues);
   }
 
   const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
@@ -237,9 +256,13 @@ function highestLayer(
   options: ResolveInputsOptions,
   environment: Readonly<Record<string, string | undefined>>,
 ): SuppliedValue | undefined {
-  const answer = options.answers?.get(id);
-  if (answer !== undefined) {
-    return { source: 'answer', raw: answer, location: undefined, origin: SOURCE_NAMES.answer };
+  if (options.answers?.has(id) === true) {
+    return {
+      source: 'answer',
+      raw: options.answers.get(id),
+      location: undefined,
+      origin: SOURCE_NAMES.answer,
+    };
   }
 
   const override = options.overrides?.get(id);
@@ -286,7 +309,11 @@ function highestLayer(
 
 type CoercionOutcome =
   | { readonly ok: true; readonly value: InputValue }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      readonly candidate: RejectedInputCandidate | undefined;
+    };
 
 function coerce(
   supplied: SuppliedValue,
@@ -311,7 +338,37 @@ function coerce(
   // belongs to and where the value came from, which is what a reader needs to go and fix it.
   return result.ok
     ? result
-    : { ok: false, message: `${id} (from ${supplied.origin}): ${result.message}` };
+    : {
+        ok: false,
+        message: `${id} (from ${supplied.origin}): ${result.message}`,
+        candidate: safeCandidate(raw, handler.secret),
+      };
+}
+
+/** Keeps only bridge-safe plain data, never a rejected secret or caller-owned array. */
+function safeCandidate(raw: unknown, secret: boolean): RejectedInputCandidate | undefined {
+  if (secret) {
+    return undefined;
+  }
+  if (typeof raw === 'string' || typeof raw === 'boolean') {
+    return raw;
+  }
+  if (Array.isArray(raw) && raw.every((entry) => typeof entry === 'string')) {
+    return [...raw] as readonly string[];
+  }
+  return undefined;
+}
+
+/** Makes the public problem plain data rather than retaining a source-map-owned object. */
+function inputProblem(message: string, location: Location | undefined): RuneIssue {
+  return {
+    code: 'RUNE-202',
+    message,
+    location:
+      location === undefined
+        ? undefined
+        : { file: location.file, line: location.line, column: location.column },
+  };
 }
 
 /** Only the free-text types carry templates; a select default is one of its option values. */
@@ -398,11 +455,8 @@ function lookup(
 }
 
 /** A key that names no input is a hard error: a typo that no-ops in a pipeline is worse (§5). */
-function checkUnknownKeys(
-  options: ResolveInputsOptions,
-  ids: readonly string[],
-  issues: RuneIssue[],
-): void {
+function unknownKeyIssues(options: ResolveInputsOptions, ids: readonly string[]): RuneIssue[] {
+  const issues: RuneIssue[] = [];
   const report = (key: string, origin: string, location: Location | undefined): void => {
     if (ids.includes(key)) {
       return;
@@ -428,6 +482,7 @@ function checkUnknownKeys(
   for (const key of options.answers?.keys() ?? []) {
     report(key, 'the answer', undefined);
   }
+  return issues;
 }
 
 /**

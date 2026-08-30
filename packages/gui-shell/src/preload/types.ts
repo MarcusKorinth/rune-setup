@@ -28,6 +28,17 @@ export interface RuneBridge {
 
 export type BridgeValueSource = 'default' | 'values' | 'environment' | 'set' | 'answer';
 
+export interface BridgeInputRejection {
+  readonly source: BridgeValueSource;
+  readonly problem: {
+    readonly code: 'RUNE-202';
+    readonly message: string;
+    readonly location?: { readonly file: string; readonly line: number; readonly column: number };
+  };
+  /** Plain non-secret data only; rejected secret candidates are never projected. */
+  readonly candidate?: string | boolean | readonly string[];
+}
+
 export type BridgeInputType =
   'text' | 'secret' | 'boolean' | 'select' | 'multiselect' | 'file' | 'directory';
 
@@ -91,6 +102,8 @@ interface BridgeInputBase {
   readonly source?: BridgeValueSource;
   /** Present only when a supplied value was discarded because the input is disabled. */
   readonly ignored?: BridgeValueSource;
+  /** Present when a recoverable layers 1–4 value failed engine validation. */
+  readonly rejection?: BridgeInputRejection;
 }
 
 /**

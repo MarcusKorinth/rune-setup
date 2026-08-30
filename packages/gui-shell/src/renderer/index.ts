@@ -318,7 +318,15 @@ function renderControl(input: BridgeInput): HTMLElement {
   }
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
-  box.value = spec.type === 'secret' ? '' : typeof input.value === 'string' ? input.value : '';
+  const rejected = input.rejection?.candidate;
+  box.value =
+    spec.type === 'secret'
+      ? ''
+      : typeof rejected === 'string'
+        ? rejected
+        : typeof input.value === 'string'
+          ? input.value
+          : '';
   box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
@@ -412,11 +420,27 @@ async function submit(id: string, raw: unknown): Promise<void> {
 }
 
 async function refreshInputs(): Promise<void> {
+  const previouslyRejected = new Set(
+    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
+  );
   state.inputs = await window.rune.allInputs();
   state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
+  const rejected = new Set(
+    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
+  );
+  for (const id of previouslyRejected) {
+    if (!rejected.has(id)) {
+      state.invalid.delete(id);
+    }
+  }
   for (const input of state.inputs) {
     if (!input.enabled) {
       state.invalid.delete(input.id);
+      continue;
+    }
+    if (input.rejection !== undefined) {
+      const hint = text(`inputs.${input.id}.patternHint`);
+      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.problem.message);
     }
   }
 }

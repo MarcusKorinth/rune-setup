@@ -316,9 +316,9 @@ function resultInput(state: InputState): ResultInput {
   return {
     id: state.id,
     value: handler || value instanceof SecretString ? null : (value ?? null),
-    // A disabled input's discarded value keeps its provenance: the layer that supplied it
-    // lives in `ignored`, and the result records it as the source (§5, §10).
-    source: state.source ?? state.ignored ?? null,
+    // Rejected and disabled inputs keep the provenance of the value that could not become
+    // effective, even though neither has a validated `value` (§5, §10).
+    source: state.source ?? state.rejection?.source ?? state.ignored ?? null,
     secret: handler,
     enabled: state.enabled,
     ignored: state.ignored === undefined ? null : 'input disabled',

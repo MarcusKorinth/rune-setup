@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { hostPlatform } from '../../src/engine/context.js';
-import { Session } from '../../src/engine/session.js';
+import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import type { InputError } from '../../src/errors.js';
 import type { Runner } from '../../src/runners/base.js';
 import { runResultSchema } from '../../src/results/schema.js';
 
@@ -40,6 +41,34 @@ const BASE = [
   '    run:',
   '      command: node',
 ];
+
+type SeedSource = 'default' | 'values' | 'environment' | 'set';
+
+function invalidSeed(source: SeedSource): { path: string; options: SessionOptions } {
+  const path = fixture(
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  code:',
+      '    type: text',
+      '    pattern: "[A-Z]+"',
+      ...(source === 'default' ? ['    default: bad'] : []),
+      'steps: []',
+    ],
+    source === 'values' ? { 'values.yaml': 'code: bad\n' } : {},
+  );
+  return {
+    path,
+    options: {
+      environment: source === 'environment' ? { RUNE_INPUT_CODE: 'bad' } : {},
+      ...(source === 'values' ? { values: [join(path, '..', 'values.yaml')] } : {}),
+      ...(source === 'set' ? { overrides: { code: 'bad' } } : {}),
+    },
+  };
+}
 
 describe('opening a session', () => {
   it('resolves layers 1-4 and reports what is still pending', async () => {
@@ -80,6 +109,75 @@ describe('opening a session', () => {
       Session.open(path, { environment: {}, mode: 'non-interactive' }),
     ).resolves.toBeInstanceOf(Session);
   });
+
+  it.each(['gui', 'interactive'] as const)(
+    'opens and corrects invalid layers 1-4 seeds in %s mode',
+    async (mode) => {
+      for (const source of ['default', 'values', 'environment', 'set'] as const) {
+        const seeded = invalidSeed(source);
+        const session = await Session.open(seeded.path, { ...seeded.options, mode });
+
+        expect(session.allInputs()[0]?.rejection).toMatchObject({
+          source,
+          problem: { code: 'RUNE-202' },
+          candidate: 'bad',
+        });
+        expect(session.pendingInputs().map((input) => input.id)).toEqual(['code']);
+        session.setValue('code', 'GOOD');
+        expect(session.pendingInputs()).toEqual([]);
+        expect(session.allInputs()[0]).toMatchObject({
+          value: 'GOOD',
+          source: 'answer',
+        });
+        expect(session.allInputs()[0]?.rejection).toBeUndefined();
+      }
+    },
+  );
+
+  it('keeps invalid layers 1-4 seeds fatal in non-interactive mode', async () => {
+    for (const source of ['default', 'values', 'environment', 'set'] as const) {
+      const seeded = invalidSeed(source);
+      await expect(
+        Session.open(seeded.path, { ...seeded.options, mode: 'non-interactive' }),
+      ).rejects.toMatchObject({ code: 'RUNE-202' });
+    }
+  });
+
+  it('produces the same plan in GUI and interactive modes after seed correction', async () => {
+    const seeded = invalidSeed('default');
+    const [gui, interactive] = await Promise.all([
+      Session.open(seeded.path, { ...seeded.options, mode: 'gui' }),
+      Session.open(seeded.path, { ...seeded.options, mode: 'interactive' }),
+    ]);
+
+    gui.setValue('code', 'GOOD');
+    interactive.setValue('code', 'GOOD');
+
+    expect(gui.plan()).toEqual(interactive.plan());
+  });
+
+  it.each(['gui', 'interactive', 'non-interactive'] as const)(
+    'keeps unknown override and values-file keys fatal in %s mode',
+    async (mode) => {
+      const overridePath = fixture(BASE);
+      await expect(
+        Session.open(overridePath, {
+          environment: {},
+          mode,
+          overrides: { installDatabse: 'true' },
+        }),
+      ).rejects.toMatchObject({ code: 'RUNE-203' });
+
+      const valuesPath = fixture(BASE, { 'values.yaml': 'installDatabse: "true"\n' });
+      await expect(
+        Session.open(valuesPath, {
+          environment: {},
+          mode,
+          values: [join(valuesPath, '..', 'values.yaml')],
+        }),
+      ).rejects.toMatchObject({ code: 'RUNE-203' });
+    },
+  );
 });
 
 describe('answering inputs', () => {
@@ -111,6 +209,63 @@ describe('answering inputs', () => {
     expect(session.allInputs().find((input) => input.id === 'databasePort')?.value).toBe('5432');
     expect(session.pendingInputs()).toEqual([]);
   });
+
+  it('throws an invalid layer-5 edit and restores the prior accepted state', async () => {
+    const seeded = invalidSeed('default');
+    const session = await Session.open(seeded.path, { ...seeded.options, mode: 'gui' });
+    session.setValue('code', 'FIRST');
+
+    expect(() => session.setValue('code', 'bad')).toThrow(/does not match/);
+    expect(() => session.setValue('code', undefined)).toThrow(/is not text/);
+
+    expect(session.allInputs()[0]).toMatchObject({ value: 'FIRST', source: 'answer' });
+    expect(session.allInputs()[0]?.rejection).toBeUndefined();
+    expect(session.pendingInputs()).toEqual([]);
+  });
+
+  it('accepts a controller edit that exposes an invalid lower-layer dependent seed', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  code:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "[A-Z]+"',
+      '    when: "${enabled}"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'gui',
+      overrides: { code: 'bad' },
+    });
+
+    expect(session.allInputs()[1]).toMatchObject({
+      enabled: false,
+      ignored: 'set',
+    });
+    expect(session.allInputs()[1]?.rejection).toBeUndefined();
+    expect(session.pendingInputs()).toEqual([]);
+    expect(session.warnings()).toEqual([
+      'code was set from --set, but its condition is false — the value is ignored',
+    ]);
+
+    expect(session.setValue('enabled', true)).toEqual([{ inputId: 'code', enabled: true }]);
+    expect(session.allInputs()[1]?.rejection).toMatchObject({ source: 'set', candidate: 'bad' });
+    expect(session.pendingInputs().map((input) => input.id)).toEqual(['code']);
+    expect(session.warnings()).toEqual([]);
+    expect(() => session.plan()).toThrow(/code \(from --set code=/);
+
+    session.setValue('code', 'GOOD');
+    expect(session.pendingInputs()).toEqual([]);
+    expect(() => session.plan()).not.toThrow();
+  });
 });
 
 describe('planning and executing', () => {
@@ -119,6 +274,45 @@ describe('planning and executing', () => {
     session.setValue('installDatabase', true);
 
     expect(() => session.plan()).toThrow(/databasePort.*--set databasePort=/s);
+  });
+
+  it('keeps an optional rejected seed pending and reports RUNE-202 before missing inputs', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  code:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "[A-Z]+"',
+      '    default: bad',
+      '  name:',
+      '    type: text',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'gui' });
+
+    expect(session.pendingInputs().map((input) => input.id)).toEqual(['code', 'name']);
+    let thrown: unknown;
+    try {
+      session.plan();
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as InputError).code).toBe('RUNE-202');
+    expect((thrown as InputError).issues).toHaveLength(1);
+    expect((thrown as InputError).message).toContain('code (from the manifest default)');
+
+    const result = session.describeCancelled();
+    expect(result.steps).toEqual([]);
+    expect(result.stepsTotal).toBe(0);
+    expect(result.inputs[0]).toMatchObject({ value: null, source: 'default', enabled: true });
+    expect(() => runResultSchema.parse(result)).not.toThrow();
   });
 
   it('executes through the facade and writes the log file', async () => {

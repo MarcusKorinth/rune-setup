@@ -121,6 +121,34 @@ describe('the interactive run', () => {
     expect(interaction.transcript()).toContain('lower-case letters only');
   });
 
+  it('prompts for an invalid seeded value and succeeds after correction', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    default: BAD1',
+      '    pattern: "[a-z]+"',
+      '    patternHint: lower-case letters only',
+      'steps:',
+      '  - id: a',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+    ]);
+    const io = capture();
+    const interaction = scripted(['good', 'p']);
+
+    const code = await run(['run', path], io, interaction);
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).toContain('name');
+    expect(io.err.join('\n')).toContain('name = good');
+  });
+
   it('lets the summary edit a value, then prompts and re-renders', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

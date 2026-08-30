@@ -147,6 +147,7 @@ export class Session {
     const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
     const overrides = new Map(Object.entries(options.overrides ?? {}));
     const secrets = new SecretRegistry();
+    const invalidValues = mode === 'non-interactive' ? 'throw' : 'collect';
 
     return new Session({
       manifest,
@@ -157,8 +158,8 @@ export class Session {
       values,
       overrides,
       environment,
-      // All-or-nothing: a value no type accepts, or a key naming no input, throws here and
-      // no session exists (paragraph 10).
+      // Pipelines stay all-or-nothing. Interactive modes retain only known bad seed values
+      // as pending rejections so the shared facade can ask for a correction (§5, §9.1).
       resolution: resolveInputs({
         manifest,
         context,
@@ -166,6 +167,7 @@ export class Session {
         environment,
         overrides,
         secrets,
+        invalidValues,
       }),
       logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
       runner: options.runner,
@@ -173,10 +175,12 @@ export class Session {
     });
   }
 
-  /** Enabled required inputs still without an answer, in declaration order — what to ask for. */
+  /** Enabled missing or rejected inputs, in declaration order — what to ask for. */
   pendingInputs(): readonly InputState[] {
     const missing = new Set(this.#resolution.missing);
-    return this.#resolution.inputs.filter((state) => missing.has(state.id));
+    return this.#resolution.inputs.filter(
+      (state) => state.enabled && (missing.has(state.id) || state.rejection !== undefined),
+    );
   }
 
   /** Every input with its resolved state — what a GUI prefills (§9.1). */
@@ -205,6 +209,10 @@ export class Session {
     let after: Resolution;
     try {
       after = this.#resolve();
+      const rejection = after.byId.get(id)?.rejection;
+      if (rejection?.source === 'answer') {
+        throw InputError.fromIssues('RUNE-202', [rejection.problem]);
+      }
     } catch (error) {
       // Restore, never delete: a rejected edit must not discard an earlier accepted answer.
       if (hadPrevious) {
@@ -225,8 +233,11 @@ export class Session {
     return changes;
   }
 
-  /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
+  /** Stage 4: the frozen plan. Invalid seeds win; otherwise lists EVERY missing input. */
   plan(): ExecutionPlan {
+    if (this.#resolution.problems.length > 0) {
+      throw InputError.fromIssues('RUNE-202', this.#resolution.problems);
+    }
     const missing = this.#resolution.missing;
     if (missing.length > 0) {
       throw InputError.fromIssues(
@@ -246,12 +257,13 @@ export class Session {
   /**
    * The result of cancelling before anything ran — the CLI edit-loop Cancel, the GUI
    * window closed before Proceed (§10). When the inputs are complete, every pending step
-   * is NOT_RUN and plan-time skips are kept. When required inputs are still missing, no
-   * truthful plan exists, so the result has zero steps and retains the resolved inputs.
+   * is NOT_RUN and plan-time skips are kept. When an input is rejected or required inputs
+   * are still missing, no truthful plan exists, so the result has zero steps and retains
+   * the resolved input provenance.
    */
   describeCancelled(): RunResult {
     const plan =
-      this.#resolution.missing.length === 0
+      this.#resolution.missing.length === 0 && this.#resolution.problems.length === 0
         ? this.plan()
         : buildPlan({
             manifest: { ...this.manifest, steps: [] },
@@ -353,6 +365,7 @@ export class Session {
       overrides: this.#overrides,
       answers: this.#answers,
       secrets: this.#secrets,
+      invalidValues: this.#mode === 'non-interactive' ? 'throw' : 'collect',
     });
   }
 

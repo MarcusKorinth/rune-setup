@@ -12,6 +12,7 @@ const conditionalFixturePath = join(
   'fixtures',
   'conditional-input.yaml',
 );
+const invalidSeedFixturePath = join(packageDirectory, 'tests', 'fixtures', 'invalid-seed.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
@@ -293,6 +294,38 @@ test('disables conditional controls natively across input pages', async () => {
     await expect(page.locator('.field[data-id="multiselectDetails"] input').nth(1)).toBeDisabled();
     await expect(page.locator('.field[data-id="fileDetails"] input')).toBeDisabled();
     await expect(page.locator('.field[data-id="directoryDetails"] input')).toBeDisabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('prefills an invalid seed and blocks Next until the engine accepts a correction', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, invalidSeedFixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await next.click();
+
+    const field = page.locator('.field[data-id="code"]');
+    const input = field.locator('input');
+    await expect(input).toHaveValue('bad-value');
+    await expect(field).toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveText('Use uppercase letters');
+    await expect(next).toBeDisabled();
+
+    await input.fill('GOOD');
+    await input.dispatchEvent('change');
+    await expect(field).not.toHaveClass(/invalid/);
+    await expect(input).toHaveValue('GOOD');
+    await expect(next).toBeEnabled();
   } finally {
     await application?.close();
   }

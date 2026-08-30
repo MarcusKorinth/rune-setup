@@ -66,6 +66,32 @@ function fixture(): string {
   return path;
 }
 
+function rejectedFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-rejection-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  code:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "[A-Z]+"',
+      '    default: prefix-super-secret-value',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
 async function bridgeOver(session: Session): Promise<{
   channels: string[];
   call: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -210,6 +236,37 @@ describe('the IPC bridge', () => {
       ignored: 'set',
     });
     expect(disabled).not.toHaveProperty('source');
+  });
+
+  it('projects recoverable rejection state as plain data through the common masking sink', async () => {
+    const session = await Session.open(rejectedFixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    const bridge = await bridgeOver(session);
+
+    const all = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const pending = (await bridge.call('rune:pendingInputs')) as readonly BridgeInput[];
+    const rejected = all.find((input) => input.id === 'code');
+
+    expect(rejected).toMatchObject({
+      id: 'code',
+      enabled: true,
+      rejection: {
+        source: 'default',
+        problem: {
+          code: 'RUNE-202',
+          message: 'code (from the manifest default): "prefix-***" does not match [A-Z]+',
+        },
+        candidate: 'prefix-***',
+      },
+    });
+    expect(rejected).not.toHaveProperty('value');
+    expect(rejected).not.toHaveProperty('source');
+    expect(pending).toEqual([rejected]);
+    expect(JSON.parse(JSON.stringify({ all, pending }))).toEqual({ all, pending });
+    expect(JSON.stringify({ all, pending })).not.toContain('super-secret-value');
   });
 
   it('masks and normalizes every rejection through the injectable registration sink', async () => {
