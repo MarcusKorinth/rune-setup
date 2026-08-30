@@ -63,7 +63,7 @@ export interface PlanOptions {
   readonly manifestPath: string;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
-  /** Localized titles land in the plan, so events and results show them (S6.3). */
+  /** Localized titles land in the plan, so events and results show them (§6.3). */
   readonly strings?: StringTable | undefined;
 }
 
