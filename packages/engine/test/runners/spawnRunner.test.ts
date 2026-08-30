@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { SecretString } from '../../src/engine/secrets.js';
@@ -215,6 +215,40 @@ describe('SpawnRunner', () => {
     const cancel = new CancelToken();
     const pending = run(nodeCommand('setInterval(() => {}, 1000)'), { cancel });
     setTimeout(() => cancel.cancel(), 200);
+
+    await expect(pending).resolves.toEqual({ kind: 'cancelled' });
+  }, 15000);
+
+  it('keeps the timeout outcome when cancellation follows before the process closes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const cancel = new CancelToken();
+    const pending = run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }), {
+      cancel,
+    });
+
+    try {
+      vi.advanceTimersByTime(1000);
+      cancel.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await expect(pending).resolves.toEqual({ kind: 'timedOut' });
+  }, 15000);
+
+  it('keeps the cancelled outcome when the timeout follows before the process closes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const cancel = new CancelToken();
+    const pending = run(nodeCommand('setInterval(() => {}, 1000)', { timeoutSeconds: 1 }), {
+      cancel,
+    });
+
+    try {
+      cancel.cancel();
+      vi.advanceTimersByTime(1000);
+    } finally {
+      vi.useRealTimers();
+    }
 
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
   }, 15000);
