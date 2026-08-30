@@ -325,6 +325,9 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(
       interaction.transcript().match(/Proceed \(p\) \/ Change a value <n> \/ Cancel \(c\): /g),
     ).toHaveLength(2);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics.match(/Review your configuration/g)).toHaveLength(1);
+    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(1);
 
     const result = JSON.parse(io.out.join('\n')) as {
       status: string;
@@ -624,6 +627,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     const diagnostics = io.err.join('\n');
     const summaries = diagnostics.split('Review your configuration').slice(1);
     expect(summaries).toHaveLength(2);
+    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(2);
     expect(summaries[0]?.match(/^ {2}1\) greeting = hello$/m)).not.toBeNull();
     expect(summaries[1]?.match(/^ {2}1\) greeting = bye$/m)).not.toBeNull();
 
@@ -665,6 +669,8 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(diagnostics).toContain('"1e0" is not');
     expect(diagnostics).toContain('"1 2" is not');
     expect(diagnostics).toContain('bye');
+    expect(diagnostics.match(/Review your configuration/g)).toHaveLength(2);
+    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(2);
   });
 
   it('accepts a controller edit before correcting the dependent invalid seed', async () => {

@@ -278,34 +278,36 @@ export async function summaryLoop(
 
     const proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
     const cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
-    const choice = normalizeSummaryChoice(
-      await prompter.ask(
-        `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
-          `${strings.chrome('rune.summary.change')} <n> / ` +
-          `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
-      ),
-    );
-
-    if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
-      return 'proceed';
-    }
-    if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {
-      return 'cancel';
-    }
-    const index = /^\d+$/.test(choice) ? Number(choice) : Number.NaN;
-    const chosen = Number.isSafeInteger(index) && index > 0 ? editable[index - 1] : undefined;
-    if (chosen === undefined) {
-      io.stderr(
-        strings.chrome('rune.summary.invalidChoice', {
-          choice,
-          proceed: proceedToken,
-          cancel: cancelToken,
-        }),
+    for (;;) {
+      const choice = normalizeSummaryChoice(
+        await prompter.ask(
+          `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
+            `${strings.chrome('rune.summary.change')} <n> / ` +
+            `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
+        ),
       );
-      continue;
+      if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
+        return 'proceed';
+      }
+      if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {
+        return 'cancel';
+      }
+      const index = /^\d+$/.test(choice) ? Number(choice) : Number.NaN;
+      const chosen = Number.isSafeInteger(index) && index > 0 ? editable[index - 1] : undefined;
+      if (chosen === undefined) {
+        io.stderr(
+          strings.chrome('rune.summary.invalidChoice', {
+            choice,
+            proceed: proceedToken,
+            cancel: cancelToken,
+          }),
+        );
+        continue;
+      }
+      await askUntilAccepted(session, chosen, strings, prompter);
+      await promptForInputs(session, prompter);
+      break;
     }
-    await askUntilAccepted(session, chosen, strings, prompter);
-    await promptForInputs(session, prompter);
   }
 }
 
