@@ -224,17 +224,16 @@ export function registerBridge(
   });
   handle('rune:execute', async () => {
     hooks.onExecuteStart?.();
-    let result: RunResult;
     try {
-      result = await session.execute((event: RunEvent) => {
+      const result = await session.execute((event: RunEvent) => {
         hooks.events.send(EVENT_CHANNEL, project(event, mask));
       });
+      hooks.onExecuteEnd?.(result);
+      return result;
     } catch (error) {
       hooks.onExecuteError?.(error);
       throw error;
     }
-    hooks.onExecuteEnd?.(result);
-    return result;
   });
   handle('rune:done', () => {
     hooks.onRendererDone?.();

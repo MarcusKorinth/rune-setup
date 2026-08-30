@@ -98,6 +98,45 @@ describe('the IPC bridge', () => {
     expect(errors).toHaveLength(1);
   });
 
+  it('reports a rejected execute completion through the same fatal boundary', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+      runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
+    });
+    const deliveryError = new Error('writeResult failed for super-secret-value');
+    const calls: string[] = [];
+    const onExecuteStart = vi.fn(() => calls.push('start'));
+    const onExecuteEnd = vi.fn(() => {
+      calls.push('end');
+      throw deliveryError;
+    });
+    const onExecuteError = vi.fn((error: unknown) => {
+      calls.push('error');
+      expect(error).toBe(deliveryError);
+    });
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerBridge(
+      session,
+      {
+        events: { send: () => undefined },
+        onExecuteStart,
+        onExecuteEnd,
+        onExecuteError,
+      },
+      (channel, handler) => handlers.set(channel, handler),
+    );
+
+    const error = await rejectedBy(Promise.resolve(handlers.get('rune:execute')?.()));
+
+    expect(error.message).toBe('writeResult failed for ***');
+    expect(onExecuteStart).toHaveBeenCalledTimes(1);
+    expect(onExecuteEnd).toHaveBeenCalledTimes(1);
+    expect(onExecuteError).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(['start', 'end', 'error']);
+  });
+
   it('is a 1:1 projection: exactly the pinned channels, nothing else', async () => {
     const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
     const bridge = await bridgeOver(session);
