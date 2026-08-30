@@ -1,9 +1,13 @@
 import { homedir, tmpdir } from 'node:os';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRuntimeContext, hostPlatform, runtimeContextFor } from '../../src/engine/context.js';
-import { InternalError, ResolutionError } from '../../src/errors.js';
+import { InternalError, ResolutionError, UsageError } from '../../src/errors.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const product = { name: 'Example', version: '1.0.0' };
 
@@ -113,6 +117,23 @@ describe('hostPlatform', () => {
   it('names one of the two platforms RUNE runs on', () => {
     expect(['windows', 'linux']).toContain(hostPlatform());
     expect(hostPlatform()).toBe(process.platform === 'win32' ? 'windows' : 'linux');
+  });
+
+  it('refuses an unsupported host instead of treating it as Linux', () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+
+    let thrown: unknown;
+    try {
+      hostPlatform();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UsageError);
+    expect((thrown as UsageError).code).toBe('RUNE-001');
+    expect((thrown as UsageError).message).toBe(
+      'the host platform "darwin" is not supported; RUNE supports only Windows and Linux',
+    );
   });
 
   it('is what a context without an explicit platform uses', () => {

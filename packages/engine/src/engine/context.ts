@@ -8,7 +8,7 @@
 
 import { homedir, tmpdir } from 'node:os';
 
-import { InternalError, ResolutionError } from '../errors.js';
+import { InternalError, ResolutionError, UsageError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
@@ -178,7 +178,16 @@ export type Platform = 'windows' | 'linux';
 
 /** The platform this process is on. */
 export function hostPlatform(): Platform {
-  return process.platform === 'win32' ? 'windows' : 'linux';
+  switch (process.platform) {
+    case 'win32':
+      return 'windows';
+    case 'linux':
+      return 'linux';
+    default:
+      throw new UsageError(
+        `the host platform "${process.platform}" is not supported; RUNE supports only Windows and Linux`,
+      );
+  }
 }
 
 export interface RuntimeContextOptions {
