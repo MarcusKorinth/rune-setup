@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -272,6 +272,70 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(3);
     expect(stderr).toHaveBeenCalledWith('the shell manifest is invalid\n');
+  });
+
+  it('writes one serialized headless result to stdout for --result -', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-headless-stdout-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const accidentalPath = join(process.cwd(), '-');
+    expect(existsSync(accidentalPath)).toBe(false);
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Stdout result',
+        '  version: 1.0.0',
+        'inputs: {}',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--result', '-', '--non-interactive']);
+
+    expect(app.exit).toHaveBeenCalledWith(0);
+    expect(stdout).toHaveBeenCalledOnce();
+    const result = JSON.parse(String(stdout.mock.calls[0]?.[0]));
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      mode: 'non-interactive',
+      nothingExecuted: true,
+    });
+    expect(existsSync(accidentalPath)).toBe(false);
+  });
+
+  it('keeps a headless result path as an atomically written file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-headless-result-file-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const resultPath = join(dir, 'result.json');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: File result',
+        '  version: 1.0.0',
+        'inputs: {}',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--non-interactive', '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(0);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'succeeded',
+      mode: 'non-interactive',
+    });
   });
 });
 

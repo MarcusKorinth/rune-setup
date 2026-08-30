@@ -46,6 +46,25 @@ describe('parseShellArgv', () => {
   });
 
   it.each([
+    [['installer.yaml', '--result', '-'], '--result - requires --non-interactive in the GUI shell'],
+    [
+      ['installer.yaml', '--result', '-', '--set', 'port=8080'],
+      '--result - requires --non-interactive in the GUI shell',
+    ],
+    [['installer.yaml', '--result', '-', '--non-interactive'], undefined],
+    [['installer.yaml', '--non-interactive', '--result', '-'], undefined],
+  ] as const)('accepts --result - only for headless invocations: %s', (argv, message) => {
+    if (message === undefined) {
+      expect(parseShellArgv(argv).result).toBe('-');
+      return;
+    }
+
+    expect(() => parseShellArgv(argv)).toThrowError(
+      expect.objectContaining({ code: 'RUNE-001', message }),
+    );
+  });
+
+  it.each([
     [['--unknown'], 'unknown flag --unknown'],
     [['--set'], '--set expects a value'],
     [['--values'], '--values expects a value'],

@@ -71,6 +71,9 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   if (manifestPath === undefined) {
     throw new UsageError('the shell needs a manifest path');
   }
+  if (result === '-' && !nonInteractive) {
+    throw new UsageError('--result - requires --non-interactive in the GUI shell');
+  }
   return {
     manifestPath,
     values,

@@ -23,6 +23,7 @@ import {
   Session,
   exitCodeFor,
   formatIssues,
+  serializeResult,
   writeResult,
   type RunEvent,
   type RunResult,
@@ -366,6 +367,11 @@ function bridgeError(error: unknown, mask: (text: string) => string): Error {
 }
 
 function deliver(result: RunResult, invocation: ShellInvocation): void {
+  if (invocation.result === '-') {
+    // Headless result streams own stdout (§4.1, §10); everything else stays on stderr.
+    process.stdout.write(serializeResult(result));
+    return;
+  }
   if (invocation.result !== undefined) {
     writeResult(result, invocation.result);
   }
