@@ -8,10 +8,23 @@
 import { randomUUID } from 'node:crypto';
 
 import { RUNE_VERSION } from '../version.js';
-import { EXIT_CODE_BY_STATUS, type RunMode, type RunResult, type RunStatus } from './model.js';
+import type { RunMode, RunResult, RunStatus } from './model.js';
+
+export type FailureExitCode = 1 | 3 | 4 | 5 | 6 | 70;
+
+type FailureStatus = Exclude<RunStatus, 'succeeded' | 'planned'>;
+
+const STATUS_BY_FAILURE_EXIT_CODE = {
+  1: 'failed',
+  3: 'config_error',
+  4: 'input_error',
+  5: 'resolution_error',
+  6: 'cancelled',
+  70: 'internal_error',
+} as const satisfies Readonly<Record<FailureExitCode, FailureStatus>>;
 
 export interface FailureResultOptions {
-  readonly exitCode: number;
+  readonly exitCode: FailureExitCode;
   readonly mode: RunMode;
   readonly manifestPath: string;
   readonly dryRun?: boolean | undefined;
@@ -22,14 +35,17 @@ export interface FailureResultOptions {
   readonly product?: { readonly name: string; readonly version: string } | undefined;
 }
 
-/** The §10 table read backwards: every failing exit code implies exactly one status. */
-export function statusForExitCode(code: number): RunStatus {
-  for (const [status, exit] of Object.entries(EXIT_CODE_BY_STATUS)) {
-    if (exit === code && status !== 'planned' && status !== 'succeeded') {
-      return status as RunStatus;
-    }
+/** Narrows an untyped host value to the closed set that may produce a failure result. */
+export function assertFailureExitCode(code: number): asserts code is FailureExitCode {
+  if (!Object.hasOwn(STATUS_BY_FAILURE_EXIT_CODE, code)) {
+    throw new RangeError(`Unsupported failure exit code: ${code}`);
   }
-  return 'internal_error';
+}
+
+/** The §10 table read backwards: every failing exit code implies exactly one status. */
+export function statusForExitCode(code: FailureExitCode): FailureStatus {
+  assertFailureExitCode(code);
+  return STATUS_BY_FAILURE_EXIT_CODE[code];
 }
 
 /** A zero-counter result: honest about the fact that the pipeline refused before a plan. */

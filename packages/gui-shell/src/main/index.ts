@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { BrowserWindow, app, ipcMain, type WebContents } from 'electron';
 
 import {
+  assertFailureExitCode,
   CancelToken,
   CancelledError,
   RUNE_VERSION,
@@ -452,6 +453,7 @@ export function failureResultFor(
   invocation: ShellInvocation,
   session?: Session,
 ): RunResult {
+  assertFailureExitCode(exitCode);
   return failureResult({
     exitCode,
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',

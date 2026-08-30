@@ -5,6 +5,7 @@
  */
 
 import {
+  assertFailureExitCode,
   CancelledError,
   exitCodeFor,
   failureResult,
@@ -182,6 +183,7 @@ function failureShell(options: {
   mode: RunMode;
 }): RunResult {
   const { session, code, flags } = options;
+  assertFailureExitCode(code);
   return failureResult({
     exitCode: code,
     mode: options.mode,
