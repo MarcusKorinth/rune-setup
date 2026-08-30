@@ -1,3 +1,5 @@
+import { UsageError } from '@rune/engine';
+
 /**
  * The shell's invocation (docs/architecture.md §9.4): `rune run --gui` launches the shell
  * with the run's own flags, and main opens the Session from them — the renderer never
@@ -29,7 +31,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
       index += 1;
       const value = argv[index];
       if (value === undefined) {
-        throw new Error(`${argument} expects a value`);
+        throw new UsageError(`${argument} expects a value`);
       }
       return value;
     };
@@ -38,7 +40,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         const pair = next();
         const separator = pair.indexOf('=');
         if (separator <= 0) {
-          throw new Error(`--set expects key=value, got "${pair}"`);
+          throw new UsageError(`--set expects key=value, got "${pair}"`);
         }
         overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
         break;
@@ -60,14 +62,14 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         break;
       default:
         if (argument.startsWith('--')) {
-          throw new Error(`unknown flag ${argument}`);
+          throw new UsageError(`unknown flag ${argument}`);
         }
         manifestPath = argument;
     }
   }
 
   if (manifestPath === undefined) {
-    throw new Error('the shell needs a manifest path');
+    throw new UsageError('the shell needs a manifest path');
   }
   return { manifestPath, values, overrides, locale, result, logFile, nonInteractive };
 }

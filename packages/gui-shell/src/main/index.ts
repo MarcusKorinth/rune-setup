@@ -65,29 +65,23 @@ export function closeWindowOnSigterm(window: Pick<BrowserWindow, 'close'>): () =
   return () => window.close();
 }
 
-async function main(): Promise<void> {
-  const invocation = parseShellArgv(process.argv.slice(app.isPackaged ? 1 : 2));
-
-  await app.whenReady();
-
-  let session: Session;
+export async function main(
+  argv: readonly string[] = process.argv.slice(app.isPackaged ? 1 : 2),
+): Promise<void> {
+  let exitCode: number;
   try {
-    session = await openSession(invocation);
+    const invocation = parseShellArgv(argv);
+    await app.whenReady();
+    const session = await openSession(invocation);
+
+    exitCode = invocation.nonInteractive
+      ? await headlessRun(session, invocation)
+      : await windowedRun(session, invocation);
   } catch (error) {
-    // A manifest or input error before any window exists: named on stderr, exit code from
-    // the one table. The §10 failure-shell result file arrives with the --gui wiring.
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    app.exit(error instanceof RuneError ? exitCodeFor(error) : 70);
-    return;
+    exitCode = exitCodeFor(error);
   }
-
-  if (invocation.nonInteractive) {
-    // The headless path (§9.4): no window, the same engine walk the CLI does.
-    app.exit(await headlessRun(session, invocation));
-    return;
-  }
-
-  app.exit(await windowedRun(session, invocation));
+  app.exit(exitCode);
 }
 
 async function openSession(invocation: ShellInvocation): Promise<Session> {

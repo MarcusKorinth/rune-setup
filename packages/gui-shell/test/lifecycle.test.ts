@@ -2,19 +2,26 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Session } from '@rune/engine';
+import { ManifestError, Session } from '@rune/engine';
 
 vi.mock('electron', () => ({
-  app: {},
+  app: {
+    exit: vi.fn(),
+    isPackaged: false,
+    whenReady: vi.fn(),
+  },
   BrowserWindow: class {},
   ipcMain: { handle: vi.fn() },
 }));
 
+import { app } from 'electron';
+
 import {
   closeWindowOnSigterm,
   headlessRun,
+  main,
   withSigtermHandler,
   type SigtermSource,
 } from '../src/main/index.js';
@@ -45,7 +52,16 @@ class FakeSigtermSource implements SigtermSource {
   }
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe('the GUI shell SIGTERM lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(app.whenReady).mockResolvedValue();
+  });
+
   it('registers one scoped handler, invokes its action, and removes it after resolve', async () => {
     const signals = new FakeSigtermSource();
     const action = vi.fn();
@@ -157,6 +173,48 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     );
 
     expect(signals.removed).toEqual(signals.added);
+  });
+});
+
+describe('the GUI shell main lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(app.whenReady).mockResolvedValue();
+  });
+
+  it('maps invalid argv to usage without waiting for Electron readiness', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main(['--unknown']);
+
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(2);
+    expect(stderr).toHaveBeenCalledWith('unknown flag --unknown\n');
+  });
+
+  it('maps an unhandled readiness failure to one internal exit', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.mocked(app.whenReady).mockRejectedValue(new Error('Electron readiness failed'));
+
+    await main(['installer.yaml']);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(stderr).toHaveBeenCalledWith('Electron readiness failed\n');
+  });
+
+  it('maps a RuneError from readiness through the shared exit table', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.mocked(app.whenReady).mockRejectedValue(
+      new ManifestError('RUNE-101', 'the shell manifest is invalid'),
+    );
+
+    await main(['installer.yaml']);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(3);
+    expect(stderr).toHaveBeenCalledWith('the shell manifest is invalid\n');
   });
 });
 
