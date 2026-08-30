@@ -4,7 +4,14 @@
  * masked — the executor masks before any observer sees them.
  */
 
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import {
+  closeSync,
+  createWriteStream,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  type WriteStream,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { EngineObserver, RunEvent } from '../engine/events.js';
@@ -17,16 +24,59 @@ export interface LogFileSink {
 
 export function createLogFileSink(path: string): LogFileSink {
   mkdirSync(dirname(path), { recursive: true });
-  const stream: WriteStream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
+  // Open eagerly so an invalid target rejects before executeRun can start a runner. Passing
+  // the descriptor to WriteStream preserves its ordered, non-blocking writes afterwards.
+  const descriptor = openSync(path, 'a');
+  let stream: WriteStream;
+  try {
+    // Windows can open a directory descriptor in append mode and fail only on the first
+    // write, unlike Linux. Reject it here so both hosts preserve pre-run validation.
+    if (fstatSync(descriptor).isDirectory()) {
+      throw new Error(`log file target is a directory: ${path}`);
+    }
+    stream = createWriteStream(path, {
+      fd: descriptor,
+      autoClose: true,
+      encoding: 'utf8',
+    });
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+
+  let firstError: Error | undefined;
+  let closePromise: Promise<void> | undefined;
+  // A WriteStream error without a listener is process-fatal. Retain the first failure so
+  // close() can report it through Session.execute's ordinary Promise boundary.
+  stream.on('error', (error: Error) => {
+    firstError ??= error;
+  });
 
   return {
     observer: (event) => {
       stream.write(`${new Date().toISOString()} ${describe(event)}\n`);
     },
-    close: () =>
-      new Promise((resolve) => {
-        stream.end(() => resolve());
-      }),
+    close: () => {
+      if (closePromise !== undefined) {
+        return closePromise;
+      }
+      closePromise = new Promise<void>((resolve, reject) => {
+        const settle = (): void => {
+          if (firstError === undefined) {
+            resolve();
+          } else {
+            reject(firstError);
+          }
+        };
+        if (stream.closed) {
+          settle();
+          return;
+        }
+        stream.once('close', settle);
+        stream.end();
+      });
+      return closePromise;
+    },
   };
 }
 

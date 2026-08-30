@@ -15,7 +15,7 @@ import { startOfFile } from '../manifest/source.js';
 import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
-import { createLogFileSink } from '../logs/logFile.js';
+import { createLogFileSink, type LogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
 import type { RunMode, RunResult } from '../results/model.js';
 import { CancelToken } from './cancel.js';
@@ -277,12 +277,13 @@ export class Session {
     const plan = this.plan();
     const token = cancel ?? new CancelToken();
     this.#cancel = token;
-    const log = this.#logFile === undefined ? undefined : createLogFileSink(this.#logFile);
+    let log: LogFileSink | undefined;
     const observers: EngineObserver = (event) => {
       log?.observer(event);
       observer?.(event);
     };
     try {
+      log = this.#logFile === undefined ? undefined : createLogFileSink(this.#logFile);
       return await executeRun({
         plan,
         resolution: this.#resolution,

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -377,6 +377,27 @@ describe('the IPC bridge', () => {
     const diagnostics = stderr.mock.calls.map(([message]) => String(message)).join('');
     expect(diagnostics).toContain('headless failure for ***');
     expect(diagnostics).not.toContain('super-secret-value');
+  });
+
+  it('maps an invalid headless log target to an internal-error result and exit 70', async () => {
+    const manifestPath = emptyFixture();
+    const logTarget = join(manifestPath, '..', 'log-target');
+    mkdirSync(logTarget);
+    const invocation = {
+      ...shellInvocation(manifestPath, true),
+      logFile: logTarget,
+      result: join(manifestPath, '..', 'result.json'),
+    };
+    const session = await openSession(invocation);
+    const delivered: unknown[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await headlessRun(session, invocation, (result) => delivered.push(result));
+
+    expect(code).toBe(70);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ exitCode: 70, status: 'internal_error' });
+    expect(stderr.mock.calls.map(([message]) => String(message)).join('')).toContain(logTarget);
   });
 
   it('masks a known secret in a rejected IPC RuneError and preserves code metadata', async () => {

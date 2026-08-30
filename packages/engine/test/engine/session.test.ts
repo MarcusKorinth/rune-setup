@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
@@ -154,6 +155,25 @@ describe('planning and executing', () => {
     const log = readFileSync(logFile, 'utf8');
     expect(log).toContain('[install] SUCCEEDED');
     expect(log).toContain('run finished: succeeded (exit 0)');
+  });
+
+  it('rejects an invalid log target before starting a runner and resets cancellation', async () => {
+    const path = fixture(BASE);
+    const logTarget = join(path, '..', 'log-target');
+    mkdirSync(logTarget);
+    const run = vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }));
+    const session = await Session.open(path, {
+      environment: {},
+      logFile: logTarget,
+      runner: { run },
+    });
+    const cancel = new CancelToken();
+
+    await expect(session.execute(undefined, cancel)).rejects.toThrow();
+    session.cancel();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(cancel.cancelled).toBe(false);
   });
 
   it('describes a dry run without executing', async () => {
