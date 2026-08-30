@@ -35,3 +35,20 @@ jobs:
       - run: npm run format:check
       - run: npm run depcruise
       - run: npm test
+
+  shell:
+    name: shell (ubuntu)
+    needs: core
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
