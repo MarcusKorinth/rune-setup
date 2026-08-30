@@ -14,10 +14,11 @@ vi.mock('electron', () => ({
     whenReady: vi.fn(),
   },
   BrowserWindow: class {},
+  dialog: { showErrorBox: vi.fn() },
   ipcMain: { handle: vi.fn() },
 }));
 
-import { app } from 'electron';
+import { app, dialog } from 'electron';
 
 import {
   closeWindowOnSigterm,
@@ -249,6 +250,7 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(2);
     expect(stderr).toHaveBeenCalledWith('unknown flag --unknown\n');
+    expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
   it('maps an unhandled readiness failure to one internal exit', async () => {
@@ -259,7 +261,12 @@ describe('the GUI shell main lifecycle', () => {
 
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(70);
-    expect(stderr).toHaveBeenCalledWith('Electron readiness failed\n');
+    expect(stderr).toHaveBeenCalledWith('RUNE-500 (exit 70): The setup could not be started.\n');
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-500 (exit 70): The setup could not be started.',
+    );
   });
 
   it('maps a RuneError from readiness through the shared exit table', async () => {
@@ -272,7 +279,33 @@ describe('the GUI shell main lifecycle', () => {
 
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(3);
-    expect(stderr).toHaveBeenCalledWith('the shell manifest is invalid\n');
+    expect(stderr).toHaveBeenCalledWith('RUNE-101 (exit 3): The setup could not be started.\n');
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-101 (exit 3): The setup could not be started.',
+    );
+  });
+
+  it('classifies a windowed Session.open failure without echoing unregistered secrets', async () => {
+    const secret = 'unregistered-open-secret';
+    vi.spyOn(Session, 'open').mockRejectedValue(
+      new ManifestError('RUNE-101', `the shell could not read ${secret}`),
+    );
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main(['installer.yaml', '--set', `token=${secret}`]);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(3);
+    expect(stderr).toHaveBeenCalledWith('RUNE-101 (exit 3): The setup could not be started.\n');
+    expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-101 (exit 3): The setup could not be started.',
+    );
+    expect(vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')).not.toContain(secret);
   });
 
   it('writes one serialized headless result to stdout for --result -', async () => {

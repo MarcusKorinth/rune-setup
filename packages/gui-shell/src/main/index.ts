@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import {
   BrowserWindow,
   app,
+  dialog,
   ipcMain,
   type BrowserWindowConstructorOptions,
   type WebContents,
@@ -123,23 +124,38 @@ export async function main(
   signals: SigtermSource = process,
 ): Promise<void> {
   let exitCode: number;
+  let windowed = false;
+  let activeSession: Session | undefined;
+  let fatalDisplayed = false;
+  const displayFatal = (error: unknown, session = activeSession): void => {
+    if (!windowed || fatalDisplayed) {
+      return;
+    }
+    fatalDisplayed = true;
+    showWindowedFatal(error, session);
+  };
   try {
     const invocation = parseShellArgv(argv);
+    windowed = !invocation.nonInteractive;
     const routedSignals = new LatchedSigtermSource();
     exitCode = await withSigtermHandler(
       () => routedSignals.request(),
       async () => {
         await app.whenReady();
         const session = await openSession(invocation);
+        activeSession = session;
 
         return invocation.nonInteractive
           ? headlessRun(session, invocation, routedSignals)
-          : windowedRun(session, invocation, routedSignals);
+          : windowedRun(session, invocation, routedSignals, displayFatal);
       },
       signals,
     );
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(
+      `${windowed ? describeWindowedFatal(error, activeSession) : error instanceof Error ? error.message : String(error)}\n`,
+    );
+    displayFatal(error);
     exitCode = exitCodeFor(error);
   }
   app.exit(exitCode);
@@ -196,7 +212,8 @@ async function executeHeadless(
 async function windowedRun(
   session: Session,
   invocation: ShellInvocation,
-  signals: SigtermSource = process,
+  signals: SigtermSource,
+  displayFatal: (error: unknown, session?: Session) => void,
 ): Promise<number> {
   const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
   window.once('ready-to-show', () => window.show());
@@ -227,6 +244,7 @@ async function windowedRun(
       running = false;
       writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
       fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+      displayFatal(error, session);
       window.close();
     },
     onRendererDone: () => {
@@ -252,6 +270,7 @@ async function windowedRun(
         } catch (error) {
           writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
           fatalCode = 70;
+          displayFatal(error, session);
         }
       }
     }
@@ -370,6 +389,31 @@ function bridgeError(error: unknown, mask: (text: string) => string): Error {
     return new Error(mask(String(error)));
   } catch {
     return new Error('Unknown error');
+  }
+}
+
+function describeWindowedFatal(error: unknown, session: Session | undefined): string {
+  const code = error instanceof RuneError ? error.code : 'RUNE-500';
+  const prefix = `${code} (exit ${exitCodeFor(error)})`;
+  if (session === undefined) {
+    // Session.open may fail before input secrets can be registered. Keep this sink useful
+    // without echoing manifest, values-file, or command-line data that cannot yet be masked.
+    return `${prefix}: The setup could not be started.`;
+  }
+  const details =
+    error instanceof RuneError
+      ? formatIssues(error.issues)
+      : error instanceof Error
+        ? error.message
+        : 'An unexpected shell error occurred.';
+  return session.mask(`${prefix}: ${details}`);
+}
+
+function showWindowedFatal(error: unknown, session: Session | undefined): void {
+  try {
+    dialog.showErrorBox('RUNE setup failed', describeWindowedFatal(error, session));
+  } catch {
+    // A failed native dialog must not replace the original error or its exit code.
   }
 }
 

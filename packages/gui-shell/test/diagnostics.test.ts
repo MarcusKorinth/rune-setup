@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Session } from '@rune/engine';
+import { ExecutionError, Session } from '@rune/engine';
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -63,6 +63,7 @@ vi.mock('electron', () => {
       whenReady: vi.fn(async () => undefined),
     },
     BrowserWindow: FakeBrowserWindow,
+    dialog: { showErrorBox: vi.fn() },
     ipcMain: {
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
         electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
@@ -71,7 +72,7 @@ vi.mock('electron', () => {
   };
 });
 
-import { app } from 'electron';
+import { app, dialog } from 'electron';
 
 import { headlessRun, main } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
@@ -183,6 +184,45 @@ describe('the GUI shell stderr diagnostics', () => {
 
     expect(stderr).toHaveBeenCalledWith('runner rejected ***\n');
     expect(stderr.mock.calls.flat().join('')).not.toContain('headless-secret');
+    expect(dialog.showErrorBox).not.toHaveBeenCalled();
+  });
+
+  it('shows one named and masked error when renderer execution rejects', async () => {
+    const secret = 'execute-secret';
+    const manifestPath = manifest([
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: fail',
+      '    run:',
+      '      command: fail',
+    ]);
+    vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
+      new ExecutionError('RUNE-403', `cannot start ${secret}`),
+    );
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      try {
+        await execute();
+      } catch {
+        // Main owns the fatal error; the bridge also rejects to the renderer.
+      }
+    };
+
+    await main([manifestPath, '--set', `token=${secret}`]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-403 (exit 1): cannot start ***',
+    );
+    expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
   });
 
   it('masks registered secrets when windowed result delivery rejects', async () => {
@@ -216,6 +256,11 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(app.exit).toHaveBeenCalledWith(70);
     expect(output).toContain('blocked-***');
     expect(output).not.toContain(secret);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    const dialogText = String(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]);
+    expect(dialogText).toContain('RUNE-500 (exit 70)');
+    expect(dialogText).toContain('blocked-***');
+    expect(dialogText).not.toContain(secret);
   });
 
   it('turns failed pre-Proceed result delivery into a masked fatal exit', async () => {
@@ -238,6 +283,11 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(output).toContain('blocked-***');
     expect(output).not.toContain(secret);
     expect(existsSync(resultPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    const dialogText = String(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]);
+    expect(dialogText).toContain('RUNE-500 (exit 70)');
+    expect(dialogText).toContain('blocked-***');
+    expect(dialogText).not.toContain(secret);
   });
 });
 
