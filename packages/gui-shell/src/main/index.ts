@@ -134,10 +134,10 @@ async function executeHeadless(session: Session, invocation: ShellInvocation): P
   try {
     const result = await session.execute();
     for (const warning of session.warnings()) {
-      process.stderr.write(`warning: ${warning}` + String.fromCharCode(10));
+      writeSessionDiagnostic(session, `warning: ${warning}`);
     }
     if (result.nothingExecuted) {
-      process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
+      writeSessionDiagnostic(session, 'warning: nothing was executed');
     }
     deliver(result, invocation);
     return result.exitCode;
@@ -173,9 +173,7 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
     onExecuteError: (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
-      process.stderr.write(
-        `${error instanceof Error ? error.message : String(error)}` + String.fromCharCode(10),
-      );
+      writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
       fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
       window.close();
     },
@@ -302,7 +300,7 @@ function deliver(result: RunResult, invocation: ShellInvocation): void {
 }
 
 function failWith(error: unknown, invocation: ShellInvocation, session: Session): number {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
   // Only a cancellation has a truthful result to leave behind here; the failure shells
   // for other owned outcomes arrive with the rune run --gui wiring.
   if (error instanceof CancelledError) {
@@ -312,6 +310,11 @@ function failWith(error: unknown, invocation: ShellInvocation, session: Session)
     }
   }
   return error instanceof RuneError ? exitCodeFor(error) : 70;
+}
+
+/** Writes one shell-owned diagnostic only after applying the active Session's mask. */
+function writeSessionDiagnostic(session: Session, message: string): void {
+  process.stderr.write(`${session.mask(message)}\n`);
 }
 
 function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
