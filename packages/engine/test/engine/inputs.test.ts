@@ -1295,6 +1295,39 @@ describe('secrets', () => {
     expect(secrets.mask('candidate-secret')).toBe('candidate-secret');
   }
 
+  function resolveWithRecursiveCause(cause: ResolutionError, secret: string): ResolutionError {
+    const withCause = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  directory:',
+      '    type: directory',
+      '    default: "${env.TRIGGER}"',
+    );
+    const baseContext = contextFor(withCause);
+    const context: RuntimeContext = {
+      ...baseContext,
+      valueOf: () => {
+        throw cause;
+      },
+    };
+
+    try {
+      resolveInputs({
+        manifest: withCause,
+        context,
+        overrides: new Map([['token', secret]]),
+        secrets: new SecretRegistry(),
+      });
+    } catch (error) {
+      if (error instanceof ResolutionError) {
+        return error;
+      }
+      throw error;
+    }
+    throw new Error('expected resolution to fail');
+  }
+
   it.each([
     {
       name: 'matching secret values',
@@ -2134,6 +2167,70 @@ describe('secrets', () => {
       expect(stack).not.toContain('\u0085');
       expect(stack).not.toContain('\u2028');
       expect(stack).not.toContain('\u2029');
+    }
+  });
+
+  it('masks and escapes every recursive stack frame while retaining only LF separators', () => {
+    const secret = 'F054-CUSTOM-STACK-SECRET';
+    const frameControls = '\r\u001b\u0007\u007f\u0085\u2028\u2029';
+    const originalPrepareStackTrace = Error.prepareStackTrace;
+    Error.prepareStackTrace = (current) =>
+      `${current.name}: ${current.message}\r\n    at resolver (${secret}${frameControls}:1:1)\rtrailer`;
+
+    let cause: ResolutionError;
+    let error: ResolutionError;
+    try {
+      cause = new ResolutionError('RUNE-301', 'cannot resolve custom stack');
+      error = resolveWithRecursiveCause(cause, secret);
+    } finally {
+      Error.prepareStackTrace = originalPrepareStackTrace;
+    }
+
+    expect(error.cause).toBe(cause);
+    for (const current of [error, cause]) {
+      expect(current).toBeInstanceOf(ResolutionError);
+      expect(current.name).toBe('ResolutionError');
+      expect(current.code).toBe('RUNE-301');
+      expect(exitCodeFor(current)).toBe(5);
+
+      const stack = current.stack!;
+      expect(stack).not.toContain(secret);
+      expect(stack).toContain('***');
+      expect(stack.split('\n')).toHaveLength(2);
+      expect(stack.split('\n')[1]).toContain('    at resolver');
+      expect(hasRawDiagnosticControl(stack.split('\n').join(''))).toBe(false);
+      for (const visible of [
+        '\\r',
+        '\\u001b',
+        '\\u0007',
+        '\\u007f',
+        '\\u0085',
+        '\\u2028',
+        '\\u2029',
+      ]) {
+        expect(stack).toContain(visible);
+      }
+    }
+  });
+
+  it('fully escapes a recursive stack whose header does not match', () => {
+    const secret = 'F054-FALLBACK-STACK-SECRET';
+    const cause = new ResolutionError('RUNE-301', 'cannot resolve fallback stack');
+    cause.stack = `custom stack ${secret}${DIAGNOSTIC_CONTROLS}\u007f\n    at forged (attack.js:1:1)`;
+
+    const error = resolveWithRecursiveCause(cause, secret);
+
+    expect(error.cause).toBe(cause);
+    expect(cause).toBeInstanceOf(ResolutionError);
+    expect(cause.name).toBe('ResolutionError');
+    expect(cause.code).toBe('RUNE-301');
+    expect(exitCodeFor(cause)).toBe(5);
+    expect(cause.stack).not.toContain(secret);
+    expect(cause.stack).toContain('***');
+    expect(cause.stack!.split('\n')).toHaveLength(1);
+    expect(hasRawDiagnosticControl(cause.stack!)).toBe(false);
+    for (const visible of [...VISIBLE_DIAGNOSTIC_ESCAPES, '\\u007f']) {
+      expect(cause.stack).toContain(visible);
     }
   });
 

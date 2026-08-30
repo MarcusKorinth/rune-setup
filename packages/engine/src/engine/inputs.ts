@@ -431,10 +431,7 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   if (rawStack !== undefined) {
     const maskedStack = secrets.mask(rawStack);
     const maskedHeader = secrets.mask(`${error.name}: ${rawMessage}`);
-    const safeHeader = escapeDiagnosticText(maskedHeader);
-    error.stack = maskedStack.startsWith(maskedHeader)
-      ? safeHeader + maskedStack.slice(maskedHeader.length)
-      : escapeDiagnosticText(maskedStack);
+    error.stack = sanitizeMaskedStack(maskedStack, maskedHeader);
   }
 
   if (error instanceof RuneError) {
@@ -456,6 +453,20 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
       value: escapeDiagnosticText(secrets.mask(error.cause)),
     });
   }
+}
+
+/** Escapes stack content while retaining only the formatter's LF frame separators. */
+function sanitizeMaskedStack(maskedStack: string, maskedHeader: string): string {
+  if (!maskedStack.startsWith(maskedHeader)) {
+    return escapeDiagnosticText(maskedStack);
+  }
+
+  const suffix = maskedStack.slice(maskedHeader.length);
+  const safeSuffix = suffix
+    .split('\n')
+    .map((frame) => escapeDiagnosticText(frame))
+    .join('\n');
+  return escapeDiagnosticText(maskedHeader) + safeSuffix;
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */
