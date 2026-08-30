@@ -97,7 +97,7 @@ export type {
   RunStatus,
 } from './results/model.js';
 export { resultJsonSchema } from './results/schema.js';
-export { serializeResult, writeResult } from './results/writer.js';
+export { writeResult } from './results/writer.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 

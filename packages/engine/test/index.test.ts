@@ -40,6 +40,7 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'isLegalTransition',
   'isTerminal',
   'STEP_STATES',
+  'serializeResult',
 ] as const;
 
 function assertOpaqueSecretType(secret: SecretString): void {
