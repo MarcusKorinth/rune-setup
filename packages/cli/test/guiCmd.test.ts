@@ -342,6 +342,7 @@ describe('rune run --gui shell version handshake', () => {
     });
     expect(spawnMock.mock.calls[1]?.[0]).toBe(join(testDirectory, shellBinary));
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([
+      '--',
       'installer.yaml',
       '--set',
       'name=value',
@@ -380,7 +381,7 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
-    expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, 'installer.yaml']);
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, '--', 'installer.yaml']);
   });
 
   it('normalizes a relative development-directory shell before probing and launching', async () => {
@@ -400,7 +401,19 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
-    expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, 'installer.yaml']);
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, '--', 'installer.yaml']);
+  });
+
+  it('delimits a manifest name beginning with -- for the shell', async () => {
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('--installer.yaml', { locale: 'de' }, capture(), interaction);
+
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual(['--', '--installer.yaml', '--locale', 'de']);
   });
 
   it.each([

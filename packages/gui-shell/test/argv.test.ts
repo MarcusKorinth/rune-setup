@@ -26,6 +26,13 @@ describe('the shell version probe', () => {
     });
   });
 
+  it('accepts a literal manifest path beginning with -- before launcher options', () => {
+    expect(parseShellArgv(['--', '--installer.yaml', '--locale', 'de'])).toMatchObject({
+      manifestPath: '--installer.yaml',
+      locale: 'de',
+    });
+  });
+
   it('preserves every override name as an own key without a prototype', () => {
     const { overrides } = parseShellArgv([
       'installer.yaml',

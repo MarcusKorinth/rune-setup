@@ -202,7 +202,9 @@ export async function launchGui(
     );
   }
 
-  const argv: string[] = [manifestPath];
+  // Keep Electron from interpreting RUNE flags such as `--log-file`. The manifest follows
+  // the marker as a literal, so a valid name beginning with `--` stays unambiguous.
+  const argv: string[] = ['--', manifestPath];
   for (const pair of flags.set ?? []) {
     argv.push('--set', pair);
   }
@@ -218,7 +220,6 @@ export async function launchGui(
   if (flags.logFile !== undefined) {
     argv.push('--log-file', flags.logFile);
   }
-
   // The first Ctrl+C or SIGTERM cancels whichever GUI startup process is active (§9.4):
   // terminate the probe, or forward one request to the workflow shell. Only a second
   // Ctrl+C force-exits the CLI; repeated SIGTERM remains idempotent.

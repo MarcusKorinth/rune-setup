@@ -47,6 +47,10 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
       return value;
     };
     switch (argument) {
+      case '--':
+        // Launcher protocol: the literal manifest path comes first, then RUNE options.
+        manifestPath = next();
+        break;
       case '--set': {
         const pair = next();
         const separator = pair.indexOf('=');
