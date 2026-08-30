@@ -33,6 +33,22 @@ function run(
   });
 }
 
+/** Keeps a POSIX child alive briefly after SIGTERM so a competing cause can arrive. */
+function delayedSigtermExit(delayMs: number): string {
+  return `
+    let sigtermCount = 0;
+    process.on('SIGTERM', () => {
+      sigtermCount += 1;
+      console.log('sigterm:' + sigtermCount);
+      if (sigtermCount === 1) {
+        setTimeout(() => process.exit(0), ${delayMs});
+      }
+    });
+    console.log('ready');
+    setInterval(() => {}, 1000);
+  `;
+}
+
 describe('SpawnRunner', () => {
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
@@ -122,4 +138,48 @@ describe('SpawnRunner', () => {
 
     await expect(pending).resolves.toEqual({ kind: 'cancelled' });
   }, 15000);
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps timeout as the first cause when cancellation arrives before close',
+    async () => {
+      const cancel = new CancelToken();
+      const lines: string[] = [];
+
+      const outcome = await run(nodeCommand(delayedSigtermExit(300), { timeoutSeconds: 1 }), {
+        cancel,
+        onOutput: (_stream, line) => {
+          lines.push(line);
+          if (line === 'sigterm:1') {
+            cancel.cancel();
+          }
+        },
+      });
+
+      expect(outcome).toEqual({ kind: 'timedOut' });
+      expect(lines.filter((line) => line.startsWith('sigterm:'))).toEqual(['sigterm:1']);
+    },
+    5000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps cancellation as the first cause when timeout arrives before close',
+    async () => {
+      const cancel = new CancelToken();
+      const lines: string[] = [];
+
+      const outcome = await run(nodeCommand(delayedSigtermExit(1500), { timeoutSeconds: 1 }), {
+        cancel,
+        onOutput: (_stream, line) => {
+          lines.push(line);
+          if (line === 'ready') {
+            cancel.cancel();
+          }
+        },
+      });
+
+      expect(outcome).toEqual({ kind: 'cancelled' });
+      expect(lines.filter((line) => line.startsWith('sigterm:'))).toEqual(['sigterm:1']);
+    },
+    5000,
+  );
 });

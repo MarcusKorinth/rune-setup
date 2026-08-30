@@ -40,8 +40,7 @@ export class SpawnRunner implements Runner {
       });
 
       let settled = false;
-      let timedOut = false;
-      let cancelled = false;
+      let terminationCause: 'timedOut' | 'cancelled' | undefined;
       let timer: NodeJS.Timeout | undefined;
 
       const settle = (outcome: SpawnOutcome): void => {
@@ -83,6 +82,14 @@ export class SpawnRunner implements Runner {
         escalate.unref();
       };
 
+      const terminate = (cause: 'timedOut' | 'cancelled'): void => {
+        if (settled || terminationCause !== undefined) {
+          return;
+        }
+        terminationCause = cause;
+        killTree();
+      };
+
       child.on('error', (cause) => {
         settle({ kind: 'failedToStart', message: cause.message });
       });
@@ -92,23 +99,19 @@ export class SpawnRunner implements Runner {
 
       if (command.timeoutSeconds !== null) {
         timer = setTimeout(() => {
-          timedOut = true;
-          killTree();
+          terminate('timedOut');
         }, command.timeoutSeconds * 1000);
         timer.unref();
       }
 
       request.cancel.onCancel(() => {
-        if (!settled) {
-          cancelled = true;
-          killTree();
-        }
+        terminate('cancelled');
       });
 
       child.on('close', (code) => {
-        if (cancelled) {
+        if (terminationCause === 'cancelled') {
           settle({ kind: 'cancelled' });
-        } else if (timedOut) {
+        } else if (terminationCause === 'timedOut') {
           settle({ kind: 'timedOut' });
         } else {
           settle({ kind: 'exited', exitCode: code ?? 1 });
