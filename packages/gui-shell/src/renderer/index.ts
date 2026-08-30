@@ -70,6 +70,8 @@ const state: State = {
 
 /** Advances on every page render so an async summary can only update its own page. */
 let renderVersion = 0;
+/** Keeps forward navigation closed until every in-flight engine submission has settled. */
+let pendingInputSubmissions = 0;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -148,6 +150,10 @@ async function boot(): Promise<void> {
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
+  if (state.page === 'inputs' && direction === 1 && !currentPageComplete()) {
+    renderFooter();
+    return;
+  }
   if (state.page === 'welcome' && direction === 1) {
     state.page = state.inputs.length > 0 ? 'inputs' : 'summary';
     state.pageIndex = 0;
@@ -233,6 +239,9 @@ function renderFooter(): void {
 function currentPageComplete(): boolean {
   if (state.page !== 'inputs') {
     return true;
+  }
+  if (pendingInputSubmissions > 0) {
+    return false;
   }
   // The engine's pendingInputs() is the one completeness signal: a secret's value crosses
   // masked and an unanswered value crosses absent, so the projection cannot be read for
@@ -408,15 +417,21 @@ function multiselect(input: BridgeInput): HTMLElement {
 
 /** One authority: the engine's setValue. Rejection marks the field; flips re-render. */
 async function submit(id: string, raw: unknown): Promise<void> {
+  pendingInputSubmissions += 1;
+  renderFooter();
   try {
-    await window.rune.setValue(id, raw);
-    state.invalid.delete(id);
-  } catch (error) {
-    const hint = text(`inputs.${id}.patternHint`);
-    state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+    try {
+      await window.rune.setValue(id, raw);
+      state.invalid.delete(id);
+    } catch (error) {
+      const hint = text(`inputs.${id}.patternHint`);
+      state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+    }
+    await refreshInputs();
+  } finally {
+    pendingInputSubmissions -= 1;
+    render();
   }
-  await refreshInputs();
-  render();
 }
 
 async function refreshInputs(): Promise<void> {

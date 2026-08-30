@@ -26,6 +26,11 @@ interface SummaryTestControl {
   emitRunFinished(): void;
 }
 
+interface InputRaceTestControl {
+  submissionCount(): number;
+  rejectSubmission(index: number): void;
+}
+
 test('launches the real Node 22 shell and renders Welcome', async () => {
   let application: ElectronApplication | undefined;
   const pageErrors: string[] = [];
@@ -141,6 +146,64 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('blocks Next while the engine is validating an edited input', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath, '--input-race'],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    const field = page.locator('.field[data-id="code"]');
+    await expect(field.locator('input')).toHaveValue('GOOD');
+    await expect(next).toBeEnabled();
+
+    const disabledImmediately = await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      const nextButton = document.querySelector('#next');
+      if (!(input instanceof HTMLInputElement) || !(nextButton instanceof HTMLButtonElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'bad';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      const disabled = nextButton.disabled;
+      nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return disabled;
+    });
+
+    expect(disabledImmediately).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(1);
+    await expect(field).toBeVisible();
+    await expect(page.locator('.result-heading')).toHaveCount(0);
+    await expect(next).toBeDisabled();
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.rejectSubmission(0),
+    );
+    await expect(field).toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveText('Use uppercase letters');
+    await expect(next).toBeDisabled();
+    await expect(page.locator('.result-heading')).toHaveCount(0);
   } finally {
     await application?.close();
   }
