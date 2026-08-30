@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
+  createWriteStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import type * as Fs from 'node:fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,11 +26,16 @@ import type { CliIo } from '../src/io.js';
 import type { Interaction } from '../src/prompt.js';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof Fs>();
+  return { ...fs, createWriteStream: vi.fn(fs.createWriteStream) };
+});
 
 const savedLocalAppData = process.env['LOCALAPPDATA'];
 const savedXdgCacheHome = process.env['XDG_CACHE_HOME'];
 const savedGuiShell = process.env['RUNE_GUI_SHELL'];
 const spawnMock = vi.mocked(spawn);
+const createWriteStreamMock = vi.mocked(createWriteStream);
 
 let testDirectory: string;
 let tarExit: number;
@@ -202,6 +209,30 @@ describe('rune gui install download failures', () => {
 
     expect(io.stderr).toHaveBeenCalledWith(
       expect.stringContaining('check your network connection'),
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(shellTemporaryDirectories()).toEqual(before);
+    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+  });
+
+  it('reports a temporary-storage failure as an installation failure without invoking tar', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    const before = shellTemporaryDirectories();
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const output = new PassThrough();
+      queueMicrotask(() => {
+        output.destroy(Object.assign(new Error('disk full'), { code: 'ENOSPC' }));
+      });
+      return output as unknown as ReturnType<typeof createWriteStream>;
+    });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      'could not write the GUI shell archive to temporary storage — check temporary-directory permissions and available disk space',
     );
     expect(spawnMock).not.toHaveBeenCalled();
     expect(shellTemporaryDirectories()).toEqual(before);

@@ -122,6 +122,12 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
         );
         throw new ExitWithCode(1);
       }
+      if (firstDownloadError === 'output') {
+        io.stderr(
+          'could not write the GUI shell archive to temporary storage — check temporary-directory permissions and available disk space',
+        );
+        throw new ExitWithCode(1);
+      }
       throw cause;
     }
 
