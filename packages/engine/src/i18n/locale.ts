@@ -93,11 +93,11 @@ export function discoverOverlays(manifestDir: string): readonly DiscoveredOverla
     });
   }
   const overlays = names
-    .filter((name) => /\.ya?ml$/i.test(name))
+    .filter((name) => /\.yaml$/i.test(name))
     .sort()
     .map((name) => {
       const path = join(directory, name);
-      const locale = normalizeOverlayLocaleClaim(name.replace(/\.ya?ml$/i, ''));
+      const locale = normalizeOverlayLocaleClaim(name.replace(/\.yaml$/i, ''));
       if (locale === undefined) {
         throw new ManifestError(
           'RUNE-104',

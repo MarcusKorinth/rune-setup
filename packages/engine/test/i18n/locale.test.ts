@@ -126,11 +126,11 @@ describe('overlay discovery and matching', () => {
   it('rejects multiple files that claim the same locale', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
     const localesPath = join(dir, 'locales');
-    const yamlPath = join(localesPath, 'de-DE.yaml');
-    const ymlPath = join(localesPath, 'de_DE.yml');
+    const hyphenatedPath = join(localesPath, 'de-DE.yaml');
+    const underscoredPath = join(localesPath, 'de_DE.yaml');
     mkdirSync(localesPath);
-    writeFileSync(yamlPath, 'rune.button.next: Weiter\n');
-    writeFileSync(ymlPath, 'rune.button.next: Vorwaerts\n');
+    writeFileSync(hyphenatedPath, 'rune.button.next: Weiter\n');
+    writeFileSync(underscoredPath, 'rune.button.next: Vorwaerts\n');
 
     let thrown: unknown;
     try {
@@ -142,9 +142,20 @@ describe('overlay discovery and matching', () => {
     expect(thrown).toBeInstanceOf(ManifestError);
     const error = thrown as ManifestError;
     expect(error.code).toBe('RUNE-104');
-    expect(error.message).toContain(yamlPath);
-    expect(error.message).toContain(ymlPath);
+    expect(error.message).toContain(hyphenatedPath);
+    expect(error.message).toContain(underscoredPath);
     expect(error.message).toContain('locale "de-DE"');
+  });
+
+  it('ignores yml files when discovering and matching overlays', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'de.yml'), 'rune.button.next: Weiter\n');
+
+    const overlays = discoverOverlays(dir);
+    expect(overlays).toEqual([]);
+    expect(matchOverlay('de', overlays)).toBeUndefined();
   });
 
   it('rejects a locale file name that cannot be normalized', () => {
