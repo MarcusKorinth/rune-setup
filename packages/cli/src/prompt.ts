@@ -7,8 +7,14 @@
 import { createInterface, type Interface } from 'node:readline';
 import { Writable } from 'node:stream';
 
-import { CancelledError, InputError, normalizeSummaryChoice, SUMMARY_ACTIONS } from '@rune/engine';
-import type { InputState, Session, StringTable } from '@rune/engine';
+import {
+  CancelledError,
+  InputError,
+  InternalError,
+  normalizeSummaryChoice,
+  SUMMARY_ACTIONS,
+} from '@rune/engine';
+import type { InputState, InputType, Session, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
 import { renderPlan } from './render.js';
@@ -31,6 +37,58 @@ export interface Interaction {
   forceExit(code: number): void;
   /** Defaults to the host process; tests inject a private signal source. */
   readonly signalSource?: SignalSource | undefined;
+}
+
+/** Everything the readline layer needs to render and ask one input question. */
+export interface CliPromptPresentation {
+  readonly lines: readonly string[];
+  readonly question: string;
+  readonly muted: boolean;
+}
+
+/** Presentation-only counterpart of one engine input type (docs/architecture.md §13). */
+export interface CliPromptPresenter {
+  readonly name: InputType;
+  present(state: InputState, strings: StringTable): CliPromptPresentation;
+}
+
+/** The CLI's explicit name-to-presenter registry; it never validates input values. */
+export class CliPromptRegistry {
+  readonly #presenters = new Map<string, CliPromptPresenter>();
+
+  constructor(presenters: Iterable<CliPromptPresenter> = []) {
+    for (const presenter of presenters) {
+      this.register(presenter);
+    }
+  }
+
+  register(presenter: CliPromptPresenter): void {
+    if (this.#presenters.has(presenter.name)) {
+      throw new InternalError(
+        `the CLI prompt presenter for input type "${presenter.name}" is registered twice`,
+      );
+    }
+    this.#presenters.set(presenter.name, presenter);
+  }
+
+  get(name: string): CliPromptPresenter {
+    const presenter = this.#presenters.get(name);
+    if (presenter === undefined) {
+      throw new InternalError(`no CLI prompt presenter is registered for input type "${name}"`);
+    }
+    return presenter;
+  }
+
+  names(): readonly string[] {
+    return [...this.#presenters.keys()];
+  }
+
+  /** The fail-fast session-open check required by docs/architecture.md §9.3. */
+  assertPresentable(states: Iterable<InputState>): void {
+    for (const state of states) {
+      this.get(state.spec.type);
+    }
+  }
 }
 
 /** A writable readline can echo through, with a switch for the muted secret echo. */
@@ -122,6 +180,52 @@ export class Prompter {
   }
 }
 
+function basePresentation(
+  state: InputState,
+  strings: StringTable,
+  typeLines: readonly string[] = [],
+  muted = false,
+): CliPromptPresentation {
+  const description = strings.inputDescription(state.id);
+  return {
+    lines: description === undefined ? typeLines : [description, ...typeLines],
+    question: `${strings.chrome('rune.prompt.value', { title: strings.inputTitle(state.id) })}: `,
+    muted,
+  };
+}
+
+function optionPresentation(state: InputState, strings: StringTable): CliPromptPresentation {
+  const spec = state.spec;
+  if (spec.type !== 'select' && spec.type !== 'multiselect') {
+    throw new InternalError(
+      `the CLI option presenter received the input type "${spec.type}" for "${state.id}"`,
+    );
+  }
+  const lines = spec.options.map((option) => {
+    const value = typeof option === 'string' ? option : option.value;
+    return `  - ${strings.optionLabel(state.id, value)} (${value})`;
+  });
+  lines.push(
+    strings.chrome(spec.type === 'select' ? 'rune.prompt.selectOne' : 'rune.prompt.selectMany'),
+  );
+  return basePresentation(state, strings, lines);
+}
+
+/** Exactly the seven public MVP input types, each registered deliberately. */
+export const cliPromptPresenters = new CliPromptRegistry([
+  { name: 'text', present: (state, strings) => basePresentation(state, strings) },
+  { name: 'secret', present: (state, strings) => basePresentation(state, strings, [], true) },
+  {
+    name: 'boolean',
+    present: (state, strings) =>
+      basePresentation(state, strings, [strings.chrome('rune.prompt.boolean')]),
+  },
+  { name: 'select', present: optionPresentation },
+  { name: 'multiselect', present: optionPresentation },
+  { name: 'file', present: (state, strings) => basePresentation(state, strings) },
+  { name: 'directory', present: (state, strings) => basePresentation(state, strings) },
+]);
+
 /**
  * Prompts for every pending input, in declaration order, until nothing is missing. A
  * rejected value re-prompts with the engine-owned diagnostic (§9.3).
@@ -202,9 +306,12 @@ async function askUntilAccepted(
   strings: StringTable,
   prompter: Prompter,
 ): Promise<void> {
-  const question = questionFor(state, strings, prompter);
+  const presentation = cliPromptPresenters.get(state.spec.type).present(state, strings);
+  for (const line of presentation.lines) {
+    prompter.say(line);
+  }
   for (;;) {
-    const raw = await prompter.ask(question, state.spec.type === 'secret');
+    const raw = await prompter.ask(presentation.question, presentation.muted);
     try {
       session.setValue(state.id, raw);
       return;
@@ -215,32 +322,6 @@ async function askUntilAccepted(
       prompter.say(error.message);
     }
   }
-}
-
-function questionFor(state: InputState, strings: StringTable, prompter: Prompter): string {
-  const title = strings.inputTitle(state.id);
-  const lines: string[] = [];
-  const description = strings.inputDescription(state.id);
-  if (description !== undefined) {
-    lines.push(description);
-  }
-  const spec = state.spec;
-  if (spec.type === 'select' || spec.type === 'multiselect') {
-    for (const option of spec.options) {
-      const value = typeof option === 'string' ? option : option.value;
-      lines.push(`  - ${strings.optionLabel(state.id, value)} (${value})`);
-    }
-    lines.push(
-      strings.chrome(spec.type === 'select' ? 'rune.prompt.selectOne' : 'rune.prompt.selectMany'),
-    );
-  }
-  if (spec.type === 'boolean') {
-    lines.push(strings.chrome('rune.prompt.boolean'));
-  }
-  for (const line of lines) {
-    prompter.say(line);
-  }
-  return `${strings.chrome('rune.prompt.value', { title })}: `;
 }
 
 function displayValue(state: InputState, strings: StringTable): string {

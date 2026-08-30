@@ -24,7 +24,13 @@ import type { RunMode, RunResult, RunStatus, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import { ExitWithCode, type CliIo } from './io.js';
-import { Prompter, promptForInputs, summaryLoop, type Interaction } from './prompt.js';
+import {
+  cliPromptPresenters,
+  Prompter,
+  promptForInputs,
+  summaryLoop,
+  type Interaction,
+} from './prompt.js';
 import { progressObserver, renderOutcome, renderPlan, renderWarnings } from './render.js';
 
 export interface RunFlags {
@@ -66,6 +72,7 @@ export async function runCommand(
       mode,
       ...(platform === undefined ? {} : { platform }),
     });
+    cliPromptPresenters.assertPresentable(session.allInputs());
     strings = session.getStrings();
 
     if (prompter !== undefined) {
