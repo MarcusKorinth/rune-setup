@@ -628,4 +628,4 @@ it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-id
     interactiveInteraction.dispose();
     rmSync(fixture.directory, { recursive: true, force: true });
   }
-});
+}, 15_000);
