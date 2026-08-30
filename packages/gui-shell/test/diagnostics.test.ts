@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import { Session } from '@rune/engine';
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   duringLoad: undefined as (() => Promise<void>) | undefined,
+  closeDuringLoad: false,
 }));
 
 vi.mock('electron', () => {
@@ -41,6 +42,9 @@ vi.mock('electron', () => {
     }
 
     async loadFile(): Promise<void> {
+      if (electronHarness.closeDuringLoad) {
+        this.close();
+      }
       await electronHarness.duringLoad?.();
     }
 
@@ -80,6 +84,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   electronHarness.handlers.clear();
   electronHarness.duringLoad = undefined;
+  electronHarness.closeDuringLoad = false;
 });
 
 describe('the GUI shell stderr diagnostics', () => {
@@ -169,6 +174,28 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(app.exit).toHaveBeenCalledWith(70);
     expect(output).toContain('blocked-***');
     expect(output).not.toContain(secret);
+  });
+
+  it('turns failed pre-Proceed result delivery into a masked fatal exit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-close-diagnostic-'));
+    const manifestPath = manifest(['inputs:', '  token:', '    type: secret', 'steps: []'], dir);
+    const secret = 'close-secret';
+    const blockedDirectory = join(dir, `blocked-${secret}`);
+    const resultPath = join(blockedDirectory, 'cancelled.json');
+    writeFileSync(blockedDirectory, 'not a directory', 'utf8');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.closeDuringLoad = true;
+
+    await expect(
+      main([manifestPath, '--set', `token=${secret}`, '--result', resultPath]),
+    ).resolves.toBeUndefined();
+
+    const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(output).toContain('blocked-***');
+    expect(output).not.toContain(secret);
+    expect(existsSync(resultPath)).toBe(false);
   });
 });
 

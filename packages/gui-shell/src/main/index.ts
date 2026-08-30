@@ -192,9 +192,15 @@ async function windowedRun(session: Session, invocation: ShellInvocation): Promi
     }
     if (outcome === undefined && fatalCode === undefined && !renderedDone) {
       // Closed before Proceed: a cancelled result over the plan when one exists (§10).
-      outcome = tryDescribeCancelled(session);
-      if (outcome !== undefined) {
-        deliver(outcome, invocation);
+      const cancelled = tryDescribeCancelled(session);
+      if (cancelled !== undefined) {
+        try {
+          deliver(cancelled, invocation);
+          outcome = cancelled;
+        } catch (error) {
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = 70;
+        }
       }
     }
   });
