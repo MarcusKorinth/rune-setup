@@ -8,4 +8,4 @@ The package is private: it is never published to npm and never part of the `@run
 It ships as prebuilt per-OS artifacts (`rune gui install`, `rune package`) under the MIT license
 in [LICENSE](LICENSE).
 
-Milestone 0: package skeleton only. See [docs/roadmap.md](../../docs/roadmap.md).
+MVP (v0.1.0): milestones 0–3 complete. See [docs/roadmap.md](../../docs/roadmap.md).
