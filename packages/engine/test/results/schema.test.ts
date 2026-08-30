@@ -44,7 +44,26 @@ describe('the result schema', () => {
     });
 
     // Through JSON, exactly as a consumer reads the file.
-    expect(() => runResultSchema.parse(JSON.parse(JSON.stringify(result)))).not.toThrow();
+    const serialized = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+    expect(() => runResultSchema.parse(serialized)).not.toThrow();
+    expect(() =>
+      runResultSchema.parse({
+        ...serialized,
+        manifest: { path: 'installer.yaml', sha256: null, schemaVersion: null },
+      }),
+    ).not.toThrow();
+
+    const missingMode = { ...serialized };
+    delete missingMode['mode'];
+    expect(() => runResultSchema.parse(missingMode)).toThrow();
+
+    const missingManifest = { ...serialized };
+    delete missingManifest['manifest'];
+    expect(() => runResultSchema.parse(missingManifest)).toThrow();
+
+    expect(() =>
+      runResultSchema.parse({ ...serialized, manifestPath: 'installer.yaml' }),
+    ).toThrow();
   });
 
   it('emits a JSON Schema document', () => {

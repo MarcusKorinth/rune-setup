@@ -44,6 +44,7 @@ export async function runCommand(manifestPath: string, flags: RunFlags, io: CliI
   let session: Session | undefined;
   try {
     session = await Session.open(manifestPath, {
+      mode: 'non-interactive',
       values: flags.values ?? [],
       overrides: parseOverrides(flags.set ?? []),
       locale: flags.locale,
@@ -115,6 +116,7 @@ function failureShell(options: {
     id: randomUUID(),
     status: statusForExit(code),
     exitCode: code,
+    mode: session?.mode ?? 'non-interactive',
     dryRun: flags.dryRun === true,
     crossPlatformPreview: platform !== host,
     platform,
@@ -128,7 +130,11 @@ function failureShell(options: {
       session === undefined
         ? { name: '', version: '' }
         : { name: session.manifest.product.name, version: session.manifest.product.version },
-    manifestPath: options.manifestPath,
+    manifest: {
+      path: session?.manifestPath ?? options.manifestPath,
+      sha256: session?.manifestSha256 ?? null,
+      schemaVersion: session?.manifest.schemaVersion ?? null,
+    },
     stepsTotal: 0,
     stepsExecuted: 0,
     stepsSucceeded: 0,

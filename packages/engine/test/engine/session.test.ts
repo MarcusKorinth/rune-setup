@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,6 +111,44 @@ describe('answering inputs', () => {
 });
 
 describe('planning and executing', () => {
+  it('uses the exact manifest bytes and mode in dry-run and live results', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-session-identity-'));
+    const path = join(dir, 'installer.yaml');
+    const bytes = Buffer.from(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps: []',
+        '# whitespace and comments are part of the file identity',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    writeFileSync(path, bytes);
+    const expectedSha256 = createHash('sha256').update(bytes).digest('hex');
+    const session = await Session.open(path, { environment: {}, runner: okRunner });
+
+    const expectedIdentity = {
+      mode: 'non-interactive',
+      manifest: { path, sha256: expectedSha256, schemaVersion: 1 },
+    };
+    expect(session.describe()).toMatchObject(expectedIdentity);
+    await expect(session.execute()).resolves.toMatchObject(expectedIdentity);
+  });
+
+  it('preserves an explicit frontend mode in dry-run and live results', async () => {
+    const session = await Session.open(fixture(BASE), {
+      mode: 'gui',
+      environment: {},
+      runner: okRunner,
+    });
+
+    expect(session.describe().mode).toBe('gui');
+    await expect(session.execute()).resolves.toMatchObject({ mode: 'gui' });
+  });
+
   it('refuses to plan while required inputs are missing, listing each one', async () => {
     const session = await Session.open(fixture(BASE), { environment: {} });
     session.setValue('installDatabase', true);

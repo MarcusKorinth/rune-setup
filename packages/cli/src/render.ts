@@ -13,7 +13,7 @@ export function renderPlan(result: RunResult, io: CliIo): void {
   const preview = result.crossPlatformPreview ? ', cross-platform preview' : '';
   io.stdout(
     `Plan for ${result.product.name} ${result.product.version} ` +
-      `(${result.manifestPath}, platform ${result.platform}${preview})`,
+      `(${result.manifest.path}, platform ${result.platform}${preview})`,
   );
   result.steps.forEach((step, index) => {
     const number = `${index + 1}.`.padEnd(3);

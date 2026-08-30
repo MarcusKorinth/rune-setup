@@ -11,14 +11,14 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { InputError, InternalError, type RuneIssue } from '../errors.js';
 import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
-import { parseManifest, type Manifest } from '../manifest/index.js';
+import { parseManifestWithMetadata, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
 import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
-import type { RunResult } from '../results/model.js';
+import type { RunMode, RunResult } from '../results/model.js';
 import { CancelToken } from './cancel.js';
 import {
   createRuntimeContext,
@@ -54,6 +54,8 @@ export interface ThemeConfig {
 }
 
 export interface SessionOptions {
+  /** The frontend driving this shared engine session. */
+  readonly mode?: RunMode | undefined;
   /** `--values` file paths, in order (layer 2). */
   readonly values?: readonly string[] | undefined;
   /** `--set` key=value pairs, already split (layer 4); `RUNE_INPUT_*` comes from the environment. */
@@ -79,6 +81,8 @@ interface ActiveExecution {
 export class Session {
   readonly manifest: Manifest;
   readonly manifestPath: string;
+  readonly manifestSha256: string;
+  readonly mode: RunMode;
   readonly #context: RuntimeContext;
   readonly #secrets: SecretRegistry;
   readonly #strings: StringTable;
@@ -94,6 +98,8 @@ export class Session {
   private constructor(fields: {
     manifest: Manifest;
     manifestPath: string;
+    manifestSha256: string;
+    mode: RunMode;
     context: RuntimeContext;
     secrets: SecretRegistry;
     strings: StringTable;
@@ -106,6 +112,8 @@ export class Session {
   }) {
     this.manifest = fields.manifest;
     this.manifestPath = fields.manifestPath;
+    this.manifestSha256 = fields.manifestSha256;
+    this.mode = fields.mode;
     this.#context = fields.context;
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;
@@ -124,7 +132,8 @@ export class Session {
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
-    const manifest = parseManifest(absolutePath);
+    const parsed = parseManifestWithMetadata(absolutePath);
+    const manifest = parsed.manifest;
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
     const environment: Readonly<Record<string, string | undefined>> = Object.freeze({
@@ -157,6 +166,8 @@ export class Session {
     return new Session({
       manifest,
       manifestPath,
+      manifestSha256: parsed.sha256,
+      mode: options.mode ?? 'non-interactive',
       context,
       secrets,
       strings,
@@ -257,6 +268,9 @@ export class Session {
       resolution: this.#resolution,
       product: this.manifest.product,
       secrets: this.#secrets,
+      mode: this.mode,
+      manifestSha256: this.manifestSha256,
+      manifestSchemaVersion: this.manifest.schemaVersion,
     });
   }
 
@@ -280,6 +294,9 @@ export class Session {
         resolution: this.#resolution,
         product: this.manifest.product,
         secrets: this.#secrets,
+        mode: this.mode,
+        manifestSha256: this.manifestSha256,
+        manifestSchemaVersion: this.manifest.schemaVersion,
         observer: observers,
         cancel: activeExecution.cancel,
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),

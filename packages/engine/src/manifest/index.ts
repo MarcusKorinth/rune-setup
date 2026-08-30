@@ -11,7 +11,12 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { ManifestError } from '../errors.js';
-import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
+import {
+  loadYamlFile,
+  loadYamlFileWithMetadata,
+  loadYamlText,
+  type LoadedDocument,
+} from './loader.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
 import { checkSemantics, environmentReferences, type EnvironmentUse } from './v1/rules.js';
@@ -19,6 +24,12 @@ import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 
 /** The validated manifest model. Today that is always the v1 model. */
 export type Manifest = ManifestV1;
+
+/** Package-internal manifest identity derived from the same bytes as the validated model. */
+export interface ParsedManifest {
+  readonly manifest: Manifest;
+  readonly sha256: string;
+}
 
 export interface ParseManifestOptions {
   /** Check that `gui:` asset paths exist — `validate` and `run --gui` do, other modes do not. */
@@ -44,6 +55,18 @@ export const SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [...PARSERS.keys()].
 /** Reads, parses and validates a manifest file. Throws {@link ManifestError} with every problem. */
 export function parseManifest(file: string, options: ParseManifestOptions = {}): Manifest {
   return parseDocument(loadYamlFile(file), file, options);
+}
+
+/** Reads once, then validates and hashes that one byte snapshot. Not part of the root API. */
+export function parseManifestWithMetadata(
+  file: string,
+  options: ParseManifestOptions = {},
+): ParsedManifest {
+  const document = loadYamlFileWithMetadata(file);
+  return {
+    manifest: parseDocument(document, file, options),
+    sha256: document.sha256,
+  };
 }
 
 /** Same as {@link parseManifest} for text that is already in memory. */

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -85,6 +86,15 @@ describe('rune run', () => {
     expect(code).toBe(0);
     const result = JSON.parse(io.out.join('\n')) as Record<string, unknown>;
     expect(result['status']).toBe('succeeded');
+    expect(result).toMatchObject({
+      mode: 'non-interactive',
+      manifest: {
+        path,
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+        schemaVersion: 1,
+      },
+    });
+    expect(result).not.toHaveProperty('manifestPath');
     expect(io.err.join('\n')).toContain('hello');
   });
 
@@ -170,6 +180,10 @@ describe('result files for failed outcomes', () => {
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(written['status']).toBe('config_error');
     expect(written['exitCode']).toBe(3);
+    expect(written).toMatchObject({
+      mode: 'non-interactive',
+      manifest: { path, sha256: null, schemaVersion: null },
+    });
   });
 
   it('keeps stdout pure JSON under --dry-run --result -', async () => {

@@ -24,6 +24,7 @@ import {
   RESULT_SCHEMA_VERSION,
   type ResultInput,
   type ResultStep,
+  type RunMode,
   type RunResult,
   type RunStatus,
 } from '../results/model.js';
@@ -36,6 +37,10 @@ export interface ExecuteOptions {
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly secrets: SecretRegistry;
+  /** The frontend driving this engine run; direct engine callers default to automation. */
+  readonly mode?: RunMode;
+  readonly manifestSha256?: string | null;
+  readonly manifestSchemaVersion?: number | null;
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
@@ -191,6 +196,9 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan,
     resolution: options.resolution,
     product: options.product,
+    mode: options.mode ?? 'non-interactive',
+    manifestSha256: options.manifestSha256 ?? null,
+    manifestSchemaVersion: options.manifestSchemaVersion ?? null,
     steps,
     status: wasCancelled || cancel.cancelled ? 'cancelled' : failed ? 'failed' : 'succeeded',
     dryRun: false,
@@ -208,6 +216,9 @@ export function describePlan(options: {
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
   readonly secrets: SecretRegistry;
+  readonly mode?: RunMode;
+  readonly manifestSha256?: string | null;
+  readonly manifestSchemaVersion?: number | null;
 }): RunResult {
   const now = new Date();
   const steps = options.plan.steps.map((step): ResultStep => {
@@ -222,6 +233,9 @@ export function describePlan(options: {
     plan: options.plan,
     resolution: options.resolution,
     product: options.product,
+    mode: options.mode ?? 'non-interactive',
+    manifestSha256: options.manifestSha256 ?? null,
+    manifestSchemaVersion: options.manifestSchemaVersion ?? null,
     steps,
     status: 'planned',
     dryRun: true,
@@ -235,6 +249,9 @@ function assembleResult(input: {
   readonly plan: ExecutionPlan;
   readonly resolution: Resolution;
   readonly product: { readonly name: string; readonly version: string };
+  readonly mode: RunMode;
+  readonly manifestSha256: string | null;
+  readonly manifestSchemaVersion: number | null;
   readonly steps: readonly ResultStep[];
   readonly status: RunStatus;
   readonly dryRun: boolean;
@@ -250,6 +267,7 @@ function assembleResult(input: {
     id: input.runId,
     status: input.status,
     exitCode: EXIT_CODE_BY_STATUS[input.status],
+    mode: input.mode,
     dryRun: input.dryRun,
     crossPlatformPreview: input.plan.preview,
     platform: input.plan.platform,
@@ -261,7 +279,11 @@ function assembleResult(input: {
     // Identity only: a manifest's product block may carry more (a description), and the
     // result schema pins exactly these two fields (§10).
     product: { name: input.product.name, version: input.product.version },
-    manifestPath: input.plan.manifestPath,
+    manifest: {
+      path: input.plan.manifestPath,
+      sha256: input.manifestSha256,
+      schemaVersion: input.manifestSchemaVersion,
+    },
     stepsTotal: steps.length,
     stepsExecuted: executed,
     stepsSucceeded: count('SUCCEEDED'),

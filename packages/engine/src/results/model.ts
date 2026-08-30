@@ -10,6 +10,9 @@ import type { StepState } from '../engine/state.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 
+/** The frontend mode that drove the shared engine pipeline. */
+export type RunMode = 'gui' | 'interactive' | 'non-interactive';
+
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
@@ -60,12 +63,21 @@ export interface ResultStep {
   readonly outputTail: readonly { readonly stream: string; readonly line: string }[] | null;
 }
 
+export interface ResultManifest {
+  readonly path: string;
+  /** `null` when no successfully opened session supplied the file identity. */
+  readonly sha256: string | null;
+  /** `null` when no successfully opened session supplied a validated model. */
+  readonly schemaVersion: number | null;
+}
+
 export interface RunResult {
   readonly resultSchemaVersion: typeof RESULT_SCHEMA_VERSION;
   /** One UUID per run — the same value every child saw as RUNE_RUN_ID (§8, §10). */
   readonly id: string;
   readonly status: RunStatus;
   readonly exitCode: number;
+  readonly mode: RunMode;
   readonly dryRun: boolean;
   readonly crossPlatformPreview: boolean;
   readonly platform: string;
@@ -76,7 +88,7 @@ export interface RunResult {
   readonly durationMs: number;
   readonly runeVersion: string;
   readonly product: { readonly name: string; readonly version: string };
-  readonly manifestPath: string;
+  readonly manifest: ResultManifest;
   readonly stepsTotal: number;
   readonly stepsExecuted: number;
   readonly stepsSucceeded: number;

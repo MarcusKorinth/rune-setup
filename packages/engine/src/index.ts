@@ -90,7 +90,14 @@ export { SpawnRunner } from './runners/spawnRunner.js';
 export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
 
 export { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION } from './results/model.js';
-export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/model.js';
+export type {
+  ResultInput,
+  ResultManifest,
+  ResultStep,
+  RunMode,
+  RunResult,
+  RunStatus,
+} from './results/model.js';
 export { serializeResult, writeResult } from './results/writer.js';
 export { resultJsonSchema } from './results/schema.js';
 export { createLogFileSink } from './logs/logFile.js';

@@ -316,6 +316,7 @@ The engine–frontend boundary is one facade plus one observer interface; the GU
 // packages/engine/src/engine/session.ts
 export class Session {
   static open(manifestPath: string, options?: {
+    mode?: 'gui' | 'interactive' | 'non-interactive'; // defaults to non-interactive
     values?: readonly string[];            // --values files, in order (layer 2)
     overrides?: Readonly<Record<string, string>>; // --set (layer 4); RUNE_INPUT_* comes from the environment (layer 3)
     locale?: string;                       // --locale (§6.3)
@@ -440,7 +441,11 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 Contents:
 
 - **run block** — `id`, `status`, `exitCode`, `mode` (`gui` / `interactive` / `non-interactive`), `dryRun`, `crossPlatformPreview` (true iff `--platform` named a foreign platform, §6.1), `platform`, `locale`, timestamps, `durationMs`, `runeVersion`, and the counters `stepsTotal`, `stepsExecuted`, `stepsSucceeded`, `stepsFailed`, `stepsCancelled`, `stepsSkipped`, `stepsNotRun`, `nothingExecuted` (§7; `stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun`, `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled`)
-- `product`, `manifest` (path, sha256, schemaVersion)
+- `product`, `manifest` (`path`, `sha256`, `schemaVersion`): after a successful
+  `Session.open`, `sha256` is the SHA-256 of the exact manifest file bytes used for parsing
+  and `schemaVersion` comes from the validated model. If opening fails before those values
+  exist, failure shells retain `path` and set `sha256` and `schemaVersion` explicitly to
+  `null`; they never invent identity metadata.
 - **per input** — `{id, value, source, secret, enabled, ignored?}`: secret values always `null`; `enabled: false` for disabled inputs, whose `value` is the type's empty value; `ignored: "input disabled"` present only when a value was supplied for a disabled input, with `source` naming the layer that supplied it (provenance makes precedence — and what was discarded — auditable after the fact)
 - **per step** — `{id, title, state, exitCode, durationMs, command, skipReason, outputTail?}`: `title` localized, `id` never; command arrays passed through the masker; `outputTail` present **only** for `FAILED` steps — a list of the last 50 `{stream, line}` entries, already masked (§7)
 

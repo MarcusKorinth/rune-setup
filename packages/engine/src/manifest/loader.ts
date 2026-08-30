@@ -5,6 +5,7 @@
  * recorded in a {@link SourceMap} so errors can point at `file:line:col`.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 
 import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
@@ -34,6 +35,11 @@ export interface LoadedDocument {
   /** The document as plain JavaScript data. `null` for an empty document. */
   readonly value: unknown;
   readonly sourceMap: SourceMap;
+}
+
+export interface LoadedFileWithMetadata extends LoadedDocument {
+  /** SHA-256 of the exact file bytes that produced `value`. */
+  readonly sha256: string;
 }
 
 /** Parses YAML text that is already in memory. */
@@ -98,6 +104,25 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
 
 /** Reads and parses a YAML file. */
 export function loadYamlFile(file: string, path: string = file): LoadedDocument {
+  return loadYamlFileSnapshot(file, path).document;
+}
+
+/** Reads once and adds byte identity for manifest sessions. Package-internal, not root API. */
+export function loadYamlFileWithMetadata(
+  file: string,
+  path: string = file,
+): LoadedFileWithMetadata {
+  const snapshot = loadYamlFileSnapshot(file, path);
+  return {
+    ...snapshot.document,
+    sha256: createHash('sha256').update(snapshot.bytes).digest('hex'),
+  };
+}
+
+function loadYamlFileSnapshot(
+  file: string,
+  path: string,
+): { readonly bytes: Buffer; readonly document: LoadedDocument } {
   let bytes: Buffer;
   try {
     const stats = statSync(path);
@@ -118,7 +143,7 @@ export function loadYamlFile(file: string, path: string = file): LoadedDocument 
     throw new ManifestError('RUNE-101', `${file} cannot be read: ${messageOf(cause)}`, { cause });
   }
 
-  return loadYamlText(decodeUtf8(bytes, file), file);
+  return { bytes, document: loadYamlText(decodeUtf8(bytes, file), file) };
 }
 
 /**
