@@ -180,6 +180,7 @@ describe('a run that succeeds', () => {
     expect(result).toMatchObject({
       status: 'succeeded',
       exitCode: 0,
+      error: null,
       stepsTotal: 2,
       stepsExecuted: 2,
       stepsSucceeded: 2,
@@ -622,7 +623,14 @@ describe('a run that fails', () => {
       }),
     });
 
-    expect(result).toMatchObject({ status: 'failed', exitCode: 1, stepsFailed: 1, stepsNotRun: 1 });
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      dryRun: false,
+      error: null,
+      stepsFailed: 1,
+      stepsNotRun: 1,
+    });
     expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(result.steps[0]?.state).toBe('FAILED');
     expect(result.steps[0]?.exitCode).toBe(3);
@@ -1319,6 +1327,7 @@ describe('cancellation and timeout', () => {
     expect(result).toMatchObject({
       status: 'cancelled',
       exitCode: 6,
+      error: { code: 'RUNE-601', message: 'the run was cancelled', location: null },
       stepsTotal: 0,
       stepsExecuted: 0,
       stepsSkipped: 0,
@@ -1885,7 +1894,7 @@ describe('skipped steps and the dry run', () => {
 
     const result = describePlan({ plan });
 
-    expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true });
+    expect(result).toMatchObject({ status: 'planned', exitCode: 0, dryRun: true, error: null });
     expect(resultV1Schema.safeParse(result).success).toBe(true);
     expect(result.startedAt).toBe(result.finishedAt);
     expect(result.durationMs).toBe(0);

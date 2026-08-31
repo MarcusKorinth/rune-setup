@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
 import { PlatformError, RUNE_VERSION } from '../src/index.js';
-import type { RunMode } from '../src/index.js';
+import type { ResultError, RunMode } from '../src/index.js';
 // @ts-expect-error input resolution internals are not package-root API
 import type { Resolution as ForbiddenResolution } from '../src/index.js';
 // @ts-expect-error input resolver options are not package-root API
@@ -60,6 +60,21 @@ const PUBLIC_RUN_MODES = [
 ] as const satisfies readonly RunMode[];
 
 void PUBLIC_RUN_MODES;
+
+const PUBLIC_RESULT_ERROR: ResultError<'RUNE-104'> = {
+  code: 'RUNE-104',
+  message: 'invalid manifest semantics',
+  location: { file: 'installer.yaml', line: 1, column: 1 },
+};
+// @ts-expect-error usage errors are never part of a configured-run result
+const FORBIDDEN_RESULT_ERROR: ResultError<'RUNE-001'> = {
+  code: 'RUNE-001',
+  message: 'usage error',
+  location: null,
+};
+
+void PUBLIC_RESULT_ERROR;
+void FORBIDDEN_RESULT_ERROR;
 
 describe('@rune/engine public API', () => {
   it('exposes a semver version', () => {

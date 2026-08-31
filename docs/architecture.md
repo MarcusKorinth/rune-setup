@@ -252,6 +252,11 @@ One pipeline, shared by every verb and frontend, orchestrated by `Session`:
 
 `rune validate` = stages 1–2 (fully static), followed by the environment-variable audit report (§4.3). `rune run --dry-run` = stages 1–4, rendering the plan (final argv with secrets masked, cwd, skip reasons, disabled inputs) and executing nothing. There is **no fake runner**: dry-run and run share the same plan object, so they cannot drift.
 
+Planning can reject an execution spelling before an `ExecutionPlan` exists: an invalid native
+Windows command root or drive-relative command (RUNE-401), an invalid native Windows `cwd`
+(RUNE-404), or a batch command that requires an implicit shell (RUNE-405). A configured run
+still reports this outcome, but it must not invent a step transition or publish a partial plan.
+
 `ExecutionPlan` (deep-frozen, `readonly` types, versioned): `planSchemaVersion` (currently `1`), `manifestPath`, `manifestSha256`, `platform`, `locale`, `resolvedInputs` (secrets wrapped; disabled inputs carry their empty value and state), `executionOptions`, `steps: readonly PlannedStep[]` in declaration order. `PlannedStep` carries the real `ResolvedCommand` (secret-wrapped argv, cwd, env delta, timeout, success codes); masking happens only at render/serialization time — never a second "masked plan".
 
 ### Step lifecycle
@@ -269,6 +274,11 @@ States: `PENDING`, `SKIPPED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `NO
 **Output tail.** While a step is `RUNNING`, the Executor keeps a bounded ring buffer of its last 50 combined stdout/stderr lines (each tagged with its stream, already masked — lines enter the buffer from the same masked stream the events carry). The fixed overlong-line placeholder from §8 counts as one line in this ring. If the step ends `FAILED` (including timeout), the buffer becomes the step's `outputTail` in the result file (§10); for `SUCCEEDED`, `SKIPPED`, `CANCELLED`, and `NOT_RUN` steps the buffer is discarded and no tail is written. Full output stays in the log file except that an overlong logical line is replaced wholesale by the §8 placeholder; the tail exists for CI triage from the result alone.
 
 **Counters.** The run result carries `stepsTotal`, `stepsExecuted`, `stepsSucceeded`, `stepsFailed`, `stepsCancelled`, `stepsSkipped`, `stepsNotRun`, and `nothingExecuted` (true iff `stepsExecuted == 0`). `stepsExecuted` counts every step that entered `RUNNING`, so `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled` and `stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun` hold for every outcome (`stepsCancelled` is 0 or 1 in v1 — at most one step is `RUNNING`); the published result JSON Schema pins the structural form, while the runtime result validator/writer and §14's tests pin these arithmetic and step-array correlations. A run in which every step was skipped is a **success** (exit 0, `status: "succeeded"`) — skipping is the authored outcome of conditions and platform blocks — but it is marked: `nothingExecuted: true` and a warning on stderr, so a pipeline that considers "nothing happened" suspicious can branch on the result without RUNE guessing intent. The warning is emitted only for real runs (`dryRun: false`): in a `planned` result (§10) the counters describe the plan — `stepsSkipped` from plan-time `SKIPPED`, `stepsExecuted = 0` — so `nothingExecuted` is always `true` there and is not warned about.
+
+A plan-time ExecutionError has no plan whose steps could be counted. Its failed result therefore
+has `steps: []`, every step counter set to `0`, and `nothingExecuted: true`; it may have
+`dryRun: false` or `dryRun: true`. No synthetic failed step or separate plan-failed step state
+exists.
 
 ### Error taxonomy
 
@@ -442,7 +452,7 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 |---|---|---|
 | `succeeded` | 0 | real run, all steps succeeded or skipped (`nothingExecuted` tells the two apart) |
 | `planned` | 0 | `--dry-run` (`"dryRun": true`), plan built successfully; counters describe the plan (`stepsExecuted` is 0, `nothingExecuted` always `true`, no warning — §7) |
-| `failed` | 1 | one or more steps failed or timed out |
+| `failed` | 1 | one or more executed steps failed or timed out, or planning rejected an execution spelling with RUNE-401/404/405 before a plan existed |
 | `config_error` | 3 | manifest invalid (RUNE-1xx) |
 | `input_error` | 4 | missing/invalid input, unknown `--set`/values key (RUNE-2xx) |
 | `resolution_error` | 5 | interpolation or condition error (RUNE-3xx) |
@@ -452,6 +462,13 @@ Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune 
 Contents:
 
 - **run block** — `id`, `status`, `exitCode`, `mode` (`gui` / `interactive` / `non-interactive`), `dryRun`, `crossPlatformPreview` (true iff `--platform` named a foreign platform, §6.1), `platform`, `locale`, timestamps, `durationMs`, `runeVersion`, and the counters `stepsTotal`, `stepsExecuted`, `stepsSucceeded`, `stepsFailed`, `stepsCancelled`, `stepsSkipped`, `stepsNotRun`, `nothingExecuted` (§7; `stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun`, `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled`)
+- **top-level error** — required and strict `{code, message, location}` (`location` is `null`
+  or `{file, line, column}` with 1-based positive coordinates). It is `null` for `succeeded`,
+  `planned`, and ordinary runtime `failed` results. Otherwise its code is correlated with the
+  status: RUNE-401/404/405 for the zero-step plan-time `failed` form; RUNE-101..104 for
+  `config_error`; RUNE-201..203 for `input_error`; RUNE-301/302/311/312 for
+  `resolution_error`; RUNE-601 for `cancelled`; and RUNE-500 for `internal_error`. Usage and
+  unsupported-platform errors occur before configuration and are never represented in a result.
 - `product`, which may be `null` only before manifest validation has succeeded; `manifest`
   (`path`, always present; `sha256`, `null` only when no source bytes could be read;
   `schemaVersion`, `null` when no integer version could be read)
@@ -460,7 +477,9 @@ Contents:
 
 Input ids must be unique within `inputs`, and step ids must be unique within `steps`; the same id may appear once in each list.
 
-Dry-run writes `"dryRun": true` with per-step `state` `PENDING` or `SKIPPED` (no step ever reaches a running state), enabling plan diffing between commits.
+Every result with `"dryRun": true` has `stepsExecuted: 0` and may contain only `PENDING` or
+`SKIPPED` steps (or no steps); no dry-run result may claim `SUCCEEDED`, `FAILED`, or `CANCELLED`
+step state. A successful dry-run uses `status: "planned"`, enabling plan diffing between commits.
 
 ### Logging and secret masking
 

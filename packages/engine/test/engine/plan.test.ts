@@ -710,8 +710,11 @@ describe('the Windows honesty rule', () => {
   const lines = ['steps:', '  - id: legacy', '    run:', '      command: setup.bat'];
 
   it('refuses a batch file at plan time, with the fix in the message', () => {
-    expect(() => planFor(lines, { platform: 'windows' })).toThrow(/needs a shell/);
-    expect(() => planFor(lines, { platform: 'windows' })).toThrow(/command: cmd/);
+    const error = executionError(() => planFor(lines, { platform: 'windows' }));
+
+    expect(error.code).toBe('RUNE-405');
+    expect(error.message).toMatch(/needs a shell/);
+    expect(error.message).toMatch(/command: cmd/);
   });
 
   it('does not mind the same file name on linux', () => {

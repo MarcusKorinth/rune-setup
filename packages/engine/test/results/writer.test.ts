@@ -27,6 +27,7 @@ function result(id: string): RunResult {
     exitCode: 0,
     mode: 'non-interactive',
     dryRun: false,
+    error: null,
     crossPlatformPreview: false,
     platform: 'linux',
     locale: 'en',
@@ -95,7 +96,7 @@ function forgedDuplicateInputIdResult(id: string): RunResult {
       { id: SECRET_SENTINEL, value: 'first', source: 'set', secret: false, enabled: true },
       { id: SECRET_SENTINEL, value: 'second', source: 'set', secret: false, enabled: true },
     ],
-  } as RunResult;
+  } as unknown as RunResult;
 }
 
 function forgedContradictoryStepFieldsResult(id: string): RunResult {
@@ -145,6 +146,78 @@ function forgedFailedWithoutFailedStepResult(id: string): RunResult {
   return { ...result(id), status: 'failed', exitCode: 1 } as RunResult;
 }
 
+function planFailureResult(id: string, dryRun = true): RunResult {
+  return {
+    ...result(id),
+    status: 'failed',
+    exitCode: 1,
+    dryRun,
+    error: { code: 'RUNE-404', message: 'working directory is invalid', location: null },
+  };
+}
+
+function forgedExecutedDryRunResult(id: string): RunResult {
+  return {
+    ...result(id),
+    status: 'internal_error',
+    exitCode: 70,
+    dryRun: true,
+    error: { code: 'RUNE-500', message: 'internal error', location: null },
+    stepsTotal: 1,
+    stepsExecuted: 1,
+    stepsSucceeded: 1,
+    nothingExecuted: false,
+    steps: [
+      {
+        id: 'executed-step',
+        title: 'Executed step',
+        state: 'SUCCEEDED',
+        exitCode: 0,
+        durationMs: 1,
+        command: ['tool'],
+        skipReason: null,
+      },
+    ],
+  } as RunResult;
+}
+
+function forgedMissingErrorResult(id: string): RunResult {
+  const { error: _error, ...withoutError } = {
+    ...result(id),
+    status: 'config_error' as const,
+    exitCode: 3 as const,
+  };
+  return withoutError as RunResult;
+}
+
+function forgedWrongErrorResult(id: string): RunResult {
+  return {
+    ...result(id),
+    status: 'config_error',
+    exitCode: 3,
+    error: { code: 'RUNE-201', message: 'wrong status', location: null },
+  } as unknown as RunResult;
+}
+
+function forgedPartialPlanFailureResult(id: string): RunResult {
+  return {
+    ...planFailureResult(id),
+    stepsTotal: 1,
+    stepsNotRun: 1,
+    steps: [
+      {
+        id: 'partial-plan',
+        title: 'Partial plan',
+        state: 'PENDING',
+        exitCode: null,
+        durationMs: 0,
+        command: ['tool'],
+        skipReason: null,
+      },
+    ],
+  } as RunResult;
+}
+
 function expectGenericResultError(caught: unknown): void {
   expect(caught).toBeInstanceOf(InternalError);
   const error = caught as InternalError;
@@ -190,6 +263,40 @@ describe('writeResult', () => {
 
       expectGenericResultError(caught);
     }
+  });
+
+  it('rejects forged dry-run execution, error, and plan-failure forms', () => {
+    for (const invalid of [
+      forgedExecutedDryRunResult('executed-dry-run'),
+      forgedMissingErrorResult('missing-error'),
+      forgedWrongErrorResult('wrong-error'),
+      forgedPartialPlanFailureResult('partial-plan'),
+      { ...planFailureResult('nonzero-counter'), stepsExecuted: 1 } as RunResult,
+    ]) {
+      let caught: unknown;
+      try {
+        serializeResult(invalid);
+      } catch (error) {
+        caught = error;
+      }
+
+      expectGenericResultError(caught);
+    }
+  });
+
+  it('serializes a valid zero-step plan-time failure', () => {
+    const serialized = JSON.parse(serializeResult(planFailureResult('plan-failure'))) as RunResult;
+
+    expect(serialized).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      dryRun: true,
+      error: { code: 'RUNE-404', location: null },
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      nothingExecuted: true,
+      steps: [],
+    });
   });
 
   it("serializes the parsed copy without invoking the caller's serialization hooks", () => {
@@ -287,16 +394,25 @@ describe('writeResult', () => {
     try {
       writeFileSync(destination, 'preserve this result', 'utf8');
 
-      let caught: unknown;
-      try {
-        await writeResult(forgedPlaintextSecretResult('invalid-existing-target'), destination);
-      } catch (error) {
-        caught = error;
-      }
+      for (const invalid of [
+        forgedPlaintextSecretResult('invalid-existing-target'),
+        forgedExecutedDryRunResult('executed-dry-run-existing-target'),
+        forgedMissingErrorResult('missing-error-existing-target'),
+        forgedWrongErrorResult('wrong-error-existing-target'),
+        forgedPartialPlanFailureResult('partial-plan-existing-target'),
+        { ...planFailureResult('counter-existing-target'), stepsExecuted: 1 } as RunResult,
+      ]) {
+        let caught: unknown;
+        try {
+          await writeResult(invalid, destination);
+        } catch (error) {
+          caught = error;
+        }
 
-      expectGenericResultError(caught);
-      expect(readFileSync(destination, 'utf8')).toBe('preserve this result');
-      expect(temporaryFiles(directory)).toEqual([]);
+        expectGenericResultError(caught);
+        expect(readFileSync(destination, 'utf8')).toBe('preserve this result');
+        expect(temporaryFiles(directory)).toEqual([]);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

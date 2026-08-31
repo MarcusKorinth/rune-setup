@@ -132,6 +132,28 @@ const resultProductSchema = z.strictObject({
   version: z.string(),
 });
 
+const resultLocationSchema = z.strictObject({
+  file: z.string(),
+  line: z.number().int().min(1),
+  column: z.number().int().min(1),
+});
+
+const resultErrorSchema = <Code extends string>(code: z.ZodType<Code>) =>
+  z.strictObject({
+    code,
+    message: z.string(),
+    location: resultLocationSchema.nullable(),
+  });
+
+const planResultErrorSchema = resultErrorSchema(z.enum(['RUNE-401', 'RUNE-404', 'RUNE-405']));
+const manifestResultErrorSchema = resultErrorSchema(
+  z.enum(['RUNE-101', 'RUNE-102', 'RUNE-103', 'RUNE-104']),
+);
+const inputResultErrorSchema = resultErrorSchema(z.enum(['RUNE-201', 'RUNE-202', 'RUNE-203']));
+const resolutionResultErrorSchema = resultErrorSchema(
+  z.enum(['RUNE-301', 'RUNE-302', 'RUNE-311', 'RUNE-312']),
+);
+
 /**
  * Shape source for `resultSchemaVersion: 1`. It is deliberately separate from the readonly
  * facade types in model.ts: readonly has no JSON representation. The compile-time checks below
@@ -162,54 +184,69 @@ const resultShape = {
   steps: z.array(resultStepSchema),
 };
 
-const resultV1ShapeSchema = z.discriminatedUnion('status', [
+const resultV1ShapeSchema = z.union([
   z.strictObject({
     ...resultShape,
     status: z.literal('succeeded'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.succeeded),
     dryRun: z.literal(false),
+    error: z.null(),
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('planned'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.planned),
     dryRun: z.literal(true),
+    error: z.null(),
+  }),
+  z.strictObject({
+    ...resultShape,
+    status: z.literal('failed'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
+    dryRun: z.literal(false),
+    error: z.null(),
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('failed'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
     dryRun: z.boolean(),
+    error: planResultErrorSchema,
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('cancelled'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.cancelled),
     dryRun: z.boolean(),
+    error: resultErrorSchema(z.literal('RUNE-601')),
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('config_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.config_error),
     dryRun: z.boolean(),
+    error: manifestResultErrorSchema,
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('input_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.input_error),
     dryRun: z.boolean(),
+    error: inputResultErrorSchema,
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('resolution_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.resolution_error),
     dryRun: z.boolean(),
+    error: resolutionResultErrorSchema,
   }),
   z.strictObject({
     ...resultShape,
     status: z.literal('internal_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.internal_error),
     dryRun: z.boolean(),
+    error: resultErrorSchema(z.literal('RUNE-500')),
   }),
 ]);
 
@@ -299,6 +336,9 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
     if (result.status === 'succeeded') {
       return step.state !== 'SUCCEEDED' && step.state !== 'SKIPPED';
     }
+    if (result.dryRun) {
+      return step.state !== 'PENDING' && step.state !== 'SKIPPED';
+    }
     return step.state === 'PENDING';
   });
   if (invalidStateIndex !== -1) {
@@ -310,16 +350,28 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
           ? 'planned results may contain only PENDING or SKIPPED steps'
           : result.status === 'succeeded'
             ? 'succeeded results may contain only SUCCEEDED or SKIPPED steps'
-            : 'PENDING steps are permitted only in planned results',
+            : result.dryRun
+              ? 'dry-run results may contain only PENDING or SKIPPED steps'
+              : 'PENDING steps are permitted only in dry-run results',
     });
   }
 
-  if (result.status === 'failed' && expectedCounters.stepsFailed === 0) {
-    context.addIssue({
-      code: 'custom',
-      path: ['status'],
-      message: 'failed results must contain at least one FAILED step',
-    });
+  if (result.status === 'failed') {
+    if (result.error === null) {
+      if (result.dryRun || expectedCounters.stepsFailed === 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['status'],
+          message: 'runtime failed results require a FAILED step and dryRun false',
+        });
+      }
+    } else if (result.steps.length !== 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['steps'],
+        message: 'plan-time failed results must not contain steps',
+      });
+    }
   }
 });
 

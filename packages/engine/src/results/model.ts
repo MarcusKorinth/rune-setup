@@ -7,6 +7,13 @@
 
 import type { ValueSource } from '../engine/inputs.js';
 import type { Platform } from '../engine/context.js';
+import type {
+  ConditionCode,
+  InputCode,
+  Location,
+  ManifestCode,
+  ResolutionCode,
+} from '../errors.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 
@@ -43,19 +50,79 @@ export const EXIT_CODE_BY_STATUS = {
   internal_error: 70,
 } as const satisfies Readonly<Record<RunStatus, number>>;
 
-type NonzeroRunStatus = Exclude<RunStatus, 'succeeded' | 'planned'>;
+type PlanResultErrorCode = 'RUNE-401' | 'RUNE-404' | 'RUNE-405';
+export type ResultErrorCode =
+  | ManifestCode
+  | InputCode
+  | ResolutionCode
+  | ConditionCode
+  | PlanResultErrorCode
+  | 'RUNE-500'
+  | 'RUNE-601';
+
+/** The single top-level error represented by a result outcome (§10). */
+export interface ResultError<Code extends ResultErrorCode = ResultErrorCode> {
+  readonly code: Code;
+  readonly message: string;
+  readonly location: Location | null;
+}
 
 /** The status/exit/dry-run combinations permitted by the version-1 result contract (§10). */
 export type RunOutcome =
-  | { readonly status: 'succeeded'; readonly exitCode: 0; readonly dryRun: false }
-  | { readonly status: 'planned'; readonly exitCode: 0; readonly dryRun: true }
   | {
-      [Status in NonzeroRunStatus]: {
-        readonly status: Status;
-        readonly exitCode: (typeof EXIT_CODE_BY_STATUS)[Status];
-        readonly dryRun: boolean;
-      };
-    }[NonzeroRunStatus];
+      readonly status: 'succeeded';
+      readonly exitCode: 0;
+      readonly dryRun: false;
+      readonly error: null;
+    }
+  | {
+      readonly status: 'planned';
+      readonly exitCode: 0;
+      readonly dryRun: true;
+      readonly error: null;
+    }
+  | {
+      readonly status: 'failed';
+      readonly exitCode: 1;
+      readonly dryRun: false;
+      readonly error: null;
+    }
+  | {
+      readonly status: 'failed';
+      readonly exitCode: 1;
+      readonly dryRun: boolean;
+      readonly error: ResultError<PlanResultErrorCode>;
+    }
+  | {
+      readonly status: 'config_error';
+      readonly exitCode: 3;
+      readonly dryRun: boolean;
+      readonly error: ResultError<ManifestCode>;
+    }
+  | {
+      readonly status: 'input_error';
+      readonly exitCode: 4;
+      readonly dryRun: boolean;
+      readonly error: ResultError<InputCode>;
+    }
+  | {
+      readonly status: 'resolution_error';
+      readonly exitCode: 5;
+      readonly dryRun: boolean;
+      readonly error: ResultError<ResolutionCode | ConditionCode>;
+    }
+  | {
+      readonly status: 'cancelled';
+      readonly exitCode: 6;
+      readonly dryRun: boolean;
+      readonly error: ResultError<'RUNE-601'>;
+    }
+  | {
+      readonly status: 'internal_error';
+      readonly exitCode: 70;
+      readonly dryRun: boolean;
+      readonly error: ResultError<'RUNE-500'>;
+    };
 
 type ResultInputProvenance =
   | {

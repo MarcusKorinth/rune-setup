@@ -268,12 +268,26 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const finishedAt = new Date();
   const durationMs = Math.max(0, performance.now() - runStartedAt);
   const outcome: RunOutcome = fatalTerminationFailure
-    ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false }
+    ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false, error: null }
     : wasCancelled
-      ? { status: 'cancelled', exitCode: EXIT_CODE_BY_STATUS.cancelled, dryRun: false }
+      ? {
+          status: 'cancelled',
+          exitCode: EXIT_CODE_BY_STATUS.cancelled,
+          dryRun: false,
+          error: {
+            code: 'RUNE-601',
+            message: 'the run was cancelled',
+            location: null,
+          },
+        }
       : failed
-        ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false }
-        : { status: 'succeeded', exitCode: EXIT_CODE_BY_STATUS.succeeded, dryRun: false };
+        ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false, error: null }
+        : {
+            status: 'succeeded',
+            exitCode: EXIT_CODE_BY_STATUS.succeeded,
+            dryRun: false,
+            error: null,
+          };
   const result = assembleResult({
     runId,
     plan,
@@ -355,7 +369,12 @@ export function describePlan(options: {
     mode: options.mode,
     executionContext,
     steps,
-    outcome: { status: 'planned', exitCode: EXIT_CODE_BY_STATUS.planned, dryRun: true },
+    outcome: {
+      status: 'planned',
+      exitCode: EXIT_CODE_BY_STATUS.planned,
+      dryRun: true,
+      error: null,
+    },
     startedAt: now,
     finishedAt: now,
     durationMs: 0,

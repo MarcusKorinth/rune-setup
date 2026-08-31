@@ -64,6 +64,8 @@ export type { StepState } from './engine/state.js';
 export { RESULT_SCHEMA_VERSION } from './results/model.js';
 export type {
   ResultInput,
+  ResultError,
+  ResultErrorCode,
   ResultManifest,
   ResultOutputLine,
   ResultStep,

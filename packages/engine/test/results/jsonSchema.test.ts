@@ -198,6 +198,8 @@ const _checkResultStepCorrelation = (): void => {
 interface SchemaNode {
   readonly type?: string;
   readonly const?: unknown;
+  readonly enum?: readonly unknown[];
+  readonly minimum?: number;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
   readonly items?: SchemaNode;
   readonly anyOf?: readonly SchemaNode[];
@@ -214,6 +216,7 @@ function result(overrides: Partial<RunResult> = {}): RunResult {
     exitCode: 0,
     mode: 'non-interactive',
     dryRun: false,
+    error: null,
     crossPlatformPreview: false,
     platform: 'linux',
     locale: 'en',
@@ -264,12 +267,22 @@ function resultWithSingleStepState(state: ResultStep['state']): RunResult {
   const executed = state === 'SUCCEEDED' || state === 'FAILED' || state === 'CANCELLED';
   const outcome =
     state === 'PENDING'
-      ? { status: 'planned' as const, exitCode: 0 as const, dryRun: true as const }
+      ? { status: 'planned' as const, exitCode: 0 as const, dryRun: true as const, error: null }
       : state === 'FAILED'
-        ? { status: 'failed' as const, exitCode: 1 as const, dryRun: false as const }
+        ? { status: 'failed' as const, exitCode: 1 as const, dryRun: false as const, error: null }
         : state === 'CANCELLED' || state === 'NOT_RUN'
-          ? { status: 'cancelled' as const, exitCode: 6 as const, dryRun: false as const }
-          : { status: 'succeeded' as const, exitCode: 0 as const, dryRun: false as const };
+          ? {
+              status: 'cancelled' as const,
+              exitCode: 6 as const,
+              dryRun: false as const,
+              error: { code: 'RUNE-601' as const, message: 'cancelled', location: null },
+            }
+          : {
+              status: 'succeeded' as const,
+              exitCode: 0 as const,
+              dryRun: false as const,
+              error: null,
+            };
   return result({
     ...outcome,
     stepsExecuted: executed ? 1 : 0,
@@ -307,49 +320,156 @@ function resultForStatus(status: RunResult['status']): RunResult {
   if (status === 'failed') {
     return resultWithSingleStepState('FAILED');
   }
+  if (status === 'succeeded') {
+    return result();
+  }
+  const error =
+    status === 'config_error'
+      ? { code: 'RUNE-103' as const, message: 'invalid manifest', location: null }
+      : status === 'input_error'
+        ? { code: 'RUNE-202' as const, message: 'invalid input', location: null }
+        : status === 'resolution_error'
+          ? { code: 'RUNE-301' as const, message: 'undefined variable', location: null }
+          : status === 'cancelled'
+            ? { code: 'RUNE-601' as const, message: 'cancelled', location: null }
+            : { code: 'RUNE-500' as const, message: 'internal error', location: null };
   return result({
     status,
     exitCode: EXIT_CODE_BY_STATUS[status],
     dryRun: false,
+    error,
+  } as Partial<RunResult>);
+}
+
+function zeroStepResult(overrides: Partial<RunResult> = {}): RunResult {
+  return result({
+    stepsTotal: 0,
+    stepsExecuted: 0,
+    stepsSucceeded: 0,
+    stepsFailed: 0,
+    stepsCancelled: 0,
+    stepsSkipped: 0,
+    stepsNotRun: 0,
+    nothingExecuted: true,
+    steps: [],
+    ...overrides,
+  });
+}
+
+function planFailure(dryRun: boolean, code: 'RUNE-401' | 'RUNE-404' | 'RUNE-405'): RunResult {
+  return zeroStepResult({
+    status: 'failed',
+    exitCode: 1,
+    dryRun,
+    error: { code, message: 'planning failed', location: null },
   } as Partial<RunResult>);
 }
 
 describe('resultJsonSchema', () => {
   it('is the strict version-1 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
-    const branches = schema['oneOf'] as readonly SchemaNode[];
+    const branches = schema['anyOf'] as readonly SchemaNode[];
 
     expect(schema['$schema']).toMatch(/json-schema\.org/);
-    expect(branches).toHaveLength(RUN_STATUSES.length);
+    expect(branches).toHaveLength(RUN_STATUSES.length + 1);
     for (const branch of branches) {
       expect(branch.type).toBe('object');
       expect(branch.additionalProperties).toBe(false);
       expect(branch.properties?.['resultSchemaVersion']).toMatchObject({ const: 1 });
       expect(branch.required).toEqual(
-        expect.arrayContaining(['status', 'exitCode', 'dryRun', 'mode', 'locale']),
+        expect.arrayContaining(['status', 'exitCode', 'dryRun', 'error', 'mode', 'locale']),
       );
     }
 
+    const branchesFor = (status: RunResult['status']): readonly SchemaNode[] =>
+      branches.filter((branch) => branch.properties?.['status']?.const === status);
     expect(
-      Object.fromEntries(
-        branches.map((branch) => [
-          branch.properties?.['status']?.const,
-          {
-            exitCode: branch.properties?.['exitCode']?.const,
-            dryRun: branch.properties?.['dryRun']?.const,
-          },
-        ]),
-      ),
+      Object.fromEntries(RUN_STATUSES.map((status) => [status, branchesFor(status).length])),
     ).toEqual({
-      succeeded: { exitCode: 0, dryRun: false },
-      planned: { exitCode: 0, dryRun: true },
-      failed: { exitCode: 1, dryRun: undefined },
-      config_error: { exitCode: 3, dryRun: undefined },
-      input_error: { exitCode: 4, dryRun: undefined },
-      resolution_error: { exitCode: 5, dryRun: undefined },
-      cancelled: { exitCode: 6, dryRun: undefined },
-      internal_error: { exitCode: 70, dryRun: undefined },
+      succeeded: 1,
+      planned: 1,
+      failed: 2,
+      config_error: 1,
+      input_error: 1,
+      resolution_error: 1,
+      cancelled: 1,
+      internal_error: 1,
     });
+
+    const branchFor = (status: Exclude<RunResult['status'], 'failed'>): SchemaNode =>
+      branchesFor(status)[0]!;
+    expect(branchFor('succeeded').properties).toMatchObject({
+      exitCode: { const: 0 },
+      dryRun: { const: false },
+      error: { type: 'null' },
+    });
+    expect(branchFor('planned').properties).toMatchObject({
+      exitCode: { const: 0 },
+      dryRun: { const: true },
+      error: { type: 'null' },
+    });
+    const runtimeFailed = branchesFor('failed').find(
+      (branch) => branch.properties?.['error']?.type === 'null',
+    )!;
+    const planFailed = branchesFor('failed').find(
+      (branch) => branch.properties?.['error']?.type === 'object',
+    )!;
+    expect(runtimeFailed.properties).toMatchObject({
+      exitCode: { const: 1 },
+      dryRun: { const: false },
+      error: { type: 'null' },
+    });
+    expect(planFailed.properties?.['error']?.properties?.['code']?.enum).toEqual([
+      'RUNE-401',
+      'RUNE-404',
+      'RUNE-405',
+    ]);
+    expect(branchFor('config_error').properties?.['error']?.properties?.['code']?.enum).toEqual([
+      'RUNE-101',
+      'RUNE-102',
+      'RUNE-103',
+      'RUNE-104',
+    ]);
+    expect(branchFor('input_error').properties?.['error']?.properties?.['code']?.enum).toEqual([
+      'RUNE-201',
+      'RUNE-202',
+      'RUNE-203',
+    ]);
+    expect(branchFor('resolution_error').properties?.['error']?.properties?.['code']?.enum).toEqual(
+      ['RUNE-301', 'RUNE-302', 'RUNE-311', 'RUNE-312'],
+    );
+    expect(branchFor('cancelled').properties?.['error']?.properties?.['code']?.const).toBe(
+      'RUNE-601',
+    );
+    expect(branchFor('internal_error').properties?.['error']?.properties?.['code']?.const).toBe(
+      'RUNE-500',
+    );
+    for (const errorBranch of [
+      planFailed,
+      branchFor('config_error'),
+      branchFor('input_error'),
+      branchFor('resolution_error'),
+      branchFor('cancelled'),
+      branchFor('internal_error'),
+    ]) {
+      const errorSchema = errorBranch.properties?.['error'];
+      expect(errorSchema).toMatchObject({
+        type: 'object',
+        additionalProperties: false,
+        required: expect.arrayContaining(['code', 'message', 'location']),
+      });
+      const locationObject = errorSchema?.properties?.['location']?.anyOf?.find(
+        (candidate) => candidate.type === 'object',
+      );
+      expect(locationObject).toMatchObject({
+        additionalProperties: false,
+        required: expect.arrayContaining(['file', 'line', 'column']),
+        properties: {
+          line: { type: 'integer', minimum: 1 },
+          column: { type: 'integer', minimum: 1 },
+        },
+      });
+    }
 
     expect(JSON.stringify(schema)).not.toContain('RUNNING');
 
@@ -444,6 +564,7 @@ describe('resultJsonSchema', () => {
       result({
         status: 'cancelled',
         exitCode: 6,
+        error: { code: 'RUNE-601', message: 'cancelled', location: null },
         stepsSucceeded: 0,
         stepsCancelled: 1,
         steps: [
@@ -665,15 +786,15 @@ describe('resultJsonSchema', () => {
     for (const status of RUN_STATUSES.filter(
       (candidate) => candidate !== 'succeeded' && candidate !== 'planned',
     )) {
-      for (const dryRun of [false, true]) {
-        expect(
-          resultV1Schema.safeParse({
-            ...resultForStatus(status),
-            dryRun,
-          }).success,
-        ).toBe(true);
-      }
+      expect(resultV1Schema.safeParse(resultForStatus(status)).success).toBe(true);
     }
+
+    expect(
+      resultV1Schema.safeParse({
+        ...resultForStatus('failed'),
+        dryRun: true,
+      }).success,
+    ).toBe(false);
 
     expect(
       resultV1Schema.safeParse({
@@ -710,7 +831,13 @@ describe('resultJsonSchema', () => {
           status: 'config_error',
           exitCode: EXIT_CODE_BY_STATUS.config_error,
           dryRun: true,
+          error: { code: 'RUNE-103', message: 'invalid manifest', location: null },
           crossPlatformPreview: false,
+          stepsTotal: 0,
+          stepsExecuted: 0,
+          stepsSucceeded: 0,
+          nothingExecuted: true,
+          steps: [],
         }),
       ).success,
     ).toBe(true);
@@ -835,6 +962,7 @@ describe('resultJsonSchema', () => {
         result({
           status: 'cancelled',
           exitCode: 6,
+          error: { code: 'RUNE-601', message: 'cancelled', location: null },
           stepsTotal: 2,
           stepsExecuted: 2,
           stepsSucceeded: 0,
@@ -895,6 +1023,127 @@ describe('resultJsonSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts exactly the zero-step plan-time failed form for real and dry runs', () => {
+    for (const dryRun of [false, true]) {
+      for (const code of ['RUNE-401', 'RUNE-404', 'RUNE-405'] as const) {
+        expect(resultV1Schema.safeParse(planFailure(dryRun, code)).success).toBe(true);
+      }
+    }
+
+    const partialPlan = resultWithSingleStepState('PENDING');
+    expect(
+      resultV1Schema.safeParse({
+        ...partialPlan,
+        status: 'failed',
+        exitCode: 1,
+        error: { code: 'RUNE-401', message: 'planning failed', location: null },
+      }).success,
+    ).toBe(false);
+    expect(
+      resultV1Schema.safeParse({ ...planFailure(true, 'RUNE-404'), stepsExecuted: 1 }).success,
+    ).toBe(false);
+    expect(
+      resultV1Schema.safeParse({ ...planFailure(false, 'RUNE-405'), nothingExecuted: false })
+        .success,
+    ).toBe(false);
+  });
+
+  it('rejects executed terminal states in every dry-run result', () => {
+    for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
+      const base = resultWithSingleStepState(state);
+      expect(
+        resultV1Schema.safeParse({
+          ...base,
+          status: 'internal_error',
+          exitCode: 70,
+          dryRun: true,
+          error: { code: 'RUNE-500', message: 'internal error', location: null },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('accepts error and cancellation dry runs with pending, skipped, or no steps', () => {
+    const pending = resultWithSingleStepState('PENDING');
+    const skipped = resultWithSingleStepState('SKIPPED');
+    const variants = [
+      {
+        ...pending,
+        status: 'input_error',
+        exitCode: 4,
+        error: { code: 'RUNE-202', message: 'invalid input', location: null },
+      },
+      {
+        ...skipped,
+        status: 'cancelled',
+        exitCode: 6,
+        dryRun: true,
+        error: { code: 'RUNE-601', message: 'cancelled', location: null },
+      },
+      {
+        ...zeroStepResult(),
+        status: 'config_error',
+        exitCode: 3,
+        dryRun: true,
+        error: { code: 'RUNE-101', message: 'invalid YAML', location: null },
+      },
+    ];
+
+    for (const variant of variants) {
+      expect(resultV1Schema.safeParse(variant).success).toBe(true);
+    }
+  });
+
+  it('requires a strict status-specific top-level error with a 1-based location', () => {
+    const valid = resultForStatus('config_error');
+    const { error: _error, ...withoutError } = valid;
+    expect(resultV1Schema.safeParse(withoutError).success).toBe(false);
+
+    for (const invalidError of [
+      null,
+      { code: 'RUNE-001', message: 'usage', location: null },
+      { code: 'RUNE-002', message: 'platform', location: null },
+      { code: 'RUNE-201', message: 'wrong status', location: null },
+      {
+        code: 'RUNE-103',
+        message: 'located',
+        location: { file: 'installer.yaml', line: 0, column: 1 },
+      },
+      {
+        code: 'RUNE-103',
+        message: 'located',
+        location: { file: 'installer.yaml', line: 1, column: 0 },
+      },
+      {
+        code: 'RUNE-103',
+        message: 'located',
+        location: { file: 'installer.yaml', line: 1, column: 1, unknown: true },
+      },
+      { code: 'RUNE-103', message: 'extra', location: null, issues: [] },
+    ]) {
+      expect(resultV1Schema.safeParse({ ...valid, error: invalidError }).success).toBe(false);
+    }
+
+    expect(
+      resultV1Schema.safeParse({
+        ...valid,
+        error: {
+          code: 'RUNE-104',
+          message: 'located',
+          location: { file: 'installer.yaml', line: 1, column: 1 },
+        },
+      }).success,
+    ).toBe(true);
+    for (const code of ['RUNE-402', 'RUNE-403', 'RUNE-500', 'RUNE-601'] as const) {
+      expect(
+        resultV1Schema.safeParse({
+          ...planFailure(true, 'RUNE-401'),
+          error: { code, message: 'wrong plan error', location: null },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('allows a cancelled result to retain an earlier failure and a not-run step', () => {
     const failed = resultWithSingleStepState('FAILED').steps[0]!;
     const notRun = { ...resultWithSingleStepState('NOT_RUN').steps[0]!, id: 'not-run-step' };
@@ -904,6 +1153,7 @@ describe('resultJsonSchema', () => {
         result({
           status: 'cancelled',
           exitCode: 6,
+          error: { code: 'RUNE-601', message: 'cancelled', location: null },
           stepsTotal: 2,
           stepsExecuted: 1,
           stepsSucceeded: 0,
@@ -940,11 +1190,13 @@ describe('resultJsonSchema', () => {
       'resolution_error',
       'internal_error',
     ] as const) {
+      const statusResult = resultForStatus(status);
       expect(
         resultV1Schema.safeParse({
           ...base,
           status,
           exitCode: EXIT_CODE_BY_STATUS[status],
+          error: statusResult.error,
         }).success,
       ).toBe(true);
     }
