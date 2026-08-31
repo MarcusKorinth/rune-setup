@@ -71,7 +71,7 @@ locales/<lang>.yaml ──▶ i18n/loader ──▶ Strings (locale chain resolv
 Engine, CLI, and GUI shell live in one repository and one language: `@rune/engine` (the library, `packages/engine`), `rune` (the CLI, `packages/cli`), and the Electron GUI shell (`packages/gui-shell`). Dependency directions (enforced by an import-boundary test, §14):
 
 - `@rune/engine` — `manifest`, `inputs`, `i18n`, `engine`, `runners`, `results`, `logs`, `errors` — never imports `cli` or `gui-shell`. It is a plain library: no CLI parsing, no Electron, no process-global side effects.
-- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `Strings`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `envReferences()` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
+- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `Strings`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `validateManifest().environment` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
 - `gui-shell/src/main` (Electron main process) imports `@rune/engine` the same way the CLI does and hosts it in-process; `gui-shell/src/preload` exposes the IPC bridge (§9.2) — a 1:1 projection of that same facade and event stream — through `contextBridge`; `gui-shell/src/renderer` never imports the engine (only the bridge's type declarations) and never reads the manifest, `locales/`, or values files itself. There is no GUI-only engine surface and no engine sidecar process: the engine package never depends on the shell, and core, CLI, and CI never see Electron.
 - Everything downstream of the `ExecutionPlan` is frontend-agnostic; dry-run is "build the plan, render it, stop" — by construction, what dry-run shows is what run would execute.
 
@@ -508,7 +508,7 @@ packages/
 │   ├── package.json
 │   └── src/
 │       ├── index.ts               # curated public API: Session, events, errors, value types, version,
-│       │                          #   manifestJsonSchema/resultJsonSchema, envReferences, writeResult
+│       │                          #   manifestJsonSchema/resultJsonSchema, validateManifest().environment, writeResult
 │       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
 │       ├── diagnostics.ts         # safe diagnostic escaping and JSON-style quoting
 │       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
