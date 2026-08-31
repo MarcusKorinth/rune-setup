@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, sep } from 'node:path';
+import { inspect } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
@@ -794,6 +795,87 @@ describe('the Windows honesty rule', () => {
     expect(error.message).toContain(MASK);
     expect(error.message).toContain('command: cmd');
     expect(error.message).toContain('args: ["/c"');
+  });
+});
+
+describe('derived secret masking in Windows planning diagnostics', () => {
+  const relativeSecret = '.\\private/derived-secret';
+  const derivedSecret = resolvePath('/project', 'private', 'derived-secret');
+
+  function errorForPublicCollision(field: 'command' | 'cwd', publicValue: string): ExecutionError {
+    return executionError(() =>
+      planFor(
+        [
+          'inputs:',
+          '  secretPath:',
+          '    type: secret',
+          '  publicValue:',
+          '    type: text',
+          'steps:',
+          '  - id: register-derived',
+          '    run:',
+          '      command: node',
+          '      cwd: "${secretPath}"',
+          '  - id: reject-public',
+          '    run:',
+          ...(field === 'command'
+            ? ['      command: "${publicValue}"']
+            : ['      command: node', '      cwd: "${publicValue}"']),
+        ],
+        {
+          platform: 'windows',
+          overrides: new Map([
+            ['secretPath', relativeSecret],
+            ['publicValue', publicValue],
+          ]),
+        },
+      ),
+    );
+  }
+
+  function expectDerivedSecretMasked(error: ExecutionError, code: ExecutionError['code']): void {
+    const surfaces = [
+      error.message,
+      error.stack ?? '',
+      String(error),
+      JSON.stringify(error) ?? '',
+      inspect(error),
+    ].join('\n');
+
+    expect(error.code).toBe(code);
+    expect(surfaces).not.toContain(relativeSecret);
+    expect(surfaces).not.toContain(derivedSecret);
+    expect(surfaces).toContain(MASK);
+  }
+
+  it.runIf(process.platform === 'win32')(
+    'masks a derived secret in an invalid rooted command diagnostic',
+    () => {
+      const error = errorForPublicCollision('command', `\\${derivedSecret}`);
+
+      expectDerivedSecretMasked(error, 'RUNE-401');
+    },
+  );
+
+  it('masks a derived secret in a drive-relative command diagnostic', () => {
+    const error = errorForPublicCollision('command', `Z:x${derivedSecret}`);
+
+    expectDerivedSecretMasked(error, 'RUNE-401');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'masks a derived secret in an invalid rooted cwd diagnostic',
+    () => {
+      const error = errorForPublicCollision('cwd', `\\${derivedSecret}`);
+
+      expectDerivedSecretMasked(error, 'RUNE-404');
+    },
+  );
+
+  it('masks a derived secret in a batch command diagnostic', () => {
+    const error = errorForPublicCollision('command', `${derivedSecret}\\setup.cmd`);
+
+    expectDerivedSecretMasked(error, 'RUNE-405');
   });
 });
 

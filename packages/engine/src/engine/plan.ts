@@ -438,7 +438,7 @@ function resolveCommand(
   ) {
     const commandShown = isSecretString(renderedCommand) ? MASK : renderedCommand;
     const message = `step "${stepId}" uses Windows rooted command "${commandShown}" that is not a normal fully qualified drive or UNC path — use a fully qualified path or a manifest-relative path`;
-    throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
+    throw new ExecutionError('RUNE-401', secrets.mask(message));
   }
   const driveRelative =
     context.platform === 'windows' &&
@@ -448,7 +448,7 @@ function resolveCommand(
   if (driveRelative) {
     const commandShown = isSecretString(renderedCommand) ? MASK : renderedCommand;
     const message = `step "${stepId}" uses Windows drive-relative command "${commandShown}", which depends on the caller's per-drive current directory — use an absolute path or a manifest-relative path`;
-    throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
+    throw new ExecutionError('RUNE-401', secrets.mask(message));
   }
 
   const command = anchorCommandValue(renderedCommand, manifestDir, context.platform, secrets);
@@ -462,7 +462,7 @@ function resolveCommand(
     : /\.(bat|cmd)$/i.test(command);
   if (context.platform === 'windows' && isBatchFile) {
     const message = `step "${stepId}" runs "${commandShown}", which needs a shell — write it explicitly: command: cmd, args: ["/c", "${commandShown}", ...]`;
-    throw new ExecutionError('RUNE-405', resolution.secrets.mask(message));
+    throw new ExecutionError('RUNE-405', secrets.mask(message));
   }
 
   let cwd: string | SecretString = context.manifestDir;
@@ -475,7 +475,7 @@ function resolveCommand(
     ) {
       const cwdShown = isSecretString(renderedCwd) ? MASK : renderedCwd;
       const message = `step "${stepId}" uses Windows rooted cwd "${cwdShown}" that is not a normal fully qualified drive or UNC path — use a fully qualified path or a manifest-relative path`;
-      throw new ExecutionError('RUNE-404', resolution.secrets.mask(message));
+      throw new ExecutionError('RUNE-404', secrets.mask(message));
     }
     cwd = anchorPathValue(renderedCwd, manifestDir, context.platform, secrets);
   }
