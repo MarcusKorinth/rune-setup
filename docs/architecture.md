@@ -546,7 +546,7 @@ packages/
 │       │   ├── base.ts            # Runner interface
 │       │   └── spawnRunner.ts     # child_process.spawn (shell:false), stream line-splitting, process-tree kill
 │       ├── results/
-│       │   ├── model.ts           # RunResult/StepResult (resultSchemaVersion 1): counters, outputTail, provenance
+│       │   ├── model.ts           # RunResult/ResultStep (resultSchemaVersion 1): counters, outputTail, provenance
 │       │   └── writer.ts          # atomic write, always-on-outcome
 │       └── logs/
 │           ├── setup.ts           # sink wiring from flags + execution.logFile
