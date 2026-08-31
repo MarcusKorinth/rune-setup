@@ -299,6 +299,23 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
     stepIds.add(step.id);
   }
 
+  let executionBlocked = false;
+  for (const [index, step] of result.steps.entries()) {
+    if (
+      executionBlocked &&
+      (step.state === 'SUCCEEDED' || step.state === 'FAILED' || step.state === 'CANCELLED')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['steps', index, 'state'],
+        message: 'executed steps must not follow a CANCELLED or NOT_RUN step',
+      });
+    }
+    if (step.state === 'CANCELLED' || step.state === 'NOT_RUN') {
+      executionBlocked = true;
+    }
+  }
+
   const count = (state: RunResult['steps'][number]['state']): number =>
     result.steps.filter((step) => step.state === state).length;
   const expectedCounters = {

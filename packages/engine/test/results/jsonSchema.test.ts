@@ -1234,6 +1234,78 @@ describe('resultJsonSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects executed steps after cancellation or not-run barriers during validation and serialization', () => {
+    const cancelled = resultWithSingleStepState('CANCELLED').steps[0]!;
+    const notRun = resultWithSingleStepState('NOT_RUN').steps[0]!;
+    const succeeded = resultWithSingleStepState('SUCCEEDED').steps[0]!;
+    const failed = resultWithSingleStepState('FAILED').steps[0]!;
+    const invalidResults = [
+      result({
+        status: 'cancelled',
+        exitCode: 6,
+        error: { code: 'RUNE-601', message: 'cancelled', location: null },
+        stepsTotal: 2,
+        stepsExecuted: 2,
+        stepsSucceeded: 1,
+        stepsCancelled: 1,
+        steps: [cancelled, { ...succeeded, id: 'succeeded-after-cancelled' }],
+      }),
+      result({
+        status: 'failed',
+        exitCode: 1,
+        stepsTotal: 2,
+        stepsExecuted: 1,
+        stepsSucceeded: 0,
+        stepsFailed: 1,
+        stepsNotRun: 1,
+        steps: [notRun, { ...failed, id: 'failed-after-not-run' }],
+      }),
+    ];
+
+    for (const invalid of invalidResults) {
+      expect(resultV1Schema.safeParse(invalid).success).toBe(false);
+      expect(() => serializeResult(invalid)).toThrow();
+    }
+  });
+
+  it('allows skipped and not-run steps after a barrier and continued execution after failure', () => {
+    const failed = resultWithSingleStepState('FAILED').steps[0]!;
+    const cancelled = resultWithSingleStepState('CANCELLED').steps[0]!;
+    const skipped = resultWithSingleStepState('SKIPPED').steps[0]!;
+    const notRun = resultWithSingleStepState('NOT_RUN').steps[0]!;
+    const succeeded = resultWithSingleStepState('SUCCEEDED').steps[0]!;
+
+    const barrierResult = result({
+      status: 'failed',
+      exitCode: 1,
+      stepsTotal: 4,
+      stepsExecuted: 2,
+      stepsSucceeded: 0,
+      stepsFailed: 1,
+      stepsCancelled: 1,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      steps: [
+        failed,
+        { ...cancelled, id: 'cancelled-step' },
+        { ...skipped, id: 'skipped-after-cancelled' },
+        { ...notRun, id: 'not-run-after-cancelled' },
+      ],
+    });
+    const continuedAfterFailure = result({
+      status: 'failed',
+      exitCode: 1,
+      stepsTotal: 2,
+      stepsExecuted: 2,
+      stepsSucceeded: 1,
+      stepsFailed: 1,
+      steps: [failed, { ...succeeded, id: 'succeeded-after-failed' }],
+    });
+
+    expect(resultV1Schema.safeParse(barrierResult).success).toBe(true);
+    expect(resultV1Schema.safeParse(continuedAfterFailure).success).toBe(true);
+  });
+
   it('accepts a failed result with failed and later cancelled steps', () => {
     const failed = resultWithSingleStepState('FAILED').steps[0]!;
     const cancelled = {
