@@ -368,6 +368,17 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
       message: 'cancelled results must not contain FAILED steps',
     });
   }
+  if (
+    result.status === 'cancelled' &&
+    result.stepsExecuted > 0 &&
+    !result.steps.some((step) => step.state === 'CANCELLED' || step.state === 'NOT_RUN')
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'executed cancelled results must contain a CANCELLED or NOT_RUN step',
+    });
+  }
 
   if (
     (result.status === 'config_error' ||

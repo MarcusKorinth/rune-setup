@@ -340,6 +340,19 @@ function resultForStatus(status: RunResult['status']): RunResult {
     dryRun: false,
     error,
   } as Partial<RunResult>;
+  if (status === 'cancelled') {
+    return result({
+      ...overrides,
+      stepsTotal: 2,
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsNotRun: 1,
+      steps: [
+        resultStepForState('SUCCEEDED'),
+        { ...resultStepForState('NOT_RUN'), id: 'not-run-step' },
+      ],
+    });
+  }
   return status === 'config_error' || status === 'input_error' || status === 'resolution_error'
     ? zeroStepResult(overrides)
     : result(overrides);
@@ -1232,6 +1245,62 @@ describe('resultJsonSchema', () => {
         }),
       ).success,
     ).toBe(false);
+  });
+
+  it('requires executed cancelled results to contain a cancellation marker', () => {
+    const cancelledError = { code: 'RUNE-601' as const, message: 'cancelled', location: null };
+    const succeeded = resultWithSingleStepState('SUCCEEDED').steps[0]!;
+    const cancelled = resultWithSingleStepState('CANCELLED').steps[0]!;
+    const notRun = resultWithSingleStepState('NOT_RUN').steps[0]!;
+    const invalid = result({
+      status: 'cancelled',
+      exitCode: 6,
+      error: cancelledError,
+    });
+    const valid = [
+      result({
+        status: 'cancelled',
+        exitCode: 6,
+        error: cancelledError,
+        stepsTotal: 0,
+        stepsExecuted: 0,
+        stepsSucceeded: 0,
+        nothingExecuted: true,
+        steps: [],
+      }),
+      {
+        ...resultWithSingleStepState('SKIPPED'),
+        status: 'cancelled' as const,
+        exitCode: 6 as const,
+        error: cancelledError,
+      },
+      result({
+        status: 'cancelled',
+        exitCode: 6,
+        error: cancelledError,
+        stepsTotal: 2,
+        stepsExecuted: 1,
+        stepsSucceeded: 1,
+        stepsNotRun: 1,
+        steps: [succeeded, { ...notRun, id: 'not-run-step' }],
+      }),
+      result({
+        status: 'cancelled',
+        exitCode: 6,
+        error: cancelledError,
+        stepsTotal: 2,
+        stepsExecuted: 2,
+        stepsSucceeded: 1,
+        stepsCancelled: 1,
+        steps: [succeeded, { ...cancelled, id: 'cancelled-step' }],
+      }),
+    ];
+
+    expect(resultV1Schema.safeParse(invalid).success).toBe(false);
+    expect(() => serializeResult(invalid)).toThrow();
+    for (const validResult of valid) {
+      expect(resultV1Schema.safeParse(validResult).success).toBe(true);
+    }
   });
 
   it('rejects executed steps after cancellation or not-run barriers during validation and serialization', () => {
