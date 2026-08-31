@@ -20,7 +20,7 @@ import {
   type PlanInput,
   type PlannedStep,
 } from './plan.js';
-import type { RunEvent, EngineObserver } from './events.js';
+import type { EngineObserver, RunEvent, StepFinished } from './events.js';
 import { deepFreeze } from './freeze.js';
 import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
@@ -262,13 +262,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     steps.push(commandResultStep(step, state, exitCode, durationMs, tail, secrets));
-    emit({
-      kind: 'stepFinished',
-      stepId: step.id,
-      state,
-      exitCode: exitCode ?? undefined,
-      durationMs,
-    });
+    emit(finishedStepEvent(step.id, state, exitCode, durationMs));
   }
 
   const finishedAt = new Date();
@@ -294,6 +288,38 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   emit({ kind: 'runFinished', result });
   return result;
+}
+
+/** Builds a terminal event without allowing executor state and exit code to drift apart. */
+function finishedStepEvent(
+  stepId: string,
+  state: StepState,
+  exitCode: number | null,
+  durationMs: number,
+): StepFinished {
+  const identity = { kind: 'stepFinished' as const, stepId, durationMs };
+
+  switch (state) {
+    case 'SUCCEEDED':
+      if (exitCode !== null) {
+        return { ...identity, state, exitCode };
+      }
+      break;
+    case 'FAILED':
+      return { ...identity, state, exitCode: exitCode ?? undefined };
+    case 'SKIPPED':
+    case 'CANCELLED':
+    case 'NOT_RUN':
+      if (exitCode === null) {
+        return { ...identity, state, exitCode: undefined };
+      }
+      break;
+    case 'PENDING':
+    case 'RUNNING':
+      break;
+  }
+
+  throw new InternalError('the executor produced an invalid terminal step event');
 }
 
 function startFailureDiagnostic(stepId: string, reason: StartFailureReason): string {

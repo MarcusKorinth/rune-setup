@@ -7,7 +7,6 @@
  * exactly once each.
  */
 
-import type { StepState } from './state.js';
 import type { ExecutionPlan } from './plan.js';
 import type { RunResult } from '../results/model.js';
 
@@ -33,13 +32,26 @@ export interface StepOutput {
   readonly line: string;
 }
 
-export interface StepFinished {
+interface StepFinishedBase {
   readonly kind: 'stepFinished';
   readonly stepId: string;
-  readonly state: StepState;
-  readonly exitCode: number | undefined;
   readonly durationMs: number;
 }
+
+/** A terminal step event; its exit code is correlated with its terminal state. */
+export type StepFinished =
+  | (StepFinishedBase & {
+      readonly state: 'SUCCEEDED';
+      readonly exitCode: number;
+    })
+  | (StepFinishedBase & {
+      readonly state: 'FAILED';
+      readonly exitCode: number | undefined;
+    })
+  | (StepFinishedBase & {
+      readonly state: 'SKIPPED' | 'CANCELLED' | 'NOT_RUN';
+      readonly exitCode: undefined;
+    });
 
 export interface RunFinished {
   readonly kind: 'runFinished';

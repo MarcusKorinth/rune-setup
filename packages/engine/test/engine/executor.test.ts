@@ -33,7 +33,7 @@ import {
   SecretRegistry,
   secretValuesEqual,
 } from '../../src/engine/secrets.js';
-import type { RunEvent } from '../../src/engine/events.js';
+import type { RunEvent, StepFinished } from '../../src/engine/events.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 import {
   MAX_OUTPUT_LINE_BYTES,
@@ -49,6 +49,45 @@ import { InputError } from '../../src/errors.js';
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
 const TEST_MODE: RunMode = 'non-interactive';
+
+const _checkStepFinishedCorrelation = (): void => {
+  const identity = { kind: 'stepFinished', stepId: 'step', durationMs: 0 } as const;
+  const valid: readonly StepFinished[] = [
+    { ...identity, state: 'SUCCEEDED', exitCode: 0 },
+    { ...identity, state: 'FAILED', exitCode: 1 },
+    { ...identity, state: 'FAILED', exitCode: undefined },
+    { ...identity, state: 'SKIPPED', exitCode: undefined },
+    { ...identity, state: 'CANCELLED', exitCode: undefined },
+    { ...identity, state: 'NOT_RUN', exitCode: undefined },
+  ];
+  // @ts-expect-error PENDING is never a terminal step event state
+  const pending: StepFinished = { ...identity, state: 'PENDING', exitCode: undefined };
+  // @ts-expect-error RUNNING is never a terminal step event state
+  const running: StepFinished = { ...identity, state: 'RUNNING', exitCode: undefined };
+  // @ts-expect-error SUCCEEDED step events require an exit code
+  const succeededWithoutExitCode: StepFinished = {
+    ...identity,
+    state: 'SUCCEEDED',
+    exitCode: undefined,
+  };
+  // @ts-expect-error SKIPPED step events never carry an exit code
+  const skippedWithExitCode: StepFinished = { ...identity, state: 'SKIPPED', exitCode: 1 };
+  // @ts-expect-error CANCELLED step events never carry an exit code
+  const cancelledWithExitCode: StepFinished = {
+    ...identity,
+    state: 'CANCELLED',
+    exitCode: 1,
+  };
+  // @ts-expect-error NOT_RUN step events never carry an exit code
+  const notRunWithExitCode: StepFinished = { ...identity, state: 'NOT_RUN', exitCode: 1 };
+  void valid;
+  void pending;
+  void running;
+  void succeededWithoutExitCode;
+  void skippedWithExitCode;
+  void cancelledWithExitCode;
+  void notRunWithExitCode;
+};
 
 function executeRun(options: Omit<ExecuteOptions, 'mode'>): Promise<RunResult> {
   return executeRunWithMode({ ...options, mode: TEST_MODE });
@@ -158,6 +197,14 @@ describe('a run that succeeds', () => {
       'stepOutput',
       'stepFinished',
       'runFinished',
+    ]);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([
+      { state: 'SUCCEEDED', exitCode: 0 },
+      { state: 'SUCCEEDED', exitCode: 0 },
     ]);
   });
 
@@ -484,10 +531,12 @@ describe('a run that succeeds', () => {
   it('does not expose mutable aliases for a RunFinished result', async () => {
     const { plan } = setup(FROZEN_RESULT_STEP);
     const attempts: boolean[] = [];
+    const events: RunEvent[] = [];
 
     const result = await executeRun({
       plan,
       observer: (event) => {
+        events.push(event);
         if (event.kind !== 'runFinished') {
           return;
         }
@@ -553,6 +602,11 @@ describe('a run that succeeds', () => {
         line: 'RUNE-401 step "failed" exited with code 1; expected one of [0]',
       },
     ]);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([{ state: 'FAILED', exitCode: 1 }]);
   });
 });
 
@@ -962,8 +1016,10 @@ describe('a run that fails', () => {
       { overrides: new Map([['token', 'signal-crash']]) },
     );
 
+    const events: RunEvent[] = [];
     const result = await executeRun({
       plan,
+      observer: (event) => events.push(event),
       runner: stubRunner(() => ({ kind: 'signalled' })),
     });
 
@@ -975,6 +1031,11 @@ describe('a run that fails', () => {
         line: 'RUNE-401 step "***" terminated by a signal',
       },
     ]);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([{ state: 'FAILED', exitCode: undefined }]);
   });
 
   it('reports an exact non-success exit diagnostic with the configured success codes', async () => {
@@ -1511,17 +1572,27 @@ describe('cancellation and timeout', () => {
       'stepFinished',
       'runFinished',
     ]);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([
+      { state: 'NOT_RUN', exitCode: undefined },
+      { state: 'NOT_RUN', exitCode: undefined },
+    ]);
   });
 
   it('passes cancellation from StepStarted to the running step', async () => {
     const { plan } = setup(TWO_STEPS);
     const cancel = new CancelToken();
     let calls = 0;
+    const events: RunEvent[] = [];
 
     const result = await executeRun({
       plan,
       cancel,
       observer: (event) => {
+        events.push(event);
         if (event.kind === 'stepStarted') {
           cancel.cancel();
         }
@@ -1536,6 +1607,14 @@ describe('cancellation and timeout', () => {
     expect(calls).toBe(1);
     expect(result).toMatchObject({ status: 'cancelled', exitCode: 6, stepsCancelled: 1 });
     expect(result.steps.map((step) => step.state)).toEqual(['CANCELLED', 'NOT_RUN']);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([
+      { state: 'CANCELLED', exitCode: undefined },
+      { state: 'NOT_RUN', exitCode: undefined },
+    ]);
   });
 
   it('consumes cancellation at a middle StepFinished before later pending work', async () => {
@@ -1793,6 +1872,11 @@ describe('skipped steps and the dry run', () => {
       'stepFinished',
       'runFinished',
     ]);
+    expect(
+      events
+        .filter((event): event is StepFinished => event.kind === 'stepFinished')
+        .map(({ state, exitCode }) => ({ state, exitCode })),
+    ).toEqual([{ state: 'SKIPPED', exitCode: undefined }]);
     expect(result).toMatchObject({ status: 'succeeded', nothingExecuted: true, stepsSkipped: 1 });
   });
 
