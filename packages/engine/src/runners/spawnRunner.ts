@@ -143,7 +143,7 @@ export class SpawnRunner implements Runner {
             env,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: false,
-            // Its own process group on POSIX, so the kill path can address the whole tree.
+            // A dedicated process group lets the POSIX kill path address that group as a unit.
             detached: process.platform !== 'win32',
           });
         } catch (error) {
@@ -275,7 +275,7 @@ async function classifyStartFailure(error: unknown, cwd: string): Promise<StartF
   }
 }
 
-/** Terminates the platform process tree and resolves only after the kill operation is complete. */
+/** Terminates the spawned POSIX process group or Windows task tree, then confirms completion. */
 async function terminateTree(
   child: ChildProcess,
   parentEnv: Readonly<Record<string, string | undefined>>,
