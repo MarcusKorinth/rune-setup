@@ -345,6 +345,19 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
     });
   }
 
+  if (
+    (result.status === 'config_error' ||
+      result.status === 'input_error' ||
+      result.status === 'resolution_error') &&
+    result.steps.length !== 0
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['steps'],
+      message: 'pre-execution error results must not contain steps',
+    });
+  }
+
   const invalidStateIndex = result.steps.findIndex((step) => {
     if (result.status === 'planned') {
       return step.state !== 'PENDING' && step.state !== 'SKIPPED';

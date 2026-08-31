@@ -334,12 +334,15 @@ function resultForStatus(status: RunResult['status']): RunResult {
           : status === 'cancelled'
             ? { code: 'RUNE-601' as const, message: 'cancelled', location: null }
             : { code: 'RUNE-500' as const, message: 'internal error', location: null };
-  return result({
+  const overrides = {
     status,
     exitCode: EXIT_CODE_BY_STATUS[status],
     dryRun: false,
     error,
-  } as Partial<RunResult>);
+  } as Partial<RunResult>;
+  return status === 'config_error' || status === 'input_error' || status === 'resolution_error'
+    ? zeroStepResult(overrides)
+    : result(overrides);
 }
 
 function zeroStepResult(overrides: Partial<RunResult> = {}): RunResult {
@@ -1136,15 +1139,15 @@ describe('resultJsonSchema', () => {
     }
   });
 
-  it('accepts error and cancellation dry runs with pending, skipped, or no steps', () => {
+  it('accepts cancellation dry runs with pending or skipped steps', () => {
     const pending = resultWithSingleStepState('PENDING');
     const skipped = resultWithSingleStepState('SKIPPED');
     const variants = [
       {
         ...pending,
-        status: 'input_error',
-        exitCode: 4,
-        error: { code: 'RUNE-202', message: 'invalid input', location: null },
+        status: 'cancelled',
+        exitCode: 6,
+        error: { code: 'RUNE-601', message: 'cancelled', location: null },
       },
       {
         ...skipped,
@@ -1152,13 +1155,6 @@ describe('resultJsonSchema', () => {
         exitCode: 6,
         dryRun: true,
         error: { code: 'RUNE-601', message: 'cancelled', location: null },
-      },
-      {
-        ...zeroStepResult(),
-        status: 'config_error',
-        exitCode: 3,
-        dryRun: true,
-        error: { code: 'RUNE-101', message: 'invalid YAML', location: null },
       },
     ];
 
@@ -1238,7 +1234,7 @@ describe('resultJsonSchema', () => {
     ).toBe(true);
   });
 
-  it('allows terminal step states on session error results', () => {
+  it('rejects steps for pre-execution errors and allows them for internal errors', () => {
     const steps = [
       { ...resultWithSingleStepState('SUCCEEDED').steps[0]!, id: 'succeeded-step' },
       { ...resultWithSingleStepState('FAILED').steps[0]!, id: 'failed-step' },
@@ -1257,12 +1253,8 @@ describe('resultJsonSchema', () => {
       steps,
     });
 
-    for (const status of [
-      'config_error',
-      'input_error',
-      'resolution_error',
-      'internal_error',
-    ] as const) {
+    const pending = resultWithSingleStepState('PENDING');
+    for (const status of ['config_error', 'input_error', 'resolution_error'] as const) {
       const statusResult = resultForStatus(status);
       expect(
         resultV1Schema.safeParse({
@@ -1271,8 +1263,26 @@ describe('resultJsonSchema', () => {
           exitCode: EXIT_CODE_BY_STATUS[status],
           error: statusResult.error,
         }).success,
-      ).toBe(true);
+      ).toBe(false);
+      expect(
+        resultV1Schema.safeParse({
+          ...pending,
+          status,
+          exitCode: EXIT_CODE_BY_STATUS[status],
+          error: statusResult.error,
+        }).success,
+      ).toBe(false);
     }
+
+    const internalError = resultForStatus('internal_error');
+    expect(
+      resultV1Schema.safeParse({
+        ...base,
+        status: 'internal_error',
+        exitCode: EXIT_CODE_BY_STATUS.internal_error,
+        error: internalError.error,
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects the formerly accepted RUNNING, non-failed tail, and impossible-counter shapes', () => {
