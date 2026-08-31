@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { win32 } from 'node:path';
 
-import { isWindowsRootRelativePath } from '../engine/paths.js';
+import { isFullyQualifiedWindowsPath } from '../engine/paths.js';
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
 import type { Runner, SpawnOutcome, SpawnRequest, StartFailureReason } from './base.js';
 
@@ -304,12 +304,7 @@ function runTaskkill(
   spawnTaskkill: TaskkillSpawner = spawn,
 ): Promise<boolean> {
   const systemRoot = windowsEnvironmentValue(parentEnv, 'SystemRoot');
-  if (
-    systemRoot === undefined ||
-    systemRoot.length === 0 ||
-    !win32.isAbsolute(systemRoot) ||
-    isWindowsRootRelativePath(systemRoot)
-  ) {
+  if (systemRoot === undefined || !isFullyQualifiedWindowsPath(systemRoot)) {
     return Promise.resolve(false);
   }
 

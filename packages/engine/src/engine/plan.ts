@@ -45,9 +45,11 @@ import {
 import type { SecretMasker } from './secrets.js';
 import { deepFreeze } from './freeze.js';
 import {
-  isWindowsRootRelativePath,
+  isFullyQualifiedWindowsPath,
+  isWindowsRootedPath,
   resolveTargetPathFrom,
-  WINDOWS_ROOT_RELATIVE_PATH_PATTERN,
+  WINDOWS_FULLY_QUALIFIED_PATH_PATTERN,
+  WINDOWS_ROOTED_PATH_PATTERN,
 } from './paths.js';
 
 /** The independently versioned public shape of an execution plan (§7). */
@@ -432,10 +434,10 @@ function resolveCommand(
   if (
     context.platform === 'windows' &&
     !context.preview &&
-    isWindowsRootRelativeValue(renderedCommand)
+    isInvalidWindowsRootedValue(renderedCommand)
   ) {
     const commandShown = isSecretString(renderedCommand) ? MASK : renderedCommand;
-    const message = `step "${stepId}" uses Windows root-relative command "${commandShown}", whose drive depends on the caller's current drive — use a fully qualified path or a manifest-relative path`;
+    const message = `step "${stepId}" uses Windows rooted command "${commandShown}" that is not a normal fully qualified drive or UNC path — use a fully qualified path or a manifest-relative path`;
     throw new ExecutionError('RUNE-401', resolution.secrets.mask(message));
   }
   const driveRelative =
@@ -469,10 +471,10 @@ function resolveCommand(
     if (
       context.platform === 'windows' &&
       !context.preview &&
-      isWindowsRootRelativeValue(renderedCwd)
+      isInvalidWindowsRootedValue(renderedCwd)
     ) {
       const cwdShown = isSecretString(renderedCwd) ? MASK : renderedCwd;
-      const message = `step "${stepId}" uses Windows root-relative cwd "${cwdShown}", whose drive depends on the caller's current drive — use a fully qualified path or a manifest-relative path`;
+      const message = `step "${stepId}" uses Windows rooted cwd "${cwdShown}" that is not a normal fully qualified drive or UNC path — use a fully qualified path or a manifest-relative path`;
       throw new ExecutionError('RUNE-404', resolution.secrets.mask(message));
     }
     cwd = anchorPathValue(renderedCwd, manifestDir, context.platform, secrets);
@@ -492,10 +494,14 @@ function resolveCommand(
   };
 }
 
-function isWindowsRootRelativeValue(value: string | SecretString): boolean {
-  return isSecretString(value)
-    ? secretMatches(value, WINDOWS_ROOT_RELATIVE_PATH_PATTERN)
-    : isWindowsRootRelativePath(value);
+function isInvalidWindowsRootedValue(value: string | SecretString): boolean {
+  if (isSecretString(value)) {
+    return (
+      secretMatches(value, WINDOWS_ROOTED_PATH_PATTERN) &&
+      !secretMatches(value, WINDOWS_FULLY_QUALIFIED_PATH_PATTERN)
+    );
+  }
+  return isWindowsRootedPath(value) && !isFullyQualifiedWindowsPath(value);
 }
 
 function anchorCommandValue(

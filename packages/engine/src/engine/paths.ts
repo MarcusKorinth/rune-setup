@@ -2,11 +2,19 @@ import { posix, resolve as resolvePath, sep, win32 } from 'node:path';
 
 import type { Platform } from './context.js';
 
-/** A Windows path rooted on the process's current drive rather than a named drive or UNC root. */
-export const WINDOWS_ROOT_RELATIVE_PATH_PATTERN = /^[\\/](?![\\/])/;
+/** Any Windows spelling that starts from a root rather than a relative path component. */
+export const WINDOWS_ROOTED_PATH_PATTERN = /^[\\/]/;
 
-export function isWindowsRootRelativePath(value: string): boolean {
-  return WINDOWS_ROOT_RELATIVE_PATH_PATTERN.test(value);
+/** A normal fully qualified Windows drive or UNC path, excluding device namespaces. */
+export const WINDOWS_FULLY_QUALIFIED_PATH_PATTERN =
+  /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![\\/])(?!(?:[?.])[\\/])[^\\/]+[\\/][^\\/]+(?:$|[\\/]))/;
+
+export function isFullyQualifiedWindowsPath(value: string): boolean {
+  return WINDOWS_FULLY_QUALIFIED_PATH_PATTERN.test(value);
+}
+
+export function isWindowsRootedPath(value: string): boolean {
+  return WINDOWS_ROOTED_PATH_PATTERN.test(value);
 }
 
 /**

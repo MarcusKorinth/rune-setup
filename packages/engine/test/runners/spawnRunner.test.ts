@@ -883,23 +883,29 @@ describe('SpawnRunner', () => {
     }
   });
 
-  it.each(['\\Windows', '/Windows'])(
-    'rejects root-relative Windows SystemRoot %s without spawning taskkill',
-    async (systemRoot) => {
-      const spawnTaskkill = vi.fn();
+  it.each([
+    '\\Windows',
+    '/Windows',
+    '///Windows',
+    String.raw`\\\Windows`,
+    String.raw`\\server`,
+    String.raw`C:Windows`,
+    String.raw`\\?\C:\Windows`,
+    String.raw`\\.\Windows`,
+  ])('rejects an invalid Windows SystemRoot %s without spawning taskkill', async (systemRoot) => {
+    const spawnTaskkill = vi.fn();
 
-      await expect(
-        spawnRunnerTestSeam.runTaskkill(
-          123,
-          { SystemRoot: systemRoot },
-          spawnTaskkill as unknown as typeof spawnChildProcess,
-        ),
-      ).resolves.toBe(false);
-      expect(spawnTaskkill).not.toHaveBeenCalled();
-    },
-  );
+    await expect(
+      spawnRunnerTestSeam.runTaskkill(
+        123,
+        { SystemRoot: systemRoot },
+        spawnTaskkill as unknown as typeof spawnChildProcess,
+      ),
+    ).resolves.toBe(false);
+    expect(spawnTaskkill).not.toHaveBeenCalled();
+  });
 
-  it.each(['C:\\Windows', '\\\\server\\share\\Windows'])(
+  it.each(['C:\\Windows', 'C:/Windows', '\\\\server\\share\\Windows', '//server/share/Windows'])(
     'accepts fully qualified Windows SystemRoot %s for taskkill',
     async (systemRoot) => {
       const helper = new EventEmitter() as EventEmitter & {
