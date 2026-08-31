@@ -660,6 +660,26 @@ describe('SpawnRunner', () => {
     expect(outcome).toEqual({ kind: 'failedToStart', reason: 'commandNotFound' });
   });
 
+  it('does not start a missing command when cancellation was already requested', async () => {
+    const cancel = new CancelToken();
+    cancel.cancel();
+
+    await expect(
+      run(nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere'] }), { cancel }),
+    ).resolves.toEqual({ kind: 'cancelled' });
+  });
+
+  it('reports cancellation requested before a missing command emits its startup error', async () => {
+    const cancel = new CancelToken();
+    const pending = run(nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere'] }), {
+      cancel,
+    });
+
+    cancel.cancel();
+
+    await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+  });
+
   it('settles an error/close startup race once and releases cancellation', async () => {
     const cancel = new TrackedCancelToken();
     const pending = run(nodeCommand('', { argv: ['rune-definitely-not-installed-anywhere'] }), {

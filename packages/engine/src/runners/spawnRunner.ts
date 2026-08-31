@@ -109,6 +109,10 @@ export function mergeSpawnEnvironment(
 
 export class SpawnRunner implements Runner {
   run(request: SpawnRequest): Promise<SpawnOutcome> {
+    if (request.cancel.isCancelled) {
+      return Promise.resolve({ kind: 'cancelled' });
+    }
+
     return new Promise((resolve) => {
       const { command } = request;
       let child: ReturnType<typeof spawn>;
@@ -281,7 +285,7 @@ async function terminateTree(
 ): Promise<boolean> {
   const { pid } = child;
   if (pid === undefined) {
-    return false;
+    return true;
   }
 
   let confirmed: boolean;
