@@ -25,7 +25,11 @@ import { deepFreeze } from './freeze.js';
 import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import { transitionStepState, type StepState } from './state.js';
-import { SpawnRunner } from '../runners/spawnRunner.js';
+import {
+  MAX_OUTPUT_LINE_BYTES,
+  OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+  SpawnRunner,
+} from '../runners/spawnRunner.js';
 import type { Runner, StartFailureReason } from '../runners/base.js';
 import {
   EXIT_CODE_BY_STATUS,
@@ -249,7 +253,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     if (diagnostic !== undefined) {
-      const line = secrets.mask(diagnostic);
+      const maskedDiagnostic = secrets.mask(diagnostic);
+      const line =
+        Buffer.byteLength(maskedDiagnostic, 'utf8') > MAX_OUTPUT_LINE_BYTES
+          ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER
+          : maskedDiagnostic;
       keepInTail('stderr', line);
       emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
     }

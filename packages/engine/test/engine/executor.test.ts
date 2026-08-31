@@ -1121,6 +1121,34 @@ describe('a run that fails', () => {
     ]);
   });
 
+  it('replaces an oversized synthetic diagnostic in events and the output tail', async () => {
+    const stepId = 'a'.repeat(MAX_OUTPUT_LINE_BYTES);
+    const { plan } = setup(['steps:', `  - id: ${stepId}`, '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => ({ kind: 'exited', exitCode: 1 })),
+    });
+
+    const outputEvents = events.filter((event) => event.kind === 'stepOutput');
+    expect(outputEvents).toEqual([
+      {
+        kind: 'stepOutput',
+        stepId,
+        stream: 'stderr',
+        line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
+      },
+    ]);
+    expect(Buffer.byteLength(outputEvents[0]!.line, 'utf8')).toBeLessThanOrEqual(
+      MAX_OUTPUT_LINE_BYTES,
+    );
+    expect(result.steps[0]?.outputTail).toEqual([
+      { stream: 'stderr', line: OVERSIZED_OUTPUT_LINE_PLACEHOLDER },
+    ]);
+  });
+
   it.each([
     ['commandNotFound', 'RUNE-403 step "classified" command was not found'],
     ['invalidCwd', 'RUNE-404 step "classified" working directory is invalid'],
