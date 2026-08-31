@@ -510,12 +510,13 @@ function anchorCommandValue(
   platform: RuntimeContext['platform'],
   secrets: SecretRegistry,
 ): string | SecretString {
-  if (!commandLooksLikeTargetPath(value, platform)) {
-    return value;
+  const protectedValue = protectExecutionValue(value, secrets);
+  if (!commandLooksLikeTargetPath(protectedValue, platform)) {
+    return protectedValue;
   }
-  return isSecretString(value)
-    ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
-    : anchorPath(value, manifestDir, platform);
+  return isSecretString(protectedValue)
+    ? resolveSecretPathFrom(protectedValue, manifestDir, platform, secrets)
+    : anchorPath(protectedValue, manifestDir, platform);
 }
 
 function anchorPathValue(
@@ -524,9 +525,10 @@ function anchorPathValue(
   platform: RuntimeContext['platform'],
   secrets: SecretRegistry,
 ): string | SecretString {
-  return isSecretString(value)
-    ? resolveSecretPathFrom(value, manifestDir, platform, secrets)
-    : anchorPath(value, manifestDir, platform);
+  const protectedValue = protectExecutionValue(value, secrets);
+  return isSecretString(protectedValue)
+    ? resolveSecretPathFrom(protectedValue, manifestDir, platform, secrets)
+    : anchorPath(protectedValue, manifestDir, platform);
 }
 
 function commandLooksLikeTargetPath(

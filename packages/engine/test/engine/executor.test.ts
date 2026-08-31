@@ -2048,6 +2048,68 @@ describe('skipped steps and the dry run', () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
+  it('masks normalized public path collisions at every execution surface', async () => {
+    const executable = process.platform === 'win32' ? 'secret-tool.exe' : 'secret-tool';
+    const collision = `.\\private/../${executable}`;
+    const derived = resolvePath('/project', executable);
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  mirror:',
+        '    type: text',
+        'steps:',
+        '  - id: use',
+        '    run:',
+        '      command: "${mirror}"',
+        '      cwd: "${mirror}"',
+      ],
+      {
+        overrides: new Map([
+          ['token', collision],
+          ['mirror', collision],
+        ]),
+      },
+    );
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+
+    expect(isSecretString(step.command.argv[0])).toBe(true);
+    expect(secretValuesEqual(step.command.argv[0], derived)).toBe(true);
+    expect(isSecretString(step.command.cwd)).toBe(true);
+    expect(secretValuesEqual(step.command.cwd, derived)).toBe(true);
+    expect(describePlan({ plan }).steps[0]?.command).toEqual([MASK]);
+
+    const events: RunEvent[] = [];
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner(async (request) => {
+        expect(isSecretString(request.command.argv[0])).toBe(true);
+        expect(secretValuesEqual(request.command.argv[0], derived)).toBe(true);
+        expect(isSecretString(request.command.cwd)).toBe(true);
+        expect(secretValuesEqual(request.command.cwd, derived)).toBe(true);
+        request.onOutput('stdout', derived);
+        await Promise.resolve();
+        return { kind: 'exited', exitCode: 9 };
+      }),
+    });
+
+    expect(
+      events.find((event) => event.kind === 'stepOutput' && event.stream === 'stdout'),
+    ).toEqual({
+      kind: 'stepOutput',
+      stepId: 'use',
+      stream: 'stdout',
+      line: MASK,
+    });
+    expect(result.steps[0]?.outputTail?.[0]).toEqual({ stream: 'stdout', line: MASK });
+    expect(JSON.stringify({ plan, events, result })).not.toContain(collision);
+  });
+
   it('reveals colliding command, argv, cwd and env bytes only to a real spawned process', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-plan-collision-'));
     const payload = 'credential-value';

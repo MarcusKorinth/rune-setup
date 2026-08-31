@@ -772,6 +772,40 @@ describe('the Windows honesty rule', () => {
     expect(error.message).toContain('args: ["/c"');
   });
 
+  it('masks a colliding public batch path after normalization', () => {
+    const collision = '.\\private/../secret-setup.cmd';
+    const derived = resolvePath('/project', 'secret-setup.cmd');
+    const error = executionError(() =>
+      planFor(
+        [
+          'inputs:',
+          '  token:',
+          '    type: secret',
+          '  mirror:',
+          '    type: text',
+          'steps:',
+          '  - id: legacy',
+          '    run:',
+          '      command: "${mirror}"',
+        ],
+        {
+          platform: 'windows',
+          overrides: new Map([
+            ['token', collision],
+            ['mirror', collision],
+          ]),
+        },
+      ),
+    );
+    const diagnostic = `${error.message}\n${JSON.stringify(error)}`;
+
+    expect(error.code).toBe('RUNE-405');
+    expect(diagnostic).not.toContain(collision);
+    expect(diagnostic).not.toContain(derived);
+    expect(error.message).toContain(MASK);
+    expect(error.message).toContain('command: cmd');
+  });
+
   it('masks registered secret bytes that collide with a step id', () => {
     const secret = 'private-step';
     const error = executionError(() =>
