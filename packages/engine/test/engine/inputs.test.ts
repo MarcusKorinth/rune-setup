@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -37,6 +37,7 @@ import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const TEST_MANIFEST_DIR = resolvePath('/project');
 const DIAGNOSTIC_CONTROLS = '\n\r\u001b\u0007\u0085\u2028\u2029';
 const VISIBLE_DIAGNOSTIC_ESCAPES = [
   '\\n',
@@ -76,7 +77,7 @@ function contextFor(
   environment: Record<string, string> = {},
 ): RuntimeContext {
   return createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir: TEST_MANIFEST_DIR,
     product: manifest.product,
     platform: 'linux',
     environment,
@@ -560,7 +561,7 @@ describe('defaults are templates', () => {
     );
 
     expect(resolve(manifest, {}, { USER: 'marcus' }).byId.get('logs')?.value).toBe(
-      '/project/marcus/logs',
+      `${TEST_MANIFEST_DIR}/marcus/logs`,
     );
   });
 
@@ -572,7 +573,7 @@ describe('defaults are templates', () => {
       '    default: "${home}/logs"',
     );
     const preview = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: process.platform === 'win32' ? 'linux' : 'windows',
       environment: {},

@@ -7,7 +7,7 @@
  */
 
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, win32 } from 'node:path';
 
 import { InternalError, PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
@@ -262,8 +262,13 @@ export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
 }
 
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
-  if (!isAbsolute(options.manifestDir)) {
-    throw new InternalError('the runtime context manifest directory must be absolute');
+  const windowsRoot = win32.parse(options.manifestDir).root;
+  const hasUnboundWindowsRoot =
+    process.platform === 'win32' && (windowsRoot === '\\' || windowsRoot === '/');
+  if (!isAbsolute(options.manifestDir) || hasUnboundWindowsRoot) {
+    throw new InternalError(
+      'the runtime context manifest directory must be absolute and independent of the current drive',
+    );
   }
   const host = hostPlatform();
   const platform =

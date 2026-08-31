@@ -25,6 +25,7 @@ import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
+const TEST_MANIFEST_DIR = resolvePath('/project');
 
 function buildPlan(
   options: Omit<PlanOptions, 'locale'> & { readonly locale?: string },
@@ -46,10 +47,10 @@ function planFor(
   context: ReturnType<typeof createRuntimeContext>;
 } {
   const manifest = parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml', {
-    manifestDir: '/project',
+    manifestDir: TEST_MANIFEST_DIR,
   });
   const context = createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir: TEST_MANIFEST_DIR,
     product: manifest.product,
     platform: options.platform ?? 'linux',
     environment: options.environment ?? {},
@@ -163,10 +164,10 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: 'linux',
       environment: {},
@@ -201,10 +202,10 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: 'linux',
       environment: {},
@@ -235,10 +236,10 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: 'linux',
       environment: {},
@@ -269,10 +270,10 @@ describe('input completeness', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: 'linux',
       environment: {},
@@ -355,10 +356,10 @@ describe('interpolation into the command', () => {
 
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
-      resolvePath('/project', 'tools', 'install.exe'),
+      resolvePath(TEST_MANIFEST_DIR, 'tools', 'install.exe'),
     );
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(
-      resolvePath('/project', 'work', 'nested', 'cache'),
+      resolvePath(TEST_MANIFEST_DIR, 'work', 'nested', 'cache'),
     );
   });
 
@@ -378,10 +379,10 @@ describe('interpolation into the command', () => {
 
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(
-      resolvePath('/project', 'tools', 'install'),
+      resolvePath(TEST_MANIFEST_DIR, 'tools', 'install'),
     );
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(
-      resolvePath('/project', 'work', 'cache'),
+      resolvePath(TEST_MANIFEST_DIR, 'work', 'cache'),
     );
   });
 
@@ -390,7 +391,7 @@ describe('interpolation into the command', () => {
 
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && step.command.argv[0]).toBe('pwsh');
-    expect(step?.state === 'PENDING' && step.command.cwd).toBe('/project');
+    expect(step?.state === 'PENDING' && step.command.cwd).toBe(TEST_MANIFEST_DIR);
   });
 
   it('keeps Windows target absolute command and cwd paths byte-identical', () => {
@@ -685,15 +686,15 @@ describe('interpolation into the command', () => {
     const step = plan.steps[0];
     expect(step?.state === 'PENDING' && step.command.argv[0]).toBe(command);
     expect(step?.state === 'PENDING' && step.command.cwd).toBe(
-      resolvePath('/project', `.${sep}${cwd}`),
+      resolvePath(TEST_MANIFEST_DIR, `.${sep}${cwd}`),
     );
   });
 
   it.each([
     ['linux', 'tool\\name', 'tool\\name'],
-    ['linux', 'tool/name', resolvePath('/project', 'tool', 'name')],
-    ['windows', 'tool\\name', resolvePath('/project', 'tool', 'name')],
-    ['windows', 'tool/name', resolvePath('/project', 'tool', 'name')],
+    ['linux', 'tool/name', resolvePath(TEST_MANIFEST_DIR, 'tool', 'name')],
+    ['windows', 'tool\\name', resolvePath(TEST_MANIFEST_DIR, 'tool', 'name')],
+    ['windows', 'tool/name', resolvePath(TEST_MANIFEST_DIR, 'tool', 'name')],
   ] as const)(
     'uses %s target separators to classify the opaque command %s',
     (platform, command, expected) => {
@@ -786,7 +787,7 @@ describe('the Windows honesty rule', () => {
 
   it('masks a colliding public batch path after normalization', () => {
     const collision = '.\\private/../secret-setup.cmd';
-    const derived = resolvePath('/project', 'secret-setup.cmd');
+    const derived = resolvePath(TEST_MANIFEST_DIR, 'secret-setup.cmd');
     const error = executionError(() =>
       planFor(
         [
@@ -846,7 +847,7 @@ describe('the Windows honesty rule', () => {
 
 describe('derived secret masking in Windows planning diagnostics', () => {
   const relativeSecret = '.\\private/derived-secret';
-  const derivedSecret = resolvePath('/project', 'private', 'derived-secret');
+  const derivedSecret = resolvePath(TEST_MANIFEST_DIR, 'private', 'derived-secret');
 
   function errorForPublicCollision(field: 'command' | 'cwd', publicValue: string): ExecutionError {
     return executionError(() =>
@@ -984,7 +985,7 @@ describe('secrets in the plan', () => {
 
   it('keeps the warning policy when a short relative secret cwd becomes maskable', () => {
     const relative = 'abc';
-    const expected = resolvePath('/project', `.${sep}${relative}`);
+    const expected = resolvePath(TEST_MANIFEST_DIR, `.${sep}${relative}`);
     const { plan, resolution } = planFor(
       [
         'inputs:',
@@ -1009,7 +1010,7 @@ describe('secrets in the plan', () => {
 
   it('keeps Windows target relative command and cwd normalization opaque and registered', () => {
     const secretPath = '.\\private/work';
-    const expected = resolvePath('/project', 'private', 'work');
+    const expected = resolvePath(TEST_MANIFEST_DIR, 'private', 'work');
     const { plan } = planFor(
       [
         'inputs:',
@@ -1144,7 +1145,9 @@ describe('secrets in the plan', () => {
     ]) {
       expect(secretValuesEqual(value, substring)).toBe(true);
     }
-    expect(secretValuesEqual(step.command.cwd, resolvePath('/project', substring))).toBe(true);
+    expect(secretValuesEqual(step.command.cwd, resolvePath(TEST_MANIFEST_DIR, substring))).toBe(
+      true,
+    );
     expect(JSON.stringify(plan)).not.toContain(secret);
   });
 
@@ -1206,7 +1209,7 @@ describe('secrets in the plan', () => {
 
   it('uses derived secrets from every command in the one final plan snapshot', () => {
     const relativeSecret = 'private-directory';
-    const derived = resolvePath('/project', relativeSecret);
+    const derived = resolvePath(TEST_MANIFEST_DIR, relativeSecret);
     const { plan } = planFor(
       [
         'inputs:',
@@ -1494,10 +1497,10 @@ describe('planning provenance', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/real' },
+      { manifestDir: resolvePath('/real') },
     );
     const context = createRuntimeContext({
-      manifestDir: '/wrong',
+      manifestDir: resolvePath('/wrong'),
       product: manifest.product,
       platform: 'linux',
       environment: {},
@@ -1515,10 +1518,10 @@ describe('planning provenance', () => {
     { name: 'Example', version: '9.9.9' },
   ])('rejects an authentic context whose product is not bound to the manifest', (product) => {
     const manifest = parseManifestText([...HEAD, 'steps: []', ''].join('\n'), 'installer.yaml', {
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
     });
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product,
       platform: 'linux',
       environment: {},
@@ -1538,13 +1541,13 @@ describe('planning provenance', () => {
       const manifestPath = join(directory, 'installer.yaml');
       writeFileSync(manifestPath, text, 'utf8');
       const manifests = [
-        parseManifestText(text, 'memory.yaml', { manifestDir: '/project' }),
-        parseManifest(manifestPath, { manifestDir: '/project' }),
+        parseManifestText(text, 'memory.yaml', { manifestDir: TEST_MANIFEST_DIR }),
+        parseManifest(manifestPath, { manifestDir: TEST_MANIFEST_DIR }),
       ];
 
       for (const manifest of manifests) {
         const context = createRuntimeContext({
-          manifestDir: '/project',
+          manifestDir: TEST_MANIFEST_DIR,
           product: manifest.product,
           platform: 'linux',
           environment: {},
@@ -1580,7 +1583,7 @@ describe('planning provenance', () => {
   it('rejects a resolution paired with another authentic context', () => {
     const { manifest, resolution } = planFor(['steps: []']);
     const otherContext = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: 'linux',
       environment: {},

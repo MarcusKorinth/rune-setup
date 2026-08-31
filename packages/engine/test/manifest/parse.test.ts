@@ -220,6 +220,23 @@ describe('parseManifestText', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform === 'win32').each(['/manifest-root', '\\manifest-root'])(
+    'binds the Windows root-relative manifest directory %s at parse time',
+    (manifestDir) => {
+      const previousCwd = process.cwd();
+      const expectedManifestDir = resolve(manifestDir);
+      const manifest = parseManifestText(MINIMAL, 'installer.yaml', { manifestDir });
+
+      try {
+        process.chdir(tmpdir());
+
+        expect(manifestDescriptorFor(manifest).manifestDir).toBe(expectedManifestDir);
+      } finally {
+        process.chdir(previousCwd);
+      }
+    },
+  );
 });
 
 describe('schemaVersion dispatch', () => {

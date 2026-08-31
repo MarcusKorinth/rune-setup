@@ -49,6 +49,7 @@ import { InputError } from '../../src/errors.js';
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
 const TEST_MODE: RunMode = 'non-interactive';
+const TEST_MANIFEST_DIR = resolvePath('/project');
 
 const _checkStepFinishedCorrelation = (): void => {
   const identity = { kind: 'stepFinished', stepId: 'step', durationMs: 0 } as const;
@@ -124,10 +125,10 @@ function setup(
   const manifest = parseManifestText(
     [...HEAD, ...failFastLine, ...lines, ''].join('\n'),
     'installer.yaml',
-    { manifestDir: '/project' },
+    { manifestDir: TEST_MANIFEST_DIR },
   );
   const context = createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir: TEST_MANIFEST_DIR,
     product: manifest.product,
     platform: hostPlatform(),
     environment,
@@ -1944,11 +1945,11 @@ describe('skipped steps and the dry run', () => {
     const manifest = parseManifestText(
       [...HEAD, 'steps:', '  - id: a', '    run:', '      command: a', ''].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: foreign,
       environment: {},
@@ -2051,7 +2052,7 @@ describe('skipped steps and the dry run', () => {
   it('masks normalized public path collisions at every execution surface', async () => {
     const executable = process.platform === 'win32' ? 'secret-tool.exe' : 'secret-tool';
     const collision = `.\\private/../${executable}`;
-    const derived = resolvePath('/project', executable);
+    const derived = resolvePath(TEST_MANIFEST_DIR, executable);
     const { plan } = setup(
       [
         'inputs:',
@@ -2216,10 +2217,10 @@ describe('skipped steps and the dry run', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: hostPlatform(),
       environment: {},
@@ -2418,10 +2419,10 @@ describe('the plan execution context', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: hostPlatform(),
       environment: {},
@@ -2475,10 +2476,10 @@ describe('the plan execution context', () => {
         '',
       ].join('\n'),
       'installer.yaml',
-      { manifestDir: '/project' },
+      { manifestDir: TEST_MANIFEST_DIR },
     );
     const context = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: hostPlatform(),
       environment: {},
