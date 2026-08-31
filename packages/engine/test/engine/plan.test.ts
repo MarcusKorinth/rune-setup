@@ -131,6 +131,18 @@ describe('conditions', () => {
 
     expect(plan.steps[0]?.state).toBe('PENDING');
   });
+
+  it('keeps distinct integer literals at the safe-range boundary', () => {
+    const { plan } = planFor([
+      'steps:',
+      '  - id: boundary',
+      '    when: "9007199254740991 != 9007199254740990"',
+      '    run:',
+      '      command: node',
+    ]);
+
+    expect(plan.steps[0]?.state).toBe('PENDING');
+  });
 });
 
 describe('input completeness', () => {

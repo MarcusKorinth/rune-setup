@@ -117,6 +117,22 @@ describe('syntax', () => {
     expect(syntaxError("'\\n'")).toMatch(/is not an escape/);
   });
 
+  it('accepts only integer literals in the inclusive safe range', () => {
+    expect(evaluate('9007199254740991 == 9007199254740991', {})).toBe(true);
+    expect(evaluate('-9007199254740991 == -9007199254740991', {})).toBe(true);
+
+    for (const value of [
+      '9007199254740992',
+      '9007199254740993',
+      '-9007199254740992',
+      '-9007199254740993',
+    ]) {
+      expect(syntaxError(`${value} == ${value}`)).toBe(
+        'integer literals must be between -9007199254740991 and 9007199254740991',
+      );
+    }
+  });
+
   it('measures the length cap in bytes, at the boundary', () => {
     const padding = 'a'.repeat(MAX_CONDITION_LENGTH - 9);
 

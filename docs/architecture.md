@@ -209,6 +209,9 @@ literal := "true" | "false" | integer | quoted-string ;
 varref  := "${" NAME { "." NAME } "}" ;
 ```
 
+Integer literals are decimal values in the inclusive safe range
+`-9007199254740991..9007199254740991`; a literal outside that range is a validate-time error.
+
 No functions, arithmetic, regex, attribute access, or indexing. **Typing is strict:** a bare `${x}` is valid only if `x` is a declared `boolean` (`when: "${installDatabase}"`). Strings and selects are never implicitly truthy — `when: "${environment}"` fails with the hint *compare explicitly: `${environment} == 'production'`*. `==`/`!=` require both sides same type; `in` tests string ∈ multiselect. Because input types are declared, **every condition type-checks at `rune validate` time with zero values supplied**. Loose truthiness must never ship in v1 — it could never be tightened later.
 
 Absent `when:` ⇒ always eligible. On a step, a false condition plans the step as `SKIPPED` with reason `condition false: <expr>`. On an input, a false condition disables the input (§5).
