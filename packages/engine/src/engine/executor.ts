@@ -83,7 +83,14 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const emit = (event: RunEvent): void => {
     try {
-      observer(deepFreeze(event));
+      const returned = (observer as (event: RunEvent) => unknown)(deepFreeze(event));
+      if (
+        returned !== null &&
+        (typeof returned === 'object' || typeof returned === 'function') &&
+        typeof (returned as PromiseLike<unknown>).then === 'function'
+      ) {
+        void (returned as PromiseLike<unknown>).then(undefined, () => undefined);
+      }
     } catch {
       // A broken renderer must never corrupt a run (§9.1).
     }
