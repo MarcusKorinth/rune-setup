@@ -2,9 +2,8 @@
  * The one runner of the MVP (docs/architecture.md §8).
  *
  * `child_process.spawn` with an argv array and never a shell; output consumed as streams and
- * split into lines; every termination cause shares one kill path that takes the whole process
- * tree with it, because an installer step that leaves orphans behind is worse than one that
- * fails.
+ * split into lines; every termination cause shares one kill path for the spawned POSIX process
+ * group or Windows task tree, matching the platform contract.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
