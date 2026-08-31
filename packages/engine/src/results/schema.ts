@@ -118,13 +118,19 @@ const resultStepSchema = z.discriminatedUnion('state', [
   }),
 ]);
 
-const resultManifestSchema = z.strictObject({
+const potentiallyUnvalidatedResultManifestSchema = z.strictObject({
   path: z.string(),
   sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .nullable(),
   schemaVersion: z.number().int().nullable(),
+});
+
+const validatedResultManifestSchema = z.strictObject({
+  path: z.string(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  schemaVersion: z.number().int(),
 });
 
 const resultProductSchema = z.strictObject({
@@ -170,8 +176,6 @@ const resultShape = {
   finishedAt: z.iso.datetime(),
   durationMs: z.number().nonnegative(),
   runeVersion: z.string(),
-  product: resultProductSchema.nullable(),
-  manifest: resultManifestSchema,
   stepsTotal: nonnegativeInteger,
   stepsExecuted: nonnegativeInteger,
   stepsSucceeded: nonnegativeInteger,
@@ -184,65 +188,77 @@ const resultShape = {
   steps: z.array(resultStepSchema),
 };
 
+const validatedResultShape = {
+  ...resultShape,
+  product: resultProductSchema,
+  manifest: validatedResultManifestSchema,
+};
+
+const potentiallyUnvalidatedResultShape = {
+  ...resultShape,
+  product: resultProductSchema.nullable(),
+  manifest: potentiallyUnvalidatedResultManifestSchema,
+};
+
 const resultV1ShapeSchema = z.union([
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('succeeded'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.succeeded),
     dryRun: z.literal(false),
     error: z.null(),
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('planned'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.planned),
     dryRun: z.literal(true),
     error: z.null(),
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('failed'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
     dryRun: z.literal(false),
     error: z.null(),
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('failed'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
     dryRun: z.boolean(),
     error: planResultErrorSchema,
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('cancelled'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.cancelled),
     dryRun: z.boolean(),
     error: resultErrorSchema(z.literal('RUNE-601')),
   }),
   z.strictObject({
-    ...resultShape,
+    ...potentiallyUnvalidatedResultShape,
     status: z.literal('config_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.config_error),
     dryRun: z.boolean(),
     error: manifestResultErrorSchema,
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('input_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.input_error),
     dryRun: z.boolean(),
     error: inputResultErrorSchema,
   }),
   z.strictObject({
-    ...resultShape,
+    ...validatedResultShape,
     status: z.literal('resolution_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.resolution_error),
     dryRun: z.boolean(),
     error: resolutionResultErrorSchema,
   }),
   z.strictObject({
-    ...resultShape,
+    ...potentiallyUnvalidatedResultShape,
     status: z.literal('internal_error'),
     exitCode: z.literal(EXIT_CODE_BY_STATUS.internal_error),
     dryRun: z.boolean(),

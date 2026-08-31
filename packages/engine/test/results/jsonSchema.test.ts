@@ -200,6 +200,7 @@ interface SchemaNode {
   readonly const?: unknown;
   readonly enum?: readonly unknown[];
   readonly minimum?: number;
+  readonly pattern?: string;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
   readonly items?: SchemaNode;
   readonly anyOf?: readonly SchemaNode[];
@@ -444,6 +445,42 @@ describe('resultJsonSchema', () => {
     expect(branchFor('internal_error').properties?.['error']?.properties?.['code']?.const).toBe(
       'RUNE-500',
     );
+
+    for (const status of [
+      'succeeded',
+      'planned',
+      'cancelled',
+      'input_error',
+      'resolution_error',
+    ] as const) {
+      expect(branchFor(status).properties?.['product']?.type).toBe('object');
+      expect(branchFor(status).properties?.['manifest']?.properties).toMatchObject({
+        sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        schemaVersion: { type: 'integer' },
+      });
+    }
+    for (const failedBranch of branchesFor('failed')) {
+      expect(failedBranch.properties?.['product']?.type).toBe('object');
+      expect(failedBranch.properties?.['manifest']?.properties).toMatchObject({
+        sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        schemaVersion: { type: 'integer' },
+      });
+    }
+    for (const status of ['config_error', 'internal_error'] as const) {
+      expect(branchFor(status).properties?.['product']?.anyOf?.map(({ type }) => type)).toEqual(
+        expect.arrayContaining(['object', 'null']),
+      );
+      expect(
+        branchFor(status).properties?.['manifest']?.properties?.['sha256']?.anyOf?.map(
+          ({ type }) => type,
+        ),
+      ).toEqual(expect.arrayContaining(['string', 'null']));
+      expect(
+        branchFor(status).properties?.['manifest']?.properties?.['schemaVersion']?.anyOf?.map(
+          ({ type }) => type,
+        ),
+      ).toEqual(expect.arrayContaining(['integer', 'null']));
+    }
     for (const errorBranch of [
       planFailed,
       branchFor('config_error'),
@@ -849,21 +886,52 @@ describe('resultJsonSchema', () => {
     ).toBe(true);
   });
 
-  it('accepts nullable pre-validation metadata', () => {
-    expect(
-      resultV1Schema.safeParse(
-        result({
-          product: null,
-          manifest: { path: 'installer.yaml', sha256: null, schemaVersion: null },
-          stepsTotal: 0,
-          stepsExecuted: 0,
-          stepsSucceeded: 0,
-          nothingExecuted: true,
-          inputs: [],
-          steps: [],
-        }),
-      ).success,
-    ).toBe(true);
+  it('correlates validated metadata with every post-validation status form', () => {
+    const postValidationResults = [
+      resultForStatus('succeeded'),
+      resultForStatus('planned'),
+      resultForStatus('failed'),
+      planFailure(false, 'RUNE-401'),
+      planFailure(true, 'RUNE-404'),
+      resultForStatus('cancelled'),
+      resultForStatus('input_error'),
+      resultForStatus('resolution_error'),
+    ];
+
+    for (const postValidationResult of postValidationResults) {
+      expect(resultV1Schema.safeParse(postValidationResult).success).toBe(true);
+      for (const invalidMetadata of [
+        { product: null },
+        { manifest: { ...postValidationResult.manifest, sha256: null } },
+        { manifest: { ...postValidationResult.manifest, sha256: 'A'.repeat(64) } },
+        { manifest: { ...postValidationResult.manifest, sha256: 'a'.repeat(63) } },
+        { manifest: { ...postValidationResult.manifest, schemaVersion: null } },
+        { manifest: { ...postValidationResult.manifest, schemaVersion: 1.5 } },
+      ]) {
+        expect(
+          resultV1Schema.safeParse({ ...postValidationResult, ...invalidMetadata }).success,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('accepts nullable metadata only for config and internal errors', () => {
+    for (const status of ['config_error', 'internal_error'] as const) {
+      const base = {
+        ...resultForStatus(status),
+        product: null,
+        manifest: { path: 'installer.yaml', sha256: null, schemaVersion: null },
+      } as const;
+
+      expect(resultV1Schema.safeParse(base).success).toBe(true);
+      expect(
+        resultV1Schema.safeParse({
+          ...base,
+          product: { name: 'Known product', version: '1.0.0' },
+          manifest: { ...base.manifest, sha256: SHA256, schemaVersion: 1 },
+        }).success,
+      ).toBe(true);
+    }
   });
 
   it('requires mode and locale and rejects unknown properties at every object level', () => {
@@ -875,7 +943,12 @@ describe('resultJsonSchema', () => {
     expect(resultV1Schema.safeParse({ ...result(), unknown: true }).success).toBe(false);
     expect(
       resultV1Schema.safeParse(
-        result({ manifest: { ...result().manifest, unknown: true } as RunResult['manifest'] }),
+        result({
+          manifest: {
+            ...result().manifest,
+            unknown: true,
+          } as unknown as RunResult['manifest'],
+        }),
       ).success,
     ).toBe(false);
     expect(

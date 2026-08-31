@@ -18,8 +18,9 @@ import { serializeResult, writeResult } from '../../src/results/writer.js';
 
 const RESULT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const SECRET_SENTINEL = 'F-064-plaintext-must-never-escape';
+const SHA256 = 'a'.repeat(64);
 
-function result(id: string): RunResult {
+function result(id: string): Extract<RunResult, { status: 'succeeded' }> {
   return {
     resultSchemaVersion: 1,
     id: RESULT_ID,
@@ -36,7 +37,7 @@ function result(id: string): RunResult {
     durationMs: 1000,
     runeVersion: '0.1.0',
     product: { name: `Writer test ${id}`, version: '1.0.0' },
-    manifest: { path: '/project/installer.yaml', sha256: null, schemaVersion: 1 },
+    manifest: { path: '/project/installer.yaml', sha256: SHA256, schemaVersion: 1 },
     stepsTotal: 0,
     stepsExecuted: 0,
     stepsSucceeded: 0,
@@ -154,6 +155,102 @@ function planFailureResult(id: string, dryRun = true): RunResult {
     dryRun,
     error: { code: 'RUNE-404', message: 'working directory is invalid', location: null },
   };
+}
+
+function postValidationResults(id: string): readonly RunResult[] {
+  const base = result(id);
+  return [
+    base,
+    {
+      ...base,
+      status: 'planned',
+      exitCode: 0,
+      dryRun: true,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      nothingExecuted: true,
+      steps: [],
+    },
+    {
+      ...base,
+      status: 'failed',
+      exitCode: 1,
+      stepsTotal: 1,
+      stepsExecuted: 1,
+      stepsSucceeded: 0,
+      stepsFailed: 1,
+      nothingExecuted: false,
+      steps: [
+        {
+          id: 'failed-step',
+          title: 'Failed step',
+          state: 'FAILED',
+          exitCode: 1,
+          durationMs: 1,
+          command: ['tool'],
+          skipReason: null,
+        },
+      ],
+    },
+    planFailureResult(`${id}-plan`, true),
+    {
+      ...base,
+      status: 'cancelled',
+      exitCode: 6,
+      error: { code: 'RUNE-601', message: 'cancelled', location: null },
+    },
+    {
+      ...base,
+      status: 'input_error',
+      exitCode: 4,
+      error: { code: 'RUNE-202', message: 'invalid input', location: null },
+    },
+    {
+      ...base,
+      status: 'resolution_error',
+      exitCode: 5,
+      error: { code: 'RUNE-301', message: 'resolution failed', location: null },
+    },
+  ];
+}
+
+function forgedNullablePostValidationResults(id: string): readonly RunResult[] {
+  return postValidationResults(id).flatMap((entry) => [
+    { ...entry, product: null } as unknown as RunResult,
+    {
+      ...entry,
+      manifest: { ...entry.manifest, sha256: null },
+    } as unknown as RunResult,
+    {
+      ...entry,
+      manifest: { ...entry.manifest, schemaVersion: null },
+    } as unknown as RunResult,
+  ]);
+}
+
+function nullableMetadataErrorResults(id: string): readonly RunResult[] {
+  const base = result(id);
+  const metadata = {
+    product: null,
+    manifest: { path: '/project/installer.yaml', sha256: null, schemaVersion: null },
+  } as const;
+  return [
+    {
+      ...base,
+      ...metadata,
+      status: 'config_error',
+      exitCode: 3,
+      error: { code: 'RUNE-103', message: 'invalid manifest', location: null },
+    },
+    {
+      ...base,
+      ...metadata,
+      status: 'internal_error',
+      exitCode: 70,
+      error: { code: 'RUNE-500', message: 'internal error', location: null },
+    },
+  ];
 }
 
 function forgedExecutedDryRunResult(id: string): RunResult {
@@ -299,6 +396,26 @@ describe('writeResult', () => {
     });
   });
 
+  it('writes nullable metadata for config and internal errors', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+
+    try {
+      for (const entry of nullableMetadataErrorResults('nullable-errors')) {
+        const destination = join(directory, `${entry.status}.json`);
+        await writeResult(entry, destination);
+
+        expect(JSON.parse(readFileSync(destination, 'utf8'))).toMatchObject({
+          status: entry.status,
+          product: null,
+          manifest: { sha256: null, schemaVersion: null },
+        });
+      }
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("serializes the parsed copy without invoking the caller's serialization hooks", () => {
     const original = result('parsed-copy');
     Object.defineProperty(original, 'toJSON', {
@@ -366,6 +483,29 @@ describe('writeResult', () => {
     }
   });
 
+  it('rejects nullable post-validation metadata before performing I/O', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destinationDirectory = join(directory, 'must-not-exist');
+    const destination = join(destinationDirectory, 'result.json');
+
+    try {
+      for (const invalid of forgedNullablePostValidationResults('nullable-post-validation')) {
+        let caught: unknown;
+        try {
+          await writeResult(invalid, destination);
+        } catch (error) {
+          caught = error;
+        }
+
+        expectGenericResultError(caught);
+        expect(existsSync(destinationDirectory)).toBe(false);
+        expect(existsSync(destination)).toBe(false);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a contradictory status before performing I/O', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
     const destinationDirectory = join(directory, 'must-not-exist');
@@ -401,6 +541,7 @@ describe('writeResult', () => {
         forgedWrongErrorResult('wrong-error-existing-target'),
         forgedPartialPlanFailureResult('partial-plan-existing-target'),
         { ...planFailureResult('counter-existing-target'), stepsExecuted: 1 } as RunResult,
+        ...forgedNullablePostValidationResults('nullable-existing-target'),
       ]) {
         let caught: unknown;
         try {

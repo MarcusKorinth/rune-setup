@@ -245,8 +245,6 @@ interface RunResultBody {
   readonly finishedAt: string;
   readonly durationMs: number;
   readonly runeVersion: string;
-  readonly product: { readonly name: string; readonly version: string } | null;
-  readonly manifest: ResultManifest;
   readonly stepsTotal: number;
   readonly stepsExecuted: number;
   readonly stepsSucceeded: number;
@@ -260,4 +258,27 @@ interface RunResultBody {
   readonly steps: readonly ResultStep[];
 }
 
-export type RunResult = RunResultBody & RunOutcome;
+interface ValidatedResultMetadata {
+  readonly product: { readonly name: string; readonly version: string };
+  readonly manifest: ResultManifest & {
+    readonly sha256: string;
+    readonly schemaVersion: number;
+  };
+}
+
+interface PotentiallyUnvalidatedResultMetadata {
+  readonly product: { readonly name: string; readonly version: string } | null;
+  readonly manifest: ResultManifest;
+}
+
+type PostValidationRunOutcome = Exclude<RunOutcome, { status: 'config_error' | 'internal_error' }>;
+type PotentiallyUnvalidatedRunOutcome = Extract<
+  RunOutcome,
+  { status: 'config_error' | 'internal_error' }
+>;
+
+export type RunResult = RunResultBody &
+  (
+    | (ValidatedResultMetadata & PostValidationRunOutcome)
+    | (PotentiallyUnvalidatedResultMetadata & PotentiallyUnvalidatedRunOutcome)
+  );

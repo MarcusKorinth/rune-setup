@@ -3,12 +3,24 @@ import { describe, expect, it } from 'vitest';
 import {
   EXIT_CODE_BY_STATUS,
   type ResultError,
+  type RunOutcome,
   type RunResult,
   type RunStatus,
 } from '../../src/results/model.js';
 
-type ResultBody = Omit<RunResult, 'status' | 'exitCode' | 'dryRun' | 'error'>;
-type WithOutcome<Outcome> = ResultBody & Outcome;
+type ResultBody = Omit<
+  Extract<RunResult, { status: 'succeeded' }>,
+  'status' | 'exitCode' | 'dryRun' | 'error' | 'product' | 'manifest'
+>;
+type ValidatedMetadata = {
+  product: { name: string; version: string };
+  manifest: { path: string; sha256: string; schemaVersion: number };
+};
+type NullableMetadata = {
+  product: { name: string; version: string } | null;
+  manifest: { path: string; sha256: string | null; schemaVersion: number | null };
+};
+type WithOutcome<Outcome, Metadata = ValidatedMetadata> = ResultBody & Metadata & Outcome;
 type Assert<Condition extends true> = Condition;
 type AssertFalse<Condition extends false> = Condition;
 type _AcceptSucceeded = Assert<
@@ -47,12 +59,15 @@ type _AcceptPlanFailedRealRun = Assert<
     : false
 >;
 type _AcceptConfigError = Assert<
-  WithOutcome<{
-    status: 'config_error';
-    exitCode: 3;
-    dryRun: true;
-    error: ResultError<'RUNE-104'>;
-  }> extends RunResult
+  WithOutcome<
+    {
+      status: 'config_error';
+      exitCode: 3;
+      dryRun: true;
+      error: ResultError<'RUNE-104'>;
+    },
+    NullableMetadata
+  > extends RunResult
     ? true
     : false
 >;
@@ -87,12 +102,15 @@ type _AcceptCancelled = Assert<
     : false
 >;
 type _AcceptInternalError = Assert<
-  WithOutcome<{
-    status: 'internal_error';
-    exitCode: 70;
-    dryRun: false;
-    error: ResultError<'RUNE-500'>;
-  }> extends RunResult
+  WithOutcome<
+    {
+      status: 'internal_error';
+      exitCode: 70;
+      dryRun: false;
+      error: ResultError<'RUNE-500'>;
+    },
+    NullableMetadata
+  > extends RunResult
     ? true
     : false
 >;
@@ -140,6 +158,62 @@ type _RejectWrongPlanFailureCode = AssertFalse<
   }> extends RunResult
     ? true
     : false
+>;
+
+type PostValidationOutcomeMatrix = readonly [
+  Extract<RunOutcome, { status: 'succeeded' }>,
+  Extract<RunOutcome, { status: 'planned' }>,
+  Extract<RunOutcome, { status: 'failed'; error: null }>,
+  Extract<RunOutcome, { status: 'failed'; error: ResultError }>,
+  Extract<RunOutcome, { status: 'cancelled' }>,
+  Extract<RunOutcome, { status: 'input_error' }>,
+  Extract<RunOutcome, { status: 'resolution_error' }>,
+];
+type PotentiallyUnvalidatedOutcomeMatrix = readonly [
+  Extract<RunOutcome, { status: 'config_error' }>,
+  Extract<RunOutcome, { status: 'internal_error' }>,
+];
+type AllAccepted<Outcomes extends readonly unknown[], Metadata> = Outcomes extends readonly [
+  infer Outcome,
+  ...infer Rest,
+]
+  ? WithOutcome<Outcome, Metadata> extends RunResult
+    ? AllAccepted<Rest, Metadata>
+    : false
+  : true;
+type AllRejected<Outcomes extends readonly unknown[], Metadata> = Outcomes extends readonly [
+  infer Outcome,
+  ...infer Rest,
+]
+  ? WithOutcome<Outcome, Metadata> extends RunResult
+    ? false
+    : AllRejected<Rest, Metadata>
+  : true;
+
+type _AcceptPostValidationMetadataMatrix = Assert<
+  AllAccepted<PostValidationOutcomeMatrix, ValidatedMetadata>
+>;
+type _AcceptNullableConfigAndInternalMetadata = Assert<
+  AllAccepted<PotentiallyUnvalidatedOutcomeMatrix, NullableMetadata>
+>;
+type _RejectNullPostValidationProduct = Assert<
+  AllRejected<PostValidationOutcomeMatrix, Omit<ValidatedMetadata, 'product'> & { product: null }>
+>;
+type _RejectNullPostValidationSha256 = Assert<
+  AllRejected<
+    PostValidationOutcomeMatrix,
+    Omit<ValidatedMetadata, 'manifest'> & {
+      manifest: Omit<ValidatedMetadata['manifest'], 'sha256'> & { sha256: null };
+    }
+  >
+>;
+type _RejectNullPostValidationSchemaVersion = Assert<
+  AllRejected<
+    PostValidationOutcomeMatrix,
+    Omit<ValidatedMetadata, 'manifest'> & {
+      manifest: Omit<ValidatedMetadata['manifest'], 'schemaVersion'> & { schemaVersion: null };
+    }
+  >
 >;
 
 const expectedExitCodes = {

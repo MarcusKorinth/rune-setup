@@ -469,9 +469,11 @@ Contents:
   `config_error`; RUNE-201..203 for `input_error`; RUNE-301/302/311/312 for
   `resolution_error`; RUNE-601 for `cancelled`; and RUNE-500 for `internal_error`. Usage and
   unsupported-platform errors occur before configuration and are never represented in a result.
-- `product`, which may be `null` only before manifest validation has succeeded; `manifest`
-  (`path`, always present; `sha256`, `null` only when no source bytes could be read;
-  `schemaVersion`, `null` when no integer version could be read)
+- `product` and manifest identity are required after manifest validation: `succeeded`,
+  `planned`, both `failed` forms, `cancelled`, `input_error`, and `resolution_error` carry a
+  non-null `product` plus a 64-character lowercase-hex `manifest.sha256` and an integer
+  `manifest.schemaVersion`. `config_error` and `internal_error` may occur before validation and
+  therefore retain the nullable metadata form. `manifest.path` is always present.
 - **per input** — `{id, value, source, secret, enabled, ignored?}`: secret values always `null`; `enabled: false` for disabled inputs, whose `value` is the type's empty value; `ignored: "input disabled"` present only when a value was supplied for a disabled input, with `source` naming the layer that supplied it (provenance makes precedence — and what was discarded — auditable after the fact)
 - **per step** — `{id, title, state, exitCode, durationMs, command, skipReason, outputTail?}`: `title` localized, `id` never; command arrays passed through the masker; `outputTail` present **only** for `FAILED` steps — a list of the last 50 `{stream, line}` entries, already masked (§7)
 
