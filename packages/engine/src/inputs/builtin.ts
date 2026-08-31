@@ -126,8 +126,8 @@ const secret: InputTypeHandler = {
   isAbsent: (value) => (isSecretString(value) ? secretLength(value) === 0 : value === ''),
   fromString: (value) => ok(createSecretString(value)),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
-  // A frontend may hand back a wrapper when it re-resolves. Copy its private base value into
-  // a fresh wrapper so registration and later resolution cannot observe changing overrides.
+  // A frontend may hand back an already opaque immutable wrapper when it re-resolves. Retain it:
+  // its private value is fixed, and public consumers continue to observe only the mask.
   fromNative: (value) => {
     if (typeof value === 'string') {
       return ok(createSecretString(value));
