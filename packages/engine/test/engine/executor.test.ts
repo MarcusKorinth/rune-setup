@@ -91,8 +91,8 @@ const _checkStepFinishedCorrelation = (): void => {
 };
 
 const _checkObserverReturnContract = (): void => {
-  const syncObserver: EngineObserver = () => undefined;
-  // @ts-expect-error async observers violate the synchronous delivery contract
+  const synchronousObserver: (event: RunEvent) => void = () => undefined;
+  const syncObserver: EngineObserver = synchronousObserver;
   const asyncObserver: EngineObserver = async () => undefined;
   void syncObserver;
   void asyncObserver;
@@ -179,9 +179,7 @@ describe('a run that succeeds', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         request.onOutput('stdout', `running ${request.command.argv[0]}`);
         return { kind: 'exited', exitCode: 0 };
@@ -235,7 +233,7 @@ describe('a run that succeeds', () => {
 
     const result = await executeRun({
       plan,
-      observer: observe as unknown as EngineObserver,
+      observer: observe,
     });
 
     expect(result.status).toBe('succeeded');
@@ -245,6 +243,23 @@ describe('a run that succeeds', () => {
 
     rejectObserver(new Error('observer rejection'));
     await Promise.resolve();
+  });
+
+  it('does not inspect a foreign then method returned by an observer', async () => {
+    const { plan } = setup(['steps: []']);
+    const then = vi.fn();
+    const observed: RunEvent[] = [];
+    const observe = (event: RunEvent) => {
+      observed.push(event);
+      return { then };
+    };
+    const observer: EngineObserver = observe;
+
+    const result = await executeRun({ plan, observer });
+
+    expect(result.status).toBe('succeeded');
+    expect(observed.map((event) => event.kind)).toEqual(['runStarted', 'runFinished']);
+    expect(then).not.toHaveBeenCalled();
   });
 
   it('hands every child the run and step ids', async () => {
@@ -274,9 +289,7 @@ describe('a run that succeeds', () => {
     try {
       const result = await executeRun({
         plan,
-        observer: (event) => {
-          events.push(event);
-        },
+        observer: (event) => events.push(event),
         runner: stubRunner(() => {
           vi.setSystemTime(finishedAt);
           return { kind: 'exited', exitCode: 0 };
@@ -457,9 +470,7 @@ describe('a run that succeeds', () => {
 
       const result = await executeRun({
         plan,
-        observer: (event) => {
-          events.push(event);
-        },
+        observer: (event) => events.push(event),
         runner: stubRunner((request) => {
           expect(request.parentEnv[variable]).toBeUndefined();
           expect(
@@ -502,9 +513,7 @@ describe('a run that succeeds', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         request.onOutput('stderr', 'failure details');
         return { kind: 'exited', exitCode: 1 };
@@ -792,9 +801,7 @@ describe('a run that fails', () => {
 
       const result = await executeRun({
         plan,
-        observer: (event) => {
-          events.push(event);
-        },
+        observer: (event) => events.push(event),
       });
 
       const outputEvents = events.filter((event) => event.kind === 'stepOutput');
@@ -864,9 +871,7 @@ describe('a run that fails', () => {
 
       const result = await executeRun({
         plan,
-        observer: (event) => {
-          events.push(event);
-        },
+        observer: (event) => events.push(event),
       });
 
       expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
@@ -1005,9 +1010,7 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
     });
 
     expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
@@ -1077,9 +1080,7 @@ describe('a run that fails', () => {
     const events: RunEvent[] = [];
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => ({ kind: 'signalled' })),
     });
 
@@ -1173,9 +1174,7 @@ describe('a run that fails', () => {
 
       const result = await executeRun({
         plan,
-        observer: (event) => {
-          events.push(event);
-        },
+        observer: (event) => events.push(event),
         runner: stubRunner(() => ({ kind: 'streamFailed', stream })),
       });
 
@@ -1228,9 +1227,7 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => {
         throw new Error('exception text must stay private');
       }),
@@ -1272,9 +1269,7 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
     });
     const serialized = JSON.stringify({ events, result });
 
@@ -1311,9 +1306,7 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner,
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1342,9 +1335,7 @@ describe('a run that fails', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner,
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1378,9 +1369,7 @@ describe('cancellation and timeout', () => {
     const result = await executeRun({
       plan,
       cancel,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => {
         calls += 1;
         return { kind: 'exited', exitCode: 0 };
@@ -1426,9 +1415,7 @@ describe('cancellation and timeout', () => {
     const result = await executeRun({
       plan,
       cancel,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => {
         calls += 1;
         return { kind: 'exited', exitCode: 0 };
@@ -1524,9 +1511,7 @@ describe('cancellation and timeout', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => {
         calls += 1;
         return { kind: 'cancelled' };
@@ -1563,9 +1548,7 @@ describe('cancellation and timeout', () => {
     const result = await executeRun({
       plan,
       cancel,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         calls += 1;
         request.onOutput('stderr', 'before termination-secret after');
@@ -1992,9 +1975,7 @@ describe('skipped steps and the dry run', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(() => ({ kind: 'exited', exitCode: 0 })),
     });
 
@@ -2132,9 +2113,7 @@ describe('skipped steps and the dry run', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         for (const value of [
           request.command.argv[0],
@@ -2210,9 +2189,7 @@ describe('skipped steps and the dry run', () => {
     const events: RunEvent[] = [];
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner(async (request) => {
         expect(isSecretString(request.command.argv[0])).toBe(true);
         expect(secretValuesEqual(request.command.argv[0], derived)).toBe(true);
@@ -2373,9 +2350,7 @@ describe('skipped steps and the dry run', () => {
     const events: RunEvent[] = [];
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         request.onOutput('stderr', `${original} ${later}`);
         return { kind: 'exited', exitCode: 1 };
@@ -2477,9 +2452,7 @@ describe('skipped steps and the dry run', () => {
 
     const result = await executeRun({
       plan,
-      observer: (event) => {
-        events.push(event);
-      },
+      observer: (event) => events.push(event),
       runner: stubRunner((request) => {
         runnerSawOpaqueValues = [
           request.command.argv[1],

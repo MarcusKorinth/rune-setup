@@ -64,4 +64,4 @@ export type RunEvent = RunStarted | StepStarted | StepOutput | StepFinished | Ru
  * What a frontend implements to watch a run. Observers must return quickly and must not
  * throw; an exception is caught and swallowed — a broken renderer cannot corrupt a run.
  */
-export type EngineObserver = (event: RunEvent) => undefined;
+export type EngineObserver = (event: RunEvent) => void;

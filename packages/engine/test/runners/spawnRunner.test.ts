@@ -58,7 +58,7 @@ function run(
 class TrackedCancelToken extends CancelToken {
   activeListeners = 0;
 
-  override onCancel(listener: () => undefined): () => void {
+  override onCancel(listener: () => void): () => void {
     this.activeListeners += 1;
     const unsubscribe = super.onCancel(listener);
     let disposed = false;

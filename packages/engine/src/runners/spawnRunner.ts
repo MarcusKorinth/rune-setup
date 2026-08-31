@@ -257,9 +257,7 @@ export class SpawnRunner implements Runner {
         timeout.unref();
       }
 
-      unsubscribeCancel = request.cancel.onCancel(() => {
-        requestTermination({ kind: 'cancelled' });
-      });
+      unsubscribeCancel = request.cancel.onCancel(() => requestTermination({ kind: 'cancelled' }));
     });
   }
 }

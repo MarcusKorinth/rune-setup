@@ -8,7 +8,7 @@
 
 export class CancelToken {
   #cancelled = false;
-  readonly #listeners = new Set<() => undefined>();
+  readonly #listeners = new Set<() => void>();
 
   get isCancelled(): boolean {
     return this.#cancelled;
@@ -31,7 +31,7 @@ export class CancelToken {
    * Runs `listener` on cancellation — immediately, when it already happened — and returns an
    * idempotent disposer for callers whose lifetime is shorter than the token's.
    */
-  onCancel(listener: () => undefined): () => void {
+  onCancel(listener: () => void): () => void {
     if (this.#cancelled) {
       invokeListener(listener);
       return () => undefined;
@@ -44,15 +44,11 @@ export class CancelToken {
 }
 
 /** Cancellation is best-effort: one cleanup failure must not block another. */
-function invokeListener(listener: () => undefined): void {
+function invokeListener(listener: () => void): void {
   try {
     const returned = (listener as () => unknown)();
-    if (
-      returned !== null &&
-      (typeof returned === 'object' || typeof returned === 'function') &&
-      typeof (returned as PromiseLike<unknown>).then === 'function'
-    ) {
-      void (returned as PromiseLike<unknown>).then(undefined, () => undefined);
+    if (returned instanceof Promise) {
+      void returned.then(undefined, () => undefined);
     }
   } catch {
     // Listener errors have no cancellation recovery path and must not escape this boundary.

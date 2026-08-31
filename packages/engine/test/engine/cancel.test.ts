@@ -4,8 +4,8 @@ import { CancelToken } from '../../src/engine/cancel.js';
 
 const _checkCancelListenerReturnContract = (): void => {
   const token = new CancelToken();
-  token.onCancel(() => undefined);
-  // @ts-expect-error async listeners violate the synchronous cancellation contract
+  const synchronousListener: () => void = () => undefined;
+  token.onCancel(synchronousListener);
   token.onCancel(async () => undefined);
 };
 void _checkCancelListenerReturnContract;
@@ -68,7 +68,7 @@ describe('CancelToken', () => {
     const order: string[] = [];
     const rejection = Promise.reject(new Error('listener failed'));
     const then = vi.spyOn(rejection, 'then');
-    const rejected = vi.fn(() => {
+    const rejected: () => void = vi.fn(() => {
       order.push('rejected');
       return rejection;
     });
@@ -77,7 +77,7 @@ describe('CancelToken', () => {
       return undefined;
     });
 
-    token.onCancel(rejected as unknown as () => undefined);
+    token.onCancel(rejected);
     token.onCancel(healthy);
 
     expect(() => token.cancel()).not.toThrow();
@@ -122,10 +122,10 @@ describe('CancelToken', () => {
     token.cancel();
     const rejection = Promise.reject(new Error('listener failed'));
     const then = vi.spyOn(rejection, 'then');
-    const rejected = vi.fn(() => rejection);
+    const rejected: () => void = vi.fn(() => rejection);
     const healthy = vi.fn(() => undefined);
 
-    const unsubscribe = token.onCancel(rejected as unknown as () => undefined);
+    const unsubscribe = token.onCancel(rejected);
     token.onCancel(healthy);
 
     expect(rejected).toHaveBeenCalledOnce();
@@ -134,4 +134,23 @@ describe('CancelToken', () => {
     expect(unsubscribe).toBeTypeOf('function');
     expect(() => unsubscribe()).not.toThrow();
   });
+
+  it.each(['registered', 'immediate'] as const)(
+    'does not inspect a foreign then method on the %s delivery path',
+    (delivery) => {
+      const token = new CancelToken();
+      const then = vi.fn();
+      const listener: () => void = () => ({ then });
+      if (delivery === 'immediate') {
+        token.cancel();
+      }
+
+      token.onCancel(listener);
+      if (delivery === 'registered') {
+        token.cancel();
+      }
+
+      expect(then).not.toHaveBeenCalled();
+    },
+  );
 });
