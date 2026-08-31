@@ -1213,7 +1213,7 @@ describe('resultJsonSchema', () => {
     }
   });
 
-  it('allows a cancelled result to retain an earlier failure and a not-run step', () => {
+  it('rejects a cancelled result that contains a failed step', () => {
     const failed = resultWithSingleStepState('FAILED').steps[0]!;
     const notRun = { ...resultWithSingleStepState('NOT_RUN').steps[0]!, id: 'not-run-step' };
 
@@ -1229,6 +1229,30 @@ describe('resultJsonSchema', () => {
           stepsFailed: 1,
           stepsNotRun: 1,
           steps: [failed, notRun],
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('accepts a failed result with failed and later cancelled steps', () => {
+    const failed = resultWithSingleStepState('FAILED').steps[0]!;
+    const cancelled = {
+      ...resultWithSingleStepState('CANCELLED').steps[0]!,
+      id: 'cancelled-step',
+    };
+
+    expect(
+      resultV1Schema.safeParse(
+        result({
+          status: 'failed',
+          exitCode: 1,
+          error: null,
+          stepsTotal: 2,
+          stepsExecuted: 2,
+          stepsSucceeded: 0,
+          stepsFailed: 1,
+          stepsCancelled: 1,
+          steps: [failed, cancelled],
         }),
       ).success,
     ).toBe(true);

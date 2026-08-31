@@ -1717,7 +1717,7 @@ describe('cancellation and timeout', () => {
     expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'NOT_RUN']);
   });
 
-  it('consumes cancellation after a failure when fail-fast is disabled', async () => {
+  it('keeps a failure ahead of between-step cancellation when fail-fast is disabled', async () => {
     const { plan } = setup(TWO_STEPS, { failFast: false });
     const cancel = new CancelToken();
 
@@ -1733,12 +1733,62 @@ describe('cancellation and timeout', () => {
     });
 
     expect(result).toMatchObject({
-      status: 'cancelled',
-      exitCode: 6,
+      status: 'failed',
+      exitCode: 1,
       stepsFailed: 1,
       stepsNotRun: 1,
+      error: null,
     });
     expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'NOT_RUN']);
+  });
+
+  it('keeps a failure when a later running step is cancelled', async () => {
+    const { plan } = setup(
+      [
+        'steps:',
+        '  - id: failed',
+        '    run:',
+        '      command: a',
+        '  - id: cancelled',
+        '    run:',
+        '      command: b',
+        '  - id: pending',
+        '    run:',
+        '      command: c',
+      ],
+      { failFast: false },
+    );
+    const cancel = new CancelToken();
+    let calls = 0;
+
+    const result = await executeRun({
+      plan,
+      cancel,
+      runner: stubRunner(() => {
+        calls += 1;
+        if (calls === 1) {
+          return { kind: 'exited', exitCode: 1 };
+        }
+        cancel.cancel();
+        return { kind: 'cancelled' };
+      }),
+    });
+
+    expect(calls).toBe(2);
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: null,
+      stepsTotal: 3,
+      stepsExecuted: 2,
+      stepsSucceeded: 0,
+      stepsFailed: 1,
+      stepsCancelled: 1,
+      stepsSkipped: 0,
+      stepsNotRun: 1,
+      nothingExecuted: false,
+    });
+    expect(result.steps.map((step) => step.state)).toEqual(['FAILED', 'CANCELLED', 'NOT_RUN']);
   });
 
   it('leaves skipped steps skipped while cancellation prevents pending work', async () => {

@@ -267,21 +267,20 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
   const finishedAt = new Date();
   const durationMs = Math.max(0, performance.now() - runStartedAt);
-  const outcome: RunOutcome = fatalTerminationFailure
-    ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false, error: null }
-    : wasCancelled
-      ? {
-          status: 'cancelled',
-          exitCode: EXIT_CODE_BY_STATUS.cancelled,
-          dryRun: false,
-          error: {
-            code: 'RUNE-601',
-            message: 'the run was cancelled',
-            location: null,
-          },
-        }
-      : failed
-        ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false, error: null }
+  const outcome: RunOutcome =
+    fatalTerminationFailure || failed
+      ? { status: 'failed', exitCode: EXIT_CODE_BY_STATUS.failed, dryRun: false, error: null }
+      : wasCancelled
+        ? {
+            status: 'cancelled',
+            exitCode: EXIT_CODE_BY_STATUS.cancelled,
+            dryRun: false,
+            error: {
+              code: 'RUNE-601',
+              message: 'the run was cancelled',
+              location: null,
+            },
+          }
         : {
             status: 'succeeded',
             exitCode: EXIT_CODE_BY_STATUS.succeeded,

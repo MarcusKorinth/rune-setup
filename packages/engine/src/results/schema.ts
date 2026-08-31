@@ -344,6 +344,13 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
       message: 'stepsCancelled must not exceed one',
     });
   }
+  if (result.status === 'cancelled' && expectedCounters.stepsFailed > 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'cancelled results must not contain FAILED steps',
+    });
+  }
 
   if (
     (result.status === 'config_error' ||
