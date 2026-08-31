@@ -236,6 +236,20 @@ describe('SpawnRunner', () => {
     });
   });
 
+  it('preserves __proto__ as an enumerable environment entry across layers', () => {
+    const environment = mergeSpawnEnvironment(
+      Object.fromEntries([['__proto__', 'parent']]),
+      Object.fromEntries([['__proto__', 'command']]),
+      Object.fromEntries([['__proto__', 'extra']]),
+      'linux',
+    );
+
+    expect(Object.getPrototypeOf(environment)).toBeNull();
+    expect(Object.hasOwn(environment, '__proto__')).toBe(true);
+    expect(Object.prototype.propertyIsEnumerable.call(environment, '__proto__')).toBe(true);
+    expect(environment['__proto__']).toBe('extra');
+  });
+
   it('runs an argv command and reports its exit code', async () => {
     await expect(run(nodeCommand('process.exit(0)'))).resolves.toEqual({
       kind: 'exited',
@@ -467,6 +481,29 @@ describe('SpawnRunner', () => {
     );
 
     expect(lines).toContain('hello step');
+  });
+
+  it('passes a __proto__ environment variable to a real child process', async () => {
+    const lines: string[] = [];
+
+    await run(
+      nodeCommand('console.log(process.env["__proto__"])', {
+        env: Object.fromEntries([['__proto__', 'command']]),
+      }),
+      {
+        parentEnv: Object.freeze(
+          Object.fromEntries([...Object.entries(process.env), ['__proto__', 'parent']]),
+        ),
+        extraEnv: Object.fromEntries([
+          ['__proto__', 'extra'],
+          ['RUNE_RUN_ID', 'run'],
+          ['RUNE_STEP_ID', 'step'],
+        ]),
+        onOutput: (_stream, line) => lines.push(line),
+      },
+    );
+
+    expect(lines).toContain('extra');
   });
 
   it('inherits only the supplied parent snapshot and preserves environment precedence', async () => {

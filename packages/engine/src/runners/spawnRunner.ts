@@ -88,7 +88,7 @@ export function mergeSpawnEnvironment(
   extraEnv: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform,
 ): Record<string, string | undefined> {
-  const merged: Record<string, string | undefined> = {};
+  const merged: Record<string, string | undefined> = Object.create(null);
 
   for (const layer of [parentEnv, commandEnv, extraEnv]) {
     for (const [name, value] of Object.entries(layer)) {
