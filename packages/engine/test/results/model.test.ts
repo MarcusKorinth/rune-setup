@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CancelledError,
+  ExecutionError,
+  exitCodeFor,
+  InputError,
+  InternalError,
+  ManifestError,
+  ResolutionError,
+  type RuneError,
+} from '../../src/errors.js';
+import {
   EXIT_CODE_BY_STATUS,
   type ResultError,
   type RunOutcome,
@@ -227,9 +237,32 @@ const expectedExitCodes = {
   internal_error: 70,
 } satisfies Readonly<Record<RunStatus, number>>;
 
+const representativeErrorsByStatus = {
+  failed: new ExecutionError('RUNE-401', 'step failed'),
+  config_error: new ManifestError('RUNE-103', 'bad manifest'),
+  input_error: new InputError('RUNE-201', 'missing input'),
+  resolution_error: new ResolutionError('RUNE-301', 'undefined variable'),
+  cancelled: new CancelledError(),
+  internal_error: new InternalError('unreachable'),
+} as const satisfies Readonly<Record<Exclude<RunStatus, 'succeeded' | 'planned'>, RuneError>>;
+
 describe('result status exit-code contract', () => {
   it('matches the complete versioned status table', () => {
     expect(EXIT_CODE_BY_STATUS).toEqual(expectedExitCodes);
+  });
+
+  it.each(Object.entries(representativeErrorsByStatus))(
+    'derives %s from the representative RuneError exit code',
+    (status, error) => {
+      expect(EXIT_CODE_BY_STATUS[status as keyof typeof representativeErrorsByStatus]).toBe(
+        exitCodeFor(error),
+      );
+    },
+  );
+
+  it('keeps succeeded and planned as the two zero-code exceptions', () => {
+    expect(EXIT_CODE_BY_STATUS.succeeded).toBe(0);
+    expect(EXIT_CODE_BY_STATUS.planned).toBe(0);
   });
 
   it('assigns exit 0 only to succeeded and planned, with unique nonzero codes', () => {

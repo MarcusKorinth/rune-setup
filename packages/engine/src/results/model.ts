@@ -7,12 +7,13 @@
 
 import type { ValueSource } from '../engine/inputs.js';
 import type { Platform } from '../engine/context.js';
-import type {
-  ConditionCode,
-  InputCode,
-  Location,
-  ManifestCode,
-  ResolutionCode,
+import {
+  EXIT_CODE_BY_RUNE_CODE,
+  type ConditionCode,
+  type InputCode,
+  type Location,
+  type ManifestCode,
+  type ResolutionCode,
 } from '../errors.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
@@ -42,12 +43,12 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 export const EXIT_CODE_BY_STATUS = {
   succeeded: 0,
   planned: 0,
-  failed: 1,
-  config_error: 3,
-  input_error: 4,
-  resolution_error: 5,
-  cancelled: 6,
-  internal_error: 70,
+  failed: EXIT_CODE_BY_RUNE_CODE['RUNE-401'],
+  config_error: EXIT_CODE_BY_RUNE_CODE['RUNE-101'],
+  input_error: EXIT_CODE_BY_RUNE_CODE['RUNE-201'],
+  resolution_error: EXIT_CODE_BY_RUNE_CODE['RUNE-301'],
+  cancelled: EXIT_CODE_BY_RUNE_CODE['RUNE-601'],
+  internal_error: EXIT_CODE_BY_RUNE_CODE['RUNE-500'],
 } as const satisfies Readonly<Record<RunStatus, number>>;
 
 type PlanResultErrorCode = 'RUNE-401' | 'RUNE-404' | 'RUNE-405';

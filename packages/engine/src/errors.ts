@@ -235,7 +235,7 @@ export class InternalError extends RuneError {
 }
 
 /** Exit codes are fixed and identical on every platform (docs/architecture.md §10). */
-const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
+export const EXIT_CODE_BY_RUNE_CODE = {
   'RUNE-001': 2,
   'RUNE-002': 2,
   'RUNE-101': 3,
@@ -256,15 +256,15 @@ const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
   'RUNE-405': 1,
   'RUNE-500': 70,
   'RUNE-601': 6,
-};
+} as const satisfies Readonly<Record<RuneCode, number>>;
 
 /** Internal error: anything that is not a `RuneError` escaped, which is always a bug. */
-export const INTERNAL_EXIT_CODE = 70;
+export const INTERNAL_EXIT_CODE = EXIT_CODE_BY_RUNE_CODE['RUNE-500'];
 
 /**
  * Maps an error to the process exit code. This is the only place that decides exit codes;
  * the CLI and the GUI shell both call it, so `--gui` cannot drift from a headless run.
  */
 export function exitCodeFor(error: unknown): number {
-  return error instanceof RuneError ? EXIT_CODES[error.code] : INTERNAL_EXIT_CODE;
+  return error instanceof RuneError ? EXIT_CODE_BY_RUNE_CODE[error.code] : INTERNAL_EXIT_CODE;
 }
