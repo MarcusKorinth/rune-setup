@@ -10,7 +10,7 @@ import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
-import { Session } from '../../src/engine/session.js';
+import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
@@ -70,6 +70,120 @@ describe('opening a session', () => {
     expect(session.allInputs()[0]?.value).toBe(true);
     expect(session.allInputs()[0]?.source).toBe('values');
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
+  });
+
+  it.each([
+    {
+      name: 'manifest default',
+      source: 'default',
+      defaultLine: '    default: bad',
+      extra: {},
+      options: (): SessionOptions => ({ environment: {} }),
+    },
+    {
+      name: 'values file',
+      source: 'values',
+      defaultLine: undefined,
+      extra: { 'values.yaml': 'target: bad\n' },
+      options: (path: string): SessionOptions => ({
+        environment: {},
+        values: [join(path, '..', 'values.yaml')],
+      }),
+    },
+    {
+      name: 'environment',
+      source: 'environment',
+      defaultLine: undefined,
+      extra: {},
+      options: (): SessionOptions => ({ environment: { RUNE_INPUT_TARGET: 'bad' } }),
+    },
+    {
+      name: '--set',
+      source: 'set',
+      defaultLine: undefined,
+      extra: {},
+      options: (): SessionOptions => ({ environment: {}, overrides: { target: 'bad' } }),
+    },
+  ])('collects an invalid $name seed only for interactive frontends', async (scenario) => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  target:',
+        '    type: text',
+        '    pattern: "x+"',
+        ...(scenario.defaultLine === undefined ? [] : [scenario.defaultLine]),
+        'steps: []',
+      ],
+      scenario.extra,
+    );
+    const options = scenario.options(path);
+
+    await expect(
+      Session.open(path, { ...options, mode: 'non-interactive' }),
+    ).rejects.toBeInstanceOf(InputError);
+
+    for (const mode of ['interactive', 'gui'] as const) {
+      const session = await Session.open(path, { ...options, mode });
+      const target = session.allInputs().find((input) => input.id === 'target');
+
+      expect(target).toMatchObject({
+        enabled: true,
+        value: undefined,
+        source: undefined,
+        rejection: { source: scenario.source, candidate: 'bad' },
+      });
+      expect(session.pendingInputs()).toEqual([target]);
+      expect(target?.rejection?.issue.code).toBe('RUNE-202');
+
+      expect(session.setValue('target', 'xxx')).toEqual([]);
+      expect(session.allInputs()[0]).toMatchObject({
+        value: 'xxx',
+        source: 'answer',
+        rejection: undefined,
+      });
+      expect(session.pendingInputs()).toEqual([]);
+      expect(() => session.plan()).not.toThrow();
+    }
+  });
+
+  it('includes optional rejected seeds in pending inputs but excludes ordinary optional empties', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  invalidOptional:',
+        '    type: text',
+        '    required: false',
+        '    pattern: "x+"',
+        '  emptyOptional:',
+        '    type: text',
+        '    required: false',
+        '  required:',
+        '    type: text',
+        'steps: []',
+      ]),
+      {
+        mode: 'gui',
+        environment: {},
+        overrides: { invalidOptional: 'bad' },
+      },
+    );
+
+    expect(session.pendingInputs().map((input) => input.id)).toEqual([
+      'invalidOptional',
+      'required',
+    ]);
+    expect(session.allInputs().find((input) => input.id === 'emptyOptional')).toMatchObject({
+      value: '',
+      rejection: undefined,
+    });
   });
 
   it('registers validated identity without inventing a locale when locale selection fails', async () => {
@@ -231,7 +345,7 @@ describe('answering inputs', () => {
         '    when: "${enabled}"',
         'steps: []',
       ]),
-      { environment: {} },
+      { mode: 'interactive', environment: {} },
     );
     const before = session.allInputs();
 
@@ -291,6 +405,84 @@ describe('answering inputs', () => {
 
     expect(session.allInputs().find((input) => input.id === 'databasePort')?.value).toBe('5432');
     expect(session.pendingInputs()).toEqual([]);
+  });
+
+  it('collects a seed rejection exposed by a valid controlling edit', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  choice:',
+        '    type: select',
+        '    options: [accepted]',
+        '    when: "${enabled}"',
+        'steps: []',
+      ]),
+      {
+        mode: 'interactive',
+        environment: {},
+        overrides: { choice: 'rejected' },
+      },
+    );
+
+    expect(session.setValue('enabled', true)).toEqual([{ inputId: 'choice', enabled: true }]);
+    expect(session.allInputs().find((input) => input.id === 'enabled')).toMatchObject({
+      value: true,
+      source: 'answer',
+    });
+    expect(session.allInputs().find((input) => input.id === 'choice')).toMatchObject({
+      enabled: true,
+      value: undefined,
+      rejection: { source: 'set', candidate: 'rejected' },
+    });
+    expect(session.pendingInputs().map((input) => input.id)).toEqual(['choice']);
+  });
+
+  it('rolls back a rejected edit while retaining an independent seed rejection', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  invalidSeed:',
+        '    type: text',
+        '    required: false',
+        '    pattern: "x+"',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        'steps: []',
+      ]),
+      {
+        mode: 'gui',
+        environment: {},
+        overrides: { invalidSeed: 'bad' },
+      },
+    );
+    session.setValue('enabled', true);
+    const before = session.allInputs();
+
+    expect(() => session.setValue('enabled', 'not-a-boolean')).toThrow(InputError);
+
+    expect(session.allInputs()).toBe(before);
+    expect(session.allInputs().find((input) => input.id === 'enabled')).toMatchObject({
+      value: true,
+      source: 'answer',
+    });
+    expect(
+      session.allInputs().find((input) => input.id === 'invalidSeed')?.rejection,
+    ).toMatchObject({
+      source: 'set',
+      candidate: 'bad',
+    });
   });
 
   it('rolls back secret registration when a later input rejects an edit', async () => {
@@ -472,6 +664,51 @@ describe('planning and executing', () => {
     session.setValue('installDatabase', true);
 
     expect(() => session.plan()).toThrow(/databasePort.*--set databasePort=/s);
+  });
+
+  it('refuses to plan with every rejection and missing-input source', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  invalidOptional:',
+        '    type: text',
+        '    required: false',
+        '    pattern: "x+"',
+        '  firstMissing:',
+        '    type: text',
+        '  secondMissing:',
+        '    type: secret',
+        'steps: []',
+      ]),
+      {
+        mode: 'interactive',
+        environment: {},
+        overrides: { invalidOptional: 'bad' },
+      },
+    );
+    let thrown: unknown;
+
+    try {
+      session.plan();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const inputError = thrown as InputError;
+    expect(inputError.code).toBe('RUNE-202');
+    expect(inputError.issues.map((issue) => issue.code)).toEqual([
+      'RUNE-202',
+      'RUNE-201',
+      'RUNE-201',
+    ]);
+    expect(inputError.message).toMatch(/invalidOptional \(from --set invalidOptional=…\)/);
+    expect(inputError.message).toMatch(/firstMissing.*--set firstMissing=/s);
+    expect(inputError.message).toMatch(/secondMissing.*--set secondMissing=/s);
   });
 
   it('executes through the facade and writes the log file', async () => {

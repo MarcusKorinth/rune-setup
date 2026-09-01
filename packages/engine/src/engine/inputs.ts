@@ -224,14 +224,18 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   return resolveInputsWithRegistry(options, new SecretRegistry());
 }
 
-/** Internal resolver seam for a session that retains masking across re-resolution. */
+/**
+ * Internal resolver seam for a session that retains masking across re-resolution.
+ * `rejectAnswerId` keeps one in-flight interactive Session edit fatal while seeds are collected.
+ */
 export function resolveInputsWithRegistry(
   options: ResolveInputsOptions,
   secrets: SecretRegistry,
+  rejectAnswerId?: string,
 ): Resolution {
   const attempt: ResolutionAttempt = { stagedSecrets: new SecretRegistry() };
   try {
-    return resolveInputsStaged(options, secrets, attempt);
+    return resolveInputsStaged(options, secrets, attempt, rejectAnswerId);
   } catch (cause) {
     if (cause instanceof RuneError) {
       const redactor = attempt.redactor ?? secrets.combinedWith(attempt.stagedSecrets);
@@ -250,6 +254,7 @@ function resolveInputsStaged(
   options: ResolveInputsOptions,
   publishedSecrets: SecretRegistry,
   attempt: ResolutionAttempt,
+  rejectAnswerId: string | undefined,
 ): Resolution {
   const { manifest, context } = options;
   const { stagedSecrets } = attempt;
@@ -293,11 +298,13 @@ function resolveInputsStaged(
         if (supplied?.source === 'answer') {
           const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
           if (!coerced.ok) {
-            issues.push({
+            const issue: RuneIssue = {
               code: 'RUNE-202',
               message: coerced.message,
               location: supplied.location,
-            });
+            };
+            rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
+            issues.push(issue);
           }
         }
         // A manifest default is not something anybody *supplied* for this run: it is what the
@@ -351,6 +358,7 @@ function resolveInputsStaged(
           message: coerced.message,
           location: supplied.location,
         };
+        rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
         issues.push(
           supplied.valuesDocumentOrdinal === undefined
             ? issue
@@ -457,6 +465,18 @@ function resolveInputsStaged(
   publishedSecrets.replaceWith(stagedSecrets);
   resolutionSnapshots.set(resolution, snapshot);
   return resolution;
+}
+
+/** Keeps an interactive Session.setValue transactional while seed rejections are collected. */
+function rejectEditedAnswer(
+  id: string,
+  supplied: SuppliedValue,
+  issue: RuneIssue,
+  rejectAnswerId: string | undefined,
+): void {
+  if (supplied.source === 'answer' && id === rejectAnswerId) {
+    throw InputError.fromIssues('RUNE-202', [issue]);
+  }
 }
 
 function snapshotInputState(state: InputState): InputState {

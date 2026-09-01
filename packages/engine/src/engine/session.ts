@@ -186,6 +186,7 @@ export class Session {
           context,
           values,
           overrides,
+          invalidValues: mode === 'non-interactive' ? 'throw' : 'collect',
         },
         secrets,
       );
@@ -200,8 +201,8 @@ export class Session {
         strings,
         values,
         overrides,
-        // All-or-nothing: a value no type accepts, or a key naming no input, threw above and
-        // no session exists (§10).
+        // Automation is all-or-nothing. Interactive frontends retain rejected seed values so
+        // they can render and replace them before planning (§5).
         resolution,
         logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
         runner: options.runner,
@@ -228,10 +229,14 @@ export class Session {
     }
   }
 
-  /** Enabled required inputs still without an answer, in declaration order — what to ask for. */
+  /** Enabled unresolved inputs a frontend can correct, in declaration order. */
   pendingInputs(): readonly InputState[] {
     const missing = new Set(this.#resolution.missing);
-    return Object.freeze(this.#resolution.inputs.filter((state) => missing.has(state.id)));
+    return Object.freeze(
+      this.#resolution.inputs.filter(
+        (state) => state.enabled && (missing.has(state.id) || state.rejection !== undefined),
+      ),
+    );
   }
 
   /** Every input with its resolved state — what a GUI prefills (§9.1). */
@@ -265,7 +270,7 @@ export class Session {
     const candidateSecrets = new SecretRegistry();
     let after: Resolution;
     try {
-      after = this.#resolve(candidateSecrets);
+      after = this.#resolve(candidateSecrets, id);
     } catch (error) {
       // Restore, never delete: a rejected edit must not discard an earlier accepted answer.
       if (hadPrevious) {
@@ -412,11 +417,12 @@ export class Session {
   #executionPlan(): ExecutionPlan {
     try {
       const missing = this.#resolution.missing;
-      if (missing.length > 0) {
-        throw InputError.fromIssues(
-          'RUNE-201',
-          missing.map((id) => this.#missingIssue(id)),
-        );
+      const problems = this.#resolution.problems;
+      if (missing.length > 0 || problems.length > 0) {
+        throw InputError.fromIssues(problems.length > 0 ? 'RUNE-202' : 'RUNE-201', [
+          ...problems,
+          ...missing.map((id) => this.#missingIssue(id)),
+        ]);
       }
       if (this.#plan !== undefined) {
         return this.#plan;
@@ -441,7 +447,7 @@ export class Session {
       : error;
   }
 
-  #resolve(secrets: SecretRegistry): Resolution {
+  #resolve(secrets: SecretRegistry, editedAnswerId?: string): Resolution {
     return resolveInputsWithRegistry(
       {
         manifest: this.manifest,
@@ -449,8 +455,10 @@ export class Session {
         values: this.#values,
         overrides: this.#overrides,
         answers: this.#answers,
+        invalidValues: this.mode === 'non-interactive' ? 'throw' : 'collect',
       },
       secrets,
+      this.mode === 'non-interactive' ? undefined : editedAnswerId,
     );
   }
 
