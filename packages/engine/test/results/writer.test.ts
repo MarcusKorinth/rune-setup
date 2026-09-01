@@ -396,6 +396,14 @@ describe('writeResult', () => {
     });
   });
 
+  it('keeps the built-in-default locale as an explicit null field', () => {
+    const serialized = JSON.parse(
+      serializeResult({ ...result('built-in-locale'), locale: null }),
+    ) as RunResult;
+
+    expect(serialized).toHaveProperty('locale', null);
+  });
+
   it('writes nullable metadata for config and internal errors', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
 

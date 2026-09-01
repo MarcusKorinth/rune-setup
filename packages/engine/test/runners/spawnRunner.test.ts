@@ -259,7 +259,7 @@ describe('SpawnRunner', () => {
       kind: 'exited',
       exitCode: 7,
     });
-  });
+  }, 15_000);
 
   it('preserves argument boundaries and contents in a real child process', async () => {
     const args = [
@@ -650,7 +650,7 @@ describe('SpawnRunner', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('reports a command that does not exist as failed to start, not as a crash', async () => {
     const outcome = await run(

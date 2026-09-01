@@ -32,6 +32,7 @@ import {
 import type { ManifestV1, CommandSpec } from '../manifest/v1/schema.js';
 import { isCommandSpec } from '../manifest/v1/schema.js';
 import { inputTypes } from '../inputs/registry.js';
+import { stringTableContextFor, type StringTable } from '../i18n/strings.js';
 import { evaluateCondition, parseCondition, type ConditionReference } from './conditions.js';
 import { resolveReference, runtimeContextFor, type RuntimeContext } from './context.js';
 import { scanTemplate, type TemplateReference } from './interpolate.js';
@@ -104,7 +105,8 @@ export interface ExecutionPlan {
   readonly manifestPath: string;
   readonly manifestSha256: string;
   readonly platform: RuntimeContext['platform'];
-  readonly locale: string;
+  /** Selected locale tag, or `null` for the built-in defaults (§6.3). */
+  readonly locale: string | null;
   /** True when a foreign platform was previewed; such a plan must never execute (§6.1). */
   readonly preview: boolean;
   readonly resolvedInputs: readonly PlanInput[];
@@ -116,7 +118,10 @@ export interface PlanOptions {
   readonly manifest: Manifest;
   readonly resolution: Resolution;
   readonly context: RuntimeContext;
-  readonly locale: string;
+  /** Selected locale tag, or `undefined` for the built-in defaults (§6.3). */
+  readonly locale: string | undefined;
+  /** Localized titles land in the plan, so events and results show them (§6.3). */
+  readonly strings?: StringTable | undefined;
 }
 
 /** Execution-only context. Deliberately not re-exported from the package entry point. */
@@ -145,6 +150,15 @@ export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
 export function buildPlan(options: PlanOptions): ExecutionPlan {
   const { manifest, resolution, context, locale } = options;
   const manifestDescriptor = manifestDescriptorFor(manifest);
+  if (options.strings !== undefined) {
+    const strings = stringTableContextFor(options.strings);
+    if (strings.manifest !== manifest) {
+      throw new InternalError('the string table belongs to a different manifest');
+    }
+    if (strings.locale !== locale) {
+      throw new InternalError('the string table locale does not match the execution plan locale');
+    }
+  }
   const resolved = resolutionSnapshotFor(resolution);
   const trustedContext = runtimeContextFor(context);
   if (resolved.manifest !== manifest) {
@@ -158,7 +172,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   const planSecrets = registryFromSecretMasker(resolved.secrets);
 
   const interpolatedSteps = manifest.steps.map((step): PlannedStep => {
-    const title = step.title ?? step.id;
+    const title = options.strings?.stepTitle(step.id) ?? step.title ?? step.id;
 
     const command = commandFor(step.run, trustedContext);
     if (command === undefined) {
@@ -198,7 +212,7 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
     manifestPath: manifestDescriptor.path,
     manifestSha256: manifestDescriptor.sha256,
     platform: trustedContext.platform,
-    locale,
+    locale: locale ?? null,
     preview: trustedContext.preview,
     resolvedInputs,
     executionOptions: {

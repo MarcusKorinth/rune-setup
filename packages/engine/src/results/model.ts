@@ -241,7 +241,8 @@ interface RunResultBody {
   readonly mode: RunMode;
   readonly crossPlatformPreview: boolean;
   readonly platform: Platform;
-  readonly locale: string;
+  /** Selected locale tag, or `null` for the built-in defaults (§6.3). */
+  readonly locale: string | null;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly durationMs: number;

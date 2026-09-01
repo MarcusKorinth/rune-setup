@@ -20,6 +20,8 @@ import {
   secretValuesEqual,
 } from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
+import { loadOverlayText } from '../../src/i18n/overlay.js';
+import { resolveStrings } from '../../src/i18n/strings.js';
 import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
@@ -923,6 +925,192 @@ describe('derived secret masking in Windows planning diagnostics', () => {
     const error = errorForPublicCollision('command', `${derivedSecret}\\setup.cmd`);
 
     expectDerivedSecretMasked(error, 'RUNE-405');
+  });
+});
+
+describe('localized titles', () => {
+  function localizationFixture(file = 'installer.yaml') {
+    const manifest = parseManifestText(
+      [...HEAD, 'steps:', '  - id: install', '    run:', '      command: node', ''].join('\n'),
+      file,
+      { manifestDir: TEST_MANIFEST_DIR },
+    );
+    const context = createRuntimeContext({
+      manifestDir: TEST_MANIFEST_DIR,
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    return { manifest, context, resolution: resolveInputs({ manifest, context }) };
+  }
+
+  it('changes only the planned title for an overlay; machine fields stay locale-invariant', () => {
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    title: Install',
+        '    run:',
+        '      command: scripts/install.js',
+        '      args: ["--mode", "guided"]',
+        '      cwd: work',
+        '      env:',
+        '        INSTALL_MODE: guided',
+        '      timeoutSeconds: 30',
+        '      successExitCodes: [0, 9]',
+        '',
+      ].join(String.fromCharCode(10)),
+      'installer.yaml',
+      { manifestDir: TEST_MANIFEST_DIR },
+    );
+    const context = createRuntimeContext({
+      manifestDir: TEST_MANIFEST_DIR,
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({ manifest, context });
+    const overlay = loadOverlayText(
+      'steps.install.title: Installieren',
+      'locales/de.yaml',
+      'de',
+      manifest,
+    );
+    const defaultPlan = buildPlan({
+      manifest,
+      resolution,
+      context,
+    });
+    const localizedPlan = buildPlan({
+      manifest,
+      resolution,
+      context,
+      locale: 'de',
+      strings: resolveStrings({ manifest, locale: 'de', overlay }),
+    });
+
+    const defaultStep = defaultPlan.steps[0];
+    const localizedStep = localizedPlan.steps[0];
+    if (defaultStep?.state !== 'PENDING' || localizedStep?.state !== 'PENDING') {
+      throw new Error('expected pending steps');
+    }
+
+    expect(defaultStep.title).toBe('Install');
+    expect(defaultPlan.locale).toBe(TEST_LOCALE);
+    expect(localizedPlan.locale).toBe('de');
+    expect(localizedStep).toEqual({ ...defaultStep, title: 'Installieren' });
+  });
+
+  it('refuses to mix a string table and execution plan from different locales', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const strings = resolveStrings({ manifest, locale: 'de' });
+
+    expect(() =>
+      buildPlanWithLocale({ manifest, resolution, context, locale: 'fr', strings }),
+    ).toThrow('the string table locale does not match the execution plan locale');
+  });
+
+  it('serializes the built-in defaults as an explicit null locale', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const strings = resolveStrings({ manifest, locale: undefined });
+
+    const plan = buildPlanWithLocale({
+      manifest,
+      resolution,
+      context,
+      locale: undefined,
+      strings,
+    });
+
+    expect(plan.locale).toBeNull();
+    expect(JSON.parse(JSON.stringify(plan)).locale).toBeNull();
+  });
+
+  it('refuses a default string table for an explicitly localized plan', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const strings = resolveStrings({ manifest, locale: undefined });
+
+    expect(() =>
+      buildPlanWithLocale({ manifest, resolution, context, locale: 'de', strings }),
+    ).toThrow('the string table locale does not match the execution plan locale');
+  });
+
+  it('refuses a localized string table for a built-in-default plan', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const strings = resolveStrings({ manifest, locale: 'de' });
+
+    expect(() =>
+      buildPlanWithLocale({ manifest, resolution, context, locale: undefined, strings }),
+    ).toThrow('the string table locale does not match the execution plan locale');
+  });
+
+  it('refuses a same-locale string table resolved for another manifest instance', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const other = localizationFixture('other.yaml');
+    const strings = resolveStrings({ manifest: other.manifest, locale: 'de' });
+
+    expect(() =>
+      buildPlanWithLocale({ manifest, resolution, context, locale: 'de', strings }),
+    ).toThrow('the string table belongs to a different manifest');
+  });
+
+  it('refuses a structural copy of an authentic string table', () => {
+    const { manifest, context, resolution } = localizationFixture();
+    const strings = resolveStrings({ manifest, locale: 'de' });
+    const forged = { ...strings, stepTitle: () => 'forged' };
+
+    expect(() =>
+      buildPlanWithLocale({ manifest, resolution, context, locale: 'de', strings: forged }),
+    ).toThrow('the string table was not created by resolveStrings');
+  });
+
+  it('masks a localized title that collides with a declared secret', () => {
+    const secret = 'super-secret-value';
+    const manifest = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+      { manifestDir: TEST_MANIFEST_DIR },
+    );
+    const context = createRuntimeContext({
+      manifestDir: TEST_MANIFEST_DIR,
+      product: manifest.product,
+      platform: 'linux',
+      environment: {},
+    });
+    const resolution = resolveInputs({
+      manifest,
+      context,
+      overrides: new Map([['token', secret]]),
+    });
+    const overlay = loadOverlayText(
+      `steps.install.title: Deploy ${secret}\n`,
+      'locales/de.yaml',
+      'de',
+      manifest,
+    );
+    const strings = resolveStrings({ manifest, locale: 'de', overlay });
+
+    const plan = buildPlanWithLocale({
+      manifest,
+      resolution,
+      context,
+      locale: 'de',
+      strings,
+    });
+
+    expect(plan.steps[0]?.title).toBe('Deploy ***');
+    expect(JSON.stringify(plan)).not.toContain(secret);
   });
 });
 

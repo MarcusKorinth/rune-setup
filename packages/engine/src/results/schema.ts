@@ -171,7 +171,7 @@ const resultShape = {
   mode: z.enum(RUN_MODES),
   crossPlatformPreview: z.boolean(),
   platform: z.enum(PLATFORMS),
-  locale: z.string(),
+  locale: z.string().nullable(),
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime(),
   durationMs: z.number().nonnegative(),

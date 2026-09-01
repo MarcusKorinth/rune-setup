@@ -76,6 +76,9 @@ export type {
 export { resultJsonSchema } from './results/schema.js';
 export { writeResult } from './results/writer.js';
 
+export type { StringTable } from './i18n/strings.js';
+export type { ChromeKey } from './i18n/catalog.js';
+
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 
 export { formatLocation, formatPath } from './manifest/source.js';

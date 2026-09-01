@@ -393,6 +393,7 @@ describe('resultJsonSchema', () => {
       expect(branch.type).toBe('object');
       expect(branch.additionalProperties).toBe(false);
       expect(branch.properties?.['resultSchemaVersion']).toMatchObject({ const: 1 });
+      expect(branch.properties?.['locale']?.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
       expect(branch.required).toEqual(
         expect.arrayContaining(['status', 'exitCode', 'dryRun', 'error', 'mode', 'locale']),
       );
@@ -950,12 +951,14 @@ describe('resultJsonSchema', () => {
     }
   });
 
-  it('requires mode and locale and rejects unknown properties at every object level', () => {
+  it('requires a string-or-null locale and rejects unknown properties at every object level', () => {
     const { mode: _mode, ...withoutMode } = result();
     const { locale: _locale, ...withoutLocale } = result();
 
     expect(resultV1Schema.safeParse(withoutMode).success).toBe(false);
     expect(resultV1Schema.safeParse(withoutLocale).success).toBe(false);
+    expect(resultV1Schema.safeParse(result({ locale: null })).success).toBe(true);
+    expect(resultV1Schema.safeParse({ ...result(), locale: 42 }).success).toBe(false);
     expect(resultV1Schema.safeParse({ ...result(), unknown: true }).success).toBe(false);
     expect(
       resultV1Schema.safeParse(

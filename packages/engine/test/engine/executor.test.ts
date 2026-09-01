@@ -107,9 +107,12 @@ function describePlan(options: { readonly plan: ExecutionPlan }): RunResult {
 }
 
 function buildPlan(
-  options: Omit<PlanOptions, 'locale'> & { readonly locale?: string },
+  options: Omit<PlanOptions, 'locale'> & { readonly locale?: string | undefined },
 ): ExecutionPlan {
-  return buildPlanWithLocale({ ...options, locale: options.locale ?? TEST_LOCALE });
+  return buildPlanWithLocale({
+    ...options,
+    locale: Object.hasOwn(options, 'locale') ? options.locale : TEST_LOCALE,
+  });
 }
 
 /** A runner whose behaviour per step is written into the test, so nothing real is spawned. */
@@ -125,7 +128,7 @@ function setup(
     overrides?: ReadonlyMap<string, string>;
     failFast?: boolean;
     environment?: Readonly<Record<string, string | undefined>>;
-    locale?: string;
+    locale?: string | undefined;
   } = {},
 ): { plan: ExecutionPlan } {
   const failFastLine = options.failFast === false ? ['execution:', '  failFast: false'] : [];
@@ -147,7 +150,12 @@ function setup(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
   });
   return {
-    plan: buildPlan({ manifest, resolution, context, locale: options.locale ?? TEST_LOCALE }),
+    plan: buildPlan({
+      manifest,
+      resolution,
+      context,
+      locale: Object.hasOwn(options, 'locale') ? options.locale : TEST_LOCALE,
+    }),
   };
 }
 
@@ -2046,6 +2054,19 @@ describe('skipped steps and the dry run', () => {
       expect(executed).toMatchObject({ mode, locale: 'de-DE' });
     },
   );
+
+  it('records the built-in defaults as null in dry-run and execution results', async () => {
+    const { plan } = setup(['steps: []'], { locale: undefined });
+
+    const described = describePlan({ plan });
+    const executed = await executeRun({ plan });
+
+    expect(plan.locale).toBeNull();
+    expect(described.locale).toBeNull();
+    expect(executed.locale).toBeNull();
+    expect(resultV1Schema.safeParse(described).success).toBe(true);
+    expect(resultV1Schema.safeParse(executed).success).toBe(true);
+  });
 
   it('returns a deeply frozen dry-run result', () => {
     const { plan } = setup([

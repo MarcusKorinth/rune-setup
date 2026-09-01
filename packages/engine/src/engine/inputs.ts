@@ -1075,7 +1075,7 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
   const issues: DeferredValuesProblem[] = [];
 
   const raw = document.value;
-  if (raw === undefined || (raw === null && document.sourceMap.best([]) === undefined)) {
+  if (document.isEmpty) {
     return { file: document.file, values, sourceMap: document.sourceMap };
   }
 

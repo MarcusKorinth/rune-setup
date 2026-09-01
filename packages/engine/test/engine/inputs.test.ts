@@ -3287,10 +3287,13 @@ describe('values files', () => {
     ]);
   });
 
-  it.each(['', ' \n\t\n', '# no values\n\n# here\n'])(
+  it.each(['', ' \n\t\n', '# no values\n\n# here\n', '---\n', '%YAML 1.2\n---\n'])(
     'reads a contentless document as no values at all',
     (contents) => {
-      expect(parseValuesFile(file(contents)).values.size).toBe(0);
+      const document = parseValuesFile(file(contents));
+
+      expect(document.values.size).toBe(0);
+      expect(document.problems).toBeUndefined();
     },
   );
 
@@ -3490,14 +3493,18 @@ describe('values files', () => {
     expectRegistryUnchanged(secrets, [first, second]);
   });
 
-  it.each(['null\n', '~\n'])('refuses an explicit top-level null value', (contents) => {
+  it.each([
+    { contents: 'null\n', line: 1 },
+    { contents: '~\n', line: 1 },
+    { contents: '---\nnull\n', line: 2 },
+  ])('refuses an explicit top-level null value', ({ contents, line }) => {
     const error = loadError(contents);
 
     expect(error.code).toBe('RUNE-202');
     expect(error.message).toBe(
-      'values.yaml:1:1: values.yaml must contain a mapping of input ids to values',
+      `values.yaml:${line}:1: values.yaml must contain a mapping of input ids to values`,
     );
-    expect(error.location).toEqual({ file: 'values.yaml', line: 1, column: 1 });
+    expect(error.location).toEqual({ file: 'values.yaml', line, column: 1 });
   });
 
   it('classifies YAML syntax errors as invalid values input and keeps their location', () => {
