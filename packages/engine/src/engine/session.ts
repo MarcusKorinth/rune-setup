@@ -148,9 +148,9 @@ export class Session {
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
-    const manifest = parseManifest(absolutePath);
-    const descriptor = manifestDescriptorFor(manifest);
     const mode = options.mode ?? 'non-interactive';
+    const manifest = parseManifest(absolutePath, { checkAssetFiles: mode === 'gui' });
+    const descriptor = manifestDescriptorFor(manifest);
     const host = hostPlatform();
     const platform = options.platform ?? host;
     const preview = platform !== host;

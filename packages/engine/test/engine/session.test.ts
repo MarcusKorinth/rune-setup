@@ -9,7 +9,7 @@ import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
-import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
+import { ExecutionError, InputError, InternalError, ManifestError } from '../../src/errors.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
@@ -1148,19 +1148,64 @@ describe('strings and theme', () => {
     expect(result.manifest.path).toBe(path);
   });
 
+  it.each(['logo', 'banner', 'theme'] as const)(
+    'rejects a missing gui $asset file',
+    async (asset) => {
+      const path = fixture([...BASE, 'gui:', `  ${asset}: assets/missing-${asset}`]);
+
+      await expect(Session.open(path, { mode: 'gui', environment: {} })).rejects.toMatchObject({
+        code: 'RUNE-104',
+        name: ManifestError.name,
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'RUNE-104',
+            message: expect.stringContaining(`gui.${asset}`),
+          }),
+        ]),
+      });
+    },
+  );
+
+  it.each(['logo', 'banner', 'theme'] as const)(
+    'does not check a missing gui $asset file outside GUI mode',
+    async (asset) => {
+      const path = fixture([...BASE, 'gui:', `  ${asset}: assets/missing-${asset}`]);
+
+      for (const mode of ['interactive', 'non-interactive'] as const) {
+        await expect(Session.open(path, { mode, environment: {} })).resolves.toBeInstanceOf(
+          Session,
+        );
+      }
+    },
+  );
+
   it('hands back the gui block with absolute paths, or nothing', async () => {
     const plain = await Session.open(fixture(BASE), { environment: {} });
     expect(plain.getThemeConfig()).toEqual({});
 
     const themed = await Session.open(
-      fixture([...BASE, 'gui:', '  accentColor: "#3355ff"', '  logo: assets/logo.png'], {
-        'assets/logo.png': 'not-a-real-png',
-      }),
-      { environment: {} },
+      fixture(
+        [
+          ...BASE,
+          'gui:',
+          '  accentColor: "#3355ff"',
+          '  logo: assets/logo.png',
+          '  banner: assets/banner.png',
+          '  theme: assets/theme.css',
+        ],
+        {
+          'assets/logo.png': 'not-a-real-png',
+          'assets/banner.png': 'not-a-real-png',
+          'assets/theme.css': 'body {}',
+        },
+      ),
+      { mode: 'gui', environment: {} },
     );
     const theme = themed.getThemeConfig();
     expect(theme.accentColor).toBe('#3355ff');
     expect(theme.logo).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]logo\.png$/);
+    expect(theme.banner).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]banner\.png$/);
+    expect(theme.theme).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]theme\.css$/);
   });
 });
 
