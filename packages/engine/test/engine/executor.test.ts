@@ -762,6 +762,36 @@ describe('a run that fails', () => {
     expect(result.steps[0]?.outputTail).toHaveLength(OUTPUT_TAIL_LINES);
   });
 
+  it.each([
+    ['ASCII exactly at the limit', 'a'.repeat(MAX_OUTPUT_LINE_BYTES), false],
+    ['ASCII one byte over the limit', 'a'.repeat(MAX_OUTPUT_LINE_BYTES + 1), true],
+    ['multibyte UTF-8 exactly at the limit', 'é'.repeat(MAX_OUTPUT_LINE_BYTES / 2), false],
+    ['multibyte UTF-8 one byte over the limit', `${'é'.repeat(MAX_OUTPUT_LINE_BYTES / 2)}x`, true],
+  ])('bounds an injected runner output line: %s', async (_name, rawLine, omitted) => {
+    const { plan } = setup(['steps:', '  - id: bounded', '    run:', '      command: a']);
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', rawLine);
+        return { kind: 'exited', exitCode: 0 };
+      }),
+    });
+
+    expect(Buffer.byteLength(rawLine, 'utf8')).toBe(
+      omitted ? MAX_OUTPUT_LINE_BYTES + 1 : MAX_OUTPUT_LINE_BYTES,
+    );
+    expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
+      expect.objectContaining({
+        stream: 'stdout',
+        line: omitted ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER : rawLine,
+      }),
+    ]);
+    expect(result).toMatchObject({ status: 'succeeded', stepsSucceeded: 1 });
+  });
+
   it('omits an oversized default-runner line before masking can split its secret', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-bounded-output-'));
     try {
@@ -1348,6 +1378,113 @@ describe('a run that fails', () => {
       ]);
       if (forbidden !== undefined) {
         expect(JSON.stringify({ thrown, events, result })).not.toContain(forbidden);
+        expect((thrown as Error).message).not.toContain(forbidden);
+      }
+
+      const settledEventCount = events.length;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toHaveLength(settledEventCount);
+    },
+  );
+
+  it.each(['invalid stream', 'non-string line'])(
+    'contains an injected runner %s as a value-free internal contract failure',
+    async (invalidPayload) => {
+      const { plan } = setup(TWO_STEPS, { failFast: false });
+      const events: RunEvent[] = [];
+      const privateObject = {
+        marker: 'private-object-payload',
+        toString: vi.fn(() => 'private-stringified-payload'),
+      };
+      const emitUnsafe = (request: SpawnRequest, stream: unknown, line: unknown): void => {
+        (request.onOutput as unknown as (unsafeStream: unknown, unsafeLine: unknown) => void)(
+          stream,
+          line,
+        );
+      };
+      const runner = stubRunner((request) => {
+        if (invalidPayload === 'invalid stream') {
+          emitUnsafe(request, 'private-stream-payload', 'private-line-payload');
+        } else {
+          emitUnsafe(request, 'stdout', privateObject);
+        }
+        emitUnsafe(request, 'private-second-stream', privateObject);
+        request.onOutput('stderr', 'private-output-after-contract-failure');
+        return { kind: 'exited', exitCode: 0 };
+      });
+
+      let thrown: unknown;
+      try {
+        await executeRun({
+          plan,
+          observer: (event) => events.push(event),
+          runner,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(InternalError);
+      expect(thrown).toMatchObject({ code: 'RUNE-500' });
+      expect((thrown as Error).message).toContain(
+        'runner emitted an invalid output payload for step "first"',
+      );
+      expect(privateObject.toString).not.toHaveBeenCalled();
+      expect(events.map((event) => event.kind)).toEqual([
+        'runStarted',
+        'stepStarted',
+        'stepOutput',
+        'stepFinished',
+        'stepFinished',
+        'runFinished',
+      ]);
+      expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
+        expect.objectContaining({
+          stepId: 'first',
+          stream: 'stderr',
+          line: 'RUNE-500 runner emitted an invalid output payload for step "first"',
+        }),
+      ]);
+
+      const terminal = events.at(-1);
+      expect(terminal?.kind).toBe('runFinished');
+      const result = terminal?.kind === 'runFinished' ? terminal.result : undefined;
+      expect(result).toMatchObject({
+        status: 'internal_error',
+        exitCode: 70,
+        error: {
+          code: 'RUNE-500',
+          message: expect.stringContaining(
+            'runner emitted an invalid output payload for step "first"',
+          ),
+        },
+        stepsFailed: 1,
+        stepsNotRun: 1,
+        steps: [
+          {
+            state: 'FAILED',
+            outputTail: [
+              {
+                stream: 'stderr',
+                line: 'RUNE-500 runner emitted an invalid output payload for step "first"',
+              },
+            ],
+          },
+          { state: 'NOT_RUN' },
+        ],
+      });
+      expect(resultV1Schema.safeParse(result).success).toBe(true);
+
+      const serializedSinks = JSON.stringify({ events, result });
+      for (const forbidden of [
+        'private-stream-payload',
+        'private-line-payload',
+        'private-object-payload',
+        'private-stringified-payload',
+        'private-second-stream',
+        'private-output-after-contract-failure',
+      ]) {
+        expect(serializedSinks).not.toContain(forbidden);
         expect((thrown as Error).message).not.toContain(forbidden);
       }
 

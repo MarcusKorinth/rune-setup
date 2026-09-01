@@ -233,6 +233,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     const stepStartedAt = performance.now();
 
     let acceptingOutput = true;
+    let outputContractError: InternalError | undefined;
     let outcome: unknown;
     try {
       outcome = await runner
@@ -248,7 +249,18 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
               if (!acceptingOutput) {
                 return;
               }
-              const line = secrets.mask(rawLine);
+              if ((stream !== 'stdout' && stream !== 'stderr') || typeof rawLine !== 'string') {
+                acceptingOutput = false;
+                outputContractError = new InternalError(
+                  `runner emitted an invalid output payload for step "${step.id}"`,
+                );
+                return;
+              }
+              const boundedLine =
+                Buffer.byteLength(rawLine, 'utf8') > MAX_OUTPUT_LINE_BYTES
+                  ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER
+                  : rawLine;
+              const line = secrets.mask(boundedLine);
               keepInTail(stream, line);
               emit({ kind: 'stepOutput', stepId: step.id, stream, line });
             });
@@ -274,7 +286,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     let exitCode: number | null = null;
     let diagnostic: string | undefined;
 
-    if (!isSpawnOutcome(outcome)) {
+    if (outputContractError !== undefined) {
+      terminalState = 'FAILED';
+      fatalInternalError = outputContractError;
+      diagnostic = `RUNE-500 runner emitted an invalid output payload for step "${step.id}"`;
+    } else if (!isSpawnOutcome(outcome)) {
       terminalState = 'FAILED';
       fatalInternalError = new InternalError(
         `runner returned an invalid outcome for step "${step.id}"`,
