@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { inspect } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,8 @@ import { createRuntimeContext, type RuntimeContext } from '../../src/engine/cont
 import {
   parseValuesFile,
   resolveInputs,
+  resolveInputsWithRegistry,
+  resolutionSnapshotFor,
   UNKNOWN_KEY_SUGGESTION_WORK_BUDGET,
   type InputRejection,
   type Resolution,
@@ -16,9 +18,12 @@ import {
   type ValuesDocument,
 } from '../../src/engine/inputs.js';
 import {
+  createSecretString,
+  isSecretString,
   MAX_SECRET_REGISTRY_CODE_UNITS,
+  revealSecretString,
   SecretRegistry,
-  SecretString,
+  type SecretString,
 } from '../../src/engine/secrets.js';
 import type { InputValue } from '../../src/inputs/base.js';
 import {
@@ -32,6 +37,7 @@ import { parseManifestText } from '../../src/manifest/index.js';
 import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
+const TEST_MANIFEST_DIR = resolvePath('/project');
 const DIAGNOSTIC_CONTROLS = '\n\r\u001b\u0007\u0085\u2028\u2029';
 const VISIBLE_DIAGNOSTIC_ESCAPES = [
   '\\n',
@@ -71,31 +77,37 @@ function contextFor(
   environment: Record<string, string> = {},
 ): RuntimeContext {
   return createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir: TEST_MANIFEST_DIR,
     product: manifest.product,
     platform: 'linux',
     environment,
   });
 }
 
+type ResolveTestOptions = Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> & {
+  readonly secrets?: SecretRegistry;
+};
+
 function resolve(
   manifest: ManifestV1,
-  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  options: ResolveTestOptions = {},
   environment: Record<string, string> = {},
 ): Resolution {
   const { secrets = new SecretRegistry(), ...rest } = options;
-  return resolveInputs({
-    manifest,
-    context: contextFor(manifest, environment),
-    ...rest,
+  return resolveInputsWithRegistry(
+    {
+      manifest,
+      context: contextFor(manifest, environment),
+      ...rest,
+    },
     secrets,
-  });
+  );
 }
 
 /** The messages a resolution was rejected with. */
 function problems(
   manifest: ManifestV1,
-  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  options: ResolveTestOptions = {},
   environment: Record<string, string> = {},
 ): string[] {
   try {
@@ -109,7 +121,7 @@ function problems(
 /** The input error a resolution was rejected with. */
 function inputError(
   manifest: ManifestV1,
-  options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context'> = {},
+  options: ResolveTestOptions = {},
   environment: Record<string, string> = {},
 ): InputError {
   try {
@@ -121,6 +133,13 @@ function inputError(
     throw error;
   }
   throw new Error('expected the values to be rejected');
+}
+
+function revealForTest(value: unknown): string {
+  if (!isSecretString(value)) {
+    throw new Error('expected an authentic secret value');
+  }
+  return revealSecretString(value);
 }
 
 /** A values document without touching the disk. */
@@ -163,6 +182,81 @@ function suggestionWorkEstimate(key: string, ids: readonly string[]): number {
     ids.reduce((width, id) => width + id.toLowerCase().length + 1, 0)
   );
 }
+
+describe('resolution facade', () => {
+  it('exposes a frozen immutable map view consistent with the input snapshot', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+      '  enabled:',
+      '    type: boolean',
+    );
+    const resolution = resolve(manifest, {
+      overrides: new Map([['tools', 'git,docker']]),
+    });
+    const state = resolution.inputs[0];
+
+    expect(Object.isFrozen(resolution)).toBe(true);
+    expect(Object.isFrozen(resolution.inputs)).toBe(true);
+    expect(Object.isFrozen(resolution.byId)).toBe(true);
+    expect(Object.isFrozen(state)).toBe(true);
+    expect(Object.isFrozen(state?.value)).toBe(true);
+    expect(state?.value).toEqual(['git', 'docker']);
+
+    const byId = resolution.byId;
+    const entries = [...byId];
+    expect(byId.size).toBe(resolution.inputs.length);
+    expect(byId.get('tools')).toBe(resolution.inputs[0]);
+    expect(byId.has('tools')).toBe(true);
+    expect([...byId.entries()]).toEqual(entries);
+    expect([...byId.keys()]).toEqual(['tools', 'enabled']);
+    expect([...byId.values()]).toEqual(resolution.inputs);
+
+    const callbackThis = {};
+    const callbackMaps: ReadonlyMap<string, (typeof resolution.inputs)[number]>[] = [];
+    byId.forEach(function (this: object, _value, _key, map) {
+      expect(this).toBe(callbackThis);
+      callbackMaps.push(map);
+    }, callbackThis);
+    expect(callbackMaps).toEqual([byId, byId]);
+
+    expect('set' in byId).toBe(false);
+    expect('delete' in byId).toBe(false);
+    expect('clear' in byId).toBe(false);
+    const prototype = Object.getPrototypeOf(byId) as object;
+    expect(Object.isFrozen(prototype)).toBe(true);
+    const mapView = byId as unknown as Map<string, (typeof resolution.inputs)[number]>;
+    expect(() => Map.prototype.set.call(mapView, 'forged', resolution.inputs[0]!)).toThrow(
+      TypeError,
+    );
+    expect(() => Map.prototype.delete.call(mapView, 'tools')).toThrow(TypeError);
+    expect(() => Map.prototype.clear.call(mapView)).toThrow(TypeError);
+    expect([...byId]).toEqual(entries);
+  });
+
+  it('keeps masking capabilities private and stable across retained-registry changes', () => {
+    const manifest = manifestOf('inputs:', '  token:', '    type: secret');
+    const secrets = new SecretRegistry();
+    const resolution = resolveInputsWithRegistry(
+      {
+        manifest,
+        context: contextFor(manifest),
+        overrides: new Map([['token', 'resolved-secret']]),
+      },
+      secrets,
+    );
+    const snapshot = resolutionSnapshotFor(resolution).secrets;
+
+    secrets.register('later-secret');
+
+    expect(resolution).not.toHaveProperty('secrets');
+    expect(snapshot.mask('resolved-secret/later-secret')).toBe('***/later-secret');
+    expect(snapshot).not.toHaveProperty('register');
+    expect(snapshot).not.toHaveProperty('size');
+  });
+});
 
 describe('precedence', () => {
   const manifest = manifestOf(
@@ -421,7 +515,6 @@ describe('resolved multiselect values', () => {
       manifest,
       context: contextFor(manifest),
       answers: new Map([['tools', answer]]),
-      secrets: new SecretRegistry(),
       invalidValues: 'collect',
     });
 
@@ -468,7 +561,7 @@ describe('defaults are templates', () => {
     );
 
     expect(resolve(manifest, {}, { USER: 'marcus' }).byId.get('logs')?.value).toBe(
-      '/project/marcus/logs',
+      `${TEST_MANIFEST_DIR}/marcus/logs`,
     );
   });
 
@@ -480,7 +573,7 @@ describe('defaults are templates', () => {
       '    default: "${home}/logs"',
     );
     const preview = createRuntimeContext({
-      manifestDir: '/project',
+      manifestDir: TEST_MANIFEST_DIR,
       product: manifest.product,
       platform: process.platform === 'win32' ? 'linux' : 'windows',
       environment: {},
@@ -489,7 +582,6 @@ describe('defaults are templates', () => {
     const resolution = resolveInputs({
       manifest,
       context: preview,
-      secrets: new SecretRegistry(),
     });
 
     expect(resolution.byId.get('logs')?.value).toMatch(/^<home@(linux|windows)>\/logs$/);
@@ -807,8 +899,8 @@ describe('keys that name no input', () => {
     expect(includesCalls).toBe(0);
     const first = resolution?.byId.get('input0');
     expect(first?.source).toBe('values');
-    expect(first?.value).toBeInstanceOf(SecretString);
-    expect((first?.value as SecretString).reveal()).toBe('value-input0');
+    expect(isSecretString(first?.value)).toBe(true);
+    expect(revealForTest(first?.value)).toBe('value-input0');
   });
 
   it('refuses a typo rather than letting it do nothing', () => {
@@ -1063,7 +1155,6 @@ describe('a frontend that can ask again', () => {
     const resolution = resolveInputs({
       manifest,
       context: contextFor(manifest),
-      secrets: new SecretRegistry(),
       overrides: new Map([['port', 'eighty']]),
       invalidValues: 'collect',
     });
@@ -1205,7 +1296,7 @@ describe('collected rejected values', () => {
     const sentinel = 'SECRET-REJECTION-SENTINEL';
     const rejectedValues: readonly unknown[] = [
       { payload: sentinel },
-      new Proxy(new SecretString(sentinel), {}),
+      new Proxy(createSecretString(sentinel), {}),
     ];
 
     for (const raw of rejectedValues) {
@@ -1356,7 +1447,6 @@ describe('secrets', () => {
         manifest: withCause,
         context,
         overrides: new Map([['token', secret]]),
-        secrets: new SecretRegistry(),
       });
     } catch (error) {
       if (error instanceof ResolutionError) {
@@ -1505,8 +1595,8 @@ describe('secrets', () => {
 
     const second = resolve(manifest, { answers: new Map([['token', answer as InputValue]]) });
 
-    expect(second.byId.get('token')?.value).toBeInstanceOf(SecretString);
-    expect((second.byId.get('token')?.value as SecretString).reveal()).toBe('hunter2-and-more');
+    expect(isSecretString(second.byId.get('token')?.value)).toBe(true);
+    expect(revealForTest(second.byId.get('token')?.value)).toBe('hunter2-and-more');
     expect(second.missing).toEqual([]);
   });
 
@@ -1520,7 +1610,7 @@ describe('secrets', () => {
     });
 
     expect(resolution.byId.get('token')?.source).toBe('values');
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe(winner);
     expect(secrets.mask(winner)).toBe('***');
     expect(secrets.mask(base)).toBe('***');
     expect(secrets.size).toBe(2);
@@ -1605,7 +1695,7 @@ describe('secrets', () => {
       const state = resolution.byId.get('token');
 
       expect(state?.source).toBe(source);
-      expect((state?.value as SecretString).reveal()).toBe(winner);
+      expect(revealForTest(state?.value)).toBe(winner);
       expect(secrets.size).toBe(candidates.length);
       expect(secrets.mask(candidates.join('/'))).toBe(candidates.map(() => '***').join('/'));
     },
@@ -1642,7 +1732,7 @@ describe('secrets', () => {
       secrets,
     });
 
-    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
+    expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
     expect(secrets.size).toBe(1);
     expect(secrets.mask('logging in with hunter2-and-more')).toBe('logging in with ***');
   });
@@ -1673,8 +1763,8 @@ describe('secrets', () => {
       const state = resolution.byId.get('token');
 
       expect(state?.source).toBe(source);
-      expect(state?.value).toBeInstanceOf(SecretString);
-      expect((state?.value as SecretString).reveal()).toBe(winner);
+      expect(isSecretString(state?.value)).toBe(true);
+      expect(revealForTest(state?.value)).toBe(winner);
       expect(resolution.warnings).toEqual([]);
       expect(secrets.size).toBe(2);
       expect(secrets.mask(`${winner}/${inherited}`)).toBe('***/***');
@@ -1687,8 +1777,8 @@ describe('secrets', () => {
     const resolution = resolve(optional, { secrets });
 
     expect(resolution.warnings).toEqual([]);
-    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe('');
+    expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe('');
     expect(resolution.missing).toEqual([]);
     expect(secrets.size).toBe(0);
   });
@@ -1701,8 +1791,8 @@ describe('secrets', () => {
     expect(resolution.warnings).toEqual([
       'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
     ]);
-    expect(resolution.byId.get('token')?.value).toBeInstanceOf(SecretString);
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe('');
+    expect(isSecretString(resolution.byId.get('token')?.value)).toBe(true);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe('');
     expect(resolution.missing).toEqual([]);
     expect(secrets.size).toBe(0);
   });
@@ -1784,15 +1874,17 @@ describe('secrets', () => {
     let matcherSorts = 0;
 
     try {
-      resolveInputs({
-        manifest: withLateCause,
-        context,
-        overrides: new Map([
-          ['token', staged],
-          ['note', `${active}/${staged}`],
-        ]),
+      resolveInputsWithRegistry(
+        {
+          manifest: withLateCause,
+          context,
+          overrides: new Map([
+            ['token', staged],
+            ['note', `${active}/${staged}`],
+          ]),
+        },
         secrets,
-      });
+      );
     } catch (error) {
       thrown = error;
     } finally {
@@ -2262,12 +2354,14 @@ describe('secrets', () => {
     const secrets = existingRegistry();
     let thrown: unknown;
     try {
-      resolveInputs({
-        manifest: withLocatedCause,
-        context,
-        overrides: new Map([['token', sentinel]]),
+      resolveInputsWithRegistry(
+        {
+          manifest: withLocatedCause,
+          context,
+          overrides: new Map([['token', sentinel]]),
+        },
         secrets,
-      });
+      );
     } catch (error) {
       thrown = error;
     }
@@ -2321,7 +2415,6 @@ describe('secrets', () => {
         manifest: withInjectedCause,
         context,
         overrides: new Map([['token', secret]]),
-        secrets: new SecretRegistry(),
       });
     } catch (error) {
       thrown = error;
@@ -2625,7 +2718,7 @@ describe('secrets', () => {
     const token = resolution.byId.get('token');
 
     expect(token?.source).toBe('set');
-    expect((token?.value as SecretString).reveal()).toBe(winner);
+    expect(revealForTest(token?.value)).toBe(winner);
     expect(rejectionFor(resolution, 'note').candidate).toBe('***/***');
     expect(resolution.problems[0]?.message).toContain('"***/***" does not match x+');
     expect(collectedSecrets.size).toBe(2);
@@ -2701,7 +2794,7 @@ describe('secrets', () => {
     const rejection = rejectionFor(resolution, 'note');
 
     expect(token?.source).toBe('answer');
-    expect((token?.value as SecretString).reveal()).toBe(answer);
+    expect(revealForTest(token?.value)).toBe(answer);
     expect(rejection.source).toBe('values');
     expect(rejection.candidate).toBe(expectedMaskedValue);
     expect(rejection.issue).toBe(resolution.problems[0]);
@@ -2755,8 +2848,8 @@ describe('secrets', () => {
         rejection: undefined,
         ignored: source,
       });
-      expect(state?.value).toBeInstanceOf(SecretString);
-      expect((state?.value as SecretString).reveal()).toBe('');
+      expect(isSecretString(state?.value)).toBe(true);
+      expect(revealForTest(state?.value)).toBe('');
       expect(secrets.mask(sentinel)).toBe('***');
       expect(resolution.warnings).toHaveLength(1);
       expect(resolution.warnings[0]).not.toContain(sentinel);
@@ -2884,29 +2977,19 @@ describe('secrets', () => {
     expect(secrets.mask('shadowed-secret')).toBe('***');
   });
 
-  it('registers exactly the stable value returned from an untrusted wrapper', () => {
-    let revealCalls = 0;
-    class ChangingSecret extends SecretString {
-      override reveal(): string {
-        revealCalls += 1;
-        return revealCalls === 1 ? 'alpha-secret' : 'omega-secret';
-      }
-    }
-    const supplied = new ChangingSecret('omega-secret');
+  it('registers exactly the value of an authentic opaque wrapper', () => {
+    const supplied = createSecretString('omega-secret');
     const secrets = new SecretRegistry();
     const resolution = resolve(manifest, {
       answers: new Map([['token', supplied]]),
       secrets,
     });
-    const resolved = resolution.byId.get('token')?.value as SecretString;
+    const resolved = resolution.byId.get('token')?.value;
 
-    expect(resolved).not.toBe(supplied);
-    expect(Object.getPrototypeOf(resolved)).toBe(SecretString.prototype);
-    expect(resolved.reveal()).toBe('omega-secret');
-    expect(revealCalls).toBe(0);
+    expect(resolved).toBe(supplied);
+    expect(revealForTest(resolved)).toBe('omega-secret');
     expect(secrets.size).toBe(1);
     expect(secrets.mask('returned omega-secret')).toBe('returned ***');
-    expect(secrets.mask('decoy alpha-secret')).toBe('decoy alpha-secret');
   });
 
   it('registers genuine wrappers from shadowed values and --set layers', () => {
@@ -2915,8 +2998,8 @@ describe('secrets', () => {
     const answer = 'F047-STRING-ANSWER';
     const secrets = new SecretRegistry();
     const resolution = resolve(manifest, {
-      values: [values('v.yaml', { token: new SecretString(valuesSecret) })],
-      overrides: new Map([['token', new SecretString(setSecret)]]) as unknown as ReadonlyMap<
+      values: [values('v.yaml', { token: createSecretString(valuesSecret) })],
+      overrides: new Map([['token', createSecretString(setSecret)]]) as unknown as ReadonlyMap<
         string,
         string
       >,
@@ -2925,7 +3008,7 @@ describe('secrets', () => {
     });
 
     expect(resolution.byId.get('token')?.source).toBe('answer');
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(answer);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe(answer);
     expect(secrets.size).toBe(3);
     expect(secrets.mask(`${valuesSecret}/${setSecret}/${answer}`)).toBe('***/***/***');
   });
@@ -2947,8 +3030,9 @@ describe('secrets', () => {
         },
       },
     });
-    const forged = Object.create(SecretString.prototype) as SecretString;
-    const proxied = new Proxy(new SecretString('F047-PROXY-DECOY'), {
+    const authentic = createSecretString('F047-PROXY-DECOY');
+    const forged = Object.create(Object.getPrototypeOf(authentic) as object) as SecretString;
+    const proxied = new Proxy(authentic, {
       get: () => {
         proxyCalls += 1;
         throw new Error('proxy candidate was inspected');
@@ -3010,7 +3094,7 @@ describe('secrets', () => {
     );
 
     expect(resolution.byId.get('token')?.source).toBe('answer');
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(answer);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe(answer);
     expect(
       resolution.warnings.filter((warning) => warning.includes('cannot be masked reliably')),
     ).toEqual([
@@ -3043,7 +3127,7 @@ describe('secrets', () => {
       );
 
       expect(resolution.byId.get('token')?.source).toBe('set');
-      expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+      expect(revealForTest(resolution.byId.get('token')?.value)).toBe(winner);
       expect(reliabilityWarnings).toHaveLength(1);
       expect(resolution.warnings).toEqual([
         'token cannot be masked reliably: all or part of its value may appear in logs; it needs non-empty content, and each content line must be at least 4 characters after trimming whitespace',
@@ -3085,7 +3169,7 @@ describe('secrets', () => {
       resolution.warnings.filter((warning) => warning.includes('cannot be masked reliably')),
     ).toHaveLength(1);
     expect(resolution.byId.get('token')?.source).toBe('set');
-    expect((resolution.byId.get('token')?.value as SecretString).reveal()).toBe(winner);
+    expect(revealForTest(resolution.byId.get('token')?.value)).toBe(winner);
     expect(secrets.mask(winner)).toBe('***');
   });
 
@@ -3144,7 +3228,7 @@ describe('values files', () => {
 
   function documentError(
     document: ValuesDocument,
-    options: Omit<Partial<ResolveInputsOptions>, 'manifest' | 'context' | 'values'> = {},
+    options: Omit<ResolveTestOptions, 'values'> = {},
     environment: Record<string, string> = {},
     manifest: ManifestV1 = emptyManifest,
   ): InputError {

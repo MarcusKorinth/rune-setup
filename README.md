@@ -12,9 +12,9 @@ installer, the command line or a CI/CD pipeline.
 ## Status
 
 RUNE is in **Milestone 1 (engine core) in progress**: the architectural contract is complete —
-see [docs/architecture.md](docs/architecture.md) — and the engine's manifest, input and
-secret-handling foundations are implemented. The Session facade and broader public engine
-surface/API expansion, CLI commands and GUI shell remain on the roadmap.
+see [docs/architecture.md](docs/architecture.md) — and the engine now implements manifests,
+input and secret handling, static planning, process running, sequential execution, events and
+versioned results. The Session facade, CLI commands and GUI shell remain on the roadmap.
 [docs/roadmap.md](docs/roadmap.md) tracks the MVP scope and what comes after.
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS**; once

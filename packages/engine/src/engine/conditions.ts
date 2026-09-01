@@ -202,11 +202,20 @@ function tokenize(text: string): { tokens: Token[] } | { failure: TokenizeFailur
 
     const number = /^-?\d+/.exec(text.slice(index));
     if (number) {
+      const value = Number.parseInt(number[0], 10);
+      if (!Number.isSafeInteger(value)) {
+        return {
+          failure: {
+            message: `integer literals must be between ${Number.MIN_SAFE_INTEGER} and ${Number.MAX_SAFE_INTEGER}`,
+            offset,
+          },
+        };
+      }
       tokens.push({
         kind: 'integer',
         text: number[0],
         offset,
-        value: Number.parseInt(number[0], 10),
+        value,
       });
       index += number[0].length;
       continue;

@@ -7,7 +7,7 @@
  * value is matched against its `pattern`.
  */
 
-import { MASK, normalizeSecretString, SecretString } from '../engine/secrets.js';
+import { createSecretString, isSecretString, MASK, secretLength } from '../engine/secrets.js';
 import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
@@ -122,24 +122,23 @@ const text: InputTypeHandler = {
 const secret: InputTypeHandler = {
   name: 'secret',
   secret: true,
-  empty: () => new SecretString(''),
-  isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
-  fromString: (value) => ok(new SecretString(value)),
+  empty: () => createSecretString(''),
+  isAbsent: (value) => (isSecretString(value) ? secretLength(value) === 0 : value === ''),
+  fromString: (value) => ok(createSecretString(value)),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
-  // A frontend may hand back a wrapper when it re-resolves. Copy its private base value into
-  // a fresh wrapper so registration and later resolution cannot observe changing overrides.
+  // A frontend may hand back an already opaque immutable wrapper when it re-resolves. Retain it:
+  // its private value is fixed, and public consumers continue to observe only the mask.
   fromNative: (value) => {
     if (typeof value === 'string') {
-      return ok(new SecretString(value));
+      return ok(createSecretString(value));
     }
-    const normalized = normalizeSecretString(value);
-    return normalized === undefined ? fail('the value is not text') : ok(normalized);
+    return isSecretString(value) ? ok(value) : fail('the value is not text');
   },
   // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a
   // secret into text is exactly what invariant 6 forbids everywhere but there.
   render: () => MASK,
-  compare: (value) => normalizeSecretString(value) ?? new SecretString(''),
+  compare: (value) => (isSecretString(value) ? value : createSecretString('')),
 };
 
 const boolean: InputTypeHandler = {

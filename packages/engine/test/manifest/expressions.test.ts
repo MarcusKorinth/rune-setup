@@ -1,18 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ManifestError } from '../../src/errors.js';
+import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 
 /** Every message a manifest is rejected with; the checks under test collect, never stop early. */
-function messagesOf(lines: readonly string[]): string[] {
+function errorOf(lines: readonly string[]): ManifestError {
   try {
     parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml');
   } catch (error) {
-    return (error as ManifestError).issues.map((issue) => issue.message);
+    if (error instanceof ManifestError) {
+      return error;
+    }
+    throw error;
   }
   throw new Error('expected the manifest to be rejected');
+}
+
+function messagesOf(lines: readonly string[]): string[] {
+  return errorOf(lines).issues.map((issue) => issue.message);
 }
 
 function accepts(lines: readonly string[]): void {
@@ -163,6 +170,36 @@ describe('conditions', () => {
       ),
     ).toEqual([
       'steps[0].when: "prod" is not a value — write a quoted string, or ${prod} to mean the input',
+    ]);
+  });
+
+  it('reports unsafe integer literals in input and step conditions as located RUNE-104 issues', () => {
+    const error = errorOf([
+      'inputs:',
+      '  guarded:',
+      '    type: text',
+      '    when: "-9007199254740992 == -9007199254740991"',
+      'steps:',
+      '  - id: guarded-step',
+      '    when: "9007199254740992 == 9007199254740991"',
+      '    run:',
+      '      command: x',
+    ]);
+
+    expect(error.code).toBe('RUNE-104');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-104',
+        message:
+          'inputs.guarded.when: integer literals must be between -9007199254740991 and 9007199254740991',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 8, column: 5 }),
+      }),
+      expect.objectContaining({
+        code: 'RUNE-104',
+        message:
+          'steps[0].when: integer literals must be between -9007199254740991 and 9007199254740991',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 11, column: 5 }),
+      }),
     ]);
   });
 

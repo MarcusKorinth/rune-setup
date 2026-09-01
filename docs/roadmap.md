@@ -2,8 +2,8 @@
 
 Current state: **Milestone 1 (engine core and non-interactive execution) in progress**.
 [architecture.md](architecture.md) is the binding architectural contract; the engine's
-manifest, input and secret-handling foundations are implemented, while the Session facade and
-broader public engine surface/API expansion, CLI commands and GUI shell remain planned work.
+manifest, input and secret handling, planner, process runner, executor, events and result
+surfaces are implemented, while the Session facade, CLI commands and GUI shell remain planned.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.

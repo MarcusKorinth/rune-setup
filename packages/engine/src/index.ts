@@ -5,11 +5,7 @@
  * and the GUI shell's main process import the engine only through it.
  */
 
-/**
- * Version of the engine package. Pinned to `packages/engine/package.json` by
- * `tests/package-versions.test.ts`, so a release bump cannot land here half-done.
- */
-export const RUNE_VERSION = '0.0.0';
+export { RUNE_VERSION } from './version.js';
 
 export {
   CancelledError,
@@ -50,6 +46,35 @@ export type { Manifest, ParseManifestOptions, ValidationReport } from './manifes
 
 export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
 export type { ValueType } from './engine/context.js';
+
+export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
+export type {
+  ExecutionPlan,
+  PlannedStep,
+  PlanExecutionOptions,
+  PlanInput,
+  ResolvedCommand,
+} from './engine/plan.js';
+
+export { CancelToken } from './engine/cancel.js';
+export type { EngineObserver, RunEvent } from './engine/events.js';
+
+export type { StepState } from './engine/state.js';
+
+export { RESULT_SCHEMA_VERSION } from './results/model.js';
+export type {
+  ResultInput,
+  ResultError,
+  ResultErrorCode,
+  ResultManifest,
+  ResultOutputLine,
+  ResultStep,
+  RunResult,
+  RunMode,
+  RunStatus,
+} from './results/model.js';
+export { resultJsonSchema } from './results/schema.js';
+export { writeResult } from './results/writer.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 

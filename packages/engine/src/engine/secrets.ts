@@ -8,6 +8,8 @@
  */
 
 import { InputError } from '../errors.js';
+import type { Platform } from './context.js';
+import { resolveTargetPathFrom } from './paths.js';
 
 /** What a secret looks like everywhere except at the one place that needs it. */
 export const MASK = '***';
@@ -22,6 +24,14 @@ const MAX_MASKING_PASSES = 16;
  */
 export const MIN_MASKABLE_LENGTH = 4;
 
+/** Internal mask-only capability captured with a resolved input set or execution plan. */
+export interface SecretMasker {
+  mask(text: string): string;
+}
+
+/** Private registry contents retained for authentic immutable masker snapshots. */
+const SECRET_MASKER_VALUES = new WeakMap<SecretMasker, readonly string[]>();
+
 /**
  * Maximum UTF-16 code units across the unique maskable parts in one registry snapshot.
  * This bounds the matcher to at most this many non-root trie nodes.
@@ -30,48 +40,19 @@ export const MAX_SECRET_REGISTRY_CODE_UNITS = 262_144;
 
 const CAPACITY_ERROR_MESSAGE =
   'the total size of secret input values exceeds the masking safety limit';
+const DERIVED_SECRET_MASKING_ERROR_MESSAGE = 'a derived secret value cannot be masked safely';
 
-/** Authentic wrapper contents, owned only by this module and never exposed through lookup. */
-const SECRET_VALUES = new WeakMap<object, unknown>();
+const SECRET_STRING = Symbol('SecretString');
 
-/** Returns whether `value` contains enough Unicode code points to mask safely. */
-function hasMinimumMaskableLength(value: string): boolean {
-  let length = 0;
-  for (const _codePoint of value) {
-    length += 1;
-    if (length >= MIN_MASKABLE_LENGTH) {
-      return true;
-    }
-  }
-  return false;
+/** Publicly nameable only as an opaque, safely stringifiable value. */
+export interface SecretString {
+  readonly [SECRET_STRING]: true;
+  toString(): string;
+  toJSON(): typeof MASK;
 }
 
-/**
- * A string that does not show itself. `toString`, template interpolation, `JSON.stringify`
- * and `util.inspect` all render the mask, so a secret cannot reach a log through an ordinary
- * mistake — only through `reveal()`, which is easy to find and to review.
- */
-export class SecretString {
-  constructor(value: string) {
-    SECRET_VALUES.set(this, value);
-  }
-
-  /** The secret itself. Called at spawn, inside the runner, and nowhere else. */
-  reveal(): string {
-    const value = privateSecretValue(this);
-    if (value === undefined) {
-      throw new TypeError('SecretString has no authentic string value');
-    }
-    return value;
-  }
-
-  get length(): number {
-    const value = privateSecretValue(this);
-    if (value === undefined) {
-      throw new TypeError('SecretString has no authentic string value');
-    }
-    return value.length;
-  }
+class OpaqueSecretString implements SecretString {
+  readonly [SECRET_STRING] = true;
 
   toString(): string {
     return MASK;
@@ -86,30 +67,115 @@ export class SecretString {
   }
 }
 
+/** Authentic wrapper resolvers, owned only by this module and never exposed through lookup. */
+const SECRET_VALUES = new WeakMap<object, () => string>();
+
+/** Returns whether `value` contains enough Unicode code points to mask safely. */
+function hasMinimumMaskableLength(value: string): boolean {
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length >= MIN_MASKABLE_LENGTH) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function secretFromResolver(
+  resolve: () => string,
+  registry?: SecretRegistry,
+  requiresCompleteRegistration?: (resolved: string) => boolean,
+): SecretString {
+  const secret = Object.freeze(new OpaqueSecretString());
+  SECRET_VALUES.set(secret, resolve);
+  if (registry !== undefined) {
+    const resolved = resolve();
+    if (!registry.register(resolved) && requiresCompleteRegistration?.(resolved) === true) {
+      throw new InputError('RUNE-202', DERIVED_SECRET_MASKING_ERROR_MESSAGE);
+    }
+  }
+  return secret;
+}
+
 /** Reads a genuine wrapper's private string without dynamic method dispatch. */
 function privateSecretValue(value: unknown): string | undefined {
   if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
     return undefined;
   }
-  const text = SECRET_VALUES.get(value);
+  const resolve = SECRET_VALUES.get(value);
+  if (resolve === undefined) {
+    return undefined;
+  }
+  const text = resolve();
   return typeof text === 'string' ? text : undefined;
 }
 
-/**
- * Copies a genuine secret into a fresh base wrapper.
- *
- * `SecretString` is public and may be subclassed or modified by an in-process client. The
- * module-private store makes the constructed wrapper identity the authority, while the fresh
- * wrapper prevents later calls from observing overrides or own properties on the input. A
- * proxy, forged prototype, or non-string value stored through plain JavaScript is rejected.
- */
-export function normalizeSecretString(value: unknown): SecretString | undefined {
-  const text = privateSecretValue(value);
-  return text === undefined ? undefined : new SecretString(text);
+function resolveSecret(secret: SecretString): string {
+  const text = privateSecretValue(secret);
+  if (text === undefined) {
+    throw new TypeError('the value is not an engine secret');
+  }
+  return text;
+}
+
+/** Creates an opaque secret at the resolution boundary. */
+export function createSecretString(value: string): SecretString {
+  return secretFromResolver(() => value);
+}
+
+/** Joins public and opaque pieces without exposing the resulting text. */
+export function composeSecretString(
+  parts: readonly (string | SecretString)[],
+  registry?: SecretRegistry,
+): SecretString {
+  const snapshot = Object.freeze([...parts]);
+  return secretFromResolver(
+    () => snapshot.map((part) => (isSecretString(part) ? resolveSecret(part) : part)).join(''),
+    registry,
+  );
+}
+
+/** Lazily anchors a path while keeping the value opaque. */
+export function resolveSecretPathFrom(
+  secret: SecretString,
+  basePath: string,
+  platform: Platform,
+  registry?: SecretRegistry,
+): SecretString {
+  const baseSnapshot = basePath;
+  return secretFromResolver(
+    () => resolveTargetPathFrom(resolveSecret(secret), baseSnapshot, platform),
+    registry,
+    (resolved) => resolved !== resolveSecret(secret),
+  );
+}
+
+/** Tests an opaque value without returning its text. */
+export function secretMatches(secret: SecretString, pattern: RegExp): boolean {
+  return new RegExp(pattern.source, pattern.flags).test(resolveSecret(secret));
+}
+
+/** Returns only the length needed by required-input validation. */
+export function secretLength(secret: SecretString): number {
+  return resolveSecret(secret).length;
+}
+
+/** Registers an opaque secret without handing its text back to resolution. */
+export function registerSecretForMasking(secret: SecretString, registry: SecretRegistry): boolean {
+  return registry.register(resolveSecret(secret));
+}
+
+/** Plaintext capability used only by the spawn runner at the child-process boundary. */
+export function revealSecretString(secret: SecretString): string {
+  return resolveSecret(secret);
 }
 
 export function isSecretString(value: unknown): value is SecretString {
-  return privateSecretValue(value) !== undefined;
+  return (
+    ((typeof value === 'object' && value !== null) || typeof value === 'function') &&
+    SECRET_VALUES.has(value)
+  );
 }
 
 /**
@@ -411,34 +477,68 @@ export class SecretRegistry {
     this.#matcherCache = source.#matcherCache;
   }
 
+  /** Captures the current secret set as an immutable mask-only capability. */
+  snapshot(): SecretMasker {
+    const matcher = this.#matcher();
+    const snapshot = Object.freeze({
+      mask: (text: string): string =>
+        matcher === undefined ? text : maskWithMatcher(text, matcher),
+    });
+    SECRET_MASKER_VALUES.set(snapshot, Object.freeze([...this.#values]));
+    return snapshot;
+  }
+
   /** Replaces every registered secret in `text` with the mask. */
   mask(text: string): string {
+    const matcher = this.#matcher();
+    return matcher === undefined ? text : maskWithMatcher(text, matcher);
+  }
+
+  #matcher(): SecretMatcher | undefined {
     if (this.#values.size === 0) {
-      return text;
+      return undefined;
     }
 
     // Stable ordering makes the cached snapshot deterministic even though matching behavior
     // itself is independent of registration order.
-    const matcher = (this.#matcherCache.matcher ??= new SecretMatcher(
+    return (this.#matcherCache.matcher ??= new SecretMatcher(
       [...this.#values].sort(
         (left, right) => right.length - left.length || (left < right ? -1 : left === right ? 0 : 1),
       ),
     ));
-    let masked = text;
-    for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
-      const next = matcher.maskOnce(masked);
-      if (next === masked) {
-        return masked;
-      }
+  }
+}
 
-      masked = next;
+/** Creates a mutable plan-local registry from an authentic immutable masker snapshot. */
+export function registryFromSecretMasker(masker: SecretMasker): SecretRegistry {
+  const values = SECRET_MASKER_VALUES.get(masker);
+  if (values === undefined) {
+    throw new TypeError('the secret masker was not created by SecretRegistry.snapshot');
+  }
+
+  const registry = new SecretRegistry();
+  for (const value of values) {
+    registry.register(value);
+  }
+  return registry;
+}
+
+/** Shared overlap-safe implementation for mutable registries and immutable snapshots. */
+function maskWithMatcher(text: string, matcher: SecretMatcher): string {
+  let masked = text;
+  for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
+    const next = matcher.maskOnce(masked);
+    if (next === masked) {
+      return masked;
     }
 
-    // Returning an intermediate value could expose part of a collision chain. MASK itself
-    // is shorter than every registrable secret, so masking the whole input is safely stable;
-    // the extra masking is limited to this pathological budget-exhaustion path.
-    return MASK;
+    masked = next;
   }
+
+  // Returning an intermediate value could expose part of a collision chain. MASK itself is
+  // shorter than every registrable secret, so masking the whole input is safely stable; the
+  // extra masking is limited to this pathological budget-exhaustion path.
+  return MASK;
 }
 
 function capacityError(): InputError {

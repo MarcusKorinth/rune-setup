@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve as resolvePath, sep } from 'node:path';
 import { inspect } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -8,16 +8,21 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { InputError } from '../../src/errors.js';
 import {
+  composeSecretString,
+  createSecretString,
   isSecretString,
   MASK,
   MAX_SECRET_REGISTRY_CODE_UNITS,
   MIN_MASKABLE_LENGTH,
+  resolveSecretPathFrom,
+  secretLength,
+  secretMatches,
   SecretRegistry,
-  SecretString,
+  secretValuesEqual,
 } from '../../src/engine/secrets.js';
 
 describe('SecretString', () => {
-  const secret = new SecretString('hunter2');
+  const secret = createSecretString('hunter2');
 
   it('shows the mask through every path that stringifies a value', () => {
     expect(String(secret)).toBe(MASK);
@@ -39,41 +44,50 @@ describe('SecretString', () => {
     expect(inspect({ token: secret })).not.toContain('hunter2');
   });
 
-  it('gives up its value only when asked outright', () => {
-    expect(secret.reveal()).toBe('hunter2');
-    expect(secret.length).toBe(7);
+  it('exposes no plaintext or oracle operations on the value itself', () => {
+    const surface = new Set([
+      ...Object.getOwnPropertyNames(secret),
+      ...Object.getOwnPropertyNames(Object.getPrototypeOf(secret) as object),
+    ]);
+
+    expect(surface).not.toContain('reveal');
+    expect(surface).not.toContain('matches');
+    expect(surface).not.toContain('equals');
+    expect(surface).not.toContain('isIncludedIn');
+    expect(surface).not.toContain('registerForMasking');
+    expect(surface).not.toContain('resolvePathFrom');
+    expect(surface).not.toContain('compose');
+    expect(surface).not.toContain('length');
   });
 
-  it('recognises only wrappers with a usable private string brand', () => {
-    let methodCalls = 0;
-    class SecretSubclass extends SecretString {
-      override reveal(): string {
-        methodCalls += 1;
-        return 'decoy-secret';
-      }
-    }
-    const subclass = new SecretSubclass('subclass-secret');
-    const getterSubclass = new SecretSubclass('getter-subclass-secret');
-    let getterReads = 0;
-    Object.defineProperty(getterSubclass, 'reveal', {
-      get: () => {
-        getterReads += 1;
-        return () => 'getter-decoy-secret';
-      },
-    });
-    const forged = Object.create(SecretString.prototype) as SecretString;
-    const proxied = new Proxy(new SecretString('proxy-secret'), {});
-    const { proxy: revoked, revoke } = Proxy.revocable(new SecretString('revoked-secret'), {});
+  it('keeps composed and transformed values opaque', () => {
+    const composed = resolveSecretPathFrom(
+      composeSecretString(['prefix-', secret, '-${env.SHOULD_NOT_BE_RESCANNED}']),
+      '/project',
+      'linux',
+    );
+
+    expect(String(composed)).toBe(MASK);
+    expect(JSON.stringify(composed)).toBe(`"${MASK}"`);
+    expect(inspect(composed)).toBe(MASK);
+    expect(secretMatches(composed, /SHOULD_NOT_BE_RESCANNED}$/)).toBe(true);
+    expect(
+      secretValuesEqual(
+        composed,
+        resolvePath('/project', `.${sep}prefix-hunter2-\${env.SHOULD_NOT_BE_RESCANNED}`),
+      ),
+    ).toBe(true);
+    expect(secretLength(secret)).toBe(7);
+  });
+
+  it('recognises only wrappers with an authentic private brand', () => {
+    const forged = Object.create(Object.getPrototypeOf(secret) as object);
+    const proxied = new Proxy(createSecretString('proxy-secret'), {});
+    const { proxy: revoked, revoke } = Proxy.revocable(createSecretString('revoked-secret'), {});
     revoke();
-    const nonString = new SecretString(1234 as unknown as string);
 
     expect(isSecretString(secret)).toBe(true);
-    expect(isSecretString(subclass)).toBe(true);
-    expect(isSecretString(getterSubclass)).toBe(true);
-    expect(methodCalls).toBe(0);
-    expect(getterReads).toBe(0);
-
-    for (const value of ['hunter2', forged, proxied, revoked, nonString]) {
+    for (const value of ['hunter2', forged, proxied, revoked]) {
       expect(() => isSecretString(value)).not.toThrow();
       expect(isSecretString(value)).toBe(false);
     }
@@ -82,23 +96,10 @@ describe('SecretString', () => {
 
 describe('SecretRegistry', () => {
   it('registers opaque candidates without invoking supplied traps or methods', () => {
-    let methodCalls = 0;
-    class SecretSubclass extends SecretString {
-      override reveal(): string {
-        methodCalls += 1;
-        return 'F049-METHOD-DECOY';
-      }
-    }
-    const subclass = new SecretSubclass('F049-SUBCLASS-SECRET');
-    Object.defineProperty(subclass, 'toString', {
-      get: () => {
-        methodCalls += 1;
-        return () => 'F049-STRING-DECOY';
-      },
-    });
+    const authentic = createSecretString('F049-AUTHENTIC-SECRET');
 
     let proxyCalls = 0;
-    const proxy = new Proxy(new SecretString('F049-PROXY-DECOY'), {
+    const proxy = new Proxy(createSecretString('F049-PROXY-DECOY'), {
       get: () => {
         proxyCalls += 1;
         throw new Error('proxy candidate was inspected');
@@ -108,14 +109,17 @@ describe('SecretRegistry', () => {
         throw new Error('proxy candidate prototype was inspected');
       },
     });
-    const { proxy: revoked, revoke } = Proxy.revocable(new SecretString('F049-REVOKED-DECOY'), {});
+    const { proxy: revoked, revoke } = Proxy.revocable(
+      createSecretString('F049-REVOKED-DECOY'),
+      {},
+    );
     revoke();
-    const forged = Object.create(SecretString.prototype) as SecretString;
-    const nonString = new SecretString(1234 as unknown as string);
+    const forged = Object.create(Object.getPrototypeOf(authentic) as object);
+    let accessorReads = 0;
     const accessor = Object.create(null, {
       reveal: {
         get: () => {
-          methodCalls += 1;
+          accessorReads += 1;
           return () => 'F049-ACCESSOR-DECOY';
         },
       },
@@ -123,19 +127,32 @@ describe('SecretRegistry', () => {
     const registry = new SecretRegistry();
 
     expect(registry.registerCandidate('F049-STRING-SECRET')).toBe(true);
-    expect(registry.registerCandidate(subclass)).toBe(true);
-    for (const candidate of [proxy, revoked, forged, nonString, accessor]) {
+    expect(registry.registerCandidate(authentic)).toBe(true);
+    for (const candidate of [proxy, revoked, forged, accessor]) {
       expect(() => registry.registerCandidate(candidate)).not.toThrow();
       expect(registry.registerCandidate(candidate)).toBeUndefined();
     }
 
-    expect(methodCalls).toBe(0);
+    expect(accessorReads).toBe(0);
     expect(proxyCalls).toBe(0);
     expect(registry.size).toBe(2);
-    expect(registry.mask('F049-STRING-SECRET/F049-SUBCLASS-SECRET')).toBe('***/***');
-    expect(registry.mask('F049-METHOD-DECOY/F049-PROXY-DECOY')).toBe(
-      'F049-METHOD-DECOY/F049-PROXY-DECOY',
+    expect(registry.mask('F049-STRING-SECRET/F049-AUTHENTIC-SECRET')).toBe('***/***');
+    expect(registry.mask('F049-ACCESSOR-DECOY/F049-PROXY-DECOY')).toBe(
+      'F049-ACCESSOR-DECOY/F049-PROXY-DECOY',
     );
+  });
+
+  it('captures immutable mask-only snapshots', () => {
+    const registry = new SecretRegistry();
+    registry.register('first-secret');
+    const snapshot = registry.snapshot();
+
+    registry.register('later-secret');
+
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(snapshot).not.toHaveProperty('register');
+    expect(snapshot.mask('first-secret/later-secret')).toBe('***/later-secret');
+    expect(registry.mask('first-secret/later-secret')).toBe('***/***');
   });
 
   it('removes a registered secret from text, wherever it appears', () => {
@@ -759,7 +776,7 @@ describe('SecretRegistry', () => {
 });
 
 describe('secret lifecycle boundary', () => {
-  it('has no product-source call to reveal before the runner exists', () => {
+  it('allows plaintext reveal only at the spawn-runner boundary', () => {
     const sourceRoot = fileURLToPath(new URL('../../src/', import.meta.url));
     const files = typeScriptFiles(sourceRoot);
     const calls: string[] = [];
@@ -775,18 +792,17 @@ describe('secret lifecycle boundary', () => {
       const visit = (node: ts.Node): void => {
         if (
           ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === 'reveal'
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'revealSecretString'
         ) {
-          const position = source.getLineAndCharacterOfPosition(node.getStart(source));
-          calls.push(`${relative(sourceRoot, file)}:${position.line + 1}`);
+          calls.push(relative(sourceRoot, file).replaceAll('\\', '/'));
         }
         ts.forEachChild(node, visit);
       };
       visit(source);
     }
 
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(['runners/spawnRunner.ts']);
   }, 30_000);
 });
 

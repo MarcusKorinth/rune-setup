@@ -14,12 +14,14 @@ import { INPUT_ID, INPUT_TYPES, STEP_ID } from '../../src/manifest/v1/schema.js'
 /** The parts of a JSON Schema node this suite reads. */
 interface SchemaNode {
   readonly const?: unknown;
+  readonly maximum?: number;
   readonly pattern?: string;
   readonly minItems?: number;
   readonly items?: SchemaNode;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
   readonly propertyNames?: SchemaNode;
   readonly additionalProperties?: SchemaNode;
+  readonly anyOf?: readonly SchemaNode[];
   readonly oneOf?: readonly SchemaNode[];
 }
 
@@ -68,5 +70,14 @@ describe('manifestJsonSchema', () => {
 
     const select = inputBranches.find((branch) => branch.properties?.['type']?.const === 'select');
     expect(select?.properties?.['options']?.minItems).toBe(1);
+  });
+
+  it('publishes the maximum command timeout validation enforces', () => {
+    const command = properties['steps']?.items?.properties?.['run']?.anyOf?.find(
+      (branch) => branch.properties?.['command'] !== undefined,
+    );
+
+    const timeout = command?.properties?.['timeoutSeconds'];
+    expect(timeout?.anyOf?.find((branch) => branch.maximum !== undefined)?.maximum).toBe(2_147_483);
   });
 });

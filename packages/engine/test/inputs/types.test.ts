@@ -3,7 +3,12 @@ import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 
 import { InternalError } from '../../src/errors.js';
-import { isSecretString, SecretString } from '../../src/engine/secrets.js';
+import {
+  createSecretString,
+  isSecretString,
+  secretLength,
+  secretValuesEqual,
+} from '../../src/engine/secrets.js';
 import { InputTypeRegistry, inputTypes } from '../../src/inputs/registry.js';
 import { BUILT_IN_INPUT_TYPES, MAX_PATTERN_INPUT_BYTES } from '../../src/inputs/builtin.js';
 import { FALSE_WORDS, TRUE_WORDS, type InputTypeHandler } from '../../src/inputs/base.js';
@@ -297,11 +302,11 @@ describe('secret', () => {
     const result = handler('secret').fromString('hunter2', spec('secret'));
     const value = result.ok ? result.value : undefined;
 
-    expect(value).toBeInstanceOf(SecretString);
+    expect(isSecretString(value)).toBe(true);
     expect(String(value)).toBe('***');
     expect(`${String(value)}`).not.toContain('hunter2');
     expect(JSON.stringify({ value })).toBe('{"value":"***"}');
-    expect((value as SecretString).reveal()).toBe('hunter2');
+    expect(isSecretString(value) && secretValuesEqual(value, 'hunter2')).toBe(true);
   });
 
   it('never echoes the value it refuses', () => {
@@ -311,63 +316,50 @@ describe('secret', () => {
     expect(result.ok ? '' : result.message).toBe('the value is not text');
   });
 
-  it('copies a subclass private value without calling its changing reveal override', () => {
-    let revealCalls = 0;
-    class ChangingSecret extends SecretString {
-      override reveal(): string {
-        revealCalls += 1;
-        return revealCalls === 1 ? 'alpha-secret' : 'omega-secret';
-      }
-    }
-    const supplied = new ChangingSecret('stable-secret');
+  it('accepts an authentic opaque value without exposing or copying it', () => {
+    const supplied = createSecretString('stable-secret');
     const result = handler('secret').fromNative(supplied, spec('secret'));
     const normalized = result.ok ? result.value : undefined;
 
-    expect(normalized).toBeInstanceOf(SecretString);
-    expect(normalized).not.toBe(supplied);
-    expect(Object.getPrototypeOf(normalized)).toBe(SecretString.prototype);
-    expect((normalized as SecretString).reveal()).toBe('stable-secret');
-    expect(revealCalls).toBe(0);
+    expect(normalized).toBe(supplied);
+    expect(isSecretString(normalized)).toBe(true);
+    expect(isSecretString(normalized) && secretValuesEqual(normalized, 'stable-secret')).toBe(true);
   });
 
-  it('copies the private value without reading shadowed reveal or length properties', () => {
-    const supplied = new SecretString('stable-secret');
-    let revealCalls = 0;
-    Object.defineProperty(supplied, 'reveal', {
-      value: () => {
-        revealCalls += 1;
-        return 'decoy-secret';
-      },
+  it('keeps authentic values frozen with no plaintext surface to shadow', () => {
+    const supplied = createSecretString('stable-secret');
+
+    expect(Object.isFrozen(supplied)).toBe(true);
+    expect(Reflect.defineProperty(supplied, 'reveal', { value: () => 'decoy-secret' })).toBe(false);
+    expect(handler('secret').fromNative(supplied, spec('secret'))).toEqual({
+      ok: true,
+      value: supplied,
     });
-    Object.defineProperty(supplied, 'length', {
+  });
+
+  it('rejects proxies and forged brands without throwing or invoking traps', () => {
+    const authentic = createSecretString('proxy-secret');
+    let trapCalls = 0;
+    const proxied = new Proxy(authentic, {
       get: () => {
-        throw new Error('must not read shadowed length');
+        trapCalls += 1;
+        throw new Error('proxy was inspected');
       },
     });
+    const forged = Object.create(Object.getPrototypeOf(authentic) as object);
 
-    const result = handler('secret').fromNative(supplied, spec('secret'));
-    const normalized = result.ok ? result.value : undefined;
-
-    expect((normalized as SecretString).reveal()).toBe('stable-secret');
-    expect(revealCalls).toBe(0);
-  });
-
-  it('rejects proxies, forged brands, and non-string private values without throwing', () => {
-    const proxied = new Proxy(new SecretString('proxy-secret'), {});
-    const forged = Object.create(SecretString.prototype) as SecretString;
-    const nonString = new SecretString(1234 as unknown as string);
-
-    for (const value of [proxied, forged, nonString]) {
+    for (const value of [proxied, forged]) {
       expect(() => handler('secret').fromNative(value, spec('secret'))).not.toThrow();
       expect(handler('secret').fromNative(value, spec('secret'))).toEqual({
         ok: false,
         message: 'the value is not text',
       });
     }
+    expect(trapCalls).toBe(0);
   });
 
   it('renders the mask, never the secret', () => {
-    const value = new SecretString('hunter2');
+    const value = createSecretString('hunter2');
 
     // A secret reaches a command as the wrapper itself and is unwrapped at spawn, inside the
     // runner — so the rendering function has no business producing its text (invariant 6).
@@ -376,10 +368,11 @@ describe('secret', () => {
 
   it('gives conditions a normalized opaque wrapper without exposing its content', () => {
     const content = 'F049-COMPARE-SECRET';
-    const compared = handler('secret').compare(new SecretString(content)) as SecretString;
+    const value = createSecretString(content);
+    const compared = handler('secret').compare(value);
 
     expect(isSecretString(compared)).toBe(true);
-    expect(Object.getPrototypeOf(compared)).toBe(SecretString.prototype);
+    expect(compared).toBe(value);
     expect(String(compared)).toBe('***');
     expect(`${compared}`).toBe('***');
     expect(JSON.stringify(compared)).toBe('"***"');
@@ -392,8 +385,8 @@ describe('secret', () => {
   it('is an empty secret when nothing set it', () => {
     const empty = handler('secret').empty(spec('secret'));
 
-    expect(empty).toBeInstanceOf(SecretString);
-    expect((empty as SecretString).reveal()).toBe('');
+    expect(isSecretString(empty)).toBe(true);
+    expect(isSecretString(empty) && secretLength(empty)).toBe(0);
   });
 });
 

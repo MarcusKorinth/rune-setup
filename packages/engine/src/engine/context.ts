@@ -7,8 +7,9 @@
  */
 
 import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, win32 } from 'node:path';
 
-import { PlatformError, ResolutionError } from '../errors.js';
+import { InternalError, PlatformError, ResolutionError } from '../errors.js';
 import { suggest } from '../suggest.js';
 import type { InputType } from '../manifest/v1/schema.js';
 
@@ -199,7 +200,8 @@ function isProductField(name: string): name is ProductField {
 // ------------------------------------------------------------------- runtime values
 
 /** The platforms RUNE runs on. `macos` is reserved for a later schema version (§4.2). */
-export type Platform = 'windows' | 'linux';
+export const PLATFORMS = ['windows', 'linux'] as const;
+export type Platform = (typeof PLATFORMS)[number];
 
 /** The platform this process is on. */
 export function hostPlatform(): Platform {
@@ -248,7 +250,26 @@ export interface RuntimeContext {
   valueOf(reference: Reference): string;
 }
 
+const runtimeContexts = new WeakMap<RuntimeContext, RuntimeContext>();
+
+/** Internal fail-closed lookup: structural copies have no runtime provenance. */
+export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
+  const trusted = runtimeContexts.get(context);
+  if (trusted === undefined) {
+    throw new InternalError('the runtime context was not created by createRuntimeContext');
+  }
+  return trusted;
+}
+
 export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
+  const windowsRoot = win32.parse(options.manifestDir).root;
+  const hasUnboundWindowsRoot =
+    process.platform === 'win32' && (windowsRoot === '\\' || windowsRoot === '/');
+  if (!isAbsolute(options.manifestDir) || hasUnboundWindowsRoot) {
+    throw new InternalError(
+      'the runtime context manifest directory must be absolute and independent of the current drive',
+    );
+  }
   const host = hostPlatform();
   const platform =
     options.platform === undefined ? host : validatePreviewPlatform(options.platform);
@@ -264,7 +285,7 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
   const environmentValue = (name: string): string | undefined =>
     environmentValues.get(host === 'windows' ? name.toLowerCase() : name);
 
-  return Object.freeze({
+  const context: RuntimeContext = Object.freeze({
     platform,
     manifestDir,
     preview,
@@ -303,6 +324,8 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
       }
     },
   });
+  runtimeContexts.set(context, context);
+  return context;
 }
 
 function validatePreviewPlatform(platform: unknown): Platform {

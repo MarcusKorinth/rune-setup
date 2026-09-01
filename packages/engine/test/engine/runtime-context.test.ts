@@ -1,17 +1,25 @@
 import { homedir, tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeContext, hostPlatform, platformForNode } from '../../src/engine/context.js';
-import { exitCodeFor, PlatformError, ResolutionError } from '../../src/errors.js';
+import {
+  createRuntimeContext,
+  hostPlatform,
+  PLATFORMS,
+  platformForNode,
+  runtimeContextFor,
+} from '../../src/engine/context.js';
+import { exitCodeFor, InternalError, PlatformError, ResolutionError } from '../../src/errors.js';
 
 const product = { name: 'Example', version: '1.0.0' };
 const host = hostPlatform();
 const other = host === 'windows' ? 'linux' : 'windows';
+const manifestDir = resolve('/project');
 
 function contextFor(platform?: 'windows' | 'linux', environment: Record<string, string> = {}) {
   return createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir,
     product,
     ...(platform === undefined ? {} : { platform }),
     environment,
@@ -34,12 +42,57 @@ describe('the values behind the built-in names', () => {
     expect(context.valueOf({ kind: 'builtin', name: 'home' })).toBe(homedir());
     expect(context.valueOf({ kind: 'builtin', name: 'temp' })).toBe(tmpdir());
     expect(context.valueOf({ kind: 'builtin', name: 'platform' })).toBe(hostPlatform());
-    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
   });
 
   it('answers for the product', () => {
     expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Example');
     expect(context.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
+  });
+
+  it('rejects a relative manifest directory instead of rebinding it to the current cwd', () => {
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(InternalError);
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(/runtime context manifest directory must be absolute/);
+  });
+
+  it
+    .runIf(process.platform === 'win32')
+    .each(['/project', '\\project', '\\\\server', '\\\\server\\'])(
+    'rejects the Windows manifest directory %s because its root is not fully bound',
+    (value) => {
+      expect(() => createRuntimeContext({ manifestDir: value, product, environment: {} })).toThrow(
+        /independent of the current drive/,
+      );
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each(['C:\\project', '\\\\server\\share'])(
+    'keeps the fully qualified Windows manifest directory %s unchanged',
+    (value) => {
+      const runtime = createRuntimeContext({ manifestDir: value, product, environment: {} });
+
+      expect(runtime.manifestDir).toBe(value);
+    },
+  );
+
+  it('keeps an absolute manifest directory unchanged', () => {
+    const manifestDir = resolve('absolute-project');
+    const runtime = createRuntimeContext({ manifestDir, product, environment: {} });
+
+    expect(runtime.manifestDir).toBe(manifestDir);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
   });
 
   it('reads any environment variable, because there is no allowlist', () => {
@@ -151,7 +204,7 @@ describe('the values behind the built-in names', () => {
       platform: 'windows' | 'linux';
       environment: Record<string, string>;
     } = {
-      manifestDir: '/before',
+      manifestDir: resolve('/before'),
       product: { name: 'Before', version: '1.0.0' },
       platform: host,
       environment: {},
@@ -163,9 +216,9 @@ describe('the values behind the built-in names', () => {
     options.product.version = '2.0.0';
     options.platform = other;
 
-    expect(runtime.manifestDir).toBe('/before');
+    expect(runtime.manifestDir).toBe(resolve('/before'));
     expect(runtime.platform).toBe(host);
-    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/before');
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(resolve('/before'));
     expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
     expect(runtime.valueOf({ kind: 'product', field: 'name' })).toBe('Before');
     expect(runtime.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
@@ -182,11 +235,11 @@ describe('the values behind the built-in names', () => {
     expect(Reflect.set(runtime, 'valueOf', () => 'replaced')).toBe(false);
 
     expect(runtime.platform).toBe(host);
-    expect(runtime.manifestDir).toBe('/project');
+    expect(runtime.manifestDir).toBe(manifestDir);
     expect(runtime.preview).toBe(false);
     expect(runtime.environmentValue('SNAPSHOT_VALUE')).toBe('kept');
     expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
-    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
     expect(runtime.valueOf({ kind: 'environment', name: 'SNAPSHOT_VALUE' })).toBe('kept');
   });
 
@@ -228,7 +281,7 @@ describe('previewing the other platform', () => {
 
   it('still answers for what the preview does know', () => {
     expect(context.valueOf({ kind: 'builtin', name: 'platform' })).toBe(other);
-    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
     expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Example');
   });
 
@@ -241,7 +294,7 @@ describe('previewing the other platform', () => {
     let thrown: unknown;
     try {
       createRuntimeContext({
-        manifestDir: '/project',
+        manifestDir,
         product,
         platform: unsafePlatform(platform),
         environment: {},
@@ -260,6 +313,10 @@ describe('previewing the other platform', () => {
 });
 
 describe('hostPlatform', () => {
+  it('names exactly the two platforms RUNE runs on', () => {
+    expect(PLATFORMS).toEqual(['windows', 'linux']);
+  });
+
   it.each([
     ['win32', 'windows'],
     ['linux', 'linux'],
@@ -296,5 +353,15 @@ describe('hostPlatform', () => {
   it('is what a context without an explicit platform uses', () => {
     expect(contextFor().platform).toBe(hostPlatform());
     expect(contextFor().preview).toBe(false);
+  });
+
+  it('authenticates the exact frozen context facade and rejects structural copies', () => {
+    const context = contextFor();
+
+    expect(runtimeContextFor(context)).toBe(context);
+    expect(() => runtimeContextFor({ ...context })).toThrow(InternalError);
+    expect(() => runtimeContextFor({ ...context })).toThrow(
+      /runtime context was not created by createRuntimeContext/,
+    );
   });
 });

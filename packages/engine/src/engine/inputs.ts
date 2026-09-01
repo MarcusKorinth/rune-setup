@@ -45,7 +45,7 @@ import {
   type RuntimeContext,
 } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretRegistry } from './secrets.js';
+import { SecretRegistry, type SecretMasker } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -120,8 +120,6 @@ export interface ResolveInputsOptions {
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
   readonly answers?: ReadonlyMap<string, InputValue>;
-  /** Required registry for masking every secret as it resolves, before any step can launch (§10). */
-  readonly secrets: SecretRegistry;
   /**
    * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
    * runs and the process exits. A frontend that can ask again takes `collect`, which records
@@ -146,6 +144,75 @@ export interface Resolution {
   readonly problems: readonly RuneIssue[];
 }
 
+/** Canonical resolution state kept behind the exact public facade returned to the caller. */
+export interface ResolutionSnapshot {
+  readonly manifest: ManifestV1;
+  readonly context: RuntimeContext;
+  readonly inputIndex: InputReferenceIndex;
+  readonly inputs: readonly InputState[];
+  readonly byId: ReadonlyMap<string, InputState>;
+  readonly secrets: SecretMasker;
+  readonly missing: readonly string[];
+  readonly warnings: readonly string[];
+  readonly problems: readonly RuneIssue[];
+}
+
+const resolutionSnapshots = new WeakMap<Resolution, ResolutionSnapshot>();
+
+/** A runtime-immutable map view; freezing a Map does not freeze its internal slots. */
+class ImmutableReadonlyMap<K, V> implements ReadonlyMap<K, V> {
+  readonly #source: ReadonlyMap<K, V>;
+
+  constructor(source: ReadonlyMap<K, V>) {
+    this.#source = source;
+  }
+
+  get size(): number {
+    return this.#source.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#source.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#source.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#source.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#source.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#source.values();
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+
+  forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    this.#source.forEach((value, key) => {
+      callbackfn.call(thisArg, value, key, this);
+    });
+  }
+}
+
+Object.freeze(ImmutableReadonlyMap.prototype);
+
+/** Internal fail-closed lookup: structural resolution copies have no resolver provenance. */
+export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapshot {
+  const snapshot = resolutionSnapshots.get(resolution);
+  if (snapshot === undefined) {
+    throw new InternalError('the input resolution was not created by resolveInputs');
+  }
+  return snapshot;
+}
+
 /**
  * Merges the layers for every input of a manifest.
  *
@@ -154,12 +221,20 @@ export interface Resolution {
  * to ask — they are reported in {@link Resolution.missing}.
  */
 export function resolveInputs(options: ResolveInputsOptions): Resolution {
+  return resolveInputsWithRegistry(options, new SecretRegistry());
+}
+
+/** Internal resolver seam for a session that retains masking across re-resolution. */
+export function resolveInputsWithRegistry(
+  options: ResolveInputsOptions,
+  secrets: SecretRegistry,
+): Resolution {
   const attempt: ResolutionAttempt = { stagedSecrets: new SecretRegistry() };
   try {
-    return resolveInputsStaged(options, attempt);
+    return resolveInputsStaged(options, secrets, attempt);
   } catch (cause) {
     if (cause instanceof RuneError) {
-      const redactor = attempt.redactor ?? options.secrets.combinedWith(attempt.stagedSecrets);
+      const redactor = attempt.redactor ?? secrets.combinedWith(attempt.stagedSecrets);
       throw redactRuneError(cause, redactor);
     }
     throw cause;
@@ -173,6 +248,7 @@ interface ResolutionAttempt {
 
 function resolveInputsStaged(
   options: ResolveInputsOptions,
+  publishedSecrets: SecretRegistry,
   attempt: ResolutionAttempt,
 ): Resolution {
   const { manifest, context } = options;
@@ -181,7 +257,7 @@ function resolveInputsStaged(
   const inputIndex = createInputReferenceIndex(ids);
   const valuesLayer = indexValuesLayer(options.values);
   const suppliedSecrets = stageSuppliedSecrets(options, ids, valuesLayer, stagedSecrets);
-  const redactor = options.secrets.combinedWith(stagedSecrets);
+  const redactor = publishedSecrets.combinedWith(stagedSecrets);
   attempt.redactor = redactor;
 
   // A malformed values-file entry must not hide unknown keys or independent coercion errors
@@ -309,8 +385,8 @@ function resolveInputsStaged(
     throwCollectedInputIssues(issues);
   }
 
-  const redactedIssues = issues.map((issue) => redactIssue(issue, redactor));
-  const issueReplacements = new Map(issues.map((issue, index) => [issue, redactedIssues[index]!]));
+  const frozenIssues = issues.map((issue) => freezeIssue(redactIssue(issue, redactor)));
+  const issueReplacements = new Map(issues.map((issue, index) => [issue, frozenIssues[index]!]));
   for (const [id, state] of states) {
     if (state.rejection === undefined) {
       continue;
@@ -329,16 +405,64 @@ function resolveInputsStaged(
     });
   }
 
-  const inputs = order.map((id) => states.get(id)).filter((state) => state !== undefined);
-  const resolution = {
+  const inputs = Object.freeze(
+    order
+      .map((id) => states.get(id))
+      .filter((state) => state !== undefined)
+      .map(snapshotInputState),
+  );
+  const canonicalById = new Map(inputs.map((state) => [state.id, state]));
+  const publicById = Object.freeze(new ImmutableReadonlyMap(canonicalById));
+  const missing = Object.freeze(
+    inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
+  );
+  const frozenWarnings = Object.freeze(
+    warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
+  );
+  const problems = Object.freeze(frozenIssues);
+  const secretMasker = stagedSecrets.snapshot();
+  const resolution: Resolution = Object.freeze({
     inputs,
-    byId: states,
-    missing: inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-    warnings: warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
-    problems: redactedIssues,
-  };
-  options.secrets.replaceWith(stagedSecrets);
+    byId: publicById,
+    missing,
+    warnings: frozenWarnings,
+    problems,
+  });
+  const snapshot: ResolutionSnapshot = Object.freeze({
+    manifest,
+    context,
+    inputIndex,
+    inputs,
+    byId: canonicalById,
+    secrets: secretMasker,
+    missing,
+    warnings: frozenWarnings,
+    problems,
+  });
+
+  // Publish only after every caller-visible object and execution capability is complete.
+  publishedSecrets.replaceWith(stagedSecrets);
+  resolutionSnapshots.set(resolution, snapshot);
   return resolution;
+}
+
+function snapshotInputState(state: InputState): InputState {
+  const value = Array.isArray(state.value) ? Object.freeze([...state.value]) : state.value;
+  const rejection =
+    state.rejection === undefined
+      ? undefined
+      : Object.freeze({
+          ...state.rejection,
+          candidate: Array.isArray(state.rejection.candidate)
+            ? Object.freeze([...state.rejection.candidate])
+            : state.rejection.candidate,
+        });
+  return Object.freeze({ ...state, value, rejection });
+}
+
+function freezeIssue(issue: RuneIssue): RuneIssue {
+  const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
+  return Object.freeze({ ...issue, location });
 }
 
 /** Throws collected issues under their aggregate code, preserving the existing taxonomy. */

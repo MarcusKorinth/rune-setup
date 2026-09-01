@@ -14,7 +14,7 @@ import {
 } from '../../src/engine/conditions.js';
 import { ConditionError } from '../../src/errors.js';
 import type { ValueType } from '../../src/engine/context.js';
-import { SecretString } from '../../src/engine/secrets.js';
+import { createSecretString } from '../../src/engine/secrets.js';
 
 /** The declared inputs a condition is checked against, by name. */
 const TYPES: Readonly<Record<string, ValueType>> = {
@@ -115,6 +115,22 @@ describe('syntax', () => {
     expect(evaluate("'a\\'b' == \"a'b\"", {})).toBe(true);
     expect(evaluate('"back\\\\slash" == \'back\\\\slash\'', {})).toBe(true);
     expect(syntaxError("'\\n'")).toMatch(/is not an escape/);
+  });
+
+  it('accepts only integer literals in the inclusive safe range', () => {
+    expect(evaluate('9007199254740991 == 9007199254740991', {})).toBe(true);
+    expect(evaluate('-9007199254740991 == -9007199254740991', {})).toBe(true);
+
+    for (const value of [
+      '9007199254740992',
+      '9007199254740993',
+      '-9007199254740992',
+      '-9007199254740993',
+    ]) {
+      expect(syntaxError(`${value} == ${value}`)).toBe(
+        'integer literals must be between -9007199254740991 and 9007199254740991',
+      );
+    }
   });
 
   it('measures the length cap in bytes, at the boundary', () => {
@@ -299,11 +315,11 @@ describe('evaluation', () => {
   });
 
   it('compares opaque secrets with strings, secrets, and multiselect values', () => {
-    const matching = new SecretString('alpha-secret');
-    const different = new SecretString('beta-secret');
+    const matching = createSecretString('alpha-secret');
+    const different = createSecretString('beta-secret');
     const secretValues = {
       token: matching,
-      sameToken: new SecretString('alpha-secret'),
+      sameToken: createSecretString('alpha-secret'),
       otherToken: different,
       choices: ['alpha-secret', 'gamma-secret'],
     } satisfies Record<string, ConditionValue>;
@@ -320,7 +336,7 @@ describe('evaluation', () => {
 
   it('does not expose a secret through condition results or errors', () => {
     const content = 'F049-CONDITION-SECRET';
-    const secret = new SecretString(content);
+    const secret = createSecretString(content);
     const result = evaluate("${token} == 'different'", { token: secret });
     let failure: unknown;
     try {
