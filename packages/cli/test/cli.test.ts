@@ -729,7 +729,61 @@ describe('result files for failed outcomes', () => {
       locale: null,
       manifest: { path, sha256: null, schemaVersion: null },
     });
+    expect(io.err).toContain(`result written to ${resultPath}`);
     expect(io.err).toContain('config_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 3)');
+  });
+
+  it('suppresses unsafe fallback lines after a secret-bearing open failure', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  summarySecret:',
+      '    type: secret',
+      '  announcementSecret:',
+      '    type: secret',
+      '  channel:',
+      '    type: select',
+      '    options: [stable]',
+      'steps: []',
+    ]);
+    const resultPath = join(path, '..', 'open-failure.json');
+    const summary = 'input_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 4)';
+    const announcement = `result written to ${resultPath}`;
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--result',
+        resultPath,
+        '--set',
+        `summarySecret=${summary}`,
+        '--set',
+        `announcementSecret=${announcement}`,
+        '--set',
+        'channel=invalid',
+      ],
+      io,
+    );
+
+    expect(code).toBe(4);
+    const humanOutput = [...io.out, ...io.err].join('\n');
+    expect(humanOutput).not.toContain(summary);
+    expect(humanOutput).not.toContain(announcement);
+
+    const result = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      status: 'input_error',
+      exitCode: 4,
+      error: { code: 'RUNE-202' },
+    });
+    expect(JSON.stringify(result)).not.toContain(summary);
+    expect(JSON.stringify(result)).not.toContain(announcement);
   });
 
   it('keeps validated metadata when the selected locale overlay is invalid', async () => {

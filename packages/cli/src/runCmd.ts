@@ -121,11 +121,17 @@ export async function runCommand(
           ...(session === undefined ? {} : { session }),
           ...(plan === undefined ? {} : { plan }),
         });
+      // An open failure may have registered secret candidates without returning the session's
+      // masking StringTable. In that case the projected diagnostic above is the only safe human
+      // output; still deliver the machine result, but do not compose additional fallback lines.
+      const renderFallback = session !== undefined || result.status === 'config_error';
       if (flags.result !== undefined) {
         deliveryStarted = true;
-        await deliverResult(result, flags.result, io, strings);
+        await deliverResult(result, flags.result, io, strings, renderFallback);
       }
-      renderOutcome(result, session?.warnings() ?? [], io, strings);
+      if (renderFallback) {
+        renderOutcome(result, session?.warnings() ?? [], io, strings);
+      }
       throw new ExitWithCode(result.exitCode);
     }
     throw error;
@@ -138,12 +144,16 @@ async function deliverResult(
   destination: string,
   io: CliIo,
   strings?: StringTable,
+  announce = true,
 ): Promise<void> {
   if (destination === '-') {
     io.stdout(JSON.stringify(result, null, 2));
     return;
   }
   await writeResult(result, destination);
+  if (!announce) {
+    return;
+  }
   io.stderr(
     strings === undefined
       ? `result written to ${destination}`
