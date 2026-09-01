@@ -520,8 +520,56 @@ describe('result files for failed outcomes', () => {
     expect(written['exitCode']).toBe(3);
     expect(written).toMatchObject({
       mode: 'non-interactive',
+      product: null,
+      locale: null,
       manifest: { path, sha256: null, schemaVersion: null },
     });
+  });
+
+  it('keeps validated metadata when the selected locale overlay is invalid', async () => {
+    const path = fixture(MANIFEST);
+    writeLocaleOverlay(path, ['rune.button.unknown: Unbekannt']);
+    const resultPath = join(path, '..', 'overlay-failure.json');
+    const foreign = process.platform === 'win32' ? 'linux' : 'windows';
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--locale',
+          'de',
+          '--platform',
+          foreign,
+          '--result',
+          resultPath,
+        ],
+        io,
+      ),
+    ).toBe(3);
+
+    const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'config_error',
+      exitCode: 3,
+      dryRun: true,
+      mode: 'non-interactive',
+      platform: foreign,
+      crossPlatformPreview: true,
+      locale: 'de',
+      product: { name: 'Example', version: '1.0.0' },
+      manifest: {
+        path,
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+        schemaVersion: 1,
+      },
+      inputs: [],
+      steps: [],
+    });
+    expect((written['manifest'] as Record<string, unknown>)['sha256']).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('keeps stdout pure JSON under --dry-run --result -', async () => {

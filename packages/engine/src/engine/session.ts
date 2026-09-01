@@ -145,34 +145,38 @@ export class Session {
     const manifestDir = dirname(absolutePath);
     const manifest = parseManifest(absolutePath);
     const descriptor = manifestDescriptorFor(manifest);
+    const mode = options.mode ?? 'non-interactive';
+    const host = hostPlatform();
+    const platform = options.platform ?? host;
+    const preview = platform !== host;
+    const secrets = new SecretRegistry();
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
     const environment = snapshotEnvironment(options.environment);
-
-    const locale = selectLocale({
-      flag: options.locale,
-      environment,
-      systemLocale: options.systemLocale ?? systemLocale(),
-    });
-    let overlay: LocaleOverlay | undefined;
-    if (locale !== undefined) {
-      const match = discoverSelectedOverlay(manifestDir, locale);
-      overlay = match === undefined ? undefined : loadOverlay(match.path, match.locale, manifest);
-    }
-    const strings = resolveStrings({ manifest, locale, overlay });
-
-    const context = createRuntimeContext({
-      manifestDir,
-      product: manifest.product,
-      platform: options.platform ?? hostPlatform(),
-      environment,
-    });
-
-    const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
-    const overrides = new Map(Object.entries(options.overrides ?? {}));
-    const secrets = new SecretRegistry();
-    let resolution: Resolution;
+    let locale: string | undefined;
+    let strings: StringTable | undefined;
+    let resolution: Resolution | undefined;
     try {
+      locale = selectLocale({
+        flag: options.locale,
+        environment,
+        systemLocale: options.systemLocale ?? systemLocale(),
+      });
+      let overlay: LocaleOverlay | undefined;
+      if (locale !== undefined) {
+        const match = discoverSelectedOverlay(manifestDir, locale);
+        overlay = match === undefined ? undefined : loadOverlay(match.path, match.locale, manifest);
+      }
+      strings = resolveStrings({ manifest, locale, overlay });
+
+      const context = createRuntimeContext({
+        manifestDir,
+        product: manifest.product,
+        platform,
+        environment,
+      });
+      const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
+      const overrides = new Map(Object.entries(options.overrides ?? {}));
       resolution = resolveInputsWithRegistry(
         {
           manifest,
@@ -182,41 +186,42 @@ export class Session {
         },
         secrets,
       );
+
+      return new Session({
+        manifest,
+        manifestPath: descriptor.path,
+        mode,
+        context,
+        secrets,
+        strings,
+        values,
+        overrides,
+        // All-or-nothing: a value no type accepts, or a key naming no input, threw above and
+        // no session exists (§10).
+        resolution,
+        logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
+        runner: options.runner,
+      });
     } catch (error) {
       const projected =
         error instanceof RuneError ? projectRuneError(error, (text) => secrets.mask(text)) : error;
+      const failureStrings = strings ?? Object.freeze({ locale });
       if (projected instanceof RuneError) {
         registerOpenFailureContext(
           projected,
           Object.freeze({
             manifest,
-            mode: options.mode ?? 'non-interactive',
-            platform: context.platform,
-            preview: context.preview,
-            allInputs: () => Object.freeze([]),
-            getStrings: () => strings,
+            mode,
+            platform,
+            preview,
+            allInputs: () => resolution?.inputs ?? Object.freeze([]),
+            getStrings: () => failureStrings,
             [MASK_FOR_SINK]: (text: string) => secrets.mask(text),
           }),
         );
       }
       throw projected;
     }
-
-    return new Session({
-      manifest,
-      manifestPath: descriptor.path,
-      mode: options.mode ?? 'non-interactive',
-      context,
-      secrets,
-      strings,
-      values,
-      overrides,
-      // All-or-nothing: a value no type accepts, or a key naming no input, threw above and
-      // no session exists (§10).
-      resolution,
-      logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
-      runner: options.runner,
-    });
   }
 
   /** Enabled required inputs still without an answer, in declaration order — what to ask for. */

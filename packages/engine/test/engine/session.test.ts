@@ -7,10 +7,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
+import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
 import { ExecutionError, InputError, InternalError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import { manifestDescriptorFor } from '../../src/manifest/index.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
@@ -68,6 +70,42 @@ describe('opening a session', () => {
     expect(session.allInputs()[0]?.value).toBe(true);
     expect(session.allInputs()[0]?.source).toBe('values');
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
+  });
+
+  it('registers validated identity without inventing a locale when locale selection fails', async () => {
+    const path = fixture(BASE);
+    const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
+    const register = vi.spyOn(executor, 'registerOpenFailureContext');
+
+    try {
+      await expect(
+        Session.open(path, {
+          environment: {},
+          locale: 'definitely_invalid',
+          mode: 'interactive',
+          platform: foreign,
+        }),
+      ).rejects.toMatchObject({ code: 'RUNE-001' });
+
+      expect(register).toHaveBeenCalledOnce();
+      const context = register.mock.calls[0]?.[1];
+      expect(context).toBeDefined();
+      expect(context?.manifest.product).toEqual({ name: 'Example', version: '1.0.0' });
+      expect(manifestDescriptorFor(context!.manifest)).toMatchObject({
+        path,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        schemaVersion: 1,
+      });
+      expect(context).toMatchObject({
+        mode: 'interactive',
+        platform: foreign,
+        preview: true,
+      });
+      expect(context?.getStrings().locale).toBeUndefined();
+      expect(context?.allInputs()).toEqual([]);
+    } finally {
+      register.mockRestore();
+    }
   });
 
   it.runIf(process.platform === 'win32')(
