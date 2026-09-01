@@ -48,7 +48,7 @@ import {
   OVERSIZED_OUTPUT_LINE_PLACEHOLDER,
   SpawnRunner,
 } from '../runners/spawnRunner.js';
-import type { Runner, StartFailureReason } from '../runners/base.js';
+import type { Runner, SpawnOutcome, StartFailureReason } from '../runners/base.js';
 import {
   EXIT_CODE_BY_STATUS,
   RESULT_SCHEMA_VERSION,
@@ -231,7 +231,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     const stepStartedAt = performance.now();
 
     let acceptingOutput = true;
-    let outcome: Awaited<ReturnType<Runner['run']>>;
+    let outcome: unknown;
     try {
       outcome = await runner
         .run({
@@ -272,15 +272,15 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     let exitCode: number | null = null;
     let diagnostic: string | undefined;
 
-    switch (outcome.kind) {
-      case 'exited': {
-        if (!Number.isFinite(outcome.exitCode) || !Number.isInteger(outcome.exitCode)) {
-          terminalState = 'FAILED';
-          fatalInternalError = new InternalError(
-            `runner returned an invalid exit code for step "${step.id}"`,
-          );
-          diagnostic = `RUNE-500 runner returned an invalid exit code for step "${step.id}"`;
-        } else {
+    if (!isSpawnOutcome(outcome)) {
+      terminalState = 'FAILED';
+      fatalInternalError = new InternalError(
+        `runner returned an invalid outcome for step "${step.id}"`,
+      );
+      diagnostic = `RUNE-500 runner returned an invalid outcome for step "${step.id}"`;
+    } else {
+      switch (outcome.kind) {
+        case 'exited': {
           exitCode = outcome.exitCode;
           terminalState = step.command.successExitCodes.includes(outcome.exitCode)
             ? 'SUCCEEDED'
@@ -288,37 +288,37 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
           if (terminalState === 'FAILED') {
             diagnostic = `RUNE-401 step "${step.id}" exited with code ${outcome.exitCode}; expected one of [${step.command.successExitCodes.join(', ')}]`;
           }
+          break;
         }
-        break;
-      }
-      case 'signalled': {
-        terminalState = 'FAILED';
-        diagnostic = `RUNE-401 step "${step.id}" terminated by a signal`;
-        break;
-      }
-      case 'timedOut': {
-        terminalState = 'FAILED';
-        diagnostic = `RUNE-402 step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
-        break;
-      }
-      case 'cancelled':
-        terminalState = 'CANCELLED';
-        break;
-      case 'terminationFailed': {
-        terminalState = 'FAILED';
-        fatalTerminationFailure = true;
-        diagnostic = `RUNE-401 step "${step.id}" process-tree termination could not be confirmed`;
-        break;
-      }
-      case 'streamFailed': {
-        terminalState = 'FAILED';
-        diagnostic = `RUNE-401 step "${step.id}" ${outcome.stream} stream could not be read`;
-        break;
-      }
-      case 'failedToStart': {
-        terminalState = 'FAILED';
-        diagnostic = startFailureDiagnostic(step.id, outcome.reason);
-        break;
+        case 'signalled': {
+          terminalState = 'FAILED';
+          diagnostic = `RUNE-401 step "${step.id}" terminated by a signal`;
+          break;
+        }
+        case 'timedOut': {
+          terminalState = 'FAILED';
+          diagnostic = `RUNE-402 step "${step.id}" exceeded its timeout of ${step.command.timeoutSeconds} seconds`;
+          break;
+        }
+        case 'cancelled':
+          terminalState = 'CANCELLED';
+          break;
+        case 'terminationFailed': {
+          terminalState = 'FAILED';
+          fatalTerminationFailure = true;
+          diagnostic = `RUNE-401 step "${step.id}" process-tree termination could not be confirmed`;
+          break;
+        }
+        case 'streamFailed': {
+          terminalState = 'FAILED';
+          diagnostic = `RUNE-401 step "${step.id}" ${outcome.stream} stream could not be read`;
+          break;
+        }
+        case 'failedToStart': {
+          terminalState = 'FAILED';
+          diagnostic = startFailureDiagnostic(step.id, outcome.reason);
+          break;
+        }
       }
     }
 
@@ -392,6 +392,38 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     throw fatalInternalError;
   }
   return result;
+}
+
+/** Runtime check at the public runner seam; extra properties remain intentionally irrelevant. */
+function isSpawnOutcome(value: unknown): value is SpawnOutcome {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const outcome = value as Readonly<Record<string, unknown>>;
+  switch (outcome['kind']) {
+    case 'exited':
+      return (
+        typeof outcome['exitCode'] === 'number' &&
+        Number.isFinite(outcome['exitCode']) &&
+        Number.isInteger(outcome['exitCode'])
+      );
+    case 'signalled':
+    case 'timedOut':
+    case 'cancelled':
+    case 'terminationFailed':
+      return true;
+    case 'streamFailed':
+      return outcome['stream'] === 'stdout' || outcome['stream'] === 'stderr';
+    case 'failedToStart':
+      return (
+        outcome['reason'] === 'commandNotFound' ||
+        outcome['reason'] === 'invalidCwd' ||
+        outcome['reason'] === 'shellRequired' ||
+        outcome['reason'] === 'other'
+      );
+    default:
+      return false;
+  }
 }
 
 /** Builds a terminal event without allowing executor state and exit code to drift apart. */

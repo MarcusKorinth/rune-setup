@@ -44,7 +44,7 @@ import { parseManifest, parseManifestText } from '../../src/manifest/index.js';
 import { serializeResult } from '../../src/results/writer.js';
 import type { RunMode, RunResult } from '../../src/results/model.js';
 import { resultV1Schema } from '../../src/results/schema.js';
-import { InputError } from '../../src/errors.js';
+import { InputError, InternalError } from '../../src/errors.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 const TEST_LOCALE = 'en';
@@ -1256,6 +1256,93 @@ describe('a run that fails', () => {
     expect(line).not.toContain('private-stream-step');
     expect(line).not.toContain('stdout stream could not be read');
   });
+
+  it.each([
+    { name: 'null', outcome: null, forbidden: undefined },
+    {
+      name: 'unknown kind',
+      outcome: { kind: 'privateUnknownKind' },
+      forbidden: 'privateUnknownKind',
+    },
+    {
+      name: 'non-finite exit code',
+      outcome: { kind: 'exited', exitCode: Number.NaN },
+      forbidden: undefined,
+    },
+    {
+      name: 'fractional exit code',
+      outcome: { kind: 'exited', exitCode: 1.5 },
+      forbidden: undefined,
+    },
+    {
+      name: 'invalid stream',
+      outcome: { kind: 'streamFailed', stream: 'privateStream' },
+      forbidden: 'privateStream',
+    },
+    {
+      name: 'invalid start reason',
+      outcome: { kind: 'failedToStart', reason: 'privateReason' },
+      forbidden: 'privateReason',
+    },
+  ])(
+    'contains a malformed runner outcome ($name) as an internal contract failure',
+    async ({ outcome, forbidden }) => {
+      const { plan } = setup(TWO_STEPS, { failFast: false });
+      const events: RunEvent[] = [];
+      const runner: Runner = { run: async () => outcome as SpawnOutcome };
+
+      let thrown: unknown;
+      try {
+        await executeRun({
+          plan,
+          observer: (event) => events.push(event),
+          runner,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(InternalError);
+      expect(thrown).toMatchObject({ code: 'RUNE-500' });
+      expect(events.map((event) => event.kind)).toEqual([
+        'runStarted',
+        'stepStarted',
+        'stepOutput',
+        'stepFinished',
+        'stepFinished',
+        'runFinished',
+      ]);
+      expect(events.filter((event) => event.kind === 'runStarted')).toHaveLength(1);
+      expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
+
+      const terminal = events.at(-1);
+      expect(terminal?.kind).toBe('runFinished');
+      const result = terminal?.kind === 'runFinished' ? terminal.result : undefined;
+      expect(result).toMatchObject({
+        status: 'internal_error',
+        exitCode: 70,
+        error: { code: 'RUNE-500' },
+        stepsFailed: 1,
+        stepsNotRun: 1,
+        steps: [{ state: 'FAILED' }, { state: 'NOT_RUN' }],
+      });
+      expect(resultV1Schema.safeParse(result).success).toBe(true);
+      expect(result?.steps[0]?.outputTail).toEqual([
+        {
+          stream: 'stderr',
+          line: 'RUNE-500 runner returned an invalid outcome for step "first"',
+        },
+      ]);
+      if (forbidden !== undefined) {
+        expect(JSON.stringify({ thrown, events, result })).not.toContain(forbidden);
+        expect((thrown as Error).message).not.toContain(forbidden);
+      }
+
+      const settledEventCount = events.length;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toHaveLength(settledEventCount);
+    },
+  );
 
   it('contains a rejecting runner and completes the event bracket', async () => {
     const { plan } = setup(['steps:', '  - id: rejected', '    run:', '      command: a']);
