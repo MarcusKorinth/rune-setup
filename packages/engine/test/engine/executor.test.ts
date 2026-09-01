@@ -1275,6 +1275,16 @@ describe('a run that fails', () => {
       forbidden: undefined,
     },
     {
+      name: 'exit code above the safe integer range',
+      outcome: { kind: 'exited', exitCode: Number.MAX_SAFE_INTEGER + 1 },
+      forbidden: String(Number.MAX_SAFE_INTEGER + 1),
+    },
+    {
+      name: 'exit code below the safe integer range',
+      outcome: { kind: 'exited', exitCode: Number.MIN_SAFE_INTEGER - 1 },
+      forbidden: String(Number.MIN_SAFE_INTEGER - 1),
+    },
+    {
       name: 'invalid stream',
       outcome: { kind: 'streamFailed', stream: 'privateStream' },
       forbidden: 'privateStream',
@@ -1324,7 +1334,10 @@ describe('a run that fails', () => {
         error: { code: 'RUNE-500' },
         stepsFailed: 1,
         stepsNotRun: 1,
-        steps: [{ state: 'FAILED' }, { state: 'NOT_RUN' }],
+        steps: [
+          { state: 'FAILED', exitCode: null },
+          { state: 'NOT_RUN', exitCode: null },
+        ],
       });
       expect(resultV1Schema.safeParse(result).success).toBe(true);
       expect(result?.steps[0]?.outputTail).toEqual([

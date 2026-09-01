@@ -404,11 +404,7 @@ function isSpawnOutcome(value: unknown): value is SpawnOutcome {
   const outcome = value as Readonly<Record<string, unknown>>;
   switch (outcome['kind']) {
     case 'exited':
-      return (
-        typeof outcome['exitCode'] === 'number' &&
-        Number.isFinite(outcome['exitCode']) &&
-        Number.isInteger(outcome['exitCode'])
-      );
+      return typeof outcome['exitCode'] === 'number' && Number.isSafeInteger(outcome['exitCode']);
     case 'signalled':
     case 'timedOut':
     case 'cancelled':
