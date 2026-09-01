@@ -374,6 +374,126 @@ describe('rune run', () => {
     expect(io.out.join('\n')).toContain('argv: ["node","***","***"]');
   });
 
+  it('masks complete dry-run lines while preserving structured identities', async () => {
+    const productName = 'IdentityProduct';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${productName}`,
+      '  version: "1.0.0"',
+      'inputs:',
+      '  headingSecret:',
+      '    type: secret',
+      '  productSecret:',
+      '    type: secret',
+      '  manifestSecret:',
+      '    type: secret',
+      '  logSecret:',
+      '    type: secret',
+      '  resultSecret:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const logPath = join(path, '..', 'identity.log');
+    const resultPath = join(path, '..', 'identity-result.json');
+    const io = capture();
+    const markers = ['Resolved inputs:', productName, path, logPath, resultPath];
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--dry-run',
+        '--non-interactive',
+        '--log-file',
+        logPath,
+        '--result',
+        resultPath,
+        '--set',
+        'headingSecret=Resolved inputs:',
+        '--set',
+        `productSecret=${productName}`,
+        '--set',
+        `manifestSecret=${path}`,
+        '--set',
+        `logSecret=${logPath}`,
+        '--set',
+        `resultSecret=${resultPath}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    const humanOutput = [...io.out, ...io.err].join('\n');
+    for (const marker of markers) {
+      expect(humanOutput).not.toContain(marker);
+    }
+    expect(humanOutput).toContain('***');
+
+    const result = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+    expect(result['product']).toEqual({ name: productName, version: '1.0.0' });
+    expect(result['manifest']).toMatchObject({ path });
+  });
+
+  it('masks fixed live chrome and fully composed log records', async () => {
+    const progressMarker = 'Step 1 of 1';
+    const resultMarker = 'Setup completed successfully.';
+    const runLogMarker = 'run started';
+    const stepLogMarker = 'hello:stdout';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  progressSecret:',
+      '    type: secret',
+      '  resultSecret:',
+      '    type: secret',
+      '  runLogSecret:',
+      '    type: secret',
+      '  stepLogSecret:',
+      '    type: secret',
+      'steps:',
+      '  - id: hello',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "console.log(\'complete\')"]',
+    ]);
+    const logPath = join(path, '..', 'run.log');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--log-file',
+        logPath,
+        '--set',
+        `progressSecret=${progressMarker}`,
+        '--set',
+        `resultSecret=${resultMarker}`,
+        '--set',
+        `runLogSecret=${runLogMarker}`,
+        '--set',
+        `stepLogSecret=${stepLogMarker}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    const diagnostics = io.err.join('\n');
+    expect(diagnostics).not.toContain(progressMarker);
+    expect(diagnostics).not.toContain(resultMarker);
+    expect(diagnostics).toContain('***');
+
+    const log = readFileSync(logPath, 'utf8');
+    expect(log).not.toContain(runLogMarker);
+    expect(log).not.toContain(stepLogMarker);
+    expect(log).toContain('[***] complete');
+  });
+
   it.each(['before', 'after'] as const)(
     'masks a rejected ordinary value when the matching secret is declared %s it',
     async (order) => {

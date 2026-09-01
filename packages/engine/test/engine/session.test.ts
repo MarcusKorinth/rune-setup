@@ -1099,6 +1099,55 @@ describe('strings and theme', () => {
     expect(session.getStrings().stepTitle('install')).toBe('Installieren');
   });
 
+  it('masks sink strings with the current secret snapshot after a successful edit', async () => {
+    const productName = 'IdentityProduct';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${productName}`,
+      '  version: "1.0.0"',
+      'inputs:',
+      '  lateSecret:',
+      '    type: secret',
+      '  productSecret:',
+      '    type: secret',
+      '  manifestSecret:',
+      '    type: secret',
+      '  logSecret:',
+      '    type: secret',
+      'steps:',
+      '  - id: install',
+      '    title: Next',
+      '    run:',
+      '      command: node',
+    ]);
+    const logFile = join(path, '..', 'identity.log');
+    const session = await Session.open(path, {
+      mode: 'interactive',
+      environment: {},
+      logFile,
+      overrides: {
+        productSecret: productName,
+        manifestSecret: path,
+        logSecret: logFile,
+      },
+    });
+    const strings = session.getStrings();
+
+    expect(strings.chrome('rune.button.next')).toBe('Next');
+    expect(session.setValue('lateSecret', 'Next')).toEqual([]);
+    expect(strings.chrome('rune.button.next')).toBe('***');
+    expect(strings.entries['rune.button.next']).toBe('***');
+    expect(session.getStrings().stepTitle('install')).toBe('***');
+
+    const plan = session.plan();
+    const result = session.describe();
+    expect(plan.manifestPath).toBe(path);
+    expect(plan.executionOptions.logFile).toBe(logFile);
+    expect(result.product).toEqual({ name: productName, version: '1.0.0' });
+    expect(result.manifest.path).toBe(path);
+  });
+
   it('hands back the gui block with absolute paths, or nothing', async () => {
     const plain = await Session.open(fixture(BASE), { environment: {} });
     expect(plain.getThemeConfig()).toEqual({});

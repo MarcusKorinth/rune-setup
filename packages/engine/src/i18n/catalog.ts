@@ -23,10 +23,30 @@ export const CHROME_CATALOG = Object.freeze({
   'rune.summary.proceed': 'Proceed',
   'rune.summary.change': 'Change a value',
   'rune.summary.cancel': 'Cancel',
+  'rune.plan.heading':
+    'Execution plan v{planVersion} for {productName} {productVersion} ' +
+    '({manifestPath}, sha256 {manifestSha}, platform {platform})',
+  'rune.plan.headingPreview':
+    'Execution plan v{planVersion} for {productName} {productVersion} ' +
+    '({manifestPath}, sha256 {manifestSha}, platform {platform}, cross-platform preview)',
+  'rune.plan.executionOptions': 'Execution options: failFast={failFast}, logFile={logFile}',
+  'rune.plan.inputs': 'Resolved inputs:',
+  'rune.plan.input':
+    '  {id}: value={value}, secret={secret}, enabled={enabled}, source={source}, ignored={ignored}',
+  'rune.plan.steps': 'Steps:',
+  'rune.plan.step': '  {number} {title}',
+  'rune.plan.stepSkipped': '  {number} {title} — SKIPPED ({reason})',
+  'rune.plan.argv': '       argv: {value}',
+  'rune.plan.cwd': '       cwd: {value}',
+  'rune.plan.env': '       env: {value}',
+  'rune.plan.timeoutSeconds': '       timeoutSeconds: {value}',
+  'rune.plan.successExitCodes': '       successExitCodes: {value}',
   'rune.progress.runStarted': 'running {total} steps on {platform}',
   'rune.progress.step': 'Step {index} of {total}: {title}',
+  'rune.progress.output': '  {line}',
   'rune.progress.stepFinished': '  -> {state} (exit {exitCode}) after {durationMs}ms',
   'rune.progress.stepFinishedWithoutExitCode': '  -> {state} after {durationMs}ms',
+  'rune.warning': 'warning: {message}',
   'rune.result.succeeded': 'Setup completed successfully.',
   'rune.result.failed': 'Setup failed.',
   'rune.result.cancelled': 'Setup was cancelled.',
@@ -35,6 +55,7 @@ export const CHROME_CATALOG = Object.freeze({
   'rune.result.summary':
     '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
     '{notRun} not run (exit {exitCode})',
+  'rune.result.written': 'result written to {path}',
   'rune.validate.valid':
     '{path} is valid (schemaVersion {schemaVersion}, product {productName} {productVersion})',
   'rune.validate.locales.none': 'locales: none',

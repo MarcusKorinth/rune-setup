@@ -1,7 +1,8 @@
 /**
  * The log-file sink (docs/architecture.md §10): one of the two sinks off the one event
  * stream. Timestamped lines, step output prefixed `[stepId:stdout]`. Lines arrive already
- * masked — the executor masks before any observer sees them.
+ * masked by the executor. The complete timestamped record is masked again immediately before
+ * writing so fixed prefixes and field boundaries cannot create a new clear-text match.
  */
 
 import { createWriteStream, fstat, mkdirSync, type Stats, type WriteStream } from 'node:fs';
@@ -19,7 +20,10 @@ export interface LogFileSink {
 }
 
 /** Opens the log before returning, so execution cannot start until the sink is usable. */
-export async function createLogFileSink(path: string): Promise<LogFileSink> {
+export async function createLogFileSink(
+  path: string,
+  mask: (text: string) => string = (text) => text,
+): Promise<LogFileSink> {
   try {
     mkdirSync(dirname(path), { recursive: true });
   } catch (cause) {
@@ -95,7 +99,8 @@ export async function createLogFileSink(path: string): Promise<LogFileSink> {
         return;
       }
       try {
-        stream.write(`${new Date().toISOString()} ${describe(event)}\n`, (cause) => {
+        const line = `${new Date().toISOString()} ${describe(event)}`;
+        stream.write(`${mask(line)}\n`, (cause) => {
           if (cause !== undefined && cause !== null) {
             rememberFailure('write to', cause);
           }

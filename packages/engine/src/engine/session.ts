@@ -21,7 +21,7 @@ import { manifestDescriptorFor, parseManifest, type Manifest } from '../manifest
 import { startOfFile } from '../manifest/source.js';
 import { discoverSelectedOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
-import { resolveStrings, type StringTable } from '../i18n/strings.js';
+import { projectStringsForSink, resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
 import type { RunMode, RunResult } from '../results/model.js';
@@ -99,6 +99,7 @@ export class Session {
   readonly #environment: Environment;
   #secrets: SecretRegistry;
   readonly #strings: StringTable;
+  readonly #sinkStrings: StringTable;
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
   readonly #answers = new Map<string, unknown>();
@@ -131,6 +132,7 @@ export class Session {
     this.#environment = fields.environment;
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;
+    this.#sinkStrings = projectStringsForSink(fields.strings, (text) => this.#secrets.mask(text));
     this.#values = fields.values;
     this.#overrides = fields.overrides;
     this.#resolution = fields.resolution;
@@ -321,7 +323,10 @@ export class Session {
     let terminal: RunFinished | undefined;
     try {
       const logFile = plan.executionOptions.logFile;
-      log = logFile === undefined ? undefined : await createLogFileSink(logFile);
+      log =
+        logFile === undefined
+          ? undefined
+          : await createLogFileSink(logFile, (text) => this.#secrets.mask(text));
       const observers: EngineObserver = (event) => {
         notifyObserver(log?.observer, event);
         if (event.kind === 'runFinished') {
@@ -387,7 +392,7 @@ export class Session {
 
   /** The fully resolved string table for the session's locale (§6.3). */
   getStrings(): StringTable {
-    return this.#strings;
+    return this.#sinkStrings;
   }
 
   /** The `gui:` block, paths absolute; an empty object when the manifest has none. */

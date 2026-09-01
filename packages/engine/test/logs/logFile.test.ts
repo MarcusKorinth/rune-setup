@@ -55,4 +55,22 @@ describe('log-file sink', () => {
     expect(lines[1]).toContain('[install:stdout] ordinary output');
     expect(lines[2]).toContain('output\\r\\nforged\\u2029record\\u0002');
   });
+
+  it('masks a match created by the complete step-output prefix', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    const marker = 'install:stdout';
+    const sink = await createLogFileSink(path, (line) => line.replaceAll(marker, '***'));
+
+    sink.observer({
+      kind: 'stepOutput',
+      stepId: 'install',
+      stream: 'stdout',
+      line: 'complete',
+    });
+    await sink.close();
+
+    const log = readFileSync(path, 'utf8');
+    expect(log).not.toContain(marker);
+    expect(log).toContain('[***] complete');
+  });
 });

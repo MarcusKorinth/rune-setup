@@ -83,11 +83,11 @@ export async function runCommand(
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
-      renderPlan(plan, session.manifest.product, io);
+      renderPlan(plan, session.manifest.product, io, strings);
     }
     if (flags.result !== undefined) {
       deliveryStarted = true;
-      await deliverResult(result, flags.result, io);
+      await deliverResult(result, flags.result, io, strings);
     }
     renderOutcome(result, session.warnings(), io, strings);
     if (result.exitCode !== 0) {
@@ -123,7 +123,7 @@ export async function runCommand(
         });
       if (flags.result !== undefined) {
         deliveryStarted = true;
-        await deliverResult(result, flags.result, io);
+        await deliverResult(result, flags.result, io, strings);
       }
       renderOutcome(result, session?.warnings() ?? [], io, strings);
       throw new ExitWithCode(result.exitCode);
@@ -133,11 +133,20 @@ export async function runCommand(
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */
-async function deliverResult(result: RunResult, destination: string, io: CliIo): Promise<void> {
+async function deliverResult(
+  result: RunResult,
+  destination: string,
+  io: CliIo,
+  strings?: StringTable,
+): Promise<void> {
   if (destination === '-') {
     io.stdout(JSON.stringify(result, null, 2));
     return;
   }
   await writeResult(result, destination);
-  io.stderr(`result written to ${destination}`);
+  io.stderr(
+    strings === undefined
+      ? `result written to ${destination}`
+      : strings.chrome('rune.result.written', { path: destination }),
+  );
 }

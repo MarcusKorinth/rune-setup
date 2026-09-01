@@ -13,37 +13,64 @@ export function renderPlan(
   plan: ExecutionPlan,
   product: { readonly name: string; readonly version: string },
   io: CliIo,
+  strings: StringTable,
 ): void {
-  const preview = plan.preview ? ', cross-platform preview' : '';
   io.stdout(
-    `Execution plan v${plan.planSchemaVersion} for ${product.name} ${product.version} ` +
-      `(${plan.manifestPath}, sha256 ${plan.manifestSha256}, platform ${plan.platform}${preview})`,
+    strings.chrome(plan.preview ? 'rune.plan.headingPreview' : 'rune.plan.heading', {
+      planVersion: plan.planSchemaVersion,
+      productName: product.name,
+      productVersion: product.version,
+      manifestPath: plan.manifestPath,
+      manifestSha: plan.manifestSha256,
+      platform: plan.platform,
+    }),
   );
   io.stdout(
-    `Execution options: failFast=${String(plan.executionOptions.failFast)}, ` +
-      `logFile=${safeJson(plan.executionOptions.logFile)}`,
+    strings.chrome('rune.plan.executionOptions', {
+      failFast: String(plan.executionOptions.failFast),
+      logFile: safeJson(plan.executionOptions.logFile),
+    }),
   );
-  io.stdout('Resolved inputs:');
+  io.stdout(strings.chrome('rune.plan.inputs'));
   for (const input of plan.resolvedInputs) {
     io.stdout(
-      `  ${input.id}: value=${safeJson(input.value)}, secret=${String(input.secret)}, ` +
-        `enabled=${String(input.enabled)}, source=${input.source ?? 'none'}, ` +
-        `ignored=${input.ignored ?? 'none'}`,
+      strings.chrome('rune.plan.input', {
+        id: input.id,
+        value: safeJson(input.value),
+        secret: String(input.secret),
+        enabled: String(input.enabled),
+        source: input.source ?? 'none',
+        ignored: input.ignored ?? 'none',
+      }),
     );
   }
-  io.stdout('Steps:');
+  io.stdout(strings.chrome('rune.plan.steps'));
   plan.steps.forEach((step, index) => {
     const number = `${index + 1}.`.padEnd(3);
     if (step.state === 'SKIPPED') {
-      io.stdout(`  ${number} ${step.title} — SKIPPED (${step.skipReason})`);
+      io.stdout(
+        strings.chrome('rune.plan.stepSkipped', {
+          number,
+          title: step.title,
+          reason: step.skipReason,
+        }),
+      );
       return;
     }
-    io.stdout(`  ${number} ${step.title}`);
-    io.stdout(`       argv: ${safeJson(step.command.argv)}`);
-    io.stdout(`       cwd: ${safeJson(step.command.cwd)}`);
-    io.stdout(`       env: ${safeJson(step.command.env)}`);
-    io.stdout(`       timeoutSeconds: ${safeJson(step.command.timeoutSeconds)}`);
-    io.stdout(`       successExitCodes: ${safeJson(step.command.successExitCodes)}`);
+    io.stdout(strings.chrome('rune.plan.step', { number, title: step.title }));
+    io.stdout(strings.chrome('rune.plan.argv', { value: safeJson(step.command.argv) }));
+    io.stdout(strings.chrome('rune.plan.cwd', { value: safeJson(step.command.cwd) }));
+    io.stdout(strings.chrome('rune.plan.env', { value: safeJson(step.command.env) }));
+    io.stdout(
+      strings.chrome('rune.plan.timeoutSeconds', {
+        value: safeJson(step.command.timeoutSeconds),
+      }),
+    );
+    io.stdout(
+      strings.chrome('rune.plan.successExitCodes', {
+        value: safeJson(step.command.successExitCodes),
+      }),
+    );
   });
 }
 
@@ -74,7 +101,7 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
         );
         break;
       case 'stepOutput':
-        io.stderr(`  ${event.line}`);
+        io.stderr(strings.chrome('rune.progress.output', { line: event.line }));
         break;
       case 'stepFinished':
         if (event.exitCode === undefined) {
@@ -108,7 +135,11 @@ export function renderOutcome(
   strings?: StringTable,
 ): void {
   for (const warning of warnings) {
-    io.stderr(`warning: ${warning}`);
+    io.stderr(
+      strings === undefined
+        ? `warning: ${warning}`
+        : strings.chrome('rune.warning', { message: warning }),
+    );
   }
   const resultKey = resultChromeKey(result.status);
   if (resultKey !== undefined && strings !== undefined) {
@@ -118,7 +149,9 @@ export function renderOutcome(
     io.stderr(
       strings === undefined
         ? 'warning: nothing was executed — every step was skipped'
-        : `warning: ${strings.chrome('rune.result.nothingExecuted')}`,
+        : strings.chrome('rune.warning', {
+            message: strings.chrome('rune.result.nothingExecuted'),
+          }),
     );
   }
   io.stderr(

@@ -56,6 +56,40 @@ export function stringTableContextFor(table: StringTable): StringTableContext {
   return context;
 }
 
+/**
+ * Projects a resolved table through a sink masker without losing its manifest provenance.
+ * The masker is invoked on every access so a long-lived frontend table follows successful
+ * session edits that replace the active secret snapshot.
+ */
+export function projectStringsForSink(
+  source: StringTable,
+  mask: (text: string) => string,
+): StringTable {
+  const context = stringTableContextFor(source);
+  const maskedOptional = (text: string | undefined): string | undefined =>
+    text === undefined ? undefined : mask(text);
+  const table: StringTable = {
+    locale: source.locale,
+    overlayLocale: source.overlayLocale,
+    get entries() {
+      return Object.freeze(
+        Object.fromEntries(Object.entries(source.entries).map(([key, text]) => [key, mask(text)])),
+      );
+    },
+    chrome: (key, values) => mask(source.chrome(key, values)),
+    inputTitle: (id) => mask(source.inputTitle(id)),
+    inputDescription: (id) => maskedOptional(source.inputDescription(id)),
+    patternHint: (id) => maskedOptional(source.patternHint(id)),
+    optionLabel: (inputId, value) => mask(source.optionLabel(inputId, value)),
+    stepTitle: (id) => mask(source.stepTitle(id)),
+    productDescription: () => maskedOptional(source.productDescription()),
+    windowTitle: () => maskedOptional(source.windowTitle()),
+  };
+  const frozenTable = Object.freeze(table);
+  stringTableContexts.set(frozenTable, context);
+  return frozenTable;
+}
+
 /** Builds the one string table of a session. */
 export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const { manifest, overlay } = options;
