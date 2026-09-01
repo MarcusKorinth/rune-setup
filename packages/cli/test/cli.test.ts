@@ -164,6 +164,54 @@ describe('rune run', () => {
     expect(io.err.join('\n')).toContain('hello');
   });
 
+  it('collects repeated --set and --values options around the manifest in invocation order', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  greeting:',
+      '    type: text',
+      '  target:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const firstValues = join(path, '..', 'first-values.yaml');
+    const secondValues = join(path, '..', 'second-values.yaml');
+    writeFileSync(firstValues, 'greeting: from-first-values\ntarget: first\n', 'utf8');
+    writeFileSync(secondValues, 'greeting: from-second-values\ntarget: second\n', 'utf8');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        '--dry-run',
+        '--values',
+        firstValues,
+        '--set',
+        'greeting=before-manifest',
+        path,
+        '--values',
+        secondValues,
+        '--set',
+        'greeting=after-manifest',
+        '--result',
+        '-',
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.out.join('\n'))).toMatchObject({
+      status: 'planned',
+      inputs: [
+        { id: 'greeting', value: 'after-manifest', source: 'set' },
+        { id: 'target', value: 'second', source: 'values' },
+      ],
+    });
+  });
+
   it('renders resolved locale chrome while keeping result JSON machine-readable', async () => {
     const path = fixture([
       'schemaVersion: 1',

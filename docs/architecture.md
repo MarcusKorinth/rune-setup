@@ -84,7 +84,7 @@ The spec conflicts between §6 (`rune install`) and §13 (`rune run`). Decision:
 ```
 rune validate installer.yaml [--platform windows|linux] [--locale TAG]
 rune run installer.yaml [--gui] [--non-interactive] [--dry-run]
-                        [--set key=value ...] [--values file.yaml ...]
+                        [--set key=value]... [--values file.yaml]...
                         [--result path|-] [--log-file path] [--locale TAG]
                         [--platform windows|linux]     # dry-run/validate only
 rune schema [--output FILE] [--result]   # manifest JSON Schema (v1); --result: result-file schema
