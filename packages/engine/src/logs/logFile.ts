@@ -8,6 +8,7 @@ import { createWriteStream, fstat, mkdirSync, type Stats, type WriteStream } fro
 import { dirname } from 'node:path';
 import { finished } from 'node:stream/promises';
 
+import { escapeDiagnosticText } from '../diagnostics.js';
 import type { EngineObserver, RunEvent } from '../engine/events.js';
 import { ExecutionError, messageOf } from '../errors.js';
 
@@ -161,9 +162,9 @@ function describe(event: RunEvent): string {
     case 'runStarted':
       return `run started: ${event.plan.steps.length} steps, platform ${event.plan.platform}`;
     case 'stepStarted':
-      return `[${event.stepId}] started (${event.index + 1}/${event.total}): ${event.title}`;
+      return `[${event.stepId}] started (${event.index + 1}/${event.total}): ${escapeDiagnosticText(event.title)}`;
     case 'stepOutput':
-      return `[${event.stepId}:${event.stream}] ${event.line}`;
+      return `[${event.stepId}:${event.stream}] ${escapeDiagnosticText(event.line)}`;
     case 'stepFinished':
       return `[${event.stepId}] ${event.state}${
         event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`
