@@ -260,7 +260,7 @@ Windows command root or drive-relative command (RUNE-401), an invalid native Win
 (RUNE-404), or a batch command that requires an implicit shell (RUNE-405). A configured run
 still reports this outcome, but it must not invent a step transition or publish a partial plan.
 
-`ExecutionPlan` (deep-frozen, `readonly` types, versioned): `planSchemaVersion` (currently `1`), `manifestPath`, `manifestSha256`, `platform`, `locale`, `resolvedInputs` (secrets wrapped; disabled inputs carry their empty value and state), `executionOptions`, `steps: readonly PlannedStep[]` in declaration order. `PlannedStep` carries the real `ResolvedCommand` (secret-wrapped argv, cwd, env delta, timeout, success codes); masking happens only at render/serialization time — never a second "masked plan".
+`ExecutionPlan` (deep-frozen, `readonly` types, versioned): `planSchemaVersion` (currently `1`), `manifestPath`, `manifestSha256`, `platform`, `locale`, `preview`, `resolvedInputs` (secrets wrapped; disabled inputs carry their empty value and state), `executionOptions`, `steps: readonly PlannedStep[]` in declaration order. `PlannedStep` carries the real `ResolvedCommand` (secret-wrapped argv, cwd, env delta, timeout, success codes); masking happens only at render/serialization time — never a second "masked plan".
 
 ### Step lifecycle
 
