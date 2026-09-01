@@ -23,12 +23,18 @@ export const CHROME_CATALOG = Object.freeze({
   'rune.summary.proceed': 'Proceed',
   'rune.summary.change': 'Change a value',
   'rune.summary.cancel': 'Cancel',
+  'rune.progress.runStarted': 'running {total} steps on {platform}',
   'rune.progress.step': 'Step {index} of {total}: {title}',
+  'rune.progress.stepFinished': '  -> {state} (exit {exitCode}) after {durationMs}ms',
+  'rune.progress.stepFinishedWithoutExitCode': '  -> {state} after {durationMs}ms',
   'rune.result.succeeded': 'Setup completed successfully.',
   'rune.result.failed': 'Setup failed.',
   'rune.result.cancelled': 'Setup was cancelled.',
   'rune.result.planned': 'Dry run: nothing was executed.',
   'rune.result.nothingExecuted': 'No step needed to run.',
+  'rune.result.summary':
+    '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
+    '{notRun} not run (exit {exitCode})',
   'rune.validate.valid':
     '{path} is valid (schemaVersion {schemaVersion}, product {productName} {productVersion})',
   'rune.validate.locales.none': 'locales: none',

@@ -57,7 +57,12 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
-        io.stderr(`running ${event.plan.steps.length} steps on ${event.plan.platform}`);
+        io.stderr(
+          strings.chrome('rune.progress.runStarted', {
+            total: event.plan.steps.length,
+            platform: event.plan.platform,
+          }),
+        );
         break;
       case 'stepStarted':
         io.stderr(
@@ -72,10 +77,21 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
         io.stderr(`  ${event.line}`);
         break;
       case 'stepFinished':
+        if (event.exitCode === undefined) {
+          io.stderr(
+            strings.chrome('rune.progress.stepFinishedWithoutExitCode', {
+              state: event.state,
+              durationMs: event.durationMs,
+            }),
+          );
+          break;
+        }
         io.stderr(
-          `  -> ${event.state}` +
-            (event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`) +
-            ` after ${event.durationMs}ms`,
+          strings.chrome('rune.progress.stepFinished', {
+            state: event.state,
+            exitCode: event.exitCode,
+            durationMs: event.durationMs,
+          }),
         );
         break;
       case 'runFinished':
@@ -106,8 +122,17 @@ export function renderOutcome(
     );
   }
   io.stderr(
-    `${result.status}: ${result.stepsSucceeded} succeeded, ${result.stepsFailed} failed, ` +
-      `${result.stepsSkipped} skipped, ${result.stepsNotRun} not run (exit ${result.exitCode})`,
+    strings === undefined
+      ? `${result.status}: ${result.stepsSucceeded} succeeded, ${result.stepsFailed} failed, ` +
+          `${result.stepsSkipped} skipped, ${result.stepsNotRun} not run (exit ${result.exitCode})`
+      : strings.chrome('rune.result.summary', {
+          status: result.status,
+          succeeded: result.stepsSucceeded,
+          failed: result.stepsFailed,
+          skipped: result.stepsSkipped,
+          notRun: result.stepsNotRun,
+          exitCode: result.exitCode,
+        }),
   );
 }
 

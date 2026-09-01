@@ -218,18 +218,30 @@ describe('rune run', () => {
       'product:',
       '  name: Example',
       '  version: "1.0.0"',
+      'inputs:',
+      '  includeSkipped:',
+      '    type: boolean',
+      '    default: false',
       'steps:',
       '  - id: hello',
       '    title: Hello step',
       '    run:',
       '      command: node',
       '      args: ["-e", "console.log(\'child output\')"]',
+      '  - id: skipped',
+      '    when: "${includeSkipped}"',
+      '    run:',
+      '      command: never-runs',
     ]);
     writeLocaleOverlay(path, [
       'steps.hello.title: Hallo Schritt',
+      'rune.progress.runStarted: "Ausführung {total} Schritte auf {platform}"',
       'rune.progress.step: "Schritt {index} von {total}: {title}"',
+      'rune.progress.stepFinished: "Ende {state} mit Code {exitCode} nach {durationMs}ms"',
+      'rune.progress.stepFinishedWithoutExitCode: "Ende {state} ohne Code nach {durationMs}ms"',
       'rune.result.succeeded: Einrichtung abgeschlossen.',
       'rune.result.planned: "Vorschau: Es wurde nichts ausgeführt."',
+      'rune.result.summary: "Bilanz {status}: {succeeded}/{failed}/{skipped}/{notRun} mit Code {exitCode}"',
     ]);
 
     const live = capture();
@@ -243,10 +255,19 @@ describe('rune run', () => {
       status: 'succeeded',
       exitCode: 0,
       stepsExecuted: 1,
-      steps: [{ id: 'hello', title: 'Hallo Schritt', state: 'SUCCEEDED', exitCode: 0 }],
+      steps: [
+        { id: 'hello', title: 'Hallo Schritt', state: 'SUCCEEDED', exitCode: 0 },
+        { id: 'skipped', title: 'skipped', state: 'SKIPPED', exitCode: null },
+      ],
     });
-    expect(live.err).toContain('Schritt 1 von 1: Hallo Schritt');
-    expect(live.err).toContain('Einrichtung abgeschlossen.');
+    const platform = process.platform === 'win32' ? 'windows' : 'linux';
+    const diagnostics = live.err.join('\n');
+    expect(diagnostics).toContain(`Ausführung 2 Schritte auf ${platform}`);
+    expect(diagnostics).toContain('Schritt 1 von 2: Hallo Schritt');
+    expect(diagnostics).toContain('Ende SUCCEEDED mit Code 0 nach');
+    expect(diagnostics).toContain('Ende SKIPPED ohne Code nach');
+    expect(diagnostics).toContain('Einrichtung abgeschlossen.');
+    expect(diagnostics).toContain('Bilanz succeeded: 1/0/1/0 mit Code 0');
 
     const dryRun = capture();
     expect(
@@ -572,6 +593,7 @@ describe('result files for failed outcomes', () => {
       locale: null,
       manifest: { path, sha256: null, schemaVersion: null },
     });
+    expect(io.err).toContain('config_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 3)');
   });
 
   it('keeps validated metadata when the selected locale overlay is invalid', async () => {
