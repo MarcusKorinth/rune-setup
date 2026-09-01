@@ -35,12 +35,14 @@ export const optionSpecSchema = z.union([
   z.strictObject({ value: z.string(), label: z.string() }),
 ]);
 
+const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
+
 export const commandSpecSchema = z.strictObject({
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).default({}),
-  timeoutSeconds: z.number().int().positive().nullable().default(null),
+  timeoutSeconds: z.number().int().positive().max(MAX_TIMEOUT_SECONDS).nullable().default(null),
   successExitCodes: z.array(z.number().int()).default([0]),
 });
 

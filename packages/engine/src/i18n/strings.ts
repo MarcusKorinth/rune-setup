@@ -8,12 +8,14 @@
  */
 
 import { InternalError } from '../errors.js';
+import { manifestDescriptorFor } from '../manifest/index.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
-import type { LocaleOverlay } from './overlay.js';
+import { matchOverlay } from './locale.js';
+import { overlayManifestFor, type LocaleOverlay } from './overlay.js';
 
 export interface StringTable {
-  /** The session's selected locale — what the result file records; `undefined` means the built-in defaults (§6.3). */
+  /** The session's selected locale; `undefined` means the built-in defaults and serializes as `null` (§6.3). */
   readonly locale: string | undefined;
   /** The overlay file that served it — `de` may serve a selected `de-DE`. */
   readonly overlayLocale: string | undefined;
@@ -32,15 +34,45 @@ export interface StringTable {
 
 export interface ResolveStringsOptions {
   readonly manifest: ManifestV1;
-  /** The selected locale tag; defaults to the overlay's own tag when only that is known. */
-  readonly locale?: string | undefined;
+  /** The selected locale tag; `undefined` means the built-in defaults. */
+  readonly locale: string | undefined;
   /** The overlay serving the session's locale; none means defaults only. */
   readonly overlay?: LocaleOverlay | undefined;
+}
+
+export interface StringTableContext {
+  readonly manifest: ManifestV1;
+  readonly locale: string | undefined;
+}
+
+const stringTableContexts = new WeakMap<StringTable, StringTableContext>();
+
+/** Internal fail-closed lookup: structural table copies have no resolution provenance. */
+export function stringTableContextFor(table: StringTable): StringTableContext {
+  const context = stringTableContexts.get(table);
+  if (context === undefined) {
+    throw new InternalError('the string table was not created by resolveStrings');
+  }
+  return context;
 }
 
 /** Builds the one string table of a session. */
 export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const { manifest, overlay } = options;
+  manifestDescriptorFor(manifest);
+  if (overlay !== undefined) {
+    if (overlayManifestFor(overlay) !== manifest) {
+      throw new InternalError('the locale overlay belongs to a different manifest');
+    }
+    const candidate = { locale: overlay.locale, path: overlay.file };
+    if (options.locale === undefined || matchOverlay(options.locale, [candidate]) === undefined) {
+      const selected =
+        options.locale === undefined
+          ? 'the built-in defaults'
+          : `selected locale "${options.locale}"`;
+      throw new InternalError(`locale overlay "${overlay.locale}" cannot serve ${selected}`);
+    }
+  }
   const entries = new Map<string, string>();
 
   // Layer 1: the defaults — the manifest's own text, ids where nothing was written, and
@@ -82,7 +114,7 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     Object.hasOwn(snapshot, key) ? snapshot[key] : undefined;
 
   const table: StringTable = {
-    locale: options.locale ?? overlay?.locale,
+    locale: options.locale,
     overlayLocale: overlay?.locale,
     entries: snapshot,
     chrome: (key, values) => {
@@ -103,5 +135,7 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     productDescription: () => get('product.description'),
     windowTitle: () => get('gui.windowTitle'),
   };
-  return Object.freeze(table);
+  const frozenTable = Object.freeze(table);
+  stringTableContexts.set(frozenTable, Object.freeze({ manifest, locale: options.locale }));
+  return frozenTable;
 }

@@ -134,6 +134,17 @@ describe('loading an overlay', () => {
     expect(problem).toMatchObject({ code: 'RUNE-104' });
   });
 
+  it('rejects a structural manifest copy without parser provenance', () => {
+    expect(() =>
+      loadOverlayText(
+        'rune.button.next: Weiter\n',
+        'locales/de.yaml',
+        'de',
+        structuredClone(MANIFEST),
+      ),
+    ).toThrow(/manifest was not created by parseManifest/);
+  });
+
   it('rejects a key that names nothing, loudly and with its location', () => {
     expect(() =>
       loadOverlayText('steps.instal.title: Tippfehler\n', 'locales/de.yaml', 'de', MANIFEST),

@@ -60,7 +60,7 @@ const MANIFEST_WITHOUT_OPTIONAL_FALLBACKS = parseManifestText(
 
 describe('the resolved string table', () => {
   it('serves the defaults when no overlay is loaded', () => {
-    const strings = resolveStrings({ manifest: MANIFEST });
+    const strings = resolveStrings({ manifest: MANIFEST, locale: undefined });
 
     expect(strings.locale).toBeUndefined();
     expect(strings.productDescription()).toBe('An example product');
@@ -110,7 +110,10 @@ describe('the resolved string table', () => {
   });
 
   it('returns undefined for optional texts without manifest fallbacks', () => {
-    const strings = resolveStrings({ manifest: MANIFEST_WITHOUT_OPTIONAL_FALLBACKS });
+    const strings = resolveStrings({
+      manifest: MANIFEST_WITHOUT_OPTIONAL_FALLBACKS,
+      locale: undefined,
+    });
 
     expect(strings.productDescription()).toBeUndefined();
     expect(strings.inputDescription('target')).toBeUndefined();
@@ -119,7 +122,7 @@ describe('the resolved string table', () => {
   });
 
   it('keeps the table and its entry snapshot immutable at runtime', () => {
-    const strings = resolveStrings({ manifest: MANIFEST });
+    const strings = resolveStrings({ manifest: MANIFEST, locale: undefined });
 
     expect(Object.isFrozen(strings)).toBe(true);
     expect(Object.isFrozen(strings.entries)).toBe(true);
@@ -134,7 +137,7 @@ describe('the resolved string table', () => {
   });
 
   it('fills chrome placeholders without re-scanning the substituted text', () => {
-    const strings = resolveStrings({ manifest: MANIFEST });
+    const strings = resolveStrings({ manifest: MANIFEST, locale: undefined });
 
     expect(strings.chrome('rune.progress.step', { index: 2, total: 5, title: '{index}' })).toBe(
       'Step 2 of 5: {index}',
@@ -143,7 +146,7 @@ describe('the resolved string table', () => {
   });
 
   it('rejects unknown chrome keys at runtime', () => {
-    const strings = resolveStrings({ manifest: MANIFEST });
+    const strings = resolveStrings({ manifest: MANIFEST, locale: undefined });
     const untypedChrome = strings.chrome as (key: string) => string;
 
     expect.assertions(3);
@@ -166,5 +169,77 @@ describe('the resolved string table', () => {
     expect(
       formatChrome('{constructor} {toString}', { constructor: 'own', toString: 'value' }),
     ).toBe('own value');
+  });
+
+  it('accepts an overlay that exactly matches the selected locale', () => {
+    const overlay = loadOverlayText(
+      'steps.install.title: Installieren\n',
+      'locales/de-DE.yaml',
+      'de-DE',
+      MANIFEST,
+    );
+
+    const strings = resolveStrings({ manifest: MANIFEST, locale: 'de-DE', overlay });
+
+    expect(strings.overlayLocale).toBe('de-DE');
+    expect(strings.stepTitle('install')).toBe('Installieren');
+  });
+
+  it.each([
+    { selected: undefined, overlayLocale: 'de', serves: 'the built-in defaults' },
+    { selected: 'fr-FR', overlayLocale: 'de', serves: 'selected locale "fr-FR"' },
+    { selected: 'de', overlayLocale: 'de-DE', serves: 'selected locale "de"' },
+    { selected: 'de-DE', overlayLocale: 'de-AT', serves: 'selected locale "de-DE"' },
+  ])('rejects overlay $overlayLocale for $serves', ({ selected, overlayLocale, serves }) => {
+    const overlay = loadOverlayText(
+      'steps.install.title: Installieren\n',
+      `locales/${overlayLocale}.yaml`,
+      overlayLocale,
+      MANIFEST,
+    );
+
+    expect(() => resolveStrings({ manifest: MANIFEST, locale: selected, overlay })).toThrow(
+      `locale overlay "${overlayLocale}" cannot serve ${serves}`,
+    );
+  });
+
+  it('rejects an overlay loaded for a different manifest instance', () => {
+    const otherManifest = parseManifestText(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Other',
+        '  version: "1.0.0"',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '',
+      ].join('\n'),
+      'other.yaml',
+    );
+    const overlay = loadOverlayText(
+      'rune.button.next: Weiter\n',
+      'locales/de.yaml',
+      'de',
+      MANIFEST,
+    );
+
+    expect(() => resolveStrings({ manifest: otherManifest, locale: 'de', overlay })).toThrow(
+      'the locale overlay belongs to a different manifest',
+    );
+  });
+
+  it('rejects a structural copy of an authentic overlay', () => {
+    const overlay = loadOverlayText(
+      'steps.install.title: Installieren\n',
+      'locales/de.yaml',
+      'de',
+      MANIFEST,
+    );
+
+    expect(() =>
+      resolveStrings({ manifest: MANIFEST, locale: 'de', overlay: { ...overlay } }),
+    ).toThrow('the locale overlay was not created by loadOverlay or loadOverlayText');
   });
 });

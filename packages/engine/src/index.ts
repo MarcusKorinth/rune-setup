@@ -17,6 +17,7 @@ export {
   InternalError,
   INTERNAL_EXIT_CODE,
   ManifestError,
+  PlatformError,
   ResolutionError,
   RuneError,
   UsageError,
@@ -43,52 +44,37 @@ export {
 } from './manifest/index.js';
 export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
 
-export {
-  BUILT_IN_NAMES,
-  BUILT_IN_VARIABLES,
-  createRuntimeContext,
-  hostPlatform,
-  PRODUCT_FIELDS,
-} from './engine/context.js';
+export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
+export type { ValueType } from './engine/context.js';
+
+export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {
-  Platform,
-  RuntimeContext,
-  RuntimeContextOptions,
-  ValueType,
-} from './engine/context.js';
-
-export { parseValuesFile, resolveInputs, VALUE_SOURCES } from './engine/inputs.js';
-export type {
-  InputState,
-  Resolution,
-  ResolveInputsOptions,
-  ValuesDocument,
-  ValueSource,
-} from './engine/inputs.js';
-
-export { isSecretString, MASK, SecretRegistry, SecretString } from './engine/secrets.js';
-
-export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
-export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
-
-export { buildPlan } from './engine/plan.js';
-export type { ExecutionPlan, PlannedStep, PlanOptions, ResolvedCommand } from './engine/plan.js';
-
-export { describePlan, executeRun, OUTPUT_TAIL_LINES } from './engine/executor.js';
-export type { ExecuteOptions } from './engine/executor.js';
+  ExecutionPlan,
+  PlannedStep,
+  PlanExecutionOptions,
+  PlanInput,
+  ResolvedCommand,
+} from './engine/plan.js';
 
 export { CancelToken } from './engine/cancel.js';
 export type { EngineObserver, RunEvent } from './engine/events.js';
 
-export { isLegalTransition, isTerminal, STEP_STATES } from './engine/state.js';
 export type { StepState } from './engine/state.js';
 
-export { SpawnRunner } from './runners/spawnRunner.js';
-export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
-
 export { RESULT_SCHEMA_VERSION } from './results/model.js';
-export type { ResultInput, ResultStep, RunResult, RunStatus } from './results/model.js';
-export { serializeResult, writeResult } from './results/writer.js';
+export type {
+  ResultInput,
+  ResultError,
+  ResultErrorCode,
+  ResultManifest,
+  ResultOutputLine,
+  ResultStep,
+  RunResult,
+  RunMode,
+  RunStatus,
+} from './results/model.js';
+export { resultJsonSchema } from './results/schema.js';
+export { writeResult } from './results/writer.js';
 
 export type { StringTable } from './i18n/strings.js';
 export type { ChromeKey } from './i18n/catalog.js';

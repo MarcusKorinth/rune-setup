@@ -5,6 +5,7 @@
  */
 
 import { formatLocation, type Location } from './manifest/source.js';
+import { escapeDiagnosticText } from './diagnostics.js';
 
 export type { Location };
 
@@ -14,6 +15,7 @@ export type { Location };
  */
 export type RuneCode =
   | 'RUNE-001' // CLI misuse
+  | 'RUNE-002' // unsupported host platform
   | 'RUNE-101' // manifest syntax
   | 'RUNE-102' // schemaVersion missing or unsupported
   | 'RUNE-103' // manifest schema
@@ -25,7 +27,7 @@ export type RuneCode =
   | 'RUNE-302' // interpolation syntax
   | 'RUNE-311' // condition syntax
   | 'RUNE-312' // condition type error
-  | 'RUNE-401' // step exit code
+  | 'RUNE-401' // step exit code or unclassified execution failure
   | 'RUNE-402' // step timeout
   | 'RUNE-403' // command not found
   | 'RUNE-404' // invalid working directory
@@ -40,6 +42,15 @@ export interface RuneIssue {
   readonly location: Location | undefined;
 }
 
+/** Values-file order is internal diagnostic metadata, not part of the public issue shape. */
+const valuesDocumentOrdinals = new WeakMap<RuneIssue, number>();
+
+/** Retains a values document's invocation order while its issue is being collected. */
+export function withValuesDocumentOrdinal(issue: RuneIssue, ordinal: number): RuneIssue {
+  valuesDocumentOrdinals.set(issue, ordinal);
+  return issue;
+}
+
 export interface RuneErrorOptions {
   readonly location?: Location;
   /** All collected problems; defaults to the single problem this error describes. */
@@ -51,15 +62,18 @@ export interface RuneErrorOptions {
 export function formatIssues(issues: readonly RuneIssue[]): string {
   return issues
     .map((issue) =>
-      issue.location ? `${formatLocation(issue.location)}: ${issue.message}` : issue.message,
+      issue.location
+        ? `${escapeDiagnosticText(formatLocation(issue.location))}: ${escapeDiagnosticText(issue.message)}`
+        : escapeDiagnosticText(issue.message),
     )
     .join('\n');
 }
 
 /**
- * Puts a batch of problems into the order an author reads them — by position in the document,
- * each distinct problem once. Every layer that collects problems orders them through here, so
- * a shape batch and a semantics batch make the same promise instead of two different ones.
+ * Puts a batch of problems into the order an author reads them — values-file invocation order
+ * first, then position in a document, each distinct problem once. Every layer that collects
+ * problems orders them through here, so a shape batch and a semantics batch make the same
+ * promise instead of two different ones.
  */
 export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
   const seen = new Set<string>();
@@ -74,14 +88,20 @@ export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
       unique.push(issue);
     }
   }
-  return unique.sort(
-    (a, b) =>
+  return unique.sort((a, b) => {
+    const aValuesDocumentOrdinal = valuesDocumentOrdinals.get(a);
+    const bValuesDocumentOrdinal = valuesDocumentOrdinals.get(b);
+    return (
+      (aValuesDocumentOrdinal !== undefined && bValuesDocumentOrdinal !== undefined
+        ? aValuesDocumentOrdinal - bValuesDocumentOrdinal
+        : 0) ||
       (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
       (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
       // Code-unit order, not locale order: the golden files must read the same on every
       // machine, whatever locale it runs in and whether its Node carries the full ICU data.
-      compareCodeUnits(a.message, b.message),
-  );
+      compareCodeUnits(a.message, b.message)
+    );
+  });
 }
 
 function compareCodeUnits(a: string, b: string): number {
@@ -122,6 +142,13 @@ export class UsageError extends RuneError {
   }
 }
 
+/** RUNE cannot run on this host platform (exit 2). */
+export class PlatformError extends RuneError {
+  constructor(message: string, options?: RuneErrorOptions) {
+    super('RUNE-002', message, options);
+  }
+}
+
 /** The manifest could not be read, parsed, or validated (exit 3). */
 export class ManifestError extends RuneError {
   constructor(code: ManifestCode, message: string, options?: RuneErrorOptions) {
@@ -142,13 +169,16 @@ export class InputError extends RuneError {
 
   /** One error for every problem a batch of values had; resolution collects, never stops. */
   static fromIssues(code: InputCode, issues: readonly RuneIssue[]): InputError {
-    return aggregate(issues, (message, options) => new InputError(code, message, options));
+    return aggregate(
+      orderIssues(issues),
+      (message, options) => new InputError(code, message, options),
+    );
   }
 }
 
 /**
- * Turns collected problems into one error. The first problem's position becomes the error's
- * position, so a caller that reads only `location` still points somewhere useful.
+ * Turns collected problems into one error. The first located problem's position becomes the
+ * error's position, so a caller that reads only `location` still points somewhere useful.
  */
 function aggregate<T extends RuneError>(
   issues: readonly RuneIssue[],
@@ -158,9 +188,10 @@ function aggregate<T extends RuneError>(
   if (first === undefined) {
     throw new InternalError('an error was built from an empty list of problems');
   }
+  const firstLocated = issues.find((issue) => issue.location !== undefined);
   return make(formatIssues(issues), {
     issues,
-    ...(first.location ? { location: first.location } : {}),
+    ...(firstLocated?.location ? { location: firstLocated.location } : {}),
   });
 }
 
@@ -204,8 +235,9 @@ export class InternalError extends RuneError {
 }
 
 /** Exit codes are fixed and identical on every platform (docs/architecture.md §10). */
-const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
+export const EXIT_CODE_BY_RUNE_CODE = {
   'RUNE-001': 2,
+  'RUNE-002': 2,
   'RUNE-101': 3,
   'RUNE-102': 3,
   'RUNE-103': 3,
@@ -224,15 +256,15 @@ const EXIT_CODES: Readonly<Record<RuneCode, number>> = {
   'RUNE-405': 1,
   'RUNE-500': 70,
   'RUNE-601': 6,
-};
+} as const satisfies Readonly<Record<RuneCode, number>>;
 
 /** Internal error: anything that is not a `RuneError` escaped, which is always a bug. */
-export const INTERNAL_EXIT_CODE = 70;
+export const INTERNAL_EXIT_CODE = EXIT_CODE_BY_RUNE_CODE['RUNE-500'];
 
 /**
  * Maps an error to the process exit code. This is the only place that decides exit codes;
  * the CLI and the GUI shell both call it, so `--gui` cannot drift from a headless run.
  */
 export function exitCodeFor(error: unknown): number {
-  return error instanceof RuneError ? EXIT_CODES[error.code] : INTERNAL_EXIT_CODE;
+  return error instanceof RuneError ? EXIT_CODE_BY_RUNE_CODE[error.code] : INTERNAL_EXIT_CODE;
 }

@@ -1,19 +1,37 @@
 import { homedir, tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
-import { ResolutionError } from '../../src/errors.js';
+import {
+  createRuntimeContext,
+  hostPlatform,
+  PLATFORMS,
+  platformForNode,
+  runtimeContextFor,
+} from '../../src/engine/context.js';
+import { exitCodeFor, InternalError, PlatformError, ResolutionError } from '../../src/errors.js';
 
 const product = { name: 'Example', version: '1.0.0' };
+const host = hostPlatform();
+const other = host === 'windows' ? 'linux' : 'windows';
+const manifestDir = resolve('/project');
 
 function contextFor(platform?: 'windows' | 'linux', environment: Record<string, string> = {}) {
   return createRuntimeContext({
-    manifestDir: '/project',
+    manifestDir,
     product,
     ...(platform === undefined ? {} : { platform }),
     environment,
   });
+}
+
+function unsafeEnvironment(value: object): Record<string, string> {
+  return value as Record<string, string>;
+}
+
+function unsafePlatform(value: unknown): 'windows' | 'linux' {
+  return value as 'windows' | 'linux';
 }
 
 describe('the values behind the built-in names', () => {
@@ -24,7 +42,7 @@ describe('the values behind the built-in names', () => {
     expect(context.valueOf({ kind: 'builtin', name: 'home' })).toBe(homedir());
     expect(context.valueOf({ kind: 'builtin', name: 'temp' })).toBe(tmpdir());
     expect(context.valueOf({ kind: 'builtin', name: 'platform' })).toBe(hostPlatform());
-    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
   });
 
   it('answers for the product', () => {
@@ -32,8 +50,197 @@ describe('the values behind the built-in names', () => {
     expect(context.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
   });
 
+  it('rejects a relative manifest directory instead of rebinding it to the current cwd', () => {
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(InternalError);
+    expect(() =>
+      createRuntimeContext({
+        manifestDir: 'relative-project',
+        product,
+        environment: {},
+      }),
+    ).toThrow(/runtime context manifest directory must be absolute/);
+  });
+
+  it
+    .runIf(process.platform === 'win32')
+    .each(['/project', '\\project', '\\\\server', '\\\\server\\'])(
+    'rejects the Windows manifest directory %s because its root is not fully bound',
+    (value) => {
+      expect(() => createRuntimeContext({ manifestDir: value, product, environment: {} })).toThrow(
+        /independent of the current drive/,
+      );
+    },
+  );
+
+  it.runIf(process.platform === 'win32').each(['C:\\project', '\\\\server\\share'])(
+    'keeps the fully qualified Windows manifest directory %s unchanged',
+    (value) => {
+      const runtime = createRuntimeContext({ manifestDir: value, product, environment: {} });
+
+      expect(runtime.manifestDir).toBe(value);
+    },
+  );
+
+  it('keeps an absolute manifest directory unchanged', () => {
+    const manifestDir = resolve('absolute-project');
+    const runtime = createRuntimeContext({ manifestDir, product, environment: {} });
+
+    expect(runtime.manifestDir).toBe(manifestDir);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
+  });
+
   it('reads any environment variable, because there is no allowlist', () => {
     expect(context.valueOf({ kind: 'environment', name: 'JAVA_HOME' })).toBe('/opt/java');
+  });
+
+  it.each(['toString', 'constructor', '__proto__'])(
+    'does not read the inherited prototype name %s as an environment variable',
+    (name) => {
+      const empty = contextFor('linux');
+
+      expect(empty.environmentValue(name)).toBeUndefined();
+      expect(() => empty.valueOf({ kind: 'environment', name })).toThrow(
+        `the environment variable ${name} is not set`,
+      );
+    },
+  );
+
+  it('ignores a custom inherited string property', () => {
+    const environment = Object.create({ INHERITED: 'not-an-environment-value' }) as object;
+    const inherited = contextFor('linux', unsafeEnvironment(environment));
+
+    expect(inherited.environmentValue('INHERITED')).toBeUndefined();
+    expect(() => inherited.valueOf({ kind: 'environment', name: 'INHERITED' })).toThrow(
+      'the environment variable INHERITED is not set',
+    );
+  });
+
+  it('reads an own string property', () => {
+    const own = contextFor('linux', { OWN_VALUE: 'available' });
+
+    expect(own.environmentValue('OWN_VALUE')).toBe('available');
+    expect(own.valueOf({ kind: 'environment', name: 'OWN_VALUE' })).toBe('available');
+  });
+
+  it('snapshots own environment values when the context is created', () => {
+    const environment: Record<string, string> = {
+      CHANGED: 'before',
+      DELETED: 'kept',
+    };
+    const runtime = contextFor('linux', environment);
+
+    environment.CHANGED = 'after';
+    delete environment.DELETED;
+    environment.ADDED = 'too-late';
+
+    expect(runtime.environmentValue('CHANGED')).toBe('before');
+    expect(runtime.environmentValue('DELETED')).toBe('kept');
+    expect(runtime.environmentValue('ADDED')).toBeUndefined();
+  });
+
+  it('does not execute or expose environment accessors', () => {
+    let reads = 0;
+    const environment = Object.defineProperty({}, 'LAZY', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return 'not-an-environment-value';
+      },
+    });
+
+    const runtime = contextFor('linux', unsafeEnvironment(environment));
+
+    expect(reads).toBe(0);
+    expect(runtime.environmentValue('LAZY')).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
+  it('ignores an own property whose value is not a string', () => {
+    const nonString = contextFor('linux', unsafeEnvironment({ NOT_TEXT: { nested: true } }));
+
+    expect(nonString.environmentValue('NOT_TEXT')).toBeUndefined();
+    expect(() => nonString.valueOf({ kind: 'environment', name: 'NOT_TEXT' })).toThrow(
+      'the environment variable NOT_TEXT is not set',
+    );
+  });
+
+  it.each([
+    ['the host platform', host],
+    ['a preview of the other platform', other],
+  ] as const)('uses host environment-name semantics for %s', (_description, platform) => {
+    const runtime = contextFor(platform, { Path: 'mixed', EXACT: 'exact' });
+
+    expect(runtime.environmentValue('EXACT')).toBe('exact');
+    expect(runtime.valueOf({ kind: 'environment', name: 'EXACT' })).toBe('exact');
+    expect(runtime.environmentValue('PATH')).toBe(host === 'windows' ? 'mixed' : undefined);
+    expect(runtime.environmentValue('path')).toBe(host === 'windows' ? 'mixed' : undefined);
+    if (host === 'windows') {
+      expect(runtime.valueOf({ kind: 'environment', name: 'PATH' })).toBe('mixed');
+    } else {
+      expect(() => runtime.valueOf({ kind: 'environment', name: 'PATH' })).toThrow(
+        'the environment variable PATH is not set',
+      );
+    }
+  });
+
+  it('keeps the first own environment name under host casing semantics', () => {
+    const runtime = contextFor(host, { Path: 'first', PATH: 'second' });
+
+    expect(runtime.environmentValue('Path')).toBe('first');
+    expect(runtime.environmentValue('PATH')).toBe(host === 'windows' ? 'first' : 'second');
+    expect(runtime.environmentValue('path')).toBe(host === 'windows' ? 'first' : undefined);
+  });
+
+  it('snapshots manifest, product, and selected platform values', () => {
+    const options: {
+      manifestDir: string;
+      product: { name: string; version: string };
+      platform: 'windows' | 'linux';
+      environment: Record<string, string>;
+    } = {
+      manifestDir: resolve('/before'),
+      product: { name: 'Before', version: '1.0.0' },
+      platform: host,
+      environment: {},
+    };
+    const runtime = createRuntimeContext(options);
+
+    options.manifestDir = '/after';
+    options.product.name = 'After';
+    options.product.version = '2.0.0';
+    options.platform = other;
+
+    expect(runtime.manifestDir).toBe(resolve('/before'));
+    expect(runtime.platform).toBe(host);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(resolve('/before'));
+    expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
+    expect(runtime.valueOf({ kind: 'product', field: 'name' })).toBe('Before');
+    expect(runtime.valueOf({ kind: 'product', field: 'version' })).toBe('1.0.0');
+  });
+
+  it('freezes its public snapshot', () => {
+    const runtime = contextFor(host, { SNAPSHOT_VALUE: 'kept' });
+
+    expect(Object.isFrozen(runtime)).toBe(true);
+    expect(Reflect.set(runtime, 'platform', other)).toBe(false);
+    expect(Reflect.set(runtime, 'manifestDir', '/other-project')).toBe(false);
+    expect(Reflect.set(runtime, 'preview', !runtime.preview)).toBe(false);
+    expect(Reflect.set(runtime, 'environmentValue', () => 'replaced')).toBe(false);
+    expect(Reflect.set(runtime, 'valueOf', () => 'replaced')).toBe(false);
+
+    expect(runtime.platform).toBe(host);
+    expect(runtime.manifestDir).toBe(manifestDir);
+    expect(runtime.preview).toBe(false);
+    expect(runtime.environmentValue('SNAPSHOT_VALUE')).toBe('kept');
+    expect(runtime.valueOf({ kind: 'builtin', name: 'platform' })).toBe(host);
+    expect(runtime.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
+    expect(runtime.valueOf({ kind: 'environment', name: 'SNAPSHOT_VALUE' })).toBe('kept');
   });
 
   it('refuses an environment variable the machine does not have', () => {
@@ -59,7 +266,6 @@ describe('the values behind the built-in names', () => {
 });
 
 describe('previewing the other platform', () => {
-  const other = hostPlatform() === 'windows' ? 'linux' : 'windows';
   const context = contextFor(other);
 
   it('knows it is a preview', () => {
@@ -75,19 +281,87 @@ describe('previewing the other platform', () => {
 
   it('still answers for what the preview does know', () => {
     expect(context.valueOf({ kind: 'builtin', name: 'platform' })).toBe(other);
-    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe('/project');
+    expect(context.valueOf({ kind: 'builtin', name: 'manifestDir' })).toBe(manifestDir);
     expect(context.valueOf({ kind: 'product', field: 'name' })).toBe('Example');
+  });
+
+  it.each([
+    ['darwin', 'darwin'],
+    ['', ''],
+    [null, 'null'],
+    [42, '42'],
+  ] as const)('rejects the unsupported preview platform %s', (platform, renderedPlatform) => {
+    let thrown: unknown;
+    try {
+      createRuntimeContext({
+        manifestDir,
+        product,
+        platform: unsafePlatform(platform),
+        environment: {},
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(PlatformError);
+    expect((thrown as PlatformError).code).toBe('RUNE-002');
+    expect((thrown as PlatformError).message).toBe(
+      `preview platform "${renderedPlatform}" is not supported; supported preview platforms are windows and linux`,
+    );
+    expect(exitCodeFor(thrown)).toBe(2);
   });
 });
 
 describe('hostPlatform', () => {
-  it('names one of the two platforms RUNE runs on', () => {
-    expect(['windows', 'linux']).toContain(hostPlatform());
-    expect(hostPlatform()).toBe(process.platform === 'win32' ? 'windows' : 'linux');
+  it('names exactly the two platforms RUNE runs on', () => {
+    expect(PLATFORMS).toEqual(['windows', 'linux']);
+  });
+
+  it.each([
+    ['win32', 'windows'],
+    ['linux', 'linux'],
+  ] as const)('maps the Node platform %s to %s', (nodePlatform, platform) => {
+    expect(platformForNode(nodePlatform)).toBe(platform);
+  });
+
+  it.each(['darwin', 'freebsd'] as const)(
+    'rejects the unsupported Node platform %s',
+    (platform) => {
+      let thrown: unknown;
+      try {
+        platformForNode(platform);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(PlatformError);
+      expect((thrown as PlatformError).code).toBe('RUNE-002');
+      expect((thrown as PlatformError).message).toBe(
+        `host platform "${platform}" is not supported; supported Node platforms are win32 and linux`,
+      );
+      expect(exitCodeFor(thrown)).toBe(2);
+    },
+  );
+
+  it('maps the actual CI host correctly', () => {
+    const expected = process.platform === 'win32' ? 'windows' : 'linux';
+
+    expect(['win32', 'linux']).toContain(process.platform);
+    expect(hostPlatform()).toBe(expected);
   });
 
   it('is what a context without an explicit platform uses', () => {
     expect(contextFor().platform).toBe(hostPlatform());
     expect(contextFor().preview).toBe(false);
+  });
+
+  it('authenticates the exact frozen context facade and rejects structural copies', () => {
+    const context = contextFor();
+
+    expect(runtimeContextFor(context)).toBe(context);
+    expect(() => runtimeContextFor({ ...context })).toThrow(InternalError);
+    expect(() => runtimeContextFor({ ...context })).toThrow(
+      /runtime context was not created by createRuntimeContext/,
+    );
   });
 });

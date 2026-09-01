@@ -21,7 +21,15 @@ import {
   type ConditionReference,
   type TypeResolver,
 } from '../../engine/conditions.js';
-import { BUILT_IN_NAMES, resolveReference, typeOfReference } from '../../engine/context.js';
+import {
+  BUILT_IN_NAMES,
+  BUILT_IN_VARIABLES,
+  createInputReferenceIndex,
+  PRODUCT_NAMESPACE,
+  resolveReference,
+  typeOfReference,
+  type InputReferenceIndex,
+} from '../../engine/context.js';
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
@@ -315,13 +323,86 @@ interface ConditionField {
   readonly path: readonly PathSegment[];
   readonly text: string;
   /** The inputs this condition may name; everything else declared is visible but forbidden. */
-  readonly visibleInputs: readonly string[];
+  readonly visibleInputCount: number;
   /** The input this condition belongs to, so a reference back to it can say so. */
   readonly owner: string | undefined;
 }
 
-function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
-  const ids = Object.keys(manifest.inputs);
+/** Optional typo hints may never make a bounded manifest require unbounded edit matrices. */
+const REFERENCE_SUGGESTION_WORK_BUDGET = 250_000;
+const REFERENCE_SUGGESTION_WORK_CAP = REFERENCE_SUGGESTION_WORK_BUDGET + 1;
+const BUILT_IN_SUGGESTION_WIDTH = [...BUILT_IN_VARIABLES, PRODUCT_NAMESPACE].reduce(
+  (width, name) => saturatingSuggestionAdd(width, suggestionStringWidth(name)),
+  0,
+);
+
+/**
+ * One deterministic budget shared by every reference diagnostic in a semantic pass.
+ * Prefix widths are built only after the first unknown name, so valid manifests pay nothing.
+ */
+class ReferenceSuggestionBudget {
+  readonly #inputIds: readonly string[];
+  #inputPrefixWidths: readonly number[] | undefined;
+  #remaining = REFERENCE_SUGGESTION_WORK_BUDGET;
+
+  constructor(inputIds: readonly string[]) {
+    this.#inputIds = inputIds;
+  }
+
+  allow(name: string, visibleInputCount: number): boolean {
+    const visible = Math.max(0, Math.min(visibleInputCount, this.#inputIds.length));
+    const candidateWidth = saturatingSuggestionAdd(
+      this.#prefixWidths()[visible] ?? REFERENCE_SUGGESTION_WORK_CAP,
+      BUILT_IN_SUGGESTION_WIDTH,
+    );
+    const work = saturatingSuggestionProduct(suggestionStringWidth(name), candidateWidth);
+    if (work > this.#remaining) {
+      return false;
+    }
+    this.#remaining -= work;
+    return true;
+  }
+
+  #prefixWidths(): readonly number[] {
+    if (this.#inputPrefixWidths === undefined) {
+      const widths = [0];
+      for (const id of this.#inputIds) {
+        widths.push(saturatingSuggestionAdd(widths.at(-1)!, suggestionStringWidth(id)));
+      }
+      this.#inputPrefixWidths = widths;
+    }
+    return this.#inputPrefixWidths;
+  }
+}
+
+/**
+ * Conservative matrix work for `suggest()`: every lowercased candidate is treated as though
+ * it passes the length filter, and each matrix includes its initial row and column.
+ */
+function suggestionStringWidth(value: string): number {
+  return Math.min(value.toLowerCase().length + 1, REFERENCE_SUGGESTION_WORK_CAP);
+}
+
+function saturatingSuggestionAdd(left: number, right: number): number {
+  return left >= REFERENCE_SUGGESTION_WORK_CAP - right
+    ? REFERENCE_SUGGESTION_WORK_CAP
+    : left + right;
+}
+
+function saturatingSuggestionProduct(left: number, right: number): number {
+  if (left === 0 || right === 0) {
+    return 0;
+  }
+  return left > Math.floor(REFERENCE_SUGGESTION_WORK_CAP / right)
+    ? REFERENCE_SUGGESTION_WORK_CAP
+    : left * right;
+}
+
+function* conditionFields(
+  manifest: ManifestV1,
+  inputIndex: InputReferenceIndex,
+): Generator<ConditionField> {
+  const { orderedIds: ids } = inputIndex;
 
   for (const [index, id] of ids.entries()) {
     const input = manifest.inputs[id];
@@ -331,7 +412,7 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
       yield {
         path: ['inputs', id, 'when'],
         text: input.when,
-        visibleInputs: ids.slice(0, index),
+        visibleInputCount: index,
         owner: id,
       };
     }
@@ -342,7 +423,7 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
       yield {
         path: ['steps', index, 'when'],
         text: step.when,
-        visibleInputs: ids,
+        visibleInputCount: ids.length,
         owner: undefined,
       };
     }
@@ -351,6 +432,8 @@ function* conditionFields(manifest: ManifestV1): Generator<ConditionField> {
 
 function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
   const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
+  const suggestionBudget = new ReferenceSuggestionBudget(inputIds);
 
   // What is wrong with a reference depends only on what was written and whether inputs are in
   // scope — never on the field it stands in. A manifest may repeat the same typo in thousands
@@ -370,7 +453,10 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
       }
       const key = `${String(field.mayReferenceInputs)}:${part.reference.text}`;
       if (!explained.has(key)) {
-        explained.set(key, referenceProblem(part.reference, inputIds, field.mayReferenceInputs));
+        explained.set(
+          key,
+          referenceProblem(part.reference, inputIndex, field.mayReferenceInputs, suggestionBudget),
+        );
       }
       const problem = explained.get(key);
       if (problem !== undefined) {
@@ -379,14 +465,22 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
     }
   }
 
-  for (const field of conditionFields(manifest)) {
+  const conditionReferences = new Map<string, ReturnType<TypeResolver>>();
+  for (const field of conditionFields(manifest, inputIndex)) {
     const parsed = parseCondition(field.text);
     if (!parsed.ok) {
       issues.push(issue(`${formatPath(field.path)}: ${parsed.message}`, field.path, ctx));
       continue;
     }
 
-    const resolver = typeResolver(manifest, field.visibleInputs, field.owner);
+    const resolver = typeResolver(
+      manifest,
+      inputIndex,
+      field.visibleInputCount,
+      field.owner,
+      conditionReferences,
+      suggestionBudget,
+    );
     for (const problem of typeCheckCondition(parsed.ast, resolver)) {
       issues.push(issue(`${formatPath(field.path)}: ${problem}`, field.path, ctx));
     }
@@ -396,15 +490,25 @@ function checkExpressions(manifest: ManifestV1, ctx: SemanticContext, issues: Ru
 /** Why a reference cannot stand where it stands, or nothing when it can. */
 function referenceProblem(
   reference: TemplateReference,
-  inputIds: readonly string[],
+  inputIndex: InputReferenceIndex,
   mayReferenceInputs: boolean,
+  suggestions: ReferenceSuggestionBudget,
 ): string | undefined {
-  const resolved = resolveReference(reference.segments, mayReferenceInputs ? inputIds : []);
+  const visibleInputCount = mayReferenceInputs ? inputIndex.orderedIds.length : 0;
+  const head = reference.segments[0] ?? '';
+  const includeSuggestion =
+    maySuggestReference(head, inputIndex) && suggestions.allow(head, visibleInputCount);
+  const resolved = resolveReference(
+    reference.segments,
+    inputIndex,
+    visibleInputCount,
+    includeSuggestion,
+  );
 
   if (!resolved.ok) {
     // An input default that names an input gets the reason, not "no such variable": the name
     // exists, it just is not available yet.
-    if (!mayReferenceInputs && inputIds.includes(reference.segments[0] ?? '')) {
+    if (!mayReferenceInputs && inputIndex.ordinals.has(reference.segments[0] ?? '')) {
       return `${reference.text} cannot be used in a default — defaults are rendered before the other inputs are known, so they may only use built-in variables and \${env.*}`;
     }
     return resolved.message;
@@ -419,33 +523,59 @@ function referenceProblem(
  */
 function typeResolver(
   manifest: ManifestV1,
-  visibleInputs: readonly string[],
+  inputIndex: InputReferenceIndex,
+  visibleInputCount: number,
   owner: string | undefined,
+  cache: Map<string, ReturnType<TypeResolver>>,
+  suggestions: ReferenceSuggestionBudget,
 ): TypeResolver {
-  const declared = Object.keys(manifest.inputs);
-
   return (reference: ConditionReference) => {
+    const cacheKey = JSON.stringify([reference.text, visibleInputCount, owner]);
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const head = reference.segments[0] ?? '';
-    if (declared.includes(head) && !visibleInputs.includes(head)) {
-      return {
+    const ordinal = inputIndex.ordinals.get(head);
+    if (ordinal !== undefined && ordinal >= visibleInputCount) {
+      const result = {
         ok: false,
         message:
           head === owner
             ? `${reference.text} is this input's own value — a condition cannot depend on the input it decides about`
             : `${reference.text} is declared below this input — a condition may only use inputs written above it, so move "${head}" up`,
-      };
+      } as const;
+      cache.set(cacheKey, result);
+      return result;
     }
 
-    const resolved = resolveReference(reference.segments, visibleInputs);
+    const includeSuggestion =
+      maySuggestReference(head, inputIndex) && suggestions.allow(head, visibleInputCount);
+    const resolved = resolveReference(
+      reference.segments,
+      inputIndex,
+      visibleInputCount,
+      includeSuggestion,
+    );
     if (!resolved.ok) {
+      cache.set(cacheKey, resolved);
       return resolved;
     }
 
     const type = typeOfReference(resolved.reference, (id) => manifest.inputs[id]?.type);
-    return type === undefined
-      ? { ok: false, message: `${reference.text} has no type` }
-      : { ok: true, type };
+    const result: ReturnType<TypeResolver> =
+      type === undefined
+        ? { ok: false, message: `${reference.text} has no type` }
+        : { ok: true, type };
+    cache.set(cacheKey, result);
+    return result;
   };
+}
+
+/** Only a truly unknown head reaches the optional typo-suggestion path. */
+function maySuggestReference(head: string, inputIndex: InputReferenceIndex): boolean {
+  return !inputIndex.ordinals.has(head) && !BUILT_IN_NAMES.includes(head);
 }
 
 /**
@@ -467,9 +597,10 @@ export function environmentReferences(
   // walked, and a manifest may repeat references in thousands of arguments — the same reason
   // the reference explanations above are computed per name rather than per occurrence.
   const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
 
   const record = (segments: readonly string[], path: readonly PathSegment[]): void => {
-    const resolved = resolveReference(segments, inputIds);
+    const resolved = resolveReference(segments, inputIndex, inputIds.length, false);
     if (!resolved.ok || resolved.reference.kind !== 'environment') {
       return;
     }
@@ -492,7 +623,7 @@ export function environmentReferences(
     }
   }
 
-  for (const field of conditionFields(manifest)) {
+  for (const field of conditionFields(manifest, inputIndex)) {
     const parsed = parseCondition(field.text);
     if (parsed.ok) {
       for (const reference of referencesIn(parsed.ast)) {
