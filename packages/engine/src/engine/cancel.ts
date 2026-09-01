@@ -8,9 +8,9 @@
 
 export class CancelToken {
   #cancelled = false;
-  readonly #listeners: Array<() => void> = [];
+  readonly #listeners = new Set<() => void>();
 
-  get cancelled(): boolean {
+  get isCancelled(): boolean {
     return this.#cancelled;
   }
 
@@ -20,17 +20,37 @@ export class CancelToken {
       return;
     }
     this.#cancelled = true;
-    for (const listener of this.#listeners.splice(0)) {
-      listener();
+    const listeners = [...this.#listeners];
+    this.#listeners.clear();
+    for (const listener of listeners) {
+      invokeListener(listener);
     }
   }
 
-  /** Runs `listener` on cancellation — immediately, when it already happened. */
-  onCancel(listener: () => void): void {
+  /**
+   * Runs `listener` on cancellation — immediately, when it already happened — and returns an
+   * idempotent disposer for callers whose lifetime is shorter than the token's.
+   */
+  onCancel(listener: () => void): () => void {
     if (this.#cancelled) {
-      listener();
-      return;
+      invokeListener(listener);
+      return () => undefined;
     }
-    this.#listeners.push(listener);
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+}
+
+/** Cancellation is best-effort: one cleanup failure must not block another. */
+function invokeListener(listener: () => void): void {
+  try {
+    const returned = (listener as () => unknown)();
+    if (returned instanceof Promise) {
+      void returned.then(undefined, () => undefined);
+    }
+  } catch {
+    // Listener errors have no cancellation recovery path and must not escape this boundary.
   }
 }

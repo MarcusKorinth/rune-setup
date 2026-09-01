@@ -8,7 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { snapshotEnvironment, type Environment } from '../environment.js';
+import { snapshotEnvironment } from '../environment.js';
 import {
   InputError,
   InternalError,
@@ -16,9 +16,8 @@ import {
   RuneError,
   type RuneIssue,
 } from '../errors.js';
-import type { InputValue } from '../inputs/base.js';
 import { environmentName } from '../manifest/v1/rules.js';
-import { parseManifestWithMetadata, type Manifest } from '../manifest/index.js';
+import { manifestDescriptorFor, parseManifest, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
 import { discoverSelectedOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
@@ -33,16 +32,21 @@ import {
   type Platform,
   type RuntimeContext,
 } from './context.js';
-import { createCompletedRunFailureResult, describePlan, executeRun } from './executor.js';
+import {
+  createCompletedRunFailureResult,
+  describePlan,
+  executeRun,
+  registerOpenFailureContext,
+} from './executor.js';
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
   parseValuesFile,
-  resolveInputs,
+  resolveInputsWithRegistry,
   type InputState,
   type Resolution,
   type ValuesDocument,
 } from './inputs.js';
-import { buildPlan, projectPlanForSink, type ExecutionPlan } from './plan.js';
+import { buildPlan, type ExecutionPlan } from './plan.js';
 import { MASK_FOR_SINK, SecretRegistry } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
@@ -87,17 +91,15 @@ interface ActiveExecution {
 
 export class Session {
   readonly manifest: Manifest;
-  readonly manifestPath: string;
-  readonly manifestSha256: string;
   readonly mode: RunMode;
   readonly platform: Platform;
   readonly preview: boolean;
+  readonly #manifestPath: string;
   readonly #context: RuntimeContext;
   #secrets: SecretRegistry;
   readonly #strings: StringTable;
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
-  readonly #environment: Environment;
   readonly #answers = new Map<string, unknown>();
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
@@ -108,21 +110,18 @@ export class Session {
   private constructor(fields: {
     manifest: Manifest;
     manifestPath: string;
-    manifestSha256: string;
     mode: RunMode;
     context: RuntimeContext;
     secrets: SecretRegistry;
     strings: StringTable;
     values: readonly ValuesDocument[];
     overrides: ReadonlyMap<string, string>;
-    environment: Environment;
     resolution: Resolution;
     logFile: string | undefined;
     runner: Runner | undefined;
   }) {
     this.manifest = fields.manifest;
-    this.manifestPath = fields.manifestPath;
-    this.manifestSha256 = fields.manifestSha256;
+    this.#manifestPath = fields.manifestPath;
     this.mode = fields.mode;
     this.platform = fields.context.platform;
     this.preview = fields.context.preview;
@@ -131,8 +130,7 @@ export class Session {
     this.#strings = fields.strings;
     this.#values = fields.values;
     this.#overrides = fields.overrides;
-    this.#environment = fields.environment;
-    this.#resolution = freezeResolution(fields.resolution);
+    this.#resolution = fields.resolution;
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
     this.#plan = undefined;
@@ -145,8 +143,8 @@ export class Session {
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
-    const parsed = parseManifestWithMetadata(absolutePath);
-    const manifest = parsed.manifest;
+    const manifest = parseManifest(absolutePath);
+    const descriptor = manifestDescriptorFor(manifest);
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
     const environment = snapshotEnvironment(options.environment);
@@ -175,31 +173,44 @@ export class Session {
     const secrets = new SecretRegistry();
     let resolution: Resolution;
     try {
-      resolution = resolveInputs({
-        manifest,
-        context,
-        values,
-        environment,
-        overrides,
+      resolution = resolveInputsWithRegistry(
+        {
+          manifest,
+          context,
+          values,
+          overrides,
+        },
         secrets,
-      });
+      );
     } catch (error) {
-      throw error instanceof RuneError
-        ? projectRuneError(error, (text) => secrets.mask(text))
-        : error;
+      const projected =
+        error instanceof RuneError ? projectRuneError(error, (text) => secrets.mask(text)) : error;
+      if (projected instanceof RuneError) {
+        registerOpenFailureContext(
+          projected,
+          Object.freeze({
+            manifest,
+            mode: options.mode ?? 'non-interactive',
+            platform: context.platform,
+            preview: context.preview,
+            allInputs: () => Object.freeze([]),
+            getStrings: () => strings,
+            [MASK_FOR_SINK]: (text: string) => secrets.mask(text),
+          }),
+        );
+      }
+      throw projected;
     }
 
     return new Session({
       manifest,
-      manifestPath,
-      manifestSha256: parsed.sha256,
+      manifestPath: descriptor.path,
       mode: options.mode ?? 'non-interactive',
       context,
       secrets,
       strings,
       values,
       overrides,
-      environment,
       // All-or-nothing: a value no type accepts, or a key naming no input, threw above and
       // no session exists (§10).
       resolution,
@@ -270,15 +281,13 @@ export class Session {
 
   /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
   plan(): ExecutionPlan {
-    return projectPlanForSink(this.#executionPlan(), this.#secrets);
+    return this.#executionPlan();
   }
 
   /** The dry-run result: the plan described, nothing executed (§10, status `planned`). */
   describe(): RunResult {
     return describePlan({
       plan: this.#executionPlan(),
-      product: this.manifest.product,
-      secrets: this.#secrets,
       mode: this.mode,
     });
   }
@@ -298,7 +307,7 @@ export class Session {
     let terminal: RunFinished | undefined;
     try {
       const logFile = plan.executionOptions.logFile;
-      log = logFile === null ? undefined : await createLogFileSink(logFile);
+      log = logFile === undefined ? undefined : await createLogFileSink(logFile);
       const observers: EngineObserver = (event) => {
         notifyObserver(log?.observer, event);
         if (event.kind === 'runFinished') {
@@ -309,8 +318,6 @@ export class Session {
       };
       completed = await executeRun({
         plan,
-        product: this.manifest.product,
-        secrets: this.#secrets,
         mode: this.mode,
         observer: observers,
         cancel: activeExecution.cancel,
@@ -406,10 +413,9 @@ export class Session {
       }
       this.#plan = buildPlan({
         manifest: this.manifest,
-        manifestPath: this.manifestPath,
-        manifestSha256: this.manifestSha256,
         resolution: this.#resolution,
         context: this.#context,
+        locale: this.#strings.locale,
         logFile: this.#logFile,
         strings: this.#strings,
       });
@@ -426,16 +432,15 @@ export class Session {
   }
 
   #resolve(secrets: SecretRegistry): Resolution {
-    return freezeResolution(
-      resolveInputs({
+    return resolveInputsWithRegistry(
+      {
         manifest: this.manifest,
         context: this.#context,
         values: this.#values,
-        environment: this.#environment,
         overrides: this.#overrides,
         answers: this.#answers,
-        secrets,
-      }),
+      },
+      secrets,
     );
   }
 
@@ -444,37 +449,9 @@ export class Session {
     return {
       code: 'RUNE-201',
       message: `input "${id}" is required and has no value — supply it with ${sources}`,
-      location: startOfFile(this.manifestPath),
+      location: startOfFile(this.#manifestPath),
     };
   }
-}
-
-/**
- * Protects the engine-owned resolution while preserving its value semantics. Plain arrays
- * are copied and frozen; SecretString instances are deliberately retained, never cloned.
- */
-function freezeResolution(resolution: Resolution): Resolution {
-  const inputs = Object.freeze(
-    resolution.inputs.map((state) =>
-      Object.freeze({
-        ...state,
-        value: freezeInputValue(state.value),
-      }),
-    ),
-  );
-  const byId = new Map(inputs.map((state) => [state.id, state]));
-
-  return Object.freeze({
-    inputs,
-    byId,
-    missing: Object.freeze([...resolution.missing]),
-    warnings: Object.freeze([...resolution.warnings]),
-    problems: Object.freeze([...resolution.problems]),
-  });
-}
-
-function freezeInputValue(value: InputValue | undefined): InputValue | undefined {
-  return Array.isArray(value) ? Object.freeze([...value]) : value;
 }
 
 /** Observer failures are isolated per sink and can never change execution or finalization. */

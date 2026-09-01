@@ -20,19 +20,19 @@ vi.mock('@rune/engine', async (importOriginal) => {
       engineMock.failureErrors.push(options.error);
       return actual.createFailureResult(options);
     },
-    writeResult: (result: Parameters<typeof actual.writeResult>[0], path: string) => {
+    writeResult: async (result: Parameters<typeof actual.writeResult>[0], path: string) => {
       engineMock.writeCalls.push({ result, path });
       if (engineMock.writeFailure !== undefined) {
         throw engineMock.writeFailure;
       }
-      actual.writeResult(result, path);
+      await actual.writeResult(result, path);
     },
   };
 });
 
 import { RuneError, Session, type RunResult } from '@rune/engine';
 import { run, type CliIo } from '@rune/cli';
-import { runResultSchema } from '../packages/engine/src/results/schema.js';
+import { resultV1Schema } from '../packages/engine/src/results/schema.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -95,7 +95,7 @@ describe('CLI internal-error boundary', () => {
     expect(engineMock.failureErrors).toHaveLength(1);
     expect((engineMock.failureErrors[0] as Error).cause).toBe(cause);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'internal_error',
       exitCode: 70,
@@ -108,7 +108,6 @@ describe('CLI internal-error boundary', () => {
           source: 'set',
           secret: true,
           enabled: true,
-          ignored: null,
         },
       ],
       steps: [],
@@ -149,7 +148,7 @@ describe('CLI internal-error boundary', () => {
     expect(engineMock.failureErrors).toHaveLength(1);
     expect(engineMock.writeCalls).toHaveLength(1);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result.status).toBe('config_error');
   });
 

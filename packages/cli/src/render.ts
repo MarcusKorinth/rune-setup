@@ -4,7 +4,6 @@
  * story. Plan values keep their SecretString wrappers until this rendering sink masks them.
  */
 
-import { isSecretString, MASK } from '@rune/engine';
 import type { ChromeKey, ExecutionPlan, RunEvent, RunResult, StringTable } from '@rune/engine';
 
 import type { CliIo } from './io.js';
@@ -17,17 +16,17 @@ export function renderPlan(
 ): void {
   const preview = plan.preview ? ', cross-platform preview' : '';
   io.stdout(
-    `Execution plan v${plan.executionPlanVersion} for ${product.name} ${product.version} ` +
+    `Execution plan v${plan.planSchemaVersion} for ${product.name} ${product.version} ` +
       `(${plan.manifestPath}, sha256 ${plan.manifestSha256}, platform ${plan.platform}${preview})`,
   );
   io.stdout(
     `Execution options: failFast=${String(plan.executionOptions.failFast)}, ` +
-      `logFile=${maskedJson(plan.executionOptions.logFile)}`,
+      `logFile=${safeJson(plan.executionOptions.logFile)}`,
   );
   io.stdout('Resolved inputs:');
   for (const input of plan.resolvedInputs) {
     io.stdout(
-      `  ${input.id}: value=${maskedJson(input.value)}, type=${input.type}, ` +
+      `  ${input.id}: value=${safeJson(input.value)}, secret=${String(input.secret)}, ` +
         `enabled=${String(input.enabled)}, source=${input.source ?? 'none'}, ` +
         `ignored=${input.ignored ?? 'none'}`,
     );
@@ -40,32 +39,17 @@ export function renderPlan(
       return;
     }
     io.stdout(`  ${number} ${step.title}`);
-    io.stdout(`       argv: ${maskedJson(step.command.argv)}`);
-    io.stdout(`       cwd: ${maskedJson(step.command.cwd)}`);
-    io.stdout(`       env: ${maskedJson(step.command.env)}`);
-    io.stdout(`       timeoutSeconds: ${maskedJson(step.command.timeoutSeconds)}`);
-    io.stdout(`       successExitCodes: ${maskedJson(step.command.successExitCodes)}`);
+    io.stdout(`       argv: ${safeJson(step.command.argv)}`);
+    io.stdout(`       cwd: ${safeJson(step.command.cwd)}`);
+    io.stdout(`       env: ${safeJson(step.command.env)}`);
+    io.stdout(`       timeoutSeconds: ${safeJson(step.command.timeoutSeconds)}`);
+    io.stdout(`       successExitCodes: ${safeJson(step.command.successExitCodes)}`);
   });
 }
 
-/** JSON quoting keeps argv boundaries visible; wrappers are masked without being revealed. */
-function maskedJson(value: unknown): string {
-  return JSON.stringify(maskedValue(value));
-}
-
-function maskedValue(value: unknown): unknown {
-  if (isSecretString(value)) {
-    return MASK;
-  }
-  if (Array.isArray(value)) {
-    return value.map(maskedValue);
-  }
-  if (typeof value === 'object' && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, maskedValue(entry)]),
-    );
-  }
-  return value;
+/** The engine's opaque values stringify as `***`; quoting keeps argv boundaries visible. */
+function safeJson(value: unknown): string {
+  return JSON.stringify(value) ?? 'none';
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */

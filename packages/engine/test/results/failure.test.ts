@@ -8,7 +8,8 @@ import { createFailureResult } from '../../src/engine/executor.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import { ExecutionError, InternalError, ManifestError, ResolutionError } from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
-import { runResultSchema } from '../../src/results/schema.js';
+import { manifestDescriptorFor } from '../../src/manifest/index.js';
+import { resultV1Schema } from '../../src/results/schema.js';
 
 const SECRET = 'factory-secret-value';
 
@@ -61,7 +62,7 @@ describe('createFailureResult', () => {
       plan,
     });
 
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'failed',
       exitCode: 1,
@@ -75,7 +76,7 @@ describe('createFailureResult', () => {
         {
           id: 'pending',
           state: 'NOT_RUN',
-          command: ['deploy', '***', 'prefix-***', 'mirror-***'],
+          command: ['deploy', '***', '***', '***'],
         },
       ],
     });
@@ -130,10 +131,10 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result.manifest).toMatchObject({
       path,
-      sha256: session.manifestSha256,
+      sha256: manifestDescriptorFor(session.manifest).sha256,
       schemaVersion: 1,
     });
     expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
@@ -170,7 +171,7 @@ describe('createFailureResult', () => {
       plan,
     });
 
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       dryRun: true,
       stepsExecuted: 0,
@@ -212,12 +213,16 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'failed',
       exitCode: 1,
       product: { name: 'Example', version: '1.0.0' },
-      manifest: { path, sha256: session.manifestSha256, schemaVersion: 1 },
+      manifest: {
+        path,
+        sha256: manifestDescriptorFor(session.manifest).sha256,
+        schemaVersion: 1,
+      },
       stepsTotal: 0,
       stepsExecuted: 0,
       nothingExecuted: true,
@@ -256,15 +261,15 @@ describe('createFailureResult', () => {
       platform: hostPlatform(),
     });
 
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'config_error',
-      product: { name: '', version: '' },
+      product: null,
       manifest: { path: 'broken.yaml', sha256: null, schemaVersion: null },
       inputs: [],
       steps: [],
     });
     expect(Object.isFrozen(result.manifest)).toBe(true);
-    expect(Object.isFrozen(result.product)).toBe(true);
+    expect(result.product).toBeNull();
   });
 });

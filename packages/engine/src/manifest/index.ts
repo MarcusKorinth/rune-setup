@@ -14,12 +14,8 @@ import { ManifestError } from '../errors.js';
 import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
-import {
-  loadYamlFile,
-  loadYamlFileWithMetadata,
-  loadYamlText,
-  type LoadedDocument,
-} from './loader.js';
+import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
+import { bindManifestDescriptor, manifestDescriptorFor } from './provenance.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
 import { checkSemantics, environmentReferences, type EnvironmentUse } from './v1/rules.js';
@@ -28,11 +24,8 @@ import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 /** The validated manifest model. Today that is always the v1 model. */
 export type Manifest = ManifestV1;
 
-/** Package-internal manifest identity derived from the same bytes as the validated model. */
-export interface ParsedManifest {
-  readonly manifest: Manifest;
-  readonly sha256: string;
-}
+export { manifestDescriptorFor };
+export type { ManifestDescriptor } from './provenance.js';
 
 export interface ParseManifestOptions {
   /** Check that `gui:` asset paths exist — `validate` and `run --gui` do, other modes do not. */
@@ -69,18 +62,6 @@ export function parseManifest(file: string, options: ParseManifestOptions = {}):
   return parseDocument(loadYamlFile(file), file, options);
 }
 
-/** Reads once, then validates and hashes that one byte snapshot. Not part of the root API. */
-export function parseManifestWithMetadata(
-  file: string,
-  options: ParseManifestOptions = {},
-): ParsedManifest {
-  const document = loadYamlFileWithMetadata(file);
-  return {
-    manifest: parseDocument(document, file, options),
-    sha256: document.sha256,
-  };
-}
-
 /** Same as {@link parseManifest} for text that is already in memory. */
 export function parseManifestText(
   text: string,
@@ -90,7 +71,7 @@ export function parseManifestText(
   return parseDocument(loadYamlText(text, file), file, options);
 }
 
-/** What `rune validate` reports: the accepted manifest, overlays, and environment reads. */
+/** What `rune validate` reports: the manifest it accepted, and what that manifest reads. */
 export interface ValidationReport {
   readonly manifest: Manifest;
   /** Fully resolved display strings for the selected validate locale. */
@@ -113,13 +94,13 @@ export function validateManifest(
 ): ValidationReport {
   const document = loadYamlFile(file);
   const manifest = parseDocument(document, file, { checkAssetFiles: true, ...options });
+  const descriptor = manifestDescriptorFor(manifest);
   const locale = selectLocale({
     flag: options.locale,
     environment: options.environment ?? process.env,
     systemLocale: options.systemLocale ?? systemLocale(),
   });
-  const manifestDir = options.manifestDir ?? dirname(resolve(file));
-  const overlays = discoverOverlays(manifestDir);
+  const overlays = discoverOverlays(descriptor.manifestDir);
   const loadedOverlays = overlays.map((overlay) =>
     loadOverlay(overlay.path, overlay.locale, manifest),
   );
@@ -131,7 +112,7 @@ export function validateManifest(
   return {
     manifest,
     strings: resolveStrings({ manifest, locale, overlay }),
-    locales: Object.freeze(overlays.map((overlay) => overlay.locale)),
+    locales: Object.freeze(overlays.map((candidate) => candidate.locale)),
     environment: environmentReferences(manifest, {
       file: document.file,
       sourceMap: document.sourceMap,
@@ -173,10 +154,19 @@ function parseDocument(
   }
 
   const parser = selectParser(raw['schemaVersion'], document);
-  return parser(document, {
-    manifestDir: options.manifestDir ?? dirname(resolve(file)),
+  const manifestDir =
+    options.manifestDir === undefined ? dirname(resolve(file)) : resolve(options.manifestDir);
+  const manifest = parser(document, {
+    manifestDir,
     checkAssetFiles: options.checkAssetFiles ?? false,
   });
+  bindManifestDescriptor(manifest, {
+    path: document.file,
+    sha256: document.sha256,
+    schemaVersion: manifest.schemaVersion,
+    manifestDir,
+  });
+  return manifest;
 }
 
 function selectParser(version: unknown, document: LoadedDocument): VersionParser {

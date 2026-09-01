@@ -26,7 +26,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import { createLogFileSink } from '../../src/logs/logFile.js';
 import { Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
-import { runResultSchema } from '../../src/results/schema.js';
+import { resultV1Schema } from '../../src/results/schema.js';
 
 function openedWritable(path: string, options: WritableOptions): fs.WriteStream {
   const fd = fs.openSync(path, 'a');
@@ -158,7 +158,7 @@ describe('log-file sink failures', () => {
       nothingExecuted: false,
       steps: [{ id: 'install', state: 'SUCCEEDED', command: ['node'] }],
     });
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(Object.isFrozen(result)).toBe(true);
     expect(terminals.some((event) => event.result.status === 'succeeded')).toBe(false);
   });

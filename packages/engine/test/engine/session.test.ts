@@ -304,8 +304,14 @@ describe('answering inputs', () => {
     });
     expect(session.plan()).toBe(plan);
     expect(session.plan().steps[0]).toMatchObject({
-      command: { argv: ['node', marker] },
+      command: { argv: ['node', expect.anything()] },
     });
+    const firstStep = session.plan().steps[0];
+    expect(firstStep?.state).toBe('PENDING');
+    if (firstStep?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    expect(String(firstStep.command.argv[1])).toBe('***');
   });
 
   it('rejects an undefined answer without falling back to a default', async () => {
@@ -343,10 +349,9 @@ describe('planning and executing', () => {
       manifest: { path, sha256: expectedSha256, schemaVersion: 1 },
     };
     expect(plan).toMatchObject({
-      executionPlanVersion: 1,
+      planSchemaVersion: 1,
       manifestPath: path,
       manifestSha256: expectedSha256,
-      manifestSchemaVersion: 1,
     });
     expect(session.plan()).toBe(plan);
     expect(session.describe()).toMatchObject(expectedIdentity);
@@ -432,6 +437,7 @@ describe('planning and executing', () => {
     expect(events.map((event) => event.kind)).toEqual([
       'runStarted',
       'stepStarted',
+      'stepOutput',
       'stepFinished',
       'runFinished',
     ]);
@@ -446,7 +452,7 @@ describe('planning and executing', () => {
     expect(readFileSync(logFile, 'utf8')).toContain('run finished: internal_error (exit 70)');
   });
 
-  it('uses one safe plan projection while the runner receives the canonical clear values', async () => {
+  it('uses one opaque canonical plan for observers and runner requests', async () => {
     const marker = 'shared-secret-marker';
     const mirror = `prefix-${marker}-suffix`;
     const literal = `literal-${marker}`;
@@ -496,8 +502,12 @@ describe('planning and executing', () => {
     );
     expect(events[0]).toMatchObject({ kind: 'runStarted' });
     expect(events[0]?.kind === 'runStarted' && events[0].plan).toBe(safePlan);
-    expect(spawnedArgv).toEqual(['node', mirror, literal]);
-    expect(spawnedEnv).toEqual([mirror]);
+    const pending = safePlan.steps[0];
+    expect(pending?.state).toBe('PENDING');
+    expect(spawnedArgv).toEqual(pending?.state === 'PENDING' ? pending.command.argv : []);
+    expect(spawnedEnv).toEqual([
+      pending?.state === 'PENDING' ? pending.command.env['MIRROR'] : undefined,
+    ]);
   });
 
   it('does not start a runner until the log is open and releases a failed execution', async () => {
@@ -555,7 +565,7 @@ describe('planning and executing', () => {
     expect(overlappingObserver).not.toHaveBeenCalled();
 
     session.cancel();
-    expect(cancel.cancelled).toBe(true);
+    expect(cancel.isCancelled).toBe(true);
     await expect(active).resolves.toMatchObject({ status: 'cancelled', stepsCancelled: 1 });
 
     await expect(session.execute()).resolves.toMatchObject({ status: 'succeeded' });

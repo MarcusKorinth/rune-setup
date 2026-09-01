@@ -10,10 +10,10 @@ import {
   CancelledError,
   createFailureResult,
   InternalError,
+  PlatformError,
   RuneError,
   Session,
   UsageError,
-  serializeResult,
   writeResult,
 } from '@rune/engine';
 import type { ExecutionPlan, RunResult, StringTable } from '@rune/engine';
@@ -62,7 +62,7 @@ export async function runCommand(
     strings = session.getStrings();
 
     plan = session.plan();
-    if (flags.dryRun === true && control.cancel?.cancelled === true) {
+    if (flags.dryRun === true && control.cancel?.isCancelled === true) {
       throw new CancelledError();
     }
     const progress = progressObserver(io, strings);
@@ -83,11 +83,11 @@ export async function runCommand(
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && flags.result !== '-') {
-      renderPlan(plan, result.product, io);
+      renderPlan(plan, session.manifest.product, io);
     }
     if (flags.result !== undefined) {
       deliveryStarted = true;
-      deliverResult(result, flags.result, io);
+      await deliverResult(result, flags.result, io);
     }
     renderOutcome(result, session.warnings(), io, strings);
     if (result.exitCode !== 0) {
@@ -104,7 +104,7 @@ export async function runCommand(
     }
     // The result file is written on every outcome the run owns — manifest, input,
     // resolution, cancellation, internal — only usage errors skip it (§10).
-    if (!(error instanceof UsageError)) {
+    if (!(error instanceof UsageError) && !(error instanceof PlatformError)) {
       const failure =
         error instanceof RuneError
           ? error
@@ -123,7 +123,7 @@ export async function runCommand(
         });
       if (flags.result !== undefined) {
         deliveryStarted = true;
-        deliverResult(result, flags.result, io);
+        await deliverResult(result, flags.result, io);
       }
       renderOutcome(result, session?.warnings() ?? [], io, strings);
       throw new ExitWithCode(result.exitCode);
@@ -133,11 +133,11 @@ export async function runCommand(
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */
-function deliverResult(result: RunResult, destination: string, io: CliIo): void {
+async function deliverResult(result: RunResult, destination: string, io: CliIo): Promise<void> {
   if (destination === '-') {
-    io.stdout(serializeResult(result).replace(/\n$/, ''));
+    io.stdout(JSON.stringify(result, null, 2));
     return;
   }
-  writeResult(result, destination);
+  await writeResult(result, destination);
   io.stderr(`result written to ${destination}`);
 }

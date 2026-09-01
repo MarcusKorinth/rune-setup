@@ -286,7 +286,7 @@ describe('rune run', () => {
     expect(code).toBe(0);
     expect(io.out.join('\n')).not.toContain(marker);
     expect(io.out.join('\n')).toContain('prefix-***-suffix');
-    expect(io.out.join('\n')).toContain('literal-***');
+    expect(io.out.join('\n')).toContain('argv: ["node","***","***"]');
   });
 
   it.each(['before', 'after'] as const)(
@@ -393,11 +393,11 @@ describe('rune run', () => {
     expect(code).toBe(0);
     const rendered = io.out.join('\n');
     expect(io.out[0]).toContain('Execution plan v1 for Example 1.0.0');
-    expect(rendered).toContain('Execution options: failFast=true, logFile=null');
+    expect(rendered).toContain('Execution options: failFast=true, logFile=none');
     expect(rendered).toContain(
-      'ignoredInput: value="", type=text, enabled=false, source=none, ignored=set',
+      'ignoredInput: value="", secret=false, enabled=false, source=none, ignored=set',
     );
-    expect(rendered).toContain('token: value="***", type=secret, enabled=true, source=set');
+    expect(rendered).toContain('token: value="***", secret=true, enabled=true, source=set');
     expect(rendered).toContain('argv: ["node","two words","quote\\"inside","***"]');
     expect(rendered).toContain('cwd: "***"');
     expect(rendered).toContain('env: {"PUBLIC":"visible value","PRIVATE":"***"}');
@@ -668,7 +668,7 @@ describe('result files for failed outcomes', () => {
       nothingExecuted: true,
       steps: [
         { id: 'skipped', state: 'SKIPPED', command: null },
-        { id: 'pending', state: 'NOT_RUN', command: ['node', 'prefix-***', 'literal-***'] },
+        { id: 'pending', state: 'NOT_RUN', command: ['node', '***', '***'] },
       ],
     });
     expect(JSON.stringify(written)).not.toContain(marker);

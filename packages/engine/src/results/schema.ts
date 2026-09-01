@@ -1,292 +1,469 @@
-/**
- * The JSON Schema of the result file (`rune schema --result`, docs/architecture.md §4.1).
- *
- * A zod mirror of the model in `model.ts`, so the schema is generated the same way the
- * manifest schema is and cannot drift silently: the mirror is pinned against the model by
- * type assignability below and by tests that validate results from the real producers.
- */
+/** The public JSON Schema contract of a result file (docs/architecture.md §10). */
 
 import { z } from 'zod';
 
+import { PLATFORMS } from '../engine/context.js';
 import { VALUE_SOURCES } from '../engine/inputs.js';
-import type { RunResult } from './model.js';
+import { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION, RUN_MODES, type RunResult } from './model.js';
 
-const nonNegativeIntegerSchema = z.number().int().min(0);
-const nonNegativeDurationSchema = z.number().int().min(0);
-const commandSchema = z.array(z.string()).min(1);
+const nonnegativeInteger = z.number().int().nonnegative();
 
-const outputLineSchema = z.strictObject({
+const resultInputIdentity = {
+  id: z.string(),
+};
+
+const resultInputValueSchemas = [
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(VALUE_SOURCES).nullable(),
+    enabled: z.literal(true),
+    secret: z.literal(true),
+    value: z.null(),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(VALUE_SOURCES).nullable(),
+    enabled: z.literal(true),
+    secret: z.literal(false),
+    value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.null(),
+    enabled: z.literal(false),
+    secret: z.literal(true),
+    value: z.null(),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.null(),
+    enabled: z.literal(false),
+    secret: z.literal(false),
+    value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(['values', 'environment', 'set', 'answer']),
+    enabled: z.literal(false),
+    ignored: z.literal('input disabled'),
+    secret: z.literal(true),
+    value: z.null(),
+  }),
+  z.strictObject({
+    ...resultInputIdentity,
+    source: z.enum(['values', 'environment', 'set', 'answer']),
+    enabled: z.literal(false),
+    ignored: z.literal('input disabled'),
+    secret: z.literal(false),
+    value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  }),
+] as const;
+
+const resultInputSchema = z.union(resultInputValueSchemas);
+
+const resultOutputLineSchema = z.strictObject({
   stream: z.enum(['stdout', 'stderr']),
   line: z.string(),
 });
 
-const resultInputSchema = z
-  .strictObject({
-    id: z.string(),
-    value: z.union([z.string(), z.boolean(), z.array(z.string()), z.null()]),
-    source: z.union([z.enum(VALUE_SOURCES), z.null()]),
-    secret: z.boolean(),
-    enabled: z.boolean(),
-    ignored: z.union([z.string(), z.null()]),
-  })
-  .superRefine((input, context) => {
-    if (input.secret && input.value !== null) {
-      context.addIssue({
-        code: 'custom',
-        path: ['value'],
-        message: 'secret input values must be null',
-      });
-    }
-    if (input.ignored !== null && input.enabled) {
-      context.addIssue({
-        code: 'custom',
-        path: ['enabled'],
-        message: 'ignored inputs must be disabled',
-      });
-    }
-    if (input.ignored !== null && input.source === null) {
-      context.addIssue({
-        code: 'custom',
-        path: ['source'],
-        message: 'ignored inputs must retain their source',
-      });
-    }
-  });
-
-const resultStepBaseShape = {
+const resultStepIdentity = {
   id: z.string(),
   title: z.string(),
+  durationMs: z.number().nonnegative(),
 };
 
 const resultStepSchema = z.discriminatedUnion('state', [
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('PENDING'),
     exitCode: z.null(),
-    durationMs: z.literal(0),
-    command: commandSchema,
+    command: z.array(z.string()),
     skipReason: z.null(),
-    outputTail: z.null(),
   }),
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('SKIPPED'),
     exitCode: z.null(),
-    durationMs: z.literal(0),
     command: z.null(),
-    skipReason: z.string().min(1),
-    outputTail: z.null(),
+    skipReason: z.string(),
   }),
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('SUCCEEDED'),
     exitCode: z.number().int(),
-    durationMs: nonNegativeDurationSchema,
-    command: commandSchema,
+    command: z.array(z.string()),
     skipReason: z.null(),
-    outputTail: z.null(),
   }),
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('FAILED'),
-    exitCode: z.union([z.number().int(), z.null()]),
-    durationMs: nonNegativeDurationSchema,
-    command: commandSchema,
+    exitCode: z.number().int().nullable(),
+    command: z.array(z.string()),
     skipReason: z.null(),
-    outputTail: z.array(outputLineSchema).max(50),
+    outputTail: z.array(resultOutputLineSchema).max(50).optional(),
   }),
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('CANCELLED'),
     exitCode: z.null(),
-    durationMs: nonNegativeDurationSchema,
-    command: commandSchema,
+    command: z.array(z.string()),
     skipReason: z.null(),
-    outputTail: z.null(),
   }),
   z.strictObject({
-    ...resultStepBaseShape,
+    ...resultStepIdentity,
     state: z.literal('NOT_RUN'),
     exitCode: z.null(),
-    durationMs: z.literal(0),
-    command: commandSchema,
+    command: z.array(z.string()),
     skipReason: z.null(),
-    outputTail: z.null(),
   }),
 ]);
 
-const resultManifestSchema = z.union([
-  z.strictObject({
-    path: z.string(),
-    sha256: z.string().regex(/^[0-9a-f]{64}$/u),
-    schemaVersion: z.literal(1),
-  }),
-  z.strictObject({
-    path: z.string(),
-    sha256: z.null(),
-    schemaVersion: z.null(),
-  }),
-]);
+const potentiallyUnvalidatedResultManifestSchema = z.strictObject({
+  path: z.string(),
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+  schemaVersion: z.number().int().nullable(),
+});
 
-const runResultBaseShape = {
-  resultSchemaVersion: z.literal(1),
+const validatedResultManifestSchema = z.strictObject({
+  path: z.string(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  schemaVersion: z.number().int(),
+});
+
+const resultProductSchema = z.strictObject({
+  name: z.string(),
+  version: z.string(),
+});
+
+const resultLocationSchema = z.strictObject({
+  file: z.string(),
+  line: z.number().int().min(1),
+  column: z.number().int().min(1),
+});
+
+const resultErrorSchema = <Code extends string>(code: z.ZodType<Code>) =>
+  z.strictObject({
+    code,
+    message: z.string(),
+    location: resultLocationSchema.nullable(),
+  });
+
+const planResultErrorSchema = resultErrorSchema(z.enum(['RUNE-401', 'RUNE-404', 'RUNE-405']));
+const logResultErrorSchema = resultErrorSchema(z.literal('RUNE-406'));
+const manifestResultErrorSchema = resultErrorSchema(
+  z.enum(['RUNE-101', 'RUNE-102', 'RUNE-103', 'RUNE-104']),
+);
+const inputResultErrorSchema = resultErrorSchema(z.enum(['RUNE-201', 'RUNE-202', 'RUNE-203']));
+const resolutionResultErrorSchema = resultErrorSchema(
+  z.enum(['RUNE-301', 'RUNE-302', 'RUNE-311', 'RUNE-312']),
+);
+
+/**
+ * Shape source for `resultSchemaVersion: 1`. It is deliberately separate from the readonly
+ * facade types in model.ts: readonly has no JSON representation. The compile-time checks below
+ * pin the two structural views in both directions.
+ */
+const resultShape = {
+  resultSchemaVersion: z.literal(RESULT_SCHEMA_VERSION),
   id: z.uuid(),
-  mode: z.enum(['gui', 'interactive', 'non-interactive']),
-  platform: z.enum(['windows', 'linux']),
-  locale: z.union([z.string(), z.null()]),
+  mode: z.enum(RUN_MODES),
+  crossPlatformPreview: z.boolean(),
+  platform: z.enum(PLATFORMS),
+  locale: z.string().nullable(),
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime(),
-  durationMs: nonNegativeDurationSchema,
+  durationMs: z.number().nonnegative(),
   runeVersion: z.string(),
-  product: z.strictObject({ name: z.string(), version: z.string() }),
-  manifest: resultManifestSchema,
-  stepsTotal: nonNegativeIntegerSchema,
-  stepsExecuted: nonNegativeIntegerSchema,
-  stepsSucceeded: nonNegativeIntegerSchema,
-  stepsFailed: nonNegativeIntegerSchema,
-  stepsCancelled: nonNegativeIntegerSchema.max(1),
-  stepsSkipped: nonNegativeIntegerSchema,
-  stepsNotRun: nonNegativeIntegerSchema,
+  stepsTotal: nonnegativeInteger,
+  stepsExecuted: nonnegativeInteger,
+  stepsSucceeded: nonnegativeInteger,
+  stepsFailed: nonnegativeInteger,
+  stepsCancelled: nonnegativeInteger,
+  stepsSkipped: nonnegativeInteger,
+  stepsNotRun: nonnegativeInteger,
   nothingExecuted: z.boolean(),
   inputs: z.array(resultInputSchema),
   steps: z.array(resultStepSchema),
 };
 
-const statusVariants = [
+const validatedResultShape = {
+  ...resultShape,
+  product: resultProductSchema,
+  manifest: validatedResultManifestSchema,
+};
+
+const potentiallyUnvalidatedResultShape = {
+  ...resultShape,
+  product: resultProductSchema.nullable(),
+  manifest: potentiallyUnvalidatedResultManifestSchema,
+};
+
+const resultV1ShapeSchema = z.union([
   z.strictObject({
-    ...runResultBaseShape,
-    status: z.literal('planned'),
-    exitCode: z.literal(0),
-    dryRun: z.literal(true),
-    crossPlatformPreview: z.boolean(),
-  }),
-  z.strictObject({
-    ...runResultBaseShape,
+    ...validatedResultShape,
     status: z.literal('succeeded'),
-    exitCode: z.literal(0),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.succeeded),
     dryRun: z.literal(false),
-    crossPlatformPreview: z.literal(false),
+    error: z.null(),
   }),
   z.strictObject({
-    ...runResultBaseShape,
-    status: z.literal('failed'),
-    exitCode: z.literal(1),
-    // A plan-time execution-policy error may end a dry-run before any step exists.
-    dryRun: z.boolean(),
-    crossPlatformPreview: z.boolean(),
+    ...validatedResultShape,
+    status: z.literal('planned'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.planned),
+    dryRun: z.literal(true),
+    error: z.null(),
   }),
-  ...(
-    [
-      ['config_error', 3],
-      ['input_error', 4],
-      ['resolution_error', 5],
-      ['cancelled', 6],
-      ['internal_error', 70],
-    ] as const
-  ).map(([status, exitCode]) =>
-    z.strictObject({
-      ...runResultBaseShape,
-      status: z.literal(status),
-      exitCode: z.literal(exitCode),
-      // These failures can happen before either a real run or a dry-run has started.
-      dryRun: z.boolean(),
-      crossPlatformPreview: z.boolean(),
-    }),
-  ),
-] as const;
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('failed'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
+    dryRun: z.literal(false),
+    error: z.null(),
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('failed'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
+    dryRun: z.boolean(),
+    error: planResultErrorSchema,
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('failed'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
+    dryRun: z.literal(false),
+    error: logResultErrorSchema,
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('cancelled'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.cancelled),
+    dryRun: z.boolean(),
+    error: resultErrorSchema(z.literal('RUNE-601')),
+  }),
+  z.strictObject({
+    ...potentiallyUnvalidatedResultShape,
+    status: z.literal('config_error'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.config_error),
+    dryRun: z.boolean(),
+    error: manifestResultErrorSchema,
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('input_error'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.input_error),
+    dryRun: z.boolean(),
+    error: inputResultErrorSchema,
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('resolution_error'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.resolution_error),
+    dryRun: z.boolean(),
+    error: resolutionResultErrorSchema,
+  }),
+  z.strictObject({
+    ...potentiallyUnvalidatedResultShape,
+    status: z.literal('internal_error'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.internal_error),
+    dryRun: z.boolean(),
+    error: resultErrorSchema(z.literal('RUNE-500')),
+  }),
+]);
 
-export const runResultSchema = z
-  .discriminatedUnion('status', statusVariants)
-  .superRefine((result, context) => {
-    const issue = (path: PropertyKey[], message: string): void => {
-      context.addIssue({ code: 'custom', path, message });
-    };
+export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+  if (result.crossPlatformPreview && !result.dryRun) {
+    context.addIssue({
+      code: 'custom',
+      path: ['crossPlatformPreview'],
+      message: 'crossPlatformPreview requires dryRun',
+    });
+  }
 
-    if (result.crossPlatformPreview && !result.dryRun) {
-      issue(['crossPlatformPreview'], 'cross-platform preview requires dryRun to be true');
+  const inputIds = new Set<string>();
+  for (const [index, input] of result.inputs.entries()) {
+    if (inputIds.has(input.id)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['inputs', index, 'id'],
+        message: 'input ids must be unique',
+      });
     }
-    if (!result.dryRun && result.steps.some((step) => step.state === 'PENDING')) {
-      issue(['steps'], 'PENDING steps are valid only in dry-run results');
+    inputIds.add(input.id);
+  }
+
+  const stepIds = new Set<string>();
+  for (const [index, step] of result.steps.entries()) {
+    if (stepIds.has(step.id)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['steps', index, 'id'],
+        message: 'step ids must be unique',
+      });
     }
+    stepIds.add(step.id);
+  }
+
+  let executionBlocked = false;
+  for (const [index, step] of result.steps.entries()) {
     if (
-      result.dryRun &&
-      result.steps.some((step) => step.state !== 'PENDING' && step.state !== 'SKIPPED')
+      executionBlocked &&
+      (step.state === 'SUCCEEDED' || step.state === 'FAILED' || step.state === 'CANCELLED')
     ) {
-      issue(['steps'], 'dry-run results may contain only PENDING or SKIPPED steps');
+      context.addIssue({
+        code: 'custom',
+        path: ['steps', index, 'state'],
+        message: 'executed steps must not follow a CANCELLED or NOT_RUN step',
+      });
     }
+    if (step.state === 'CANCELLED' || step.state === 'NOT_RUN') {
+      executionBlocked = true;
+    }
+  }
 
-    const count = (state: (typeof result.steps)[number]['state']): number =>
-      result.steps.filter((step) => step.state === state).length;
-    const succeeded = count('SUCCEEDED');
-    const failed = count('FAILED');
-    const cancelled = count('CANCELLED');
-    const skipped = count('SKIPPED');
-    const notRun = count('NOT_RUN') + count('PENDING');
-    const executed = succeeded + failed + cancelled;
+  const count = (state: RunResult['steps'][number]['state']): number =>
+    result.steps.filter((step) => step.state === state).length;
+  const expectedCounters = {
+    stepsTotal: result.steps.length,
+    stepsSucceeded: count('SUCCEEDED'),
+    stepsFailed: count('FAILED'),
+    stepsCancelled: count('CANCELLED'),
+    stepsSkipped: count('SKIPPED'),
+    stepsNotRun: count('NOT_RUN') + count('PENDING'),
+  } as const;
+  const stepsExecuted =
+    expectedCounters.stepsSucceeded +
+    expectedCounters.stepsFailed +
+    expectedCounters.stepsCancelled;
 
-    const expectedCounters = [
-      ['stepsSucceeded', result.stepsSucceeded, succeeded],
-      ['stepsFailed', result.stepsFailed, failed],
-      ['stepsCancelled', result.stepsCancelled, cancelled],
-      ['stepsSkipped', result.stepsSkipped, skipped],
-      ['stepsNotRun', result.stepsNotRun, notRun],
-      ['stepsExecuted', result.stepsExecuted, executed],
-    ] as const;
-    for (const [field, actual, expected] of expectedCounters) {
-      if (actual !== expected) {
-        issue([field], `${field} must equal the count derived from steps`);
-      }
+  for (const [counter, expected] of Object.entries(expectedCounters)) {
+    if (result[counter as keyof typeof expectedCounters] !== expected) {
+      context.addIssue({
+        code: 'custom',
+        path: [counter],
+        message: `${counter} does not match the result steps`,
+      });
     }
+  }
+  if (result.stepsExecuted !== stepsExecuted) {
+    context.addIssue({
+      code: 'custom',
+      path: ['stepsExecuted'],
+      message: 'stepsExecuted does not match the result steps',
+    });
+  }
+  if (result.nothingExecuted !== (stepsExecuted === 0)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['nothingExecuted'],
+      message: 'nothingExecuted does not match stepsExecuted',
+    });
+  }
+  if (expectedCounters.stepsCancelled > 1) {
+    context.addIssue({
+      code: 'custom',
+      path: ['stepsCancelled'],
+      message: 'stepsCancelled must not exceed one',
+    });
+  }
+  if (result.status === 'cancelled' && expectedCounters.stepsFailed > 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'cancelled results must not contain FAILED steps',
+    });
+  }
+  if (
+    result.status === 'cancelled' &&
+    result.stepsExecuted > 0 &&
+    !result.steps.some((step) => step.state === 'CANCELLED' || step.state === 'NOT_RUN')
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'executed cancelled results must contain a CANCELLED or NOT_RUN step',
+    });
+  }
 
-    const states = new Set(result.steps.map((step) => step.state));
-    if (
-      result.status === 'succeeded' &&
-      (states.has('FAILED') ||
-        states.has('CANCELLED') ||
-        states.has('NOT_RUN') ||
-        states.has('PENDING'))
-    ) {
-      issue(['status'], 'succeeded results may contain only SUCCEEDED or SKIPPED steps');
-    }
-    if (result.status === 'failed') {
-      // RUNE-406 is a run-level failure: opening the log may leave steps NOT_RUN, while
-      // writing or closing it may fail after every executed step already SUCCEEDED.
-      if (states.has('CANCELLED') || states.has('PENDING')) {
-        issue(['status'], 'failed results may not contain CANCELLED or PENDING steps');
-      }
-    }
-    if (result.status === 'cancelled' && !result.dryRun && states.has('PENDING')) {
-      issue(['status'], 'live cancelled results may not contain PENDING steps');
-    }
+  if (
+    (result.status === 'config_error' ||
+      result.status === 'input_error' ||
+      result.status === 'resolution_error') &&
+    result.steps.length !== 0
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['steps'],
+      message: 'pre-execution error results must not contain steps',
+    });
+  }
 
-    if (result.stepsTotal !== result.stepsExecuted + result.stepsSkipped + result.stepsNotRun) {
-      issue(['stepsTotal'], 'stepsTotal must equal stepsExecuted + stepsSkipped + stepsNotRun');
+  const invalidStateIndex = result.steps.findIndex((step) => {
+    if (result.status === 'planned') {
+      return step.state !== 'PENDING' && step.state !== 'SKIPPED';
     }
-    if (
-      result.stepsExecuted !==
-      result.stepsSucceeded + result.stepsFailed + result.stepsCancelled
-    ) {
-      issue(
-        ['stepsExecuted'],
-        'stepsExecuted must equal stepsSucceeded + stepsFailed + stepsCancelled',
-      );
+    if (result.status === 'succeeded') {
+      return step.state !== 'SUCCEEDED' && step.state !== 'SKIPPED';
     }
-    if (result.stepsTotal !== result.steps.length) {
-      issue(['stepsTotal'], 'stepsTotal must equal steps.length');
+    if (result.dryRun) {
+      return step.state !== 'PENDING' && step.state !== 'SKIPPED';
     }
-    if (result.nothingExecuted !== (result.stepsExecuted === 0)) {
-      issue(['nothingExecuted'], 'nothingExecuted must be true exactly when stepsExecuted is 0');
-    }
+    return step.state === 'PENDING';
   });
+  if (invalidStateIndex !== -1) {
+    context.addIssue({
+      code: 'custom',
+      path: ['steps', invalidStateIndex, 'state'],
+      message:
+        result.status === 'planned'
+          ? 'planned results may contain only PENDING or SKIPPED steps'
+          : result.status === 'succeeded'
+            ? 'succeeded results may contain only SUCCEEDED or SKIPPED steps'
+            : result.dryRun
+              ? 'dry-run results may contain only PENDING or SKIPPED steps'
+              : 'PENDING steps are permitted only in dry-run results',
+    });
+  }
 
-// The one-way pin: everything the mirror accepts is a valid RunResult. The reverse
-// direction (readonly model arrays into the mirror's mutable inference) is covered by the
-// behavioural tests that parse results from every producer.
-type Mirrored = z.infer<typeof runResultSchema>;
-const pin = (value: Mirrored): RunResult => value;
-void pin;
+  if (result.status === 'failed') {
+    if (result.error === null) {
+      if (result.dryRun || expectedCounters.stepsFailed === 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['status'],
+          message: 'runtime failed results require a FAILED step and dryRun false',
+        });
+      }
+    } else if (result.error.code !== 'RUNE-406' && result.steps.length !== 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['steps'],
+        message: 'plan-time failed results must not contain steps',
+      });
+    }
+  }
+});
 
-/** The JSON Schema of `resultSchemaVersion: 1`, generated at call time like `rune schema`. */
+type Mutable<T> = T extends readonly (infer Item)[]
+  ? Mutable<Item>[]
+  : T extends object
+    ? {
+        -readonly [Key in keyof T]:
+          Mutable<T[Key]> | (Record<never, never> extends Pick<T, Key> ? undefined : never);
+      }
+    : T;
+type Assert<Condition extends true> = Condition;
+type _SchemaMatchesModel = Assert<
+  z.output<typeof resultV1Schema> extends Mutable<RunResult> ? true : false
+>;
+type _ModelMatchesSchema = Assert<
+  Mutable<RunResult> extends z.output<typeof resultV1Schema> ? true : false
+>;
+
+/** The JSON Schema emitted by `rune schema --result`. */
 export function resultJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(runResultSchema) as Record<string, unknown>;
+  return z.toJSONSchema(resultV1Schema, { io: 'output' }) as Record<string, unknown>;
 }

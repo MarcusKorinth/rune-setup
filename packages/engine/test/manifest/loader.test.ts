@@ -15,6 +15,14 @@ function tempFile(name: string, contents: Buffer | string): string {
 }
 
 describe('loadYamlText', () => {
+  it('hashes the UTF-8 bytes of the exact text source', () => {
+    const document = loadYamlText('a: 1\n', 'f.yaml');
+
+    expect(document.sha256).toBe(
+      '37b128c59f1f5097f73f82691cb519f1f568667faab5ced1b4ab979d36837eae',
+    );
+  });
+
   it('parses plain YAML into plain data', () => {
     const { value, isEmpty } = loadYamlText('a: 1\nb: [x, y]\nc: { d: true }\n', 'f.yaml');
 
@@ -249,10 +257,14 @@ describe('loadYamlFile', () => {
     expect(loadYamlFile(path).value).toEqual({ a: 1 });
   });
 
-  it('strips a byte-order mark', () => {
-    const path = tempFile('bom.yaml', Buffer.from('\uFEFFa: 1\n', 'utf8'));
+  it('strips a byte-order mark for parsing but hashes the exact BOM and CRLF bytes', () => {
+    const path = tempFile('bom.yaml', Buffer.from('\uFEFFa: 1\r\n', 'utf8'));
+    const document = loadYamlFile(path);
 
-    expect(loadYamlFile(path).value).toEqual({ a: 1 });
+    expect(document.value).toEqual({ a: 1 });
+    expect(document.sha256).toBe(
+      'd154b5589a138ef7a6ff502ecf270b04afa5eb5c56fb398f5cfe9a055a33316d',
+    );
   });
 
   it('refuses input that is not valid UTF-8 instead of substituting characters', () => {

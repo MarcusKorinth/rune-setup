@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken, type RunResult } from '@rune/engine';
 import { run, type CliIo } from '@rune/cli';
-import { runResultSchema } from '../packages/engine/src/results/schema.js';
+import { resultV1Schema } from '../packages/engine/src/results/schema.js';
 import { CLI_CANCELLATION_SIGNALS, createSignalController } from '../packages/cli/src/signals.js';
 
 interface Capture extends CliIo {
@@ -22,7 +22,7 @@ describe('CLI cancellation control', () => {
 
     expect(CLI_CANCELLATION_SIGNALS).toEqual(['SIGINT', 'SIGTERM']);
     controller.handle();
-    expect(cancel.cancelled).toBe(true);
+    expect(cancel.isCancelled).toBe(true);
     expect(forceExit).not.toHaveBeenCalled();
 
     controller.handle();
@@ -61,7 +61,7 @@ describe('CLI cancellation control', () => {
 
     expect(code).toBe(6);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'cancelled',
       exitCode: 6,
@@ -110,7 +110,7 @@ describe('CLI cancellation control', () => {
     expect(code).toBe(6);
     expect(io.out).toEqual([]);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => runResultSchema.parse(result)).not.toThrow();
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'cancelled',
       exitCode: 6,

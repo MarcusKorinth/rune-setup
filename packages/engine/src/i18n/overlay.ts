@@ -7,8 +7,9 @@
  * validation error, never a silent no-op.
  */
 
-import { ManifestError, orderIssues, type RuneIssue } from '../errors.js';
+import { InternalError, ManifestError, orderIssues, type RuneIssue } from '../errors.js';
 import { loadYamlFile, loadYamlText, type LoadedDocument } from '../manifest/loader.js';
+import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { startOfFile } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG } from './catalog.js';
@@ -18,6 +19,17 @@ export interface LocaleOverlay {
   readonly locale: string;
   readonly file: string;
   readonly entries: Readonly<Record<string, string>>;
+}
+
+const overlayManifests = new WeakMap<LocaleOverlay, ManifestV1>();
+
+/** Internal fail-closed lookup: structural overlay copies have no manifest provenance. */
+export function overlayManifestFor(overlay: LocaleOverlay): ManifestV1 {
+  const manifest = overlayManifests.get(overlay);
+  if (manifest === undefined) {
+    throw new InternalError('the locale overlay was not created by loadOverlay or loadOverlayText');
+  }
+  return manifest;
 }
 
 /** Reads and validates one overlay file against the manifest it accompanies. */
@@ -40,10 +52,11 @@ function fromDocument(
   locale: string,
   manifest: ManifestV1,
 ): LocaleOverlay {
+  manifestDescriptorFor(manifest);
   const { file, value, isEmpty, sourceMap } = document;
   const rootLocation = sourceMap.location([]);
   if (isEmpty) {
-    return Object.freeze({ locale, file, entries: Object.freeze({}) });
+    return createOverlay(locale, file, {}, manifest);
   }
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
     throw new ManifestError('RUNE-104', 'a locale overlay must be a mapping of key to text', {
@@ -75,11 +88,22 @@ function fromDocument(
   if (issues.length > 0) {
     throw ManifestError.fromIssues('RUNE-104', orderIssues(issues));
   }
-  return Object.freeze({
+  return createOverlay(locale, file, Object.fromEntries(entries), manifest);
+}
+
+function createOverlay(
+  locale: string,
+  file: string,
+  entries: Readonly<Record<string, string>>,
+  manifest: ManifestV1,
+): LocaleOverlay {
+  const overlay: LocaleOverlay = Object.freeze({
     locale,
     file,
-    entries: Object.freeze(Object.fromEntries(entries)),
+    entries: Object.freeze({ ...entries }),
   });
+  overlayManifests.set(overlay, manifest);
+  return overlay;
 }
 
 function keyProblem(key: string): string {
