@@ -362,6 +362,7 @@ export class Session {
     platform?: Platform;                   // foreign-platform preview — validate/--dry-run only
     logFile?: string;                      // --log-file; overrides execution.logFile (§10)
     environment?: Readonly<Record<string, string | undefined>>; // defaults to process.env
+    systemLocale?: string;                 // host locale; defaults to Intl (injectable for hosts/tests)
     runner?: Runner;                       // the §13 seam; the default is the real spawn runner
   }): Promise<Session>;
   readonly manifest: Manifest;
