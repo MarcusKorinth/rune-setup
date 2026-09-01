@@ -8,7 +8,7 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { snapshotEnvironment } from '../environment.js';
+import { snapshotEnvironment, type Environment } from '../environment.js';
 import {
   InputError,
   InternalError,
@@ -96,6 +96,7 @@ export class Session {
   readonly preview: boolean;
   readonly #manifestPath: string;
   readonly #context: RuntimeContext;
+  readonly #environment: Environment;
   #secrets: SecretRegistry;
   readonly #strings: StringTable;
   readonly #values: readonly ValuesDocument[];
@@ -112,6 +113,7 @@ export class Session {
     manifestPath: string;
     mode: RunMode;
     context: RuntimeContext;
+    environment: Environment;
     secrets: SecretRegistry;
     strings: StringTable;
     values: readonly ValuesDocument[];
@@ -126,6 +128,7 @@ export class Session {
     this.platform = fields.context.platform;
     this.preview = fields.context.preview;
     this.#context = fields.context;
+    this.#environment = fields.environment;
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;
     this.#values = fields.values;
@@ -192,6 +195,7 @@ export class Session {
         manifestPath: descriptor.path,
         mode,
         context,
+        environment,
         secrets,
         strings,
         values,
@@ -324,6 +328,7 @@ export class Session {
       completed = await executeRun({
         plan,
         mode: this.mode,
+        environment: this.#environment,
         observer: observers,
         cancel: activeExecution.cancel,
         ...(this.#runner === undefined ? {} : { runner: this.#runner }),

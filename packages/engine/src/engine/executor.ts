@@ -67,6 +67,8 @@ export const OUTPUT_TAIL_LINES = 50;
 export interface ExecuteOptions {
   readonly plan: ExecutionPlan;
   readonly mode: RunMode;
+  /** Invocation environment to inherit; defaults to process.env at execution start. */
+  readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly observer?: EngineObserver;
   readonly cancel?: CancelToken;
   readonly runner?: Runner;
@@ -154,7 +156,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   let fatalInternalError: InternalError | undefined;
 
   const parentEnv = snapshotParentEnvironment(
-    process.env,
+    options.environment ?? process.env,
     plan.resolvedInputs.map((input) => input.id),
     process.platform,
   );

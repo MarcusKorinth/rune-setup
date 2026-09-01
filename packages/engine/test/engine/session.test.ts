@@ -396,6 +396,54 @@ describe('planning and executing', () => {
     await expect(session.execute()).resolves.toMatchObject(expectedIdentity);
   });
 
+  it('inherits only the immutable environment snapshot from session opening', async () => {
+    const inheritedName = 'RUNE_SESSION_INJECTED_PARENT';
+    const inheritedValue = 'captured-at-open';
+    const hostOnlyName = 'RUNE_SESSION_HOST_ONLY_SENTINEL';
+    const inputControlName = 'RUNE_INPUT_INSTALLDATABASE';
+    const previousHostOnly = process.env[hostOnlyName];
+    const callerEnvironment: Record<string, string | undefined> = {
+      [inheritedName]: inheritedValue,
+      [inputControlName]: 'false',
+    };
+    let parentEnv: SpawnRequest['parentEnv'] | undefined;
+    process.env[hostOnlyName] = 'host-before-open';
+
+    try {
+      const session = await Session.open(fixture(BASE), {
+        environment: callerEnvironment,
+        runner: {
+          run: async (request) => {
+            parentEnv = request.parentEnv;
+            return { kind: 'exited', exitCode: 0 };
+          },
+        },
+      });
+
+      callerEnvironment[inheritedName] = 'caller-mutated-after-open';
+      callerEnvironment[inputControlName] = 'true';
+      callerEnvironment['CALLER_ONLY_AFTER_OPEN'] = 'late-caller-value';
+      process.env[hostOnlyName] = 'host-mutated-after-open';
+
+      const result = await session.execute();
+
+      expect(parentEnv).toEqual({ [inheritedName]: inheritedValue });
+      expect(Object.isFrozen(parentEnv)).toBe(true);
+      expect(parentEnv?.[inputControlName]).toBeUndefined();
+      expect(parentEnv?.[hostOnlyName]).toBeUndefined();
+      expect(parentEnv?.['CALLER_ONLY_AFTER_OPEN']).toBeUndefined();
+      expect(session.allInputs()[0]).toMatchObject({ value: false, source: 'environment' });
+      expect(JSON.stringify({ plan: session.plan(), result })).not.toContain(inheritedValue);
+      expect(JSON.stringify({ plan: session.plan(), result })).not.toContain(hostOnlyName);
+    } finally {
+      if (previousHostOnly === undefined) {
+        delete process.env[hostOnlyName];
+      } else {
+        process.env[hostOnlyName] = previousHostOnly;
+      }
+    }
+  });
+
   it('plans the effective log path after manifest anchoring and flag precedence', async () => {
     const path = fixture([...BASE, 'execution:', '  logFile: logs/manifest.log']);
     const manifestLog = await Session.open(path, { environment: {} });
