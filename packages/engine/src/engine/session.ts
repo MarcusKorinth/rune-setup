@@ -457,7 +457,10 @@ export class Session {
 /** Observer failures are isolated per sink and can never change execution or finalization. */
 function notifyObserver(observer: EngineObserver | undefined, event: RunEvent): void {
   try {
-    observer?.(event);
+    const returned = (observer as ((event: RunEvent) => unknown) | undefined)?.(event);
+    if (returned instanceof Promise) {
+      void returned.then(undefined, () => undefined);
+    }
   } catch {
     // A broken renderer or sink must never corrupt a run (§9.1).
   }
