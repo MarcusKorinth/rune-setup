@@ -496,7 +496,8 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   const outcome = failureOutcome(options.error, options.dryRun, secrets);
   if (
     session === undefined &&
-    (outcome.status === 'input_error' || outcome.status === 'resolution_error')
+    outcome.status !== 'config_error' &&
+    outcome.status !== 'internal_error'
   ) {
     throw new InternalError('a post-validation failure result requires opened-session context');
   }

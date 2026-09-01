@@ -6,7 +6,15 @@ import { describe, expect, it } from 'vitest';
 
 import { createFailureResult } from '../../src/engine/executor.js';
 import { hostPlatform } from '../../src/engine/context.js';
-import { ExecutionError, InternalError, ManifestError, ResolutionError } from '../../src/errors.js';
+import {
+  CancelledError,
+  ConditionError,
+  ExecutionError,
+  InputError,
+  InternalError,
+  ManifestError,
+  ResolutionError,
+} from '../../src/errors.js';
 import { Session } from '../../src/engine/session.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
 import { resultV1Schema } from '../../src/results/schema.js';
@@ -253,23 +261,60 @@ describe('createFailureResult', () => {
     ).toThrow(/pre-execution failure result cannot carry a completed plan/);
   });
 
-  it('uses honest empty identity before a session has opened', () => {
-    const result = createFailureResult({
+  it.each([
+    {
+      name: 'manifest',
       error: new ManifestError('RUNE-103', 'manifest invalid'),
-      manifestPath: 'broken.yaml',
-      dryRun: false,
-      platform: hostPlatform(),
-    });
-
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
-    expect(result).toMatchObject({
       status: 'config_error',
-      product: null,
-      manifest: { path: 'broken.yaml', sha256: null, schemaVersion: null },
-      inputs: [],
-      steps: [],
-    });
-    expect(Object.isFrozen(result.manifest)).toBe(true);
-    expect(result.product).toBeNull();
+      exitCode: 3,
+    },
+    {
+      name: 'internal',
+      error: new InternalError('failure before validation'),
+      status: 'internal_error',
+      exitCode: 70,
+    },
+  ])(
+    'uses honest empty identity for a context-free $name failure',
+    ({ error, status, exitCode }) => {
+      const result = createFailureResult({
+        error,
+        manifestPath: 'broken.yaml',
+        dryRun: false,
+        platform: hostPlatform(),
+      });
+
+      expect(() => resultV1Schema.parse(result)).not.toThrow();
+      expect(result).toMatchObject({
+        status,
+        exitCode,
+        product: null,
+        manifest: { path: 'broken.yaml', sha256: null, schemaVersion: null },
+        inputs: [],
+        steps: [],
+      });
+      expect(Object.isFrozen(result.manifest)).toBe(true);
+      expect(result.product).toBeNull();
+    },
+  );
+
+  it.each([
+    ['input error', new InputError('RUNE-201', 'input missing')],
+    ['resolution error', new ResolutionError('RUNE-301', 'value unresolved')],
+    ['condition error', new ConditionError('RUNE-311', 'condition invalid')],
+    ['cancellation', new CancelledError()],
+    ['RUNE-401 execution error', new ExecutionError('RUNE-401', 'step failed')],
+    ['RUNE-404 execution error', new ExecutionError('RUNE-404', 'cwd invalid')],
+    ['RUNE-405 execution error', new ExecutionError('RUNE-405', 'shell required')],
+    ['RUNE-406 execution error', new ExecutionError('RUNE-406', 'log unavailable')],
+  ])('refuses a context-free %s without validated identity', (_name, error) => {
+    expect(() =>
+      createFailureResult({
+        error,
+        manifestPath: 'installer.yaml',
+        dryRun: false,
+        platform: hostPlatform(),
+      }),
+    ).toThrow('a post-validation failure result requires opened-session context');
   });
 });
