@@ -164,6 +164,22 @@ describe('rune run', () => {
     expect(io.err.join('\n')).toContain('hello');
   });
 
+  it('uses the non-interactive fallback without the flag', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    const code = await run(['run', path, '--set', 'greeting=hello', '--result', '-'], io);
+
+    expect(code).toBe(0);
+    expect(io.out).toHaveLength(1);
+    expect(JSON.parse(io.out.join('\n'))).toMatchObject({
+      mode: 'non-interactive',
+      status: 'succeeded',
+      exitCode: 0,
+    });
+    expect(io.err.join('\n')).toContain('hello');
+  });
+
   it('collects repeated --set and --values options around the manifest in invocation order', async () => {
     const path = fixture([
       'schemaVersion: 1',

@@ -94,9 +94,10 @@ rune --version
 ```
 
 The current CLI implements `validate`, `schema`, and the non-interactive and dry-run forms
-of `run`. Until Milestone 2 adds prompting and the edit loop, a TTY invocation without
-`--non-interactive` follows the same non-interactive path. `--gui`, `gui install`, and
-`package` remain planned at their roadmap milestones.
+of `run`. Until Milestone 2 adds prompting and the edit loop, every current `rune run`
+invocation uses the non-interactive path regardless of TTY state or whether
+`--non-interactive` is supplied. `--gui`, `gui install`, and `package` remain planned at
+their roadmap milestones.
 
 Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only by `validate` and `--dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
