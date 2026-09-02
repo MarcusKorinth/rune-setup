@@ -318,7 +318,7 @@ export class Session {
     // Keep caller-owned arrays outside the engine authority. SecretString and scalar values
     // pass through unchanged; cloning a SecretString would either break it or expose it.
     this.#answers.set(id, Array.isArray(raw) ? [...raw] : raw);
-    const candidateSecrets = new SecretRegistry();
+    const candidateSecrets = new SecretRegistry().combinedWith(this.#secrets);
     let after: Resolution;
     let afterInputSnapshot: InputFacadeSnapshot;
     let changes: readonly InputStateChanged[];

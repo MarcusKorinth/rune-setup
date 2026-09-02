@@ -832,6 +832,65 @@ describe('answering inputs', () => {
     expect(session.pendingInputs()).toEqual([]);
   });
 
+  it('redacts a rejected secret edit with the active registry without publishing state', async () => {
+    const activeSecret = 'token';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      `    default: ${activeSecret}`,
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+      '      args: ["${token}", "${mirror}"]',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'interactive' });
+    session.setValue('token', activeSecret);
+    const inputs = session.allInputs();
+    const pending = session.pendingInputs();
+    const plan = session.plan();
+
+    let rejection: InputError | undefined;
+    try {
+      session.setValue('token', false);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      rejection = error as InputError;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection?.message).toContain('***');
+    expect(rejection?.message).not.toContain(activeSecret);
+    expect(JSON.stringify(rejection?.issues)).not.toContain(activeSecret);
+    expect(String(rejection?.location?.file)).not.toContain(activeSecret);
+    expect(String(rejection?.cause)).not.toContain(activeSecret);
+
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(session.plan()).toBe(plan);
+
+    const failure = executor.createFailureResult({
+      error: rejection!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+      plan,
+    });
+    expect(failure.error).toMatchObject({
+      code: 'RUNE-202',
+      message: expect.stringContaining('***'),
+    });
+    expect(JSON.stringify(failure.error)).not.toContain(activeSecret);
+    expect(failure.inputs.find((input) => input.id === 'mirror')?.value).toBe('***');
+    expect(failure.steps[0]?.command).toEqual(['node', '***', '***']);
+  });
+
   it('collects a seed rejection exposed by a valid controlling edit', async () => {
     const session = await Session.open(
       fixture([
