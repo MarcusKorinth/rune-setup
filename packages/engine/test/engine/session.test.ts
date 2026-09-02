@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1923,9 +1930,22 @@ describe('facade immutability', () => {
 describe('platform previews', () => {
   it('describes a foreign platform but refuses to execute it', async () => {
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
-    const session = await Session.open(fixture(BASE), { environment: {}, platform: foreign });
+    const manifestPath = fixture(BASE);
+    const logDirectory = join(manifestPath, '..', 'preview-logs');
+    const logFile = join(logDirectory, 'run.log');
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      platform: foreign,
+      logFile,
+    });
 
     expect(session.describe().crossPlatformPreview).toBe(true);
-    await expect(session.execute()).rejects.toThrow(/preview plan/);
+    await expect(session.execute()).rejects.toMatchObject({
+      code: 'RUNE-500',
+      name: InternalError.name,
+      message: expect.stringContaining('preview plan'),
+    });
+    expect(existsSync(logDirectory)).toBe(false);
+    expect(existsSync(logFile)).toBe(false);
   });
 });

@@ -371,6 +371,13 @@ export class Session {
     }
 
     const plan = this.#executionPlan();
+    if (plan.preview) {
+      throw this.#projectError(
+        new InternalError(
+          'a cross-platform preview plan can only be described, never executed (§6.1)',
+        ),
+      );
+    }
     const activeExecution = { cancel: cancel ?? new CancelToken() };
     this.#activeExecution = activeExecution;
     let log: Awaited<ReturnType<typeof createLogFileSink>> | undefined;
