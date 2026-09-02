@@ -83,12 +83,12 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways. The non-interactive command is available today;
-interactive and GUI commands are planned:
+The same manifest, three ways. Both current CLI forms run non-interactively;
+interactive prompting and the GUI command are planned:
 
 ```bash
-# Planned with Milestone 2:
-# rune run installer.yaml
+# Available today: the default non-interactive fallback
+rune run installer.yaml --values pipeline-values.yaml --result result.json
 ```
 
 ```bash
@@ -97,7 +97,7 @@ interactive and GUI commands are planned:
 ```
 
 ```bash
-# Available today:
+# Available today: explicit non-interactive mode
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 

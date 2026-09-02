@@ -1643,6 +1643,15 @@ describe('rune run', () => {
 });
 
 describe('help and misuse', () => {
+  it('describes run as non-interactive', async () => {
+    const help = capture();
+
+    expect(await run(['run', '--help'], help)).toBe(0);
+    expect(help.err).toEqual([]);
+    expect(help.out).toHaveLength(1);
+    expect(help.out[0]).toContain('run a manifest non-interactively');
+  });
+
   it('exits 0 for requested help and 2 for a bare invocation', async () => {
     const help = capture();
     const bare = capture();

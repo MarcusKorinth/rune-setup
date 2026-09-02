@@ -78,7 +78,7 @@ export async function run(
 
   program
     .command('run')
-    .description('run a manifest — guided or automated')
+    .description('run a manifest non-interactively')
     .argument('<manifest>', 'path to the manifest file')
     .option('--non-interactive', 'never prompt; missing required inputs fail')
     .option('--dry-run', 'render the plan and execute nothing')
