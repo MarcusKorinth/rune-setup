@@ -711,11 +711,11 @@ function failureSource(
     const descriptor = manifestDescriptorFor(session.manifest);
     return {
       product: {
-        name: secrets.mask(session.manifest.product.name),
-        version: secrets.mask(session.manifest.product.version),
+        name: session.manifest.product.name,
+        version: session.manifest.product.version,
       },
       manifest: {
-        path: secrets.mask(descriptor.path),
+        path: descriptor.path,
         sha256: descriptor.sha256,
         schemaVersion: descriptor.schemaVersion,
       },

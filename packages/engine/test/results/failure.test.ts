@@ -163,6 +163,104 @@ describe('createFailureResult', () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
+  it('keeps planless Session identity exact when it collides with secrets', async () => {
+    const productName = 'Identity Collision';
+    const productVersion = '9.8.7';
+    const errorCollision = 'required';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${productName}`,
+      `  version: "${productVersion}"`,
+      'inputs:',
+      '  productNameCollision:',
+      '    type: secret',
+      '  productVersionCollision:',
+      '    type: secret',
+      '  manifestPathCollision:',
+      '    type: secret',
+      '  errorCollision:',
+      '    type: secret',
+      '  missing:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      overrides: {
+        productNameCollision: productName,
+        productVersionCollision: productVersion,
+        manifestPathCollision: path,
+        errorCollision,
+      },
+    });
+    let planningError: InputError | undefined;
+
+    try {
+      session.plan();
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      planningError = error as InputError;
+    }
+
+    const result = createFailureResult({
+      error: planningError!,
+      manifestPath: path,
+      dryRun: false,
+      session,
+    });
+
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(result).toMatchObject({
+      status: 'input_error',
+      product: { name: productName, version: productVersion },
+      manifest: { path },
+      error: {
+        code: 'RUNE-201',
+        message: expect.not.stringContaining(errorCollision),
+        location: { file: '***' },
+      },
+    });
+    expect(result.error?.message).toContain('***');
+    expect(result.inputs).toEqual([
+      {
+        id: 'productNameCollision',
+        value: null,
+        source: 'set',
+        secret: true,
+        enabled: true,
+      },
+      {
+        id: 'productVersionCollision',
+        value: null,
+        source: 'set',
+        secret: true,
+        enabled: true,
+      },
+      {
+        id: 'manifestPathCollision',
+        value: null,
+        source: 'set',
+        secret: true,
+        enabled: true,
+      },
+      {
+        id: 'errorCollision',
+        value: null,
+        source: 'set',
+        secret: true,
+        enabled: true,
+      },
+    ]);
+    expect(JSON.stringify({ error: result.error, inputs: result.inputs })).not.toContain(
+      productName,
+    );
+    expect(JSON.stringify({ error: result.error, inputs: result.inputs })).not.toContain(
+      productVersion,
+    );
+    expect(JSON.stringify({ error: result.error, inputs: result.inputs })).not.toContain(path);
+  });
+
   it('omits unresolved secret sentinels from an input-error result', async () => {
     const path = fixture([
       'schemaVersion: 1',
