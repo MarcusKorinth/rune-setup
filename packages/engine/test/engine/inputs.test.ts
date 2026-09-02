@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
 import {
   parseValuesFile,
+  projectInputFacadeSnapshot,
   resolveInputs,
   resolveInputsWithRegistry,
   resolutionSnapshotFor,
@@ -1325,12 +1326,20 @@ describe('collected rejected values', () => {
         invalidValues: 'collect',
       });
       const state = resolution.byId.get('token');
+      const facade = projectInputFacadeSnapshot(resolution);
 
       expect(state).toMatchObject({
         value: undefined,
         source: undefined,
         rejection: { candidate: undefined, source: 'answer' },
       });
+      expect(facade.all[0]).toMatchObject({
+        secret: true,
+        value: undefined,
+        rejection: { candidate: undefined, source: 'answer' },
+      });
+      expect(facade.pending).toEqual([facade.all[0]]);
+      expect(facade.pending[0]).toBe(facade.all[0]);
       expect(rejectionFor(resolution, 'token').issue).toBe(resolution.problems[0]);
       expect(inspect(state)).not.toContain(sentinel);
       expect(JSON.stringify(state)).not.toContain(sentinel);

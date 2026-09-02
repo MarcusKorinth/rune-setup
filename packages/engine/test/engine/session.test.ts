@@ -180,6 +180,108 @@ describe('opening a session', () => {
     expect(Object.isFrozen(rejected.rejection?.issue.location)).toBe(true);
   });
 
+  it('projects secret answer state consistently across empty and disabled cases', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  requiredMissing:',
+        '    type: secret',
+        '  requiredEmpty:',
+        '    type: secret',
+        '  optionalMissing:',
+        '    type: secret',
+        '    required: false',
+        '  optionalEmpty:',
+        '    type: secret',
+        '    required: false',
+        '  disabledMissing:',
+        '    type: secret',
+        '    when: "${enabled}"',
+        '  disabledSupplied:',
+        '    type: secret',
+        '    when: "${enabled}"',
+        '  disabledEmpty:',
+        '    type: secret',
+        '    when: "${enabled}"',
+        'steps: []',
+      ]),
+      {
+        mode: 'gui',
+        environment: {},
+        overrides: {
+          requiredEmpty: '',
+          optionalEmpty: '',
+          disabledSupplied: 'supplied-secret',
+          disabledEmpty: '',
+        },
+      },
+    );
+
+    const all = session.allInputs();
+    const byId = new Map(all.map((state) => [state.id, state]));
+    expect(byId.get('requiredMissing')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      enabled: true,
+    });
+    expect(byId.get('requiredEmpty')).toMatchObject({
+      value: undefined,
+      source: 'set',
+      enabled: true,
+    });
+    expect(byId.get('optionalMissing')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      enabled: true,
+    });
+    expect(byId.get('optionalEmpty')).toMatchObject({
+      value: null,
+      source: 'set',
+      enabled: true,
+    });
+    expect(byId.get('disabledMissing')).toMatchObject({
+      value: undefined,
+      source: undefined,
+      enabled: false,
+      ignored: undefined,
+    });
+    expect(byId.get('disabledSupplied')).toMatchObject({
+      value: null,
+      source: undefined,
+      enabled: false,
+      ignored: 'set',
+    });
+    expect(byId.get('disabledEmpty')).toMatchObject({
+      value: null,
+      source: undefined,
+      enabled: false,
+      ignored: 'set',
+    });
+
+    const pending = session.pendingInputs();
+    expect(pending.map((state) => state.id)).toEqual(['requiredMissing', 'requiredEmpty']);
+    expect(pending).toEqual([byId.get('requiredMissing'), byId.get('requiredEmpty')]);
+    expect(pending.every((state) => byId.get(state.id) === state)).toBe(true);
+    expect(Object.isFrozen(all)).toBe(true);
+    expect(Object.isFrozen(pending)).toBe(true);
+    expect(pending.every(Object.isFrozen)).toBe(true);
+
+    expect(() => session.setValue('requiredMissing', false)).toThrow(InputError);
+    expect(session.allInputs()).toBe(all);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(byId.get('requiredMissing')).toMatchObject({
+      value: undefined,
+      rejection: undefined,
+    });
+  });
+
   it('publishes fresh remasked snapshots atomically and preserves historical views', async () => {
     const oldSecret = 'F062-old-secret';
     const newSecret = 'F062-new-secret';

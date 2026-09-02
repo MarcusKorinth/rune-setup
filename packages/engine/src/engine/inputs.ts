@@ -308,11 +308,12 @@ function projectInputStateForFacade(state: ResolvedInputState, secrets: SecretMa
     if (state.value !== undefined && !isSecretString(state.value)) {
       throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
     }
+    const unanswered = state.source === undefined && state.ignored === undefined;
     return Object.freeze({
       ...common,
       secret: true,
       spec: Object.freeze({ type: 'secret', required: state.spec.required }),
-      value: state.value === undefined ? undefined : null,
+      value: unanswered || state.rejection !== undefined || stillNeeded(state) ? undefined : null,
     });
   }
 

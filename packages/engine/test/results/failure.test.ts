@@ -163,6 +163,83 @@ describe('createFailureResult', () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
+  it('omits unresolved secret sentinels from an input-error result', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  requiredMissing:',
+      '    type: secret',
+      '  requiredEmpty:',
+      '    type: secret',
+      '  optionalMissing:',
+      '    type: secret',
+      '    required: false',
+      '  optionalEmpty:',
+      '    type: secret',
+      '    required: false',
+      '  disabledMissing:',
+      '    type: secret',
+      '    when: "${enabled}"',
+      '  disabledEmpty:',
+      '    type: secret',
+      '    when: "${enabled}"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      mode: 'gui',
+      environment: {},
+      overrides: {
+        requiredEmpty: '',
+        optionalEmpty: '',
+        disabledEmpty: '',
+      },
+    });
+    let planningError: InputError | undefined;
+
+    try {
+      session.plan();
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      planningError = error as InputError;
+    }
+
+    expect(planningError?.code).toBe('RUNE-201');
+    expect(planningError?.issues).toHaveLength(2);
+    expect(planningError?.issues.map((issue) => issue.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('requiredMissing'),
+        expect.stringContaining('requiredEmpty'),
+      ]),
+    );
+    const result = createFailureResult({
+      error: planningError!,
+      manifestPath: path,
+      dryRun: false,
+      session,
+    });
+
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(result).toMatchObject({ status: 'input_error', exitCode: 4, steps: [] });
+    expect(result.inputs).toEqual([
+      { id: 'enabled', value: false, source: 'default', secret: false, enabled: true },
+      { id: 'optionalEmpty', value: null, source: 'set', secret: true, enabled: true },
+      {
+        id: 'disabledEmpty',
+        value: null,
+        source: 'set',
+        secret: true,
+        enabled: false,
+        ignored: 'input disabled',
+      },
+    ]);
+  });
+
   it('gives hit, miss, and embedded external candidates the same generic error', async () => {
     const path = fixture([
       'schemaVersion: 1',
