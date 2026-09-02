@@ -532,14 +532,13 @@ export function describePlan(options: {
 
 /** Builds the machine-readable outcome for a run-owned failure outside normal execution. */
 export function createFailureResult(options: FailureResultOptions): RunResult {
+  const plan = options.plan;
   const explicitSession = options.session;
   const session = explicitSession ?? openFailureContexts.get(options.error);
   const sessionContext =
     explicitSession === undefined ? undefined : sessionFailureContexts.get(explicitSession);
   const sessionSecrets =
     explicitSession === undefined ? openFailureMaskers.get(options.error) : sessionContext?.secrets;
-  const executionContext =
-    options.plan === undefined ? undefined : executionContextFor(options.plan);
 
   if (explicitSession !== undefined && sessionSecrets === undefined) {
     throw new InternalError('a failure result requires an authentic opened Session');
@@ -547,20 +546,21 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   if (explicitSession === undefined && session !== undefined && sessionSecrets === undefined) {
     throw new InternalError('an open failure context requires its secret snapshot');
   }
-  if (options.plan !== undefined && session === undefined) {
+  if (plan !== undefined && session === undefined) {
     throw new InternalError('a failure result with a plan requires its opened session');
   }
-  if (options.plan !== undefined && sessionContext?.plan !== options.plan) {
+  if (plan !== undefined && sessionContext?.plan !== plan) {
     throw new InternalError('a failure result requires the current plan of its opened Session');
   }
   if (
-    options.plan !== undefined &&
+    plan !== undefined &&
     options.error instanceof ExecutionError &&
     options.error.code !== 'RUNE-406'
   ) {
     throw new InternalError('a pre-execution failure result cannot carry a completed plan');
   }
 
+  const executionContext = plan === undefined ? undefined : executionContextFor(plan);
   const secrets = executionContext?.secrets ?? sessionSecrets ?? IDENTITY_MASKER;
   const outcome = failureOutcome(options.error, options.dryRun, secrets);
   if (
@@ -571,17 +571,10 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
     throw new InternalError('a post-validation failure result requires opened-session context');
   }
 
-  const platform =
-    options.plan?.platform ?? session?.platform ?? options.platform ?? hostPlatform();
-  const preview = options.plan?.preview ?? session?.preview ?? platform !== hostPlatform();
-  const source = failureSource(
-    options.manifestPath,
-    options.plan,
-    executionContext,
-    session,
-    secrets,
-  );
-  const steps = failureSteps(options.plan, options.dryRun, secrets);
+  const platform = plan?.platform ?? session?.platform ?? options.platform ?? hostPlatform();
+  const preview = plan?.preview ?? session?.preview ?? platform !== hostPlatform();
+  const source = failureSource(options.manifestPath, plan, executionContext, session, secrets);
+  const steps = failureSteps(plan, options.dryRun, secrets);
   const now = new Date();
 
   return assembleFailureResult({
@@ -589,7 +582,7 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
     mode: session?.mode ?? options.mode ?? 'non-interactive',
     platform,
     preview,
-    locale: options.plan?.locale ?? session?.getStrings().locale ?? null,
+    locale: plan?.locale ?? session?.getStrings().locale ?? null,
     source,
     steps,
     outcome,

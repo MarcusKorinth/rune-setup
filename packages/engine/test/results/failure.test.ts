@@ -295,6 +295,120 @@ describe('createFailureResult', () => {
     ).toThrow('a failure result requires the current plan of its opened Session');
   });
 
+  it('reads a current plan getter once and keeps that plan consistent', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Current',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: current',
+      '    run:',
+      '      command: current-command',
+    ]);
+    const foreignPath = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Foreign',
+      '  version: "2.0.0"',
+      'steps:',
+      '  - id: foreign',
+      '    run:',
+      '      command: foreign-command',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+    const foreignSession = await Session.open(foreignPath, { environment: {} });
+    const currentPlan = session.plan();
+    const foreignPlan = foreignSession.plan();
+    let planReads = 0;
+
+    const result = createFailureResult({
+      error: new InternalError('failure'),
+      manifestPath: path,
+      dryRun: false,
+      session,
+      get plan() {
+        planReads += 1;
+        return planReads === 1 ? currentPlan : foreignPlan;
+      },
+    });
+
+    expect(planReads).toBe(1);
+    expect(result.product).toEqual({ name: 'Current', version: '1.0.0' });
+    expect(result.manifest.path).toBe(path);
+    expect(result.steps).toMatchObject([{ id: 'current', command: ['current-command'] }]);
+  });
+
+  it('rejects a getter that switches plans around the Session binding check', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Current',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const foreignPath = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Foreign',
+      '  version: "2.0.0"',
+      'steps:',
+      '  - id: foreign',
+      '    run:',
+      '      command: foreign-command',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+    const foreignSession = await Session.open(foreignPath, { environment: {} });
+    const currentPlan = session.plan();
+    const foreignPlan = foreignSession.plan();
+    let planReads = 0;
+
+    expect(() =>
+      createFailureResult({
+        error: new InternalError('failure'),
+        manifestPath: path,
+        dryRun: false,
+        session,
+        get plan() {
+          planReads += 1;
+          if (planReads <= 2 || planReads > 6) {
+            return foreignPlan;
+          }
+          return currentPlan;
+        },
+      }),
+    ).toThrow('a failure result requires the current plan of its opened Session');
+    expect(planReads).toBe(1);
+  });
+
+  it('rejects a changing plan getter before looking up its execution context', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Current',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+    session.plan();
+    let planReads = 0;
+    const unauthenticPlan = {} as ReturnType<Session['plan']>;
+
+    expect(() =>
+      createFailureResult({
+        error: new InternalError('failure'),
+        manifestPath: path,
+        dryRun: false,
+        session,
+        get plan() {
+          planReads += 1;
+          return unauthenticPlan;
+        },
+      }),
+    ).toThrow('a failure result requires the current plan of its opened Session');
+    expect(planReads).toBe(1);
+  });
+
   it('retains the current plan after a rejected Session edit', async () => {
     const path = fixture([
       'schemaVersion: 1',
