@@ -41,6 +41,9 @@ export async function runCommand(
   io: CliIo,
   control: CliControl = {},
 ): Promise<void> {
+  // Session.open anchors relative manifest paths to the invocation cwd. Preserve that
+  // identity for an early open failure, before any async work can change the cwd.
+  const absoluteManifestPath = resolve(manifestPath);
   // The engine resolves result paths when it writes them. Anchor relative destinations
   // before any async work or observer callbacks can change the process working directory.
   const resultOption = flags.result;
@@ -63,7 +66,7 @@ export async function runCommand(
     }
     platform = parsePlatform(flags.platform);
 
-    session = await Session.open(manifestPath, {
+    session = await Session.open(absoluteManifestPath, {
       mode: 'non-interactive',
       values: flags.values ?? [],
       overrides: parseOverrides(flags.set ?? []),
@@ -137,7 +140,7 @@ export async function runCommand(
         executionFailureResult ??
         createFailureResult({
           error: failure,
-          manifestPath,
+          manifestPath: absoluteManifestPath,
           dryRun: flags.dryRun === true,
           mode: 'non-interactive',
           ...(platform === undefined ? {} : { platform }),

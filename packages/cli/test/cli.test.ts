@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -940,6 +940,53 @@ describe('help and misuse', () => {
 });
 
 describe('result files for failed outcomes', () => {
+  it('anchors a relative manifest path in an early config-error result', async () => {
+    const invocationDirectory = mkdtempSync(join(tmpdir(), 'rune-cli-relative-manifest-'));
+    const laterDirectory = mkdtempSync(join(tmpdir(), 'rune-cli-relative-manifest-later-'));
+    const manifestArgument = 'installer.yaml';
+    const manifestPath = join(invocationDirectory, manifestArgument);
+    const resultPath = join(invocationDirectory, 'result.json');
+    const originalDirectory = process.cwd();
+    writeFileSync(manifestPath, 'schemaVersion: 1\nproduct:\n  name: X\n', 'utf8');
+
+    try {
+      process.chdir(invocationDirectory);
+      const expectedManifestPath = resolve(manifestArgument);
+      const out: string[] = [];
+      const err: string[] = [];
+      let changedDirectory = false;
+      const io: Capture = {
+        out,
+        err,
+        stdout: (line) => out.push(line),
+        stderr: (line) => {
+          err.push(line);
+          if (!changedDirectory) {
+            changedDirectory = true;
+            process.chdir(laterDirectory);
+          }
+        },
+      };
+
+      expect(
+        await run(['run', manifestArgument, '--non-interactive', '--result', resultPath], io),
+      ).toBe(3);
+
+      const result = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+      expect(changedDirectory).toBe(true);
+      expect((result['manifest'] as Record<string, unknown>)['path']).toBe(expectedManifestPath);
+
+      const location = (result['error'] as Record<string, unknown>)['location'];
+      if (location !== null) {
+        expect((location as Record<string, unknown>)['file']).toBe(expectedManifestPath);
+      }
+    } finally {
+      process.chdir(originalDirectory);
+      rmSync(invocationDirectory, { recursive: true, force: true });
+      rmSync(laterDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('writes a config_error result when the manifest is invalid', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const resultPath = join(path, '..', 'result.json');
