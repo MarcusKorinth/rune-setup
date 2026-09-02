@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, parse, resolve } from 'node:path';
 
+import { resultJsonSchema } from '@rune/engine';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { run, type CliIo } from '../src/cli.js';
 
@@ -79,10 +81,28 @@ describe('rune schema', () => {
     expect(io.err).toEqual([]);
   });
 
-  it('prints the result schema with --result', async () => {
-    const io = capture();
-    expect(await run(['schema', '--result'], io)).toBe(0);
-    expect(io.out.join('\n')).toContain('resultSchemaVersion');
+  it('emits a result schema that validates a successful CLI result', async () => {
+    const schemaIo = capture();
+    expect(await run(['schema', '--result'], schemaIo)).toBe(0);
+
+    const emittedSchema = JSON.parse(schemaIo.out.join('\n')) as Parameters<
+      typeof z.fromJSONSchema
+    >[0];
+    expect(emittedSchema).toEqual(resultJsonSchema());
+
+    const resultValidator = z.fromJSONSchema(emittedSchema);
+    const path = fixture(MANIFEST);
+    const resultIo = capture();
+    expect(
+      await run(
+        ['run', path, '--non-interactive', '--set', 'greeting=hello', '--result', '-'],
+        resultIo,
+      ),
+    ).toBe(0);
+
+    const result = JSON.parse(resultIo.out.join('\n')) as Record<string, unknown>;
+    expect(resultValidator.safeParse(result).success).toBe(true);
+    expect(resultValidator.safeParse({ ...result, resultSchemaVersion: 2 }).success).toBe(false);
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { PLATFORMS } from '../../src/engine/context.js';
 import { VALUE_SOURCES } from '../../src/engine/inputs.js';
@@ -383,6 +384,34 @@ function planFailure(dryRun: boolean, code: 'RUNE-401' | 'RUNE-404' | 'RUNE-405'
 }
 
 describe('resultJsonSchema', () => {
+  it('round-trips every public result form through the generated JSON Schema', () => {
+    const validator = z.fromJSONSchema(
+      resultJsonSchema() as Parameters<typeof z.fromJSONSchema>[0],
+    );
+    const resultForms = [
+      result(),
+      resultForStatus('planned'),
+      resultForStatus('failed'),
+      planFailure(false, 'RUNE-401'),
+      zeroStepResult({
+        status: 'failed',
+        exitCode: 1,
+        dryRun: false,
+        error: { code: 'RUNE-406', message: 'log failed', location: null },
+      }),
+      resultForStatus('config_error'),
+      resultForStatus('input_error'),
+      resultForStatus('resolution_error'),
+      resultForStatus('cancelled'),
+      resultForStatus('internal_error'),
+    ];
+
+    for (const resultForm of resultForms) {
+      const serialized = JSON.parse(serializeResult(resultForm)) as unknown;
+      expect(validator.safeParse(serialized).success).toBe(true);
+    }
+  });
+
   it('is the strict version-1 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
     const branches = schema['anyOf'] as readonly SchemaNode[];
