@@ -1006,6 +1006,44 @@ describe('rune run', () => {
     },
   );
 
+  it.runIf(process.platform === 'win32')(
+    'does not treat non-ASCII device names as local-drive aliases',
+    () => {
+      const aliases = [
+        [String.raw`\\.\K:\out`, String.raw`\\?\K:\out`],
+        [String.raw`\\.\ſ:\out`, String.raw`\\?\ſ:\out`],
+      ] as const;
+
+      for (const [devicePath, namespacedPath] of aliases) {
+        expect(samePath(devicePath, namespacedPath)).toBe(false);
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'keeps non-drive device namespace spellings distinct',
+    () => {
+      const aliases = [
+        ['pipe', String.raw`\\.\pipe\rune`, String.raw`\\?\pipe\rune`],
+        ['PhysicalDrive', String.raw`\\.\PhysicalDrive0`, String.raw`\\?\PhysicalDrive0`],
+        [
+          'GLOBALROOT',
+          String.raw`\\.\GLOBALROOT\Device\HarddiskVolume1`,
+          String.raw`\\?\GLOBALROOT\Device\HarddiskVolume1`,
+        ],
+        [
+          'Volume',
+          String.raw`\\.\Volume{12345678-1234-1234-1234-123456789abc}\out`,
+          String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\out`,
+        ],
+      ] as const;
+
+      for (const [name, devicePath, namespacedPath] of aliases) {
+        expect(samePath(devicePath, namespacedPath), name).toBe(false);
+      }
+    },
+  );
+
   it('allows a dry-run result to use the configured log path', async () => {
     const path = fixture([...MANIFEST, 'execution:', '  logFile: planned.json']);
     const destination = join(path, '..', 'planned.json');

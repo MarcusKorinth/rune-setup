@@ -175,7 +175,7 @@ export function samePath(left: string, right: string): boolean {
 
 function windowsPathKey(path: string): string {
   return toNamespacedPath(normalize(path))
-    .replace(/^\\\\\.\\([a-z]:\\)/iu, String.raw`\\?\$1`)
+    .replace(/^\\\\\.\\([A-Za-z]:\\)/u, String.raw`\\?\$1`)
     .toLowerCase();
 }
 
