@@ -1,7 +1,7 @@
 /**
  * `rune run` (docs/architecture.md §4.1, §9.3, §10).
  *
- * This PR ships the non-interactive driver — the parity anchor — and `--dry-run`. The
+ * `rune run` uses the non-interactive driver — the parity anchor — and supports `--dry-run`. The
  * interactive prompter arrives with the next milestone slice; until then every `rune run`
  * invocation uses the non-interactive path regardless of TTY state or flag presence.
  */
