@@ -24,7 +24,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { createLogFileSink } from '../../src/logs/logFile.js';
-import { Session } from '../../src/engine/session.js';
+import { createSessionOptionsForTesting, Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { resultV1Schema } from '../../src/results/schema.js';
 
@@ -118,16 +118,18 @@ describe('log-file sink failures', () => {
           callback(new Error('close failed'));
         },
       });
-    const session = await Session.open(manifestPath, {
-      environment: {},
-      logFile: logPath,
-      runner: {
-        run: async (request) => {
-          request.onOutput('stdout', 'installed');
-          return { kind: 'exited', exitCode: 0 };
+    const session = await Session.open(
+      manifestPath,
+      createSessionOptionsForTesting(
+        { environment: {}, logFile: logPath },
+        {
+          run: async (request) => {
+            request.onOutput('stdout', 'installed');
+            return { kind: 'exited', exitCode: 0 };
+          },
         },
-      },
-    });
+      ),
+    );
     const events: RunEvent[] = [];
 
     await expect(session.execute((event) => events.push(event))).rejects.toMatchObject({

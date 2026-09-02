@@ -321,7 +321,14 @@ RuneError
 
 ## 8) Runner layer
 
-Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal `Runner` interface (`run(SpawnRequest): Promise<SpawnOutcome>`). No per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv spawn, and interpreter-selection magic would reintroduce implicit command interpretation against the spec's own security rule.
+Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal engine-internal
+`Runner` interface (`run(SpawnRequest): Promise<SpawnOutcome>`). The interface and its
+injection point are implementation/test seams inside the engine, not part of the package-root
+API or `SessionOptions`. No public trusted-runner or secret-reveal capability ships in MVP;
+that contract is decided only when the first real alternative runner is designed. No
+per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv
+spawn, and interpreter-selection magic would reintroduce implicit command interpretation
+against the spec's own security rule.
 
 Process contract:
 
@@ -364,7 +371,6 @@ export class Session {
     logFile?: string;                      // --log-file; overrides execution.logFile (§10)
     environment?: Readonly<Record<string, string | undefined>>; // defaults to process.env
     systemLocale?: string;                 // host locale; defaults to Intl (injectable for hosts/tests)
-    runner?: Runner;                       // the §13 seam; the default is the real spawn runner
   }): Promise<Session>;
   readonly manifest: Manifest;
   readonly mode: 'gui' | 'interactive' | 'non-interactive';
@@ -618,7 +624,7 @@ Each package additionally has a `test/` directory of vitest unit tests (collecte
 
 ## 13) Extension points
 
-**Now (MVP):** plain name→object registries — `inputs/registry.ts` for the seven `InputTypeHandler`s, which own empty/absence behavior, text/native coercion and validation, rendering, and condition comparison (including `pattern` and option membership — the engine-side authority), with mirrored presentation registries per frontend (`cli/prompt` prompters; the shell's field renderers keyed by input-type name in `gui-shell/src/renderer/`), and the `Runner` interface with the single spawn runner. Duplicate registration is an error. Adding an input type = register an `InputTypeHandler`, a prompter, and a renderer field component; frontends fail fast on types they cannot render. The zod schema validates *shape*; the registry owns type behavior, so a later plugin system is additive, not a core refactor.
+**Now (MVP):** plain name→object registries — `inputs/registry.ts` for the seven `InputTypeHandler`s, which own empty/absence behavior, text/native coercion and validation, rendering, and condition comparison (including `pattern` and option membership — the engine-side authority), with mirrored presentation registries per frontend (`cli/prompt` prompters; the shell's field renderers keyed by input-type name in `gui-shell/src/renderer/`). Duplicate registration is an error. Adding an input type = register an `InputTypeHandler`, a prompter, and a renderer field component; frontends fail fast on types they cannot render. The zod schema validates *shape*; the registry owns type behavior, so a later plugin system is additive, not a core refactor. The MVP runner has only the engine-internal implementation/test seam described in §8; `Session.open` always selects the built-in spawn runner in production.
 
 **Theming seam:** the CSS custom-property contract of the default theme plus `gui.theme` (§9.4). New looks are CSS, not code; RUNE guarantees the property names.
 
@@ -632,7 +638,9 @@ Each package additionally has a `test/` directory of vitest unit tests (collecte
 
 - *Elevation, retries, rollback, step dependencies*: new `Step`/`execution` keys under a `schemaVersion` bump; v1 rejects them today with a "reserved" error, so adoption can never silently reinterpret v1 manifests. New versions land as `manifest/vN/` modules with pure object → object migration functions; the engine always consumes the newest internal model.
 - *Step outputs* (`${steps.*}`) and engine variables (`${rune.*}`): namespaces syntactically reserved and rejected in v1. This feature will re-open the static-plan invariant (§6.1) and require a re-planning or two-phase design — the plan object and result schema are versioned now precisely so consumers survive that change.
-- *New runners* (e.g. elevated, remote): additional `Runner` implementations behind the existing interface.
+- *New runners* (e.g. elevated, remote): the first real alternative reopens the internal
+  interface and defines an explicit trusted-runner and secret-materialization contract before
+  any runner injection becomes public. The MVP deliberately freezes no such backend API.
 - *Other frontends*: in-process frontends are further clients of the `Session` facade (§9.1) — exactly what the CLI and the shell's main process are today. Out-of-process frontends (third-party UIs in other languages) would be served by a future stdio JSON-RPC server that projects the same facade and event stream 1:1 — zero code now; the facade being frozen as the frontend contract is the seam.
 - *JSONL event log, macOS, custom pages*: new sink off the existing event stream (with a version field); a new platform key; a new page kind in the shell driven by new schema keys — all deferred wholesale.
 

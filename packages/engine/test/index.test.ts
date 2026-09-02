@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
 import { PlatformError } from '../src/index.js';
-import type { ChromeKey, ResultError, RunMode, StringTable } from '../src/index.js';
+import type { ChromeKey, ResultError, RunMode, SessionOptions, StringTable } from '../src/index.js';
 
 const INTERNAL_RUNTIME_EXPORTS = [
   'EXIT_CODE_BY_STATUS',
@@ -25,6 +25,8 @@ const INTERNAL_RUNTIME_EXPORTS = [
 
 type StringTableIsExported = StringTable extends object ? true : false;
 const stringTableTypeIsExported: StringTableIsExported = true;
+type SessionOptionsExcludesRunner = 'runner' extends keyof SessionOptions ? false : true;
+const sessionOptionsExcludesRunner: SessionOptionsExcludesRunner = true;
 type ChromeParameter = Parameters<StringTable['chrome']>[0];
 type ChromeParameterIsPublicKey = [ChromeParameter, ChromeKey] extends [ChromeKey, ChromeParameter]
   ? true
@@ -87,6 +89,16 @@ function assertNoLowLevelRootTypes(_types: ForbiddenRootTypes): void {}
 
 void assertNoLowLevelRootTypes;
 
+const compileTimeSessionRunnerContract = (manifestPath: string): void => {
+  // @ts-expect-error runner injection is not part of public SessionOptions.
+  const options: SessionOptions = { runner: undefined };
+  // @ts-expect-error Session.open does not accept a public runner dependency.
+  void engine.Session.open(manifestPath, { runner: { run: async () => undefined } });
+  void options;
+};
+
+void compileTimeSessionRunnerContract;
+
 const FORBIDDEN_RUNTIME_EXPORTS = [
   'buildPlan',
   'describePlan',
@@ -96,6 +108,7 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'MAX_OUTPUT_LINE_BYTES',
   'OVERSIZED_OUTPUT_LINE_PLACEHOLDER',
   'spawnRunnerTestSeam',
+  'createSessionOptionsForTesting',
   'isLegalTransition',
   'isTerminal',
   'STEP_STATES',
@@ -159,6 +172,7 @@ describe('@rune/engine public API', () => {
   it('exports the Session facade and engine-owned failure-result construction', () => {
     expect(engine.Session).toBeTypeOf('function');
     expect(engine.createFailureResult).toBeTypeOf('function');
+    expect(sessionOptionsExcludesRunner).toBe(true);
   });
 
   it.each(FORBIDDEN_RUNTIME_EXPORTS)('does not expose low-level runtime export %s', (name) => {

@@ -81,8 +81,21 @@ export interface SessionOptions {
   readonly environment?: Readonly<Record<string, string | undefined>> | undefined;
   /** What the operating system reports; defaults to `Intl`. Injected so hosts and tests own it. */
   readonly systemLocale?: string | undefined;
-  /** The runner steps spawn through; the default is the real one. The §13 seam and test seam. */
-  readonly runner?: Runner | undefined;
+}
+
+const TEST_RUNNERS = new WeakMap<SessionOptions, Runner>();
+
+/**
+ * Engine-internal test seam for binding a runner to one options object. Package consumers cannot
+ * reach this through the root export, and SessionOptions remains the complete frontend contract.
+ */
+export function createSessionOptionsForTesting(
+  options: SessionOptions,
+  runner: Runner,
+): SessionOptions {
+  const bound = Object.freeze({ ...options });
+  TEST_RUNNERS.set(bound, runner);
+  return bound;
 }
 
 interface ActiveExecution {
@@ -146,6 +159,7 @@ export class Session {
 
   /** Opens a session: load, validate, resolve layers 1–4 — stages 1–3 of the pipeline (§7). */
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
+    const runner = TEST_RUNNERS.get(options);
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
     const mode = options.mode ?? 'non-interactive';
@@ -207,7 +221,7 @@ export class Session {
         // they can render and replace them before planning (§5).
         resolution,
         logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
-        runner: options.runner,
+        runner,
       });
     } catch (error) {
       const projected =

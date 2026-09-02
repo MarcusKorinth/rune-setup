@@ -10,12 +10,24 @@ import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
 import { ExecutionError, InputError, InternalError, ManifestError } from '../../src/errors.js';
-import { Session, type SessionOptions } from '../../src/engine/session.js';
+import {
+  createSessionOptionsForTesting,
+  Session,
+  type SessionOptions,
+} from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
+
+function openSessionWithRunner(
+  manifestPath: string,
+  options: SessionOptions,
+  runner: Runner,
+): Promise<Session> {
+  return Session.open(manifestPath, createSessionOptionsForTesting(options, runner));
+}
 
 function fixture(lines: readonly string[], extra: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-session-'));
@@ -571,7 +583,7 @@ describe('planning and executing', () => {
     );
     writeFileSync(path, bytes);
     const expectedSha256 = createHash('sha256').update(bytes).digest('hex');
-    const session = await Session.open(path, { environment: {}, runner: okRunner });
+    const session = await openSessionWithRunner(path, { environment: {} }, okRunner);
     const plan = session.plan();
 
     const expectedIdentity = {
@@ -602,15 +614,16 @@ describe('planning and executing', () => {
     process.env[hostOnlyName] = 'host-before-open';
 
     try {
-      const session = await Session.open(fixture(BASE), {
-        environment: callerEnvironment,
-        runner: {
+      const session = await openSessionWithRunner(
+        fixture(BASE),
+        { environment: callerEnvironment },
+        {
           run: async (request) => {
             parentEnv = request.parentEnv;
             return { kind: 'exited', exitCode: 0 };
           },
         },
-      });
+      );
 
       callerEnvironment[inheritedName] = 'caller-mutated-after-open';
       callerEnvironment[inputControlName] = 'true';
@@ -649,11 +662,11 @@ describe('planning and executing', () => {
   });
 
   it('preserves an explicit frontend mode in dry-run and live results', async () => {
-    const session = await Session.open(fixture(BASE), {
-      mode: 'gui',
-      environment: {},
-      runner: okRunner,
-    });
+    const session = await openSessionWithRunner(
+      fixture(BASE),
+      { mode: 'gui', environment: {} },
+      okRunner,
+    );
 
     expect(session.describe().mode).toBe('gui');
     await expect(session.execute()).resolves.toMatchObject({ mode: 'gui' });
@@ -714,11 +727,7 @@ describe('planning and executing', () => {
   it('executes through the facade and writes the log file', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'logs', 'run.log');
-    const session = await Session.open(path, {
-      environment: {},
-      logFile,
-      runner: okRunner,
-    });
+    const session = await openSessionWithRunner(path, { environment: {}, logFile }, okRunner);
     const events: RunEvent[] = [];
 
     const result = await session.execute((event) => events.push(event));
@@ -736,10 +745,7 @@ describe('planning and executing', () => {
   });
 
   it('contains rejected Promise observers without awaiting them or changing the event bracket', async () => {
-    const session = await Session.open(fixture(BASE), {
-      environment: {},
-      runner: okRunner,
-    });
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
     let rejectObserver!: (reason?: unknown) => void;
     const returned = new Promise<never>((_resolve, reject) => {
       rejectObserver = reject;
@@ -781,11 +787,7 @@ describe('planning and executing', () => {
   it('contains a rejected terminal observer Promise after log finalization without awaiting it', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'logs', 'run.log');
-    const session = await Session.open(path, {
-      environment: {},
-      logFile,
-      runner: okRunner,
-    });
+    const session = await openSessionWithRunner(path, { environment: {}, logFile }, okRunner);
     let rejectObserver!: (reason?: unknown) => void;
     const returned = new Promise<never>((_resolve, reject) => {
       rejectObserver = reject;
@@ -833,11 +835,11 @@ describe('planning and executing', () => {
   it('publishes a runner contract failure only after finalization, then rejects', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'logs', 'run.log');
-    const session = await Session.open(path, {
-      environment: {},
-      logFile,
-      runner: { run: async () => ({ kind: 'exited', exitCode: Number.NaN }) },
-    });
+    const session = await openSessionWithRunner(
+      path,
+      { environment: {}, logFile },
+      { run: async () => ({ kind: 'exited', exitCode: Number.NaN }) },
+    );
     const events: RunEvent[] = [];
     let terminalSawFinalizedLog = false;
 
@@ -903,11 +905,11 @@ describe('planning and executing', () => {
         return { kind: 'exited', exitCode: 0 };
       },
     };
-    const session = await Session.open(path, {
-      environment: {},
-      overrides: { token: marker, mirror },
+    const session = await openSessionWithRunner(
+      path,
+      { environment: {}, overrides: { token: marker, mirror } },
       runner,
-    });
+    );
 
     const safePlan = session.plan();
     const planned = session.describe();
@@ -933,7 +935,7 @@ describe('planning and executing', () => {
     const logFile = join(path, '..', 'blocked.log');
     mkdirSync(logFile);
     const run = vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }));
-    const session = await Session.open(path, { environment: {}, logFile, runner: { run } });
+    const session = await openSessionWithRunner(path, { environment: {}, logFile }, { run });
 
     await expect(session.execute()).rejects.toMatchObject({
       code: 'RUNE-406',
@@ -966,10 +968,7 @@ describe('planning and executing', () => {
         request.cancel.onCancel(() => resolve({ kind: 'cancelled' }));
       });
     });
-    const session = await Session.open(fixture(BASE), {
-      environment: {},
-      runner: { run },
-    });
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, { run });
 
     const active = session.execute(undefined, cancel);
     await started;
@@ -1000,7 +999,7 @@ describe('planning and executing', () => {
       releaseRunner = () => resolve({ kind: 'exited', exitCode: 0 });
     });
     const requests: SpawnRequest[] = [];
-    const session = await Session.open(
+    const session = await openSessionWithRunner(
       fixture([
         'schemaVersion: 1',
         'product:',
@@ -1016,14 +1015,12 @@ describe('planning and executing', () => {
         '      command: node',
         '      args: ["${target}"]',
       ]),
+      { environment: {} },
       {
-        environment: {},
-        runner: {
-          run: async (request) => {
-            requests.push(request);
-            runnerStarted();
-            return await runnerFinished;
-          },
+        run: async (request) => {
+          requests.push(request);
+          runnerStarted();
+          return await runnerFinished;
         },
       },
     );
