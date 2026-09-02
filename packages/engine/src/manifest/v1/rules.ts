@@ -11,6 +11,7 @@
  */
 
 import { statSync, type Stats } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 import {
@@ -53,14 +54,27 @@ export interface SemanticContext {
 
 /** Collects every semantic problem of a manifest that already passed the schema. */
 export function checkSemantics(manifest: ManifestV1, ctx: SemanticContext): RuneIssue[] {
+  const issues = checkInMemorySemantics(manifest, ctx);
+  checkGuiAssets(manifest, ctx, issues);
+  return orderIssues(issues);
+}
+
+/** Session-only semantic pass whose optional GUI asset checks use asynchronous filesystem I/O. */
+export async function checkSemanticsAsync(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+): Promise<RuneIssue[]> {
+  const issues = checkInMemorySemantics(manifest, ctx);
+  await checkGuiAssetsAsync(manifest, ctx, issues);
+  return orderIssues(issues);
+}
+
+function checkInMemorySemantics(manifest: ManifestV1, ctx: SemanticContext): RuneIssue[] {
   const issues: RuneIssue[] = [];
   checkInputs(manifest, ctx, issues);
   checkSteps(manifest, ctx, issues);
   checkExpressions(manifest, ctx, issues);
-  checkGuiAssets(manifest, ctx, issues);
-  // The rules run in the order they are written; the author reads the document top to bottom,
-  // and the first problem's position is what the error as a whole points at.
-  return orderIssues(issues);
+  return issues;
 }
 
 function checkInputs(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
@@ -212,55 +226,117 @@ function checkSteps(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssu
 }
 
 function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
+  for (const asset of guiAssets(manifest, ctx, issues)) {
+    // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
+    // files, and a path that happens to be a directory would otherwise pass validation and
+    // fail only when the shell tries to load it.
+    let stats: Stats | undefined;
+    try {
+      stats = statSync(asset.absolute, { throwIfNoEntry: false });
+    } catch (cause) {
+      // `throwIfNoEntry` covers a missing entry and nothing else: a path with a NUL byte, a
+      // component that is not a directory, a directory RUNE may not read all still throw. A
+      // path an author wrote is their problem to fix, never an internal error (exit 70).
+      reportGuiAssetFailure(asset, cause, ctx, issues);
+      continue;
+    }
+    reportGuiAssetStats(asset, stats, ctx, issues);
+  }
+}
+
+async function checkGuiAssetsAsync(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): Promise<void> {
+  for (const asset of guiAssets(manifest, ctx, issues)) {
+    let stats: Stats | undefined;
+    try {
+      stats = await stat(asset.absolute);
+    } catch (cause) {
+      if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+        stats = undefined;
+      } else {
+        reportGuiAssetFailure(asset, cause, ctx, issues);
+        continue;
+      }
+    }
+    reportGuiAssetStats(asset, stats, ctx, issues);
+  }
+}
+
+interface GuiAsset {
+  readonly value: string;
+  readonly path: readonly PathSegment[];
+  readonly absolute: string;
+}
+
+function guiAssets(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): readonly GuiAsset[] {
   if (!ctx.checkAssetFiles || manifest.gui === undefined) {
-    return;
+    return [];
   }
 
+  const assets: GuiAsset[] = [];
   for (const key of ['logo', 'banner', 'theme'] as const) {
     const value = manifest.gui[key];
     if (value === undefined) {
       continue;
     }
     const path: PathSegment[] = ['gui', key];
-
     if (value.trim() === '') {
       issues.push(issue(`${formatPath(path)} is empty`, path, ctx));
       continue;
     }
+    assets.push({
+      value,
+      path,
+      absolute: isAbsolute(value) ? value : resolve(ctx.manifestDir, value),
+    });
+  }
+  return assets;
+}
 
-    const absolute = isAbsolute(value) ? value : resolve(ctx.manifestDir, value);
-    // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
-    // files, and a path that happens to be a directory would otherwise pass validation and
-    // fail only when the shell tries to load it.
-    let stats: Stats | undefined;
-    try {
-      stats = statSync(absolute, { throwIfNoEntry: false });
-    } catch (cause) {
-      // `throwIfNoEntry` covers a missing entry and nothing else: a path with a NUL byte, a
-      // component that is not a directory, a directory RUNE may not read all still throw. A
-      // path an author wrote is their problem to fix, never an internal error (exit 70).
-      issues.push(
-        issue(
-          `${formatPath(path)} points at "${value}", which cannot be read: ${messageOf(cause)}`,
-          path,
-          ctx,
-        ),
-      );
-      continue;
-    }
-    if (stats === undefined) {
-      issues.push(
-        issue(
-          `${formatPath(path)} points at "${value}", which does not exist (resolved against the manifest's directory)`,
-          path,
-          ctx,
-        ),
-      );
-    } else if (!stats.isFile()) {
-      issues.push(
-        issue(`${formatPath(path)} points at "${value}", which is not a file`, path, ctx),
-      );
-    }
+function reportGuiAssetFailure(
+  asset: GuiAsset,
+  cause: unknown,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): void {
+  issues.push(
+    issue(
+      `${formatPath(asset.path)} points at "${asset.value}", which cannot be read: ${messageOf(cause)}`,
+      asset.path,
+      ctx,
+    ),
+  );
+}
+
+function reportGuiAssetStats(
+  asset: GuiAsset,
+  stats: Stats | undefined,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): void {
+  if (stats === undefined) {
+    issues.push(
+      issue(
+        `${formatPath(asset.path)} points at "${asset.value}", which does not exist (resolved against the manifest's directory)`,
+        asset.path,
+        ctx,
+      ),
+    );
+  } else if (!stats.isFile()) {
+    issues.push(
+      issue(
+        `${formatPath(asset.path)} points at "${asset.value}", which is not a file`,
+        asset.path,
+        ctx,
+      ),
+    );
   }
 }
 

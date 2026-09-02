@@ -10,17 +10,23 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'formatChrome',
   'discoverOverlays',
   'discoverSelectedOverlay',
+  'discoverSelectedOverlayAsync',
   'LOCALES_DIRECTORY',
   'matchOverlay',
   'normalizeLocaleTag',
   'selectLocale',
   'loadOverlay',
+  'loadOverlayAsync',
   'loadOverlayText',
   'localizableKeys',
   'overlayManifestFor',
   'resolveStrings',
   'stringTableContextFor',
   'createLogFileSink',
+  'checkSemanticsAsync',
+  'loadYamlFileAsync',
+  'parseManifestAsync',
+  'parseValuesFileAsync',
 ] as const;
 
 type StringTableIsExported = StringTable extends object ? true : false;

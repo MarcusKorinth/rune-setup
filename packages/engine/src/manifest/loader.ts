@@ -6,6 +6,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
 import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
@@ -121,6 +122,34 @@ export function loadYamlFile(file: string, path: string = file): LoadedDocument 
       );
     }
     bytes = readFileSync(path);
+  } catch (cause) {
+    if (cause instanceof ManifestError) {
+      throw cause;
+    }
+    throw new ManifestError('RUNE-101', `${file} cannot be read: ${messageOf(cause)}`, { cause });
+  }
+
+  return parseYamlText(decodeUtf8(bytes, file), file, sha256(bytes));
+}
+
+/** Asynchronously reads and parses a YAML file with the same hardening as {@link loadYamlFile}. */
+export async function loadYamlFileAsync(
+  file: string,
+  path: string = file,
+): Promise<LoadedDocument> {
+  let bytes: Buffer;
+  try {
+    const stats = await stat(path);
+    if (!stats.isFile()) {
+      throw new ManifestError('RUNE-101', `${file} is not a file`);
+    }
+    if (stats.size > MAX_DOCUMENT_BYTES) {
+      throw new ManifestError(
+        'RUNE-101',
+        `${file} is larger than the ${Math.round(MAX_DOCUMENT_BYTES / 1024 / 1024)} MiB limit`,
+      );
+    }
+    bytes = await readFile(path);
   } catch (cause) {
     if (cause instanceof ManifestError) {
       throw cause;

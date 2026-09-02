@@ -27,7 +27,7 @@ import { escapeDiagnosticText, formatDiagnostic, quotedDiagnostic } from '../dia
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
 import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
-import { loadYamlFile } from '../manifest/loader.js';
+import { loadYamlFile, loadYamlFileAsync, type LoadedDocument } from '../manifest/loader.js';
 import { startOfFile, type Location, type SourceMap } from '../manifest/source.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import type { InputSpec, ManifestV1 } from '../manifest/v1/schema.js';
@@ -1091,7 +1091,7 @@ function saturatingProduct(left: number, right: number): number {
  * else is refused here, where the file and the line are still known.
  */
 export function parseValuesFile(path: string, file: string = path): ValuesDocument {
-  let document: ReturnType<typeof loadYamlFile>;
+  let document: LoadedDocument;
   try {
     document = loadYamlFile(file, path);
   } catch (cause) {
@@ -1104,6 +1104,31 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     }
     throw cause;
   }
+  return valuesFromDocument(document, file);
+}
+
+/** Session-only asynchronous values-file loader; shape/error handling stays shared. */
+export async function parseValuesFileAsync(
+  path: string,
+  file: string = path,
+): Promise<ValuesDocument> {
+  let document: LoadedDocument;
+  try {
+    document = await loadYamlFileAsync(file, path);
+  } catch (cause) {
+    if (cause instanceof ManifestError) {
+      return {
+        file,
+        values: new Map(),
+        problems: valuesFileLoadProblems(cause, file),
+      };
+    }
+    throw cause;
+  }
+  return valuesFromDocument(document, file);
+}
+
+function valuesFromDocument(document: LoadedDocument, file: string): ValuesDocument {
   const values = new Map<string, unknown>();
   const issues: DeferredValuesProblem[] = [];
 

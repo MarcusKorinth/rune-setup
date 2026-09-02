@@ -5,7 +5,8 @@
  * writing so fixed prefixes and field boundaries cannot create a new clear-text match.
  */
 
-import { createWriteStream, fstat, mkdirSync, type Stats, type WriteStream } from 'node:fs';
+import { createWriteStream, fstat, type Stats, type WriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { finished } from 'node:stream/promises';
 
@@ -25,7 +26,7 @@ export async function createLogFileSink(
   mask: (text: string) => string = (text) => text,
 ): Promise<LogFileSink> {
   try {
-    mkdirSync(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true });
   } catch (cause) {
     throw logError('prepare the directory for', path, cause);
   }

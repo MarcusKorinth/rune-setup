@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { formatIssues, ManifestError } from '../../src/errors.js';
-import { loadYamlFile, loadYamlText, MAX_DOCUMENT_BYTES } from '../../src/manifest/loader.js';
+import {
+  loadYamlFile,
+  loadYamlFileAsync,
+  loadYamlText,
+  MAX_DOCUMENT_BYTES,
+} from '../../src/manifest/loader.js';
 
 function tempFile(name: string, contents: Buffer | string): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-loader-'));
@@ -251,6 +256,65 @@ describe('source map', () => {
 });
 
 describe('loadYamlFile', () => {
+  it('keeps asynchronous decoding, parsing, hashing, and source locations identical', async () => {
+    const path = tempFile('async.yaml', Buffer.from('\uFEFFa:\r\n  b: 1\r\n', 'utf8'));
+
+    const synchronous = loadYamlFile('shown.yaml', path);
+    const asynchronous = await loadYamlFileAsync('shown.yaml', path);
+
+    expect(asynchronous.value).toEqual(synchronous.value);
+    expect(asynchronous.sha256).toBe(synchronous.sha256);
+    expect(asynchronous.isEmpty).toBe(synchronous.isEmpty);
+    expect(asynchronous.sourceMap.location(['a', 'b'])).toEqual(
+      synchronous.sourceMap.location(['a', 'b']),
+    );
+  });
+
+  it.each([
+    {
+      name: 'missing',
+      path: () => join(mkdtempSync(join(tmpdir(), 'rune-loader-')), 'missing.yaml'),
+    },
+    {
+      name: 'not a file',
+      path: () => mkdtempSync(join(tmpdir(), 'rune-loader-')),
+    },
+    {
+      name: 'too large',
+      path: () => tempFile('huge-async.yaml', Buffer.alloc(MAX_DOCUMENT_BYTES + 1, 0x20)),
+    },
+    {
+      name: 'invalid UTF-8',
+      path: () => tempFile('latin1-async.yaml', Buffer.from([0x61, 0x3a, 0x20, 0xff, 0x0a])),
+    },
+  ])('matches synchronous error semantics for $name input', async ({ path: makePath }) => {
+    const path = makePath();
+    let synchronous: ManifestError | undefined;
+    try {
+      loadYamlFile('shown.yaml', path);
+    } catch (error) {
+      synchronous = error as ManifestError;
+    }
+
+    let asynchronous: ManifestError | undefined;
+    try {
+      await loadYamlFileAsync('shown.yaml', path);
+    } catch (error) {
+      asynchronous = error as ManifestError;
+    }
+
+    expect(asynchronous).toBeInstanceOf(ManifestError);
+    expect({
+      code: asynchronous?.code,
+      message: asynchronous?.message,
+      issues: asynchronous?.issues,
+    }).toEqual({
+      code: synchronous?.code,
+      message: synchronous?.message,
+      issues: synchronous?.issues,
+    });
+  });
+
   it('reads a file from disk', () => {
     const path = tempFile('installer.yaml', 'a: 1\n');
 

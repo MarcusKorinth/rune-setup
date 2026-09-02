@@ -10,15 +10,20 @@ import { dirname, resolve } from 'node:path';
 
 import { z } from 'zod';
 
-import { ManifestError } from '../errors.js';
+import { ManifestError, type RuneIssue } from '../errors.js';
 import { discoverOverlays, matchOverlay, selectLocale } from '../i18n/locale.js';
 import { loadOverlay } from '../i18n/overlay.js';
 import { resolveStrings, type StringTable } from '../i18n/strings.js';
-import { loadYamlFile, loadYamlText, type LoadedDocument } from './loader.js';
+import { loadYamlFile, loadYamlFileAsync, loadYamlText, type LoadedDocument } from './loader.js';
 import { bindManifestDescriptor, manifestDescriptorFor } from './provenance.js';
 import { startOfFile, type Location } from './source.js';
 import { presentIssues } from './v1/present.js';
-import { checkSemantics, environmentReferences, type EnvironmentUse } from './v1/rules.js';
+import {
+  checkSemantics,
+  checkSemanticsAsync,
+  environmentReferences,
+  type EnvironmentUse,
+} from './v1/rules.js';
 import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
 
 /** The validated manifest model. Today that is always the v1 model. */
@@ -48,10 +53,13 @@ interface ParseContext {
   readonly checkAssetFiles: boolean;
 }
 
-type VersionParser = (document: LoadedDocument, context: ParseContext) => Manifest;
+interface VersionParser {
+  readonly parse: (document: LoadedDocument, context: ParseContext) => Manifest;
+  readonly parseAsync: (document: LoadedDocument, context: ParseContext) => Promise<Manifest>;
+}
 
 /** One parser per schema version; new versions are added here, never by reinterpreting v1. */
-const PARSERS = new Map<number, VersionParser>([[1, parseV1]]);
+const PARSERS = new Map<number, VersionParser>([[1, { parse: parseV1, parseAsync: parseV1Async }]]);
 
 export const SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [...PARSERS.keys()].sort(
   (a, b) => a - b,
@@ -60,6 +68,14 @@ export const SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [...PARSERS.keys()].
 /** Reads, parses and validates a manifest file. Throws {@link ManifestError} with every problem. */
 export function parseManifest(file: string, options: ParseManifestOptions = {}): Manifest {
   return parseDocument(loadYamlFile(file), file, options);
+}
+
+/** Session-internal asynchronous file path; intentionally absent from the package-root API. */
+export async function parseManifestAsync(
+  file: string,
+  options: ParseManifestOptions = {},
+): Promise<Manifest> {
+  return parseDocumentAsync(await loadYamlFileAsync(file), file, options);
 }
 
 /** Same as {@link parseManifest} for text that is already in memory. */
@@ -156,17 +172,52 @@ function parseDocument(
   const parser = selectParser(raw['schemaVersion'], document);
   const manifestDir =
     options.manifestDir === undefined ? dirname(resolve(file)) : resolve(options.manifestDir);
-  const manifest = parser(document, {
+  const manifest = parser.parse(document, {
     manifestDir,
     checkAssetFiles: options.checkAssetFiles ?? false,
   });
+  bindParsedManifest(manifest, document, manifestDir);
+  return manifest;
+}
+
+async function parseDocumentAsync(
+  document: LoadedDocument,
+  file: string,
+  options: ParseManifestOptions,
+): Promise<Manifest> {
+  const raw = document.value;
+
+  if (raw === null || raw === undefined) {
+    throw new ManifestError('RUNE-103', 'the manifest is empty', { location: startOf(document) });
+  }
+  if (!isRecord(raw)) {
+    throw new ManifestError('RUNE-103', 'the manifest must contain a mapping at the top level', {
+      location: startOf(document),
+    });
+  }
+
+  const parser = selectParser(raw['schemaVersion'], document);
+  const manifestDir =
+    options.manifestDir === undefined ? dirname(resolve(file)) : resolve(options.manifestDir);
+  const manifest = await parser.parseAsync(document, {
+    manifestDir,
+    checkAssetFiles: options.checkAssetFiles ?? false,
+  });
+  bindParsedManifest(manifest, document, manifestDir);
+  return manifest;
+}
+
+function bindParsedManifest(
+  manifest: Manifest,
+  document: LoadedDocument,
+  manifestDir: string,
+): void {
   bindManifestDescriptor(manifest, {
     path: document.file,
     sha256: document.sha256,
     schemaVersion: manifest.schemaVersion,
     manifestDir,
   });
-  return manifest;
 }
 
 function selectParser(version: unknown, document: LoadedDocument): VersionParser {
@@ -198,6 +249,28 @@ function selectParser(version: unknown, document: LoadedDocument): VersionParser
 }
 
 function parseV1(document: LoadedDocument, context: ParseContext): Manifest {
+  const manifest = parseV1Shape(document);
+  const semantic = checkSemantics(manifest, {
+    file: document.file,
+    sourceMap: document.sourceMap,
+    manifestDir: context.manifestDir,
+    checkAssetFiles: context.checkAssetFiles,
+  });
+  return finishV1(manifest, semantic);
+}
+
+async function parseV1Async(document: LoadedDocument, context: ParseContext): Promise<Manifest> {
+  const manifest = parseV1Shape(document);
+  const semantic = await checkSemanticsAsync(manifest, {
+    file: document.file,
+    sourceMap: document.sourceMap,
+    manifestDir: context.manifestDir,
+    checkAssetFiles: context.checkAssetFiles,
+  });
+  return finishV1(manifest, semantic);
+}
+
+function parseV1Shape(document: LoadedDocument): ManifestV1 {
   const result = manifestV1Schema.safeParse(document.value);
 
   if (!result.success) {
@@ -211,12 +284,10 @@ function parseV1(document: LoadedDocument, context: ParseContext): Manifest {
     );
   }
 
-  const semantic = checkSemantics(result.data, {
-    file: document.file,
-    sourceMap: document.sourceMap,
-    manifestDir: context.manifestDir,
-    checkAssetFiles: context.checkAssetFiles,
-  });
+  return result.data;
+}
+
+function finishV1(manifest: ManifestV1, semantic: readonly RuneIssue[]): Manifest {
   if (semantic.length > 0) {
     throw ManifestError.fromIssues('RUNE-104', semantic);
   }
@@ -224,7 +295,7 @@ function parseV1(document: LoadedDocument, context: ParseContext): Manifest {
   // The manifest is handed to the CLI and to the GUI shell's main process and read from
   // there for the rest of the run; freezing it keeps "the manifest" one thing that cannot
   // be changed under another reader's feet (docs/architecture.md §3).
-  return deepFreeze(result.data);
+  return deepFreeze(manifest);
 }
 
 function deepFreeze<T>(value: T): T {

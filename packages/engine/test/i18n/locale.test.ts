@@ -8,6 +8,7 @@ import { ManifestError, UsageError } from '../../src/errors.js';
 import {
   discoverOverlays,
   discoverSelectedOverlay,
+  discoverSelectedOverlayAsync,
   matchOverlay,
   normalizeLocaleTag,
   selectLocale,
@@ -263,6 +264,39 @@ describe('overlay discovery and matching', () => {
 });
 
 describe('selected overlay discovery', () => {
+  it('keeps asynchronous exact/fallback matching identical', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'de.yaml'), 'rune.button.next: Weiter\n');
+    writeFileSync(join(localesPath, 'de_AT.yaml'), 'rune.button.next: Weiter\n');
+
+    for (const locale of ['de-AT', 'de-DE', 'fr-FR']) {
+      await expect(discoverSelectedOverlayAsync(dir, locale)).resolves.toEqual(
+        discoverSelectedOverlay(dir, locale),
+      );
+    }
+  });
+
+  it('keeps asynchronous duplicate-claim errors identical', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
+    const localesPath = join(dir, 'locales');
+    mkdirSync(localesPath);
+    writeFileSync(join(localesPath, 'he.yaml'), 'rune.button.next: Next\n');
+    writeFileSync(join(localesPath, 'iw.yaml'), 'rune.button.next: Next\n');
+    let synchronous: ManifestError | undefined;
+    try {
+      discoverSelectedOverlay(dir, 'he-IL');
+    } catch (error) {
+      synchronous = error as ManifestError;
+    }
+
+    await expect(discoverSelectedOverlayAsync(dir, 'he-IL')).rejects.toMatchObject({
+      code: synchronous?.code,
+      message: synchronous?.message,
+    });
+  });
+
   it('uses the exact locale before the language fallback and returns no unrelated match', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-i18n-'));
     const localesPath = join(dir, 'locales');

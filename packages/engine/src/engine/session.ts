@@ -17,10 +17,10 @@ import {
   type RuneIssue,
 } from '../errors.js';
 import { environmentName } from '../manifest/v1/rules.js';
-import { manifestDescriptorFor, parseManifest, type Manifest } from '../manifest/index.js';
+import { manifestDescriptorFor, parseManifestAsync, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
-import { discoverSelectedOverlay, selectLocale } from '../i18n/locale.js';
-import { loadOverlay, type LocaleOverlay } from '../i18n/overlay.js';
+import { discoverSelectedOverlayAsync, selectLocale } from '../i18n/locale.js';
+import { loadOverlayAsync, type LocaleOverlay } from '../i18n/overlay.js';
 import { projectStringsForSink, resolveStrings, type StringTable } from '../i18n/strings.js';
 import { createLogFileSink } from '../logs/logFile.js';
 import type { Runner } from '../runners/base.js';
@@ -40,7 +40,7 @@ import {
 } from './executor.js';
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
-  parseValuesFile,
+  parseValuesFileAsync,
   resolveInputsWithRegistry,
   type InputState,
   type Resolution,
@@ -163,7 +163,7 @@ export class Session {
     const absolutePath = resolvePath(manifestPath);
     const manifestDir = dirname(absolutePath);
     const mode = options.mode ?? 'non-interactive';
-    const manifest = parseManifest(absolutePath, { checkAssetFiles: mode === 'gui' });
+    const manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
     const descriptor = manifestDescriptorFor(manifest);
     const host = hostPlatform();
     const platform = options.platform ?? host;
@@ -183,8 +183,11 @@ export class Session {
       });
       let overlay: LocaleOverlay | undefined;
       if (locale !== undefined) {
-        const match = discoverSelectedOverlay(manifestDir, locale);
-        overlay = match === undefined ? undefined : loadOverlay(match.path, match.locale, manifest);
+        const match = await discoverSelectedOverlayAsync(manifestDir, locale);
+        overlay =
+          match === undefined
+            ? undefined
+            : await loadOverlayAsync(match.path, match.locale, manifest);
       }
       strings = resolveStrings({ manifest, locale, overlay });
 
@@ -194,7 +197,12 @@ export class Session {
         platform,
         environment,
       });
-      const values = (options.values ?? []).map((path) => parseValuesFile(resolvePath(path), path));
+      const values: ValuesDocument[] = [];
+      // Preserve invocation-order error precedence: one values file finishes before the next
+      // starts, exactly as in the synchronous authoring path.
+      for (const path of options.values ?? []) {
+        values.push(await parseValuesFileAsync(resolvePath(path), path));
+      }
       const overrides = new Map(Object.entries(options.overrides ?? {}));
       resolution = resolveInputsWithRegistry(
         {

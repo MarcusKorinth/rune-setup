@@ -6,6 +6,7 @@
  */
 
 import { lstatSync, readdirSync } from 'node:fs';
+import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { environmentValue } from '../environment.js';
@@ -118,6 +119,36 @@ function scanOverlayFiles(manifestDir: string): readonly OverlayFile[] {
     });
   }
 
+  return overlayFiles(directory, names);
+}
+
+async function scanOverlayFilesAsync(manifestDir: string): Promise<readonly OverlayFile[]> {
+  const directory = join(manifestDir, LOCALES_DIRECTORY);
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (cause) {
+    if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      try {
+        await lstat(directory);
+      } catch (lstatCause) {
+        if (
+          lstatCause instanceof Error &&
+          (lstatCause as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
+          return [];
+        }
+      }
+    }
+    throw new ManifestError('RUNE-101', `${directory} cannot be read: ${messageOf(cause)}`, {
+      cause,
+    });
+  }
+
+  return overlayFiles(directory, names);
+}
+
+function overlayFiles(directory: string, names: readonly string[]): readonly OverlayFile[] {
   return names
     .filter((name) => /\.yaml$/i.test(name))
     .sort()
@@ -165,7 +196,21 @@ export function discoverSelectedOverlay(
   manifestDir: string,
   selectedLocale: string,
 ): DiscoveredOverlay | undefined {
-  const files = scanOverlayFiles(manifestDir);
+  return selectDiscoveredOverlay(scanOverlayFiles(manifestDir), selectedLocale);
+}
+
+/** Session-only selected-overlay discovery using asynchronous filesystem I/O. */
+export async function discoverSelectedOverlayAsync(
+  manifestDir: string,
+  selectedLocale: string,
+): Promise<DiscoveredOverlay | undefined> {
+  return selectDiscoveredOverlay(await scanOverlayFilesAsync(manifestDir), selectedLocale);
+}
+
+function selectDiscoveredOverlay(
+  files: readonly OverlayFile[],
+  selectedLocale: string,
+): DiscoveredOverlay | undefined {
   const selected = normalizeOverlayLocaleClaim(selectedLocale);
   if (selected === undefined) {
     return undefined;

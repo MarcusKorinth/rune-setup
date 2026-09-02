@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,20 @@ import { describe, expect, it } from 'vitest';
 import { createLogFileSink } from '../../src/logs/logFile.js';
 
 describe('log-file sink', () => {
+  it('maps asynchronous directory preparation failures to RUNE-406', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-log-'));
+    const parentFile = join(directory, 'not-a-directory');
+    const path = join(parentFile, 'run.log');
+    writeFileSync(parentFile, 'occupied', 'utf8');
+
+    await expect(createLogFileSink(path)).rejects.toMatchObject({
+      code: 'RUNE-406',
+      name: 'ExecutionError',
+      message: expect.stringContaining('prepare the directory'),
+      cause: expect.any(Error),
+    });
+  });
+
   it('flushes buffered events before close settles', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     const sink = await createLogFileSink(path);

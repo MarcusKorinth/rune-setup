@@ -84,6 +84,27 @@ describe('opening a session', () => {
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['databasePort']);
   });
 
+  it('keeps multiple values-file errors in invocation order', async () => {
+    const path = fixture(BASE, {
+      'first.yaml': '- invalid\n',
+      'second.yaml': 'unknown: value\n',
+    });
+    const first = join(path, '..', 'first.yaml');
+    const second = join(path, '..', 'second.yaml');
+
+    let thrown: InputError | undefined;
+    try {
+      await Session.open(path, { values: [first, second], environment: {} });
+    } catch (error) {
+      thrown = error as InputError;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    expect(thrown?.issues.map((issue) => issue.location?.file)).toEqual([first, second]);
+    expect(thrown?.issues[0]?.message).toContain('must contain a mapping');
+    expect(thrown?.issues[1]?.message).toContain('is not an input');
+  });
+
   it.each([
     {
       name: 'manifest default',
