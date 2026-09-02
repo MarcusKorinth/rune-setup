@@ -19,13 +19,6 @@ export const MASK = '***';
 const MAX_MASKING_PASSES = 16;
 
 /**
- * Internal capability used by engine-owned failure projection. It is deliberately absent
- * from the package's public index: hosts may pass a Session back to the engine, but cannot
- * obtain the registry or reveal any value through it.
- */
-export const MASK_FOR_SINK: unique symbol = Symbol('RUNE.maskForSink');
-
-/**
  * Below this length a secret is not registered for masking: masking "1" would black out
  * every digit in every log line, which hides far more than it protects (§10).
  */

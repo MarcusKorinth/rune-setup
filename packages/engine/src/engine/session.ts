@@ -37,6 +37,7 @@ import {
   createCompletedRunFailureResult,
   describePlan,
   executeRun,
+  registerFailureResultSession,
   registerOpenFailureContext,
 } from './executor.js';
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
@@ -50,7 +51,7 @@ import {
   type ValuesDocument,
 } from './inputs.js';
 import { buildPlan, type ExecutionPlan } from './plan.js';
-import { MASK_FOR_SINK, SecretRegistry } from './secrets.js';
+import { SecretRegistry } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
 export interface InputStateChanged {
@@ -159,6 +160,7 @@ export class Session {
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
     this.#plan = undefined;
+    registerFailureResultSession(this, fields.secrets.snapshot());
     // Public readonly fields and facade methods must be readonly in JavaScript too. Private
     // slots remain mutable, so answers, resolution, execution, and cancellation still work.
     Object.freeze(this);
@@ -270,8 +272,8 @@ export class Session {
             preview,
             allInputs: () => inputSnapshot?.all ?? EMPTY_INPUTS,
             getStrings: () => failureStrings,
-            [MASK_FOR_SINK]: (text: string) => secrets.mask(text),
           }),
+          secrets.snapshot(),
         );
       }
       throw projected;
@@ -338,6 +340,7 @@ export class Session {
     this.#secrets = candidateSecrets;
     this.#inputSnapshot = afterInputSnapshot;
     this.#plan = undefined;
+    registerFailureResultSession(this, candidateSecrets.snapshot());
     return changes;
   }
 
@@ -458,11 +461,6 @@ export class Session {
         ? {}
         : { windowTitle: this.#strings.windowTitle() ?? gui.windowTitle }),
     };
-  }
-
-  /** Engine-internal sink capability used by createFailureResult; never exported publicly. */
-  [MASK_FOR_SINK](text: string): string {
-    return this.#secrets.mask(text);
   }
 
   #executionPlan(): ExecutionPlan {

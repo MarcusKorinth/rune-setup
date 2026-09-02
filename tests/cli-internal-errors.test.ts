@@ -39,8 +39,6 @@ interface Capture extends CliIo {
   readonly err: string[];
 }
 
-const originalSessionOpen = Session.open;
-
 beforeEach(() => {
   engineMock.writeFailure = undefined;
   engineMock.writeCalls.length = 0;
@@ -72,9 +70,8 @@ describe('CLI internal-error boundary', () => {
     const resultPath = join(manifestPath, '..', 'result.json');
     const io = capture();
 
-    vi.spyOn(Session, 'open').mockImplementation(async (path, options) => {
-      const session = await originalSessionOpen(path, options);
-      return failAtPlan(session, cause);
+    vi.spyOn(Session.prototype, 'plan').mockImplementation(() => {
+      throw cause;
     });
 
     const code = await run(
@@ -207,18 +204,4 @@ function fixture(lines: readonly string[]): string {
   const path = join(dir, 'installer.yaml');
   writeFileSync(path, [...lines, ''].join('\n'), 'utf8');
   return path;
-}
-
-function failAtPlan(session: Session, cause: unknown): Session {
-  return new Proxy(session, {
-    get(target, property) {
-      if (property === 'plan') {
-        return (): never => {
-          throw cause;
-        };
-      }
-      const value = Reflect.get(target, property, target) as unknown;
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
 }

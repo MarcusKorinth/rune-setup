@@ -163,6 +163,56 @@ describe('createFailureResult', () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
+  it('uses the latest authentic Session secret snapshot for error masking', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'interactive' });
+    session.setValue('token', SECRET);
+
+    const result = createFailureResult({
+      error: new InternalError(`failure contains ${SECRET}`, {
+        cause: new Error(`cause contains ${SECRET}`),
+      }),
+      manifestPath: path,
+      dryRun: false,
+      session,
+    });
+
+    expect(result.error?.message).toContain('failure contains ***');
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
+  it.each([
+    ['proxy', (session: Session) => new Proxy(session, {})],
+    ['foreign structural object', (session: Session) => Object.create(session) as Session],
+  ])('rejects a non-authentic %s context without invoking it', async (_name, wrap) => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+
+    expect(() =>
+      createFailureResult({
+        error: new InternalError('failure'),
+        manifestPath: path,
+        dryRun: false,
+        session: wrap(session),
+      }),
+    ).toThrow('a failure result requires an authentic opened Session');
+  });
+
   it('keeps planned commands PENDING in a dry-run failure result', async () => {
     const path = fixture([
       'schemaVersion: 1',

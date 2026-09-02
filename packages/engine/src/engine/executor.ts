@@ -34,13 +34,7 @@ import { hostPlatform, type Platform } from './context.js';
 import type { InputState } from './inputs.js';
 import type { EngineObserver, RunEvent, StepFinished } from './events.js';
 import { deepFreeze } from './freeze.js';
-import {
-  isSecretString,
-  MASK,
-  MASK_FOR_SINK,
-  type SecretMasker,
-  type SecretString,
-} from './secrets.js';
+import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
 import { CancelToken } from './cancel.js';
 import { transitionStepState, type StepState } from './state.js';
 import {
@@ -82,8 +76,6 @@ export interface FailureResultSession {
   readonly preview: boolean;
   allInputs(): readonly InputState[];
   getStrings(): { readonly locale: string | undefined };
-  /** Engine-internal masking capability; the symbol is not part of the package root API. */
-  [MASK_FOR_SINK](text: string): string;
 }
 
 export interface FailureResultOptions {
@@ -98,10 +90,25 @@ export interface FailureResultOptions {
 }
 
 const openFailureContexts = new WeakMap<RuneError, FailureResultSession>();
+const openFailureMaskers = new WeakMap<RuneError, SecretMasker>();
+const sessionFailureMaskers = new WeakMap<FailureResultSession, SecretMasker>();
+
+/** Package-internal registration for an authentic Session and its current secret snapshot. */
+export function registerFailureResultSession(
+  session: FailureResultSession,
+  secrets: SecretMasker,
+): void {
+  sessionFailureMaskers.set(session, secrets);
+}
 
 /** Package-internal handoff for a Session.open failure after manifest validation. */
-export function registerOpenFailureContext(error: RuneError, context: FailureResultSession): void {
+export function registerOpenFailureContext(
+  error: RuneError,
+  context: FailureResultSession,
+  secrets: SecretMasker,
+): void {
   openFailureContexts.set(error, context);
+  openFailureMaskers.set(error, secrets);
 }
 
 /** Captures the inherited environment without manifest input-control variables. */
@@ -519,10 +526,21 @@ export function describePlan(options: {
 
 /** Builds the machine-readable outcome for a run-owned failure outside normal execution. */
 export function createFailureResult(options: FailureResultOptions): RunResult {
-  const session = options.session ?? openFailureContexts.get(options.error);
+  const explicitSession = options.session;
+  const session = explicitSession ?? openFailureContexts.get(options.error);
+  const sessionSecrets =
+    explicitSession === undefined
+      ? openFailureMaskers.get(options.error)
+      : sessionFailureMaskers.get(explicitSession);
   const executionContext =
     options.plan === undefined ? undefined : executionContextFor(options.plan);
 
+  if (explicitSession !== undefined && sessionSecrets === undefined) {
+    throw new InternalError('a failure result requires an authentic opened Session');
+  }
+  if (explicitSession === undefined && session !== undefined && sessionSecrets === undefined) {
+    throw new InternalError('an open failure context requires its secret snapshot');
+  }
   if (options.plan !== undefined && session === undefined) {
     throw new InternalError('a failure result with a plan requires its opened session');
   }
@@ -534,11 +552,7 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
     throw new InternalError('a pre-execution failure result cannot carry a completed plan');
   }
 
-  const secrets =
-    executionContext?.secrets ??
-    (session === undefined
-      ? IDENTITY_MASKER
-      : Object.freeze({ mask: (text: string): string => session[MASK_FOR_SINK](text) }));
+  const secrets = executionContext?.secrets ?? sessionSecrets ?? IDENTITY_MASKER;
   const outcome = failureOutcome(options.error, options.dryRun, secrets);
   if (
     session === undefined &&

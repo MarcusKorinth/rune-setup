@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
@@ -231,6 +235,28 @@ describe('@rune/engine public API', () => {
     expect(engine.Session).toBeTypeOf('function');
     expect(engine.createFailureResult).toBeTypeOf('function');
     expect(sessionOptionsExcludesRunner).toBe(true);
+  });
+
+  it('exposes no symbol-based masking capability on Session', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-root-session-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const session = await engine.Session.open(manifestPath, { environment: {} });
+
+    expect(Object.getOwnPropertySymbols(engine.Session.prototype)).toEqual([]);
+    expect(Object.getOwnPropertySymbols(session)).toEqual([]);
+    expect(engine).not.toHaveProperty('MASK_FOR_SINK');
   });
 
   it.each(FORBIDDEN_RUNTIME_EXPORTS)('does not expose low-level runtime export %s', (name) => {
