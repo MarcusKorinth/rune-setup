@@ -245,6 +245,86 @@ describe('createFailureResult', () => {
     });
   });
 
+  it('rejects an authentic plan that belongs to another Session', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {} });
+    const foreignSession = await Session.open(path, { environment: {} });
+    const foreignPlan = foreignSession.plan();
+
+    expect(() =>
+      createFailureResult({
+        error: new InternalError('failure'),
+        manifestPath: path,
+        dryRun: false,
+        session,
+        plan: foreignPlan,
+      }),
+    ).toThrow('a failure result requires the current plan of its opened Session');
+  });
+
+  it('rejects a stale plan after a successful Session edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'interactive' });
+    const stalePlan = session.plan();
+    session.setValue('enabled', true);
+
+    expect(() =>
+      createFailureResult({
+        error: new InternalError('failure'),
+        manifestPath: path,
+        dryRun: false,
+        session,
+        plan: stalePlan,
+      }),
+    ).toThrow('a failure result requires the current plan of its opened Session');
+  });
+
+  it('retains the current plan after a rejected Session edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'interactive' });
+    const plan = session.plan();
+    expect(() => session.setValue('enabled', 'not-a-boolean')).toThrow(InputError);
+
+    const result = createFailureResult({
+      error: new InternalError('failure'),
+      manifestPath: path,
+      dryRun: false,
+      session,
+      plan,
+    });
+
+    expect(result.status).toBe('internal_error');
+    expect(result.inputs).toMatchObject([
+      { id: 'enabled', value: false, source: 'default', enabled: true },
+    ]);
+  });
+
   it('represents a plan-time execution error without inventing a failed step', async () => {
     const path = fixture([
       'schemaVersion: 1',

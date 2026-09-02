@@ -91,14 +91,20 @@ export interface FailureResultOptions {
 
 const openFailureContexts = new WeakMap<RuneError, FailureResultSession>();
 const openFailureMaskers = new WeakMap<RuneError, SecretMasker>();
-const sessionFailureMaskers = new WeakMap<FailureResultSession, SecretMasker>();
+interface FailureResultSessionContext {
+  readonly secrets: SecretMasker;
+  readonly plan: ExecutionPlan | undefined;
+}
 
-/** Package-internal registration for an authentic Session and its current secret snapshot. */
+const sessionFailureContexts = new WeakMap<FailureResultSession, FailureResultSessionContext>();
+
+/** Package-internal registration for an authentic Session and its current resolution. */
 export function registerFailureResultSession(
   session: FailureResultSession,
   secrets: SecretMasker,
+  plan?: ExecutionPlan,
 ): void {
-  sessionFailureMaskers.set(session, secrets);
+  sessionFailureContexts.set(session, { secrets, plan });
 }
 
 /** Package-internal handoff for a Session.open failure after manifest validation. */
@@ -528,10 +534,10 @@ export function describePlan(options: {
 export function createFailureResult(options: FailureResultOptions): RunResult {
   const explicitSession = options.session;
   const session = explicitSession ?? openFailureContexts.get(options.error);
+  const sessionContext =
+    explicitSession === undefined ? undefined : sessionFailureContexts.get(explicitSession);
   const sessionSecrets =
-    explicitSession === undefined
-      ? openFailureMaskers.get(options.error)
-      : sessionFailureMaskers.get(explicitSession);
+    explicitSession === undefined ? openFailureMaskers.get(options.error) : sessionContext?.secrets;
   const executionContext =
     options.plan === undefined ? undefined : executionContextFor(options.plan);
 
@@ -543,6 +549,9 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   }
   if (options.plan !== undefined && session === undefined) {
     throw new InternalError('a failure result with a plan requires its opened session');
+  }
+  if (options.plan !== undefined && sessionContext?.plan !== options.plan) {
+    throw new InternalError('a failure result requires the current plan of its opened Session');
   }
   if (
     options.plan !== undefined &&

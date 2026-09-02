@@ -484,6 +484,7 @@ export class Session {
         logFile: this.#logFile,
         strings: this.#strings,
       });
+      registerFailureResultSession(this, this.#secrets.snapshot(), this.#plan);
       return this.#plan;
     } catch (error) {
       throw this.#projectError(error);
