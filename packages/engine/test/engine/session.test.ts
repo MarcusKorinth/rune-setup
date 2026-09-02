@@ -650,6 +650,102 @@ describe('answering inputs', () => {
     expect(() => session.setValue('nope', 'x')).toThrow(/names no input/);
   });
 
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'rejects inherited input id %s without changing the session',
+    async (id) => {
+      const session = await Session.open(fixture([...BASE, '      args: []']), { environment: {} });
+      const inputs = session.allInputs();
+      const plan = session.plan();
+
+      let rejection: unknown;
+      try {
+        session.setValue(id, 'ignored');
+      } catch (error) {
+        rejection = error;
+      }
+
+      expect(rejection).toMatchObject({ code: 'RUNE-203', name: InputError.name });
+      expect(session.allInputs()).toBe(inputs);
+      expect(session.plan()).toBe(plan);
+    },
+  );
+
+  it('accepts declared input ids that collide with Object.prototype', async () => {
+    const ids = ['constructor', 'toString', 'valueOf', 'hasOwnProperty'] as const;
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        ...ids.flatMap((id) => [`  ${id}:`, '    type: text']),
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        `      args: [${ids.map((id) => `"\${${id}}"`).join(', ')}]`,
+      ]),
+      { environment: {} },
+    );
+
+    for (const id of ids) {
+      expect(session.setValue(id, `${id}-value`)).toEqual([]);
+    }
+
+    expect(session.allInputs().map((input) => input.value)).toEqual(ids.map((id) => `${id}-value`));
+    expect(session.plan().steps[0]).toMatchObject({
+      command: { argv: ['node', ...ids.map((id) => `${id}-value`)] },
+    });
+  });
+
+  it('masks an unknown id that matches an active secret without changing the session', async () => {
+    const secret = 'unknown-input-secret-marker';
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '    required: false',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${token}"]',
+      ]),
+      { environment: {}, overrides: { token: secret } },
+    );
+    const inputs = session.allInputs();
+    const plan = session.plan();
+
+    let rejection: unknown;
+    try {
+      session.setValue(secret, 'ignored');
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toMatchObject({ code: 'RUNE-203', name: InputError.name });
+    const error = rejection as InputError;
+    expect(error.message).toContain('***');
+    expect(error.message).not.toContain(secret);
+    expect(JSON.stringify(error.issues)).not.toContain(secret);
+    expect(String(error.location?.file)).not.toContain(secret);
+    expect(String(error.cause)).not.toContain(secret);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.plan()).toBe(plan);
+    const step = session.plan().steps[0];
+    expect(step?.state).toBe('PENDING');
+    if (step?.state !== 'PENDING') {
+      throw new Error('expected a pending step');
+    }
+    expect(String(step.command.argv[1])).toBe('***');
+  });
+
   it.each([
     ['choice', 'rejected'],
     ['port', 'not-a-port'],

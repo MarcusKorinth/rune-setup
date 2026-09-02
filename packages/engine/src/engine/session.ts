@@ -307,7 +307,7 @@ export class Session {
         new InternalError('cannot set a session value while execution is active'),
       );
     }
-    if (!(id in this.manifest.inputs)) {
+    if (!Object.hasOwn(this.manifest.inputs, id)) {
       throw this.#projectError(
         new InputError('RUNE-203', `"${id}" names no input of this manifest`),
       );
