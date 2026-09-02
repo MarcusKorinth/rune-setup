@@ -29,7 +29,7 @@ function fixture(lines: readonly string[]): string {
 }
 
 describe('createFailureResult', () => {
-  it('preserves a completed plan as SKIPPED/NOT_RUN and deeply freezes valid output', async () => {
+  it('projects an external error generically while preserving a completed plan', async () => {
     const path = fixture([
       'schemaVersion: 1',
       'product:',
@@ -72,8 +72,8 @@ describe('createFailureResult', () => {
 
     expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
-      status: 'failed',
-      exitCode: 1,
+      status: 'internal_error',
+      exitCode: 70,
       stepsTotal: 2,
       stepsExecuted: 0,
       stepsSkipped: 1,
@@ -163,7 +163,7 @@ describe('createFailureResult', () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
-  it('uses the latest authentic Session secret snapshot for error masking', async () => {
+  it('gives hit, miss, and embedded external candidates the same generic error', async () => {
     const path = fixture([
       'schemaVersion: 1',
       'product:',
@@ -177,17 +177,226 @@ describe('createFailureResult', () => {
     const session = await Session.open(path, { environment: {}, mode: 'interactive' });
     session.setValue('token', SECRET);
 
+    const candidates = [SECRET, 'definitely-not-a-secret', `prefix-${SECRET}-suffix`];
+    const errors = candidates.map(
+      (candidate) =>
+        createFailureResult({
+          error: new InternalError(candidate, {
+            location: { file: candidate, line: 1, column: 1 },
+            cause: new Error(candidate),
+          }),
+          manifestPath: path,
+          dryRun: false,
+          session,
+        }).error,
+    );
+
+    expect(errors[0]).toEqual(errors[1]);
+    expect(errors[1]).toEqual(errors[2]);
+    expect(errors[0]).toMatchObject({ code: 'RUNE-500', location: null });
+    for (const candidate of candidates) {
+      expect(JSON.stringify(errors)).not.toContain(candidate);
+    }
+  });
+
+  it('uses the frozen projection of an authentic Session error after mutation', async () => {
+    const secretCommand = `${SECRET}.cmd`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: "${token}"',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      overrides: { token: secretCommand },
+      platform: 'windows',
+    });
+    let authenticError: ExecutionError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      authenticError = error as ExecutionError;
+    }
+    expect(authenticError).toBeInstanceOf(ExecutionError);
+
+    Object.assign(authenticError as unknown as Record<string, unknown>, {
+      code: 'RUNE-500',
+      message: `mutated ${SECRET}`,
+      location: { file: SECRET, line: 9, column: 9 },
+    });
     const result = createFailureResult({
-      error: new InternalError(`failure contains ${SECRET}`, {
-        cause: new Error(`cause contains ${SECRET}`),
-      }),
+      error: authenticError!,
       manifestPath: path,
-      dryRun: false,
+      dryRun: true,
       session,
     });
 
-    expect(result.error?.message).toContain('failure contains ***');
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-405', location: null },
+    });
+    expect(result.error?.message).toContain('***');
     expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
+  it('does not authenticate an error against a different Session', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const first = await Session.open(path, { environment: {}, platform: 'windows' });
+    const second = await Session.open(path, { environment: {}, platform: 'windows' });
+    let firstError: ExecutionError | undefined;
+    try {
+      first.plan();
+    } catch (error) {
+      firstError = error as ExecutionError;
+    }
+
+    const result = createFailureResult({
+      error: firstError!,
+      manifestPath: path,
+      dryRun: true,
+      session: second,
+    });
+    expect(result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      error: { code: 'RUNE-500', location: null },
+    });
+  });
+
+  it('does not authenticate a stale error after a successful Session edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+      platform: 'windows',
+    });
+    let staleError: ExecutionError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      staleError = error as ExecutionError;
+    }
+    session.setValue('enabled', true);
+
+    const result = createFailureResult({
+      error: staleError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      error: { code: 'RUNE-500', location: null },
+      inputs: [{ id: 'enabled', value: true, source: 'answer' }],
+    });
+  });
+
+  it('retains an authentic error after a rejected Session edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+      platform: 'windows',
+    });
+    let retainedError: ExecutionError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      retainedError = error as ExecutionError;
+    }
+    expect(() => session.setValue('enabled', 'not-a-boolean')).toThrow(InputError);
+
+    const result = createFailureResult({
+      error: retainedError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(result).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-405', location: null },
+      inputs: [{ id: 'enabled', value: false, source: 'default' }],
+    });
+  });
+
+  it('reads an error getter once before provenance and projection', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: legacy',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const session = await Session.open(path, { environment: {}, platform: 'windows' });
+    let authenticError: ExecutionError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      authenticError = error as ExecutionError;
+    }
+    let errorReads = 0;
+
+    const result = createFailureResult({
+      get error() {
+        errorReads += 1;
+        return errorReads === 1 ? authenticError! : new InternalError(SECRET);
+      },
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+
+    expect(errorReads).toBe(1);
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'RUNE-405' } });
   });
 
   it.each([
@@ -500,15 +709,15 @@ describe('createFailureResult', () => {
     ]);
     const runnableSession = await Session.open(runnablePath, { environment: {} });
     const plan = runnableSession.plan();
-    expect(() =>
-      createFailureResult({
-        error: new ExecutionError('RUNE-405', 'command requires a shell'),
-        manifestPath: runnablePath,
-        dryRun: false,
-        session: runnableSession,
-        plan,
-      }),
-    ).toThrow(/pre-execution failure result cannot carry a completed plan/);
+    const externalResult = createFailureResult({
+      error: new ExecutionError('RUNE-405', 'command requires a shell'),
+      manifestPath: runnablePath,
+      dryRun: false,
+      session: runnableSession,
+      plan,
+    });
+    expect(externalResult).toMatchObject({ status: 'internal_error', exitCode: 70 });
+    expect(externalResult.steps).toMatchObject([{ id: 'runnable', state: 'NOT_RUN' }]);
   });
 
   it.each([

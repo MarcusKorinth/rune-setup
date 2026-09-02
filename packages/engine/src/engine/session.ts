@@ -37,6 +37,7 @@ import {
   createCompletedRunFailureResult,
   describePlan,
   executeRun,
+  registerFailureResultError,
   registerFailureResultSession,
   registerOpenFailureContext,
 } from './executor.js';
@@ -302,10 +303,14 @@ export class Session {
    */
   setValue(id: string, raw: unknown): readonly InputStateChanged[] {
     if (this.#activeExecution !== undefined) {
-      throw new InternalError('cannot set a session value while execution is active');
+      throw this.#projectError(
+        new InternalError('cannot set a session value while execution is active'),
+      );
     }
     if (!(id in this.manifest.inputs)) {
-      throw new InputError('RUNE-203', `"${id}" names no input of this manifest`);
+      throw this.#projectError(
+        new InputError('RUNE-203', `"${id}" names no input of this manifest`),
+      );
     }
     const before = this.#resolution;
     const hadPrevious = this.#answers.has(id);
@@ -360,7 +365,9 @@ export class Session {
   /** Stages 5 and 6: runs the plan; resolves with the result when the run is over. */
   async execute(observer?: EngineObserver, cancel?: CancelToken): Promise<RunResult> {
     if (this.#activeExecution !== undefined) {
-      throw new InternalError('a session cannot have more than one active execution');
+      throw this.#projectError(
+        new InternalError('a session cannot have more than one active execution'),
+      );
     }
 
     const plan = this.#executionPlan();
@@ -419,9 +426,11 @@ export class Session {
         const runError =
           projected instanceof RuneError
             ? projected
-            : new InternalError('an unexpected error escaped run finalization', {
-                cause: projected,
-              });
+            : (this.#projectError(
+                new InternalError('an unexpected error escaped run finalization', {
+                  cause: projected,
+                }),
+              ) as RuneError);
         const result = createCompletedRunFailureResult(runError, terminalResult);
         notifyObserver(observer, Object.freeze({ kind: 'runFinished', result }));
         throw runError;
@@ -492,9 +501,12 @@ export class Session {
   }
 
   #projectError(error: unknown, secrets: SecretRegistry = this.#secrets): unknown {
-    return error instanceof RuneError
-      ? projectRuneError(error, (text) => secrets.mask(text))
-      : error;
+    if (!(error instanceof RuneError)) {
+      return error;
+    }
+    const projected = projectRuneError(error, (text) => secrets.mask(text));
+    registerFailureResultError(projected, this);
+    return projected;
   }
 
   #resolve(secrets: SecretRegistry, editedAnswerId?: string): Resolution {

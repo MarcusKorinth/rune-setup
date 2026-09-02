@@ -89,14 +89,35 @@ export interface FailureResultOptions {
   readonly plan?: ExecutionPlan;
 }
 
-const openFailureContexts = new WeakMap<RuneError, FailureResultSession>();
-const openFailureMaskers = new WeakMap<RuneError, SecretMasker>();
 interface FailureResultSessionContext {
   readonly secrets: SecretMasker;
   readonly plan: ExecutionPlan | undefined;
 }
 
 const sessionFailureContexts = new WeakMap<FailureResultSession, FailureResultSessionContext>();
+
+type FailureProjectionKind =
+  | 'config_error'
+  | 'input_error'
+  | 'resolution_error'
+  | 'cancelled'
+  | 'plan_failure'
+  | 'log_failure'
+  | 'internal_error';
+
+interface FailureErrorProjection {
+  readonly kind: FailureProjectionKind;
+  readonly error: ResultError;
+}
+
+interface RegisteredFailureError {
+  readonly session: FailureResultSession;
+  readonly projection: FailureErrorProjection;
+  readonly sessionContext?: FailureResultSessionContext;
+  readonly openSecrets?: SecretMasker;
+}
+
+const registeredFailureErrors = new WeakMap<RuneError, RegisteredFailureError>();
 
 /** Package-internal registration for an authentic Session and its current resolution. */
 export function registerFailureResultSession(
@@ -107,14 +128,30 @@ export function registerFailureResultSession(
   sessionFailureContexts.set(session, { secrets, plan });
 }
 
+/** Package-internal binding for a safe RuneError projection leaving an opened Session. */
+export function registerFailureResultError(error: RuneError, session: FailureResultSession): void {
+  const sessionContext = sessionFailureContexts.get(session);
+  if (sessionContext === undefined) {
+    throw new InternalError('a failure error requires an authentic opened Session');
+  }
+  registeredFailureErrors.set(error, {
+    session,
+    sessionContext,
+    projection: snapshotSessionFailureError(error),
+  });
+}
+
 /** Package-internal handoff for a Session.open failure after manifest validation. */
 export function registerOpenFailureContext(
   error: RuneError,
   context: FailureResultSession,
   secrets: SecretMasker,
 ): void {
-  openFailureContexts.set(error, context);
-  openFailureMaskers.set(error, secrets);
+  registeredFailureErrors.set(error, {
+    session: context,
+    projection: snapshotSessionFailureError(error),
+    openSecrets: secrets,
+  });
 }
 
 /** Captures the inherited environment without manifest input-control variables. */
@@ -532,13 +569,29 @@ export function describePlan(options: {
 
 /** Builds the machine-readable outcome for a run-owned failure outside normal execution. */
 export function createFailureResult(options: FailureResultOptions): RunResult {
+  // Snapshot every caller-controlled option once. In particular, a getter must not supply one
+  // error for provenance lookup and a different error for result projection.
   const plan = options.plan;
+  const error = options.error;
+  const manifestPath = options.manifestPath;
+  const dryRun = options.dryRun;
+  const optionMode = options.mode;
+  const optionPlatform = options.platform;
   const explicitSession = options.session;
-  const session = explicitSession ?? openFailureContexts.get(options.error);
+  const registeredError = registeredFailureErrors.get(error);
+  const session =
+    explicitSession ??
+    (registeredError?.openSecrets === undefined ? undefined : registeredError.session);
   const sessionContext =
     explicitSession === undefined ? undefined : sessionFailureContexts.get(explicitSession);
   const sessionSecrets =
-    explicitSession === undefined ? openFailureMaskers.get(options.error) : sessionContext?.secrets;
+    explicitSession === undefined ? registeredError?.openSecrets : sessionContext?.secrets;
+  const registeredErrorIsCurrent =
+    registeredError !== undefined &&
+    registeredError.session === session &&
+    (registeredError.openSecrets !== undefined
+      ? registeredError.openSecrets === sessionSecrets
+      : registeredError.sessionContext === sessionContext);
 
   if (explicitSession !== undefined && sessionSecrets === undefined) {
     throw new InternalError('a failure result requires an authentic opened Session');
@@ -554,15 +607,23 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   }
   if (
     plan !== undefined &&
-    options.error instanceof ExecutionError &&
-    options.error.code !== 'RUNE-406'
+    registeredErrorIsCurrent &&
+    registeredError.projection.kind === 'plan_failure'
   ) {
     throw new InternalError('a pre-execution failure result cannot carry a completed plan');
   }
 
   const executionContext = plan === undefined ? undefined : executionContextFor(plan);
   const secrets = executionContext?.secrets ?? sessionSecrets ?? IDENTITY_MASKER;
-  const outcome = failureOutcome(options.error, options.dryRun, secrets);
+  const projection =
+    session === undefined
+      ? snapshotFailureError(error)
+      : registeredErrorIsCurrent
+        ? registeredError.projection
+        : registeredError === undefined && error instanceof CancelledError
+          ? CANONICAL_CANCELLED_PROJECTION
+          : GENERIC_INTERNAL_PROJECTION;
+  const outcome = failureOutcome(projection, dryRun);
   if (
     session === undefined &&
     outcome.status !== 'config_error' &&
@@ -571,15 +632,15 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
     throw new InternalError('a post-validation failure result requires opened-session context');
   }
 
-  const platform = plan?.platform ?? session?.platform ?? options.platform ?? hostPlatform();
+  const platform = plan?.platform ?? session?.platform ?? optionPlatform ?? hostPlatform();
   const preview = plan?.preview ?? session?.preview ?? platform !== hostPlatform();
-  const source = failureSource(options.manifestPath, plan, executionContext, session, secrets);
-  const steps = failureSteps(plan, options.dryRun, secrets);
+  const source = failureSource(manifestPath, plan, executionContext, session, secrets);
+  const steps = failureSteps(plan, dryRun, secrets);
   const now = new Date();
 
   return assembleFailureResult({
     runId: randomUUID(),
-    mode: session?.mode ?? options.mode ?? 'non-interactive',
+    mode: session?.mode ?? optionMode ?? 'non-interactive',
     platform,
     preview,
     locale: plan?.locale ?? session?.getStrings().locale ?? null,
@@ -720,92 +781,132 @@ function sessionResultInput(state: InputState): ResultInput {
   return { ...common, value: state.value, secret: false };
 }
 
-function failureOutcome(error: RuneError, dryRun: boolean, secrets: SecretMasker): RunOutcome {
-  if (error instanceof ManifestError) {
+function failureOutcome(projection: FailureErrorProjection, dryRun: boolean): RunOutcome {
+  if (projection.kind === 'config_error') {
     return {
       status: 'config_error',
       exitCode: EXIT_CODE_BY_STATUS.config_error,
       dryRun,
-      error: toResultError(error, secrets) as ResultError<
-        'RUNE-101' | 'RUNE-102' | 'RUNE-103' | 'RUNE-104'
-      >,
+      error: projection.error as ResultError<'RUNE-101' | 'RUNE-102' | 'RUNE-103' | 'RUNE-104'>,
     };
   }
-  if (error instanceof InputError) {
+  if (projection.kind === 'input_error') {
     return {
       status: 'input_error',
       exitCode: EXIT_CODE_BY_STATUS.input_error,
       dryRun,
-      error: toResultError(error, secrets) as ResultError<'RUNE-201' | 'RUNE-202' | 'RUNE-203'>,
+      error: projection.error as ResultError<'RUNE-201' | 'RUNE-202' | 'RUNE-203'>,
     };
   }
-  if (error instanceof ResolutionError || error instanceof ConditionError) {
+  if (projection.kind === 'resolution_error') {
     return {
       status: 'resolution_error',
       exitCode: EXIT_CODE_BY_STATUS.resolution_error,
       dryRun,
-      error: toResultError(error, secrets) as ResultError<
-        'RUNE-301' | 'RUNE-302' | 'RUNE-311' | 'RUNE-312'
-      >,
+      error: projection.error as ResultError<'RUNE-301' | 'RUNE-302' | 'RUNE-311' | 'RUNE-312'>,
     };
   }
-  if (error instanceof CancelledError) {
+  if (projection.kind === 'cancelled') {
     return {
       status: 'cancelled',
       exitCode: EXIT_CODE_BY_STATUS.cancelled,
       dryRun,
-      error: toResultError(error, secrets) as ResultError<'RUNE-601'>,
+      error: projection.error as ResultError<'RUNE-601'>,
     };
   }
-  if (error instanceof ExecutionError) {
-    if (error.code === 'RUNE-406') {
-      if (dryRun) {
-        throw new InternalError('a log-file failure cannot belong to a dry-run result');
-      }
-      return {
-        status: 'failed',
-        exitCode: EXIT_CODE_BY_STATUS.failed,
-        dryRun: false,
-        error: toResultError(error, secrets) as ResultError<'RUNE-406'>,
-      };
+  if (projection.kind === 'log_failure') {
+    if (dryRun) {
+      throw new InternalError('a log-file failure cannot belong to a dry-run result');
     }
-    if (error.code === 'RUNE-401' || error.code === 'RUNE-404' || error.code === 'RUNE-405') {
-      return {
-        status: 'failed',
-        exitCode: EXIT_CODE_BY_STATUS.failed,
-        dryRun,
-        error: toResultError(error, secrets) as ResultError<'RUNE-401' | 'RUNE-404' | 'RUNE-405'>,
-      };
-    }
-    throw new InternalError('this execution error cannot produce a pre-execution result');
+    return {
+      status: 'failed',
+      exitCode: EXIT_CODE_BY_STATUS.failed,
+      dryRun: false,
+      error: projection.error as ResultError<'RUNE-406'>,
+    };
   }
-  if (error instanceof InternalError) {
+  if (projection.kind === 'plan_failure') {
+    return {
+      status: 'failed',
+      exitCode: EXIT_CODE_BY_STATUS.failed,
+      dryRun,
+      error: projection.error as ResultError<'RUNE-401' | 'RUNE-404' | 'RUNE-405'>,
+    };
+  }
+  if (projection.kind === 'internal_error') {
     return {
       status: 'internal_error',
       exitCode: EXIT_CODE_BY_STATUS.internal_error,
       dryRun,
-      error: toResultError(error, secrets) as ResultError<'RUNE-500'>,
+      error: projection.error as ResultError<'RUNE-500'>,
     };
   }
   throw new InternalError('this RuneError cannot produce a run result');
 }
 
+const IDENTITY_MASKER: SecretMasker = Object.freeze({ mask: (text: string): string => text });
+
+function snapshotFailureError(error: RuneError): FailureErrorProjection {
+  const resultError = deepFreeze(toResultError(error, IDENTITY_MASKER));
+  let kind: FailureProjectionKind;
+  if (error instanceof ManifestError) {
+    kind = 'config_error';
+  } else if (error instanceof InputError) {
+    kind = 'input_error';
+  } else if (error instanceof ResolutionError || error instanceof ConditionError) {
+    kind = 'resolution_error';
+  } else if (error instanceof CancelledError) {
+    kind = 'cancelled';
+  } else if (error instanceof ExecutionError) {
+    if (resultError.code === 'RUNE-406') {
+      kind = 'log_failure';
+    } else if (
+      resultError.code === 'RUNE-401' ||
+      resultError.code === 'RUNE-404' ||
+      resultError.code === 'RUNE-405'
+    ) {
+      kind = 'plan_failure';
+    } else {
+      throw new InternalError('this execution error cannot produce a pre-execution result');
+    }
+  } else if (error instanceof InternalError) {
+    kind = 'internal_error';
+  } else {
+    throw new InternalError('this RuneError cannot produce a run result');
+  }
+  return deepFreeze({ kind, error: resultError });
+}
+
+const GENERIC_INTERNAL_PROJECTION = snapshotFailureError(
+  new InternalError('an unexpected error escaped the run pipeline'),
+);
+const CANONICAL_CANCELLED_PROJECTION = snapshotFailureError(new CancelledError());
+
+function snapshotSessionFailureError(error: RuneError): FailureErrorProjection {
+  try {
+    return snapshotFailureError(error);
+  } catch {
+    return GENERIC_INTERNAL_PROJECTION;
+  }
+}
+
 function toResultError(error: RuneError, secrets: SecretMasker): ResultError {
+  const code = error.code;
+  const message = error.message;
+  const location = error.location;
   return {
-    code: error.code as ResultError['code'],
-    message: secrets.mask(error.message),
+    code: code as ResultError['code'],
+    message: secrets.mask(message),
     location:
-      error.location === undefined
+      location === undefined
         ? null
         : {
-            file: secrets.mask(error.location.file),
-            line: error.location.line,
-            column: error.location.column,
+            file: secrets.mask(location.file),
+            line: location.line,
+            column: location.column,
           },
   };
 }
-
-const IDENTITY_MASKER: SecretMasker = Object.freeze({ mask: (text: string): string => text });
 
 function assembleFailureResult(input: {
   readonly runId: string;
