@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -697,6 +697,63 @@ describe('rune run', () => {
 
     expect(await run(['run', path, '--non-interactive'], io)).toBe(1);
     expect(io.err.join('\n')).toContain('FAILED');
+  });
+
+  it('anchors a relative result path before observer output changes the working directory', async () => {
+    const invocationDirectory = mkdtempSync(join(tmpdir(), 'rune-cli-result-invocation-'));
+    const laterDirectory = mkdtempSync(join(tmpdir(), 'rune-cli-result-later-'));
+    const manifestPath = join(invocationDirectory, 'installer.yaml');
+    const resultPath = join('results', 'run.json');
+    const originalDirectory = process.cwd();
+    mkdirSync(join(invocationDirectory, 'results'));
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps:',
+        '  - id: run',
+        '    run:',
+        '      command: node',
+        '      args: ["-e", "console.log(\'complete\')"]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const out: string[] = [];
+    const err: string[] = [];
+    let changedDirectory = false;
+    const io: Capture = {
+      out,
+      err,
+      stdout: (line) => out.push(line),
+      stderr: (line) => {
+        err.push(line);
+        if (!changedDirectory) {
+          changedDirectory = true;
+          process.chdir(laterDirectory);
+        }
+      },
+    };
+
+    try {
+      process.chdir(invocationDirectory);
+
+      expect(
+        await run(['run', manifestPath, '--non-interactive', '--result', resultPath], io),
+      ).toBe(0);
+
+      expect(changedDirectory).toBe(true);
+      expect(existsSync(join(invocationDirectory, resultPath))).toBe(true);
+      expect(existsSync(join(laterDirectory, resultPath))).toBe(false);
+      expect(err).toContain(`result written to ${resultPath}`);
+    } finally {
+      process.chdir(originalDirectory);
+      rmSync(invocationDirectory, { recursive: true, force: true });
+      rmSync(laterDirectory, { recursive: true, force: true });
+    }
   });
 
   it('refuses --platform without --dry-run as a usage error', async () => {

@@ -6,6 +6,8 @@
  * invocation uses the non-interactive path regardless of TTY state or flag presence.
  */
 
+import { resolve } from 'node:path';
+
 import {
   CancelledError,
   createFailureResult,
@@ -39,6 +41,16 @@ export async function runCommand(
   io: CliIo,
   control: CliControl = {},
 ): Promise<void> {
+  // The engine resolves result paths when it writes them. Anchor relative destinations
+  // before any async work or observer callbacks can change the process working directory.
+  const resultOption = flags.result;
+  const resultDestination =
+    resultOption === undefined
+      ? undefined
+      : {
+          path: resultOption === '-' ? '-' : resolve(resultOption),
+          announcement: resultOption,
+        };
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let strings: StringTable | undefined;
@@ -82,12 +94,12 @@ export async function runCommand(
     executionFailureResult = undefined;
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
-    if (flags.dryRun === true && flags.result !== '-') {
+    if (flags.dryRun === true && resultOption !== '-') {
       renderPlan(plan, session.manifest.product, io, strings);
     }
-    if (flags.result !== undefined) {
+    if (resultDestination !== undefined) {
       deliveryStarted = true;
-      await deliverResult(result, flags.result, io, strings);
+      await deliverResult(result, resultDestination, io, strings);
     }
     renderOutcome(result, session.warnings(), io, strings);
     if (result.exitCode !== 0) {
@@ -125,9 +137,9 @@ export async function runCommand(
       // masking StringTable. In that case the projected diagnostic above is the only safe human
       // output; still deliver the machine result, but do not compose additional fallback lines.
       const renderFallback = session !== undefined || result.status === 'config_error';
-      if (flags.result !== undefined) {
+      if (resultDestination !== undefined) {
         deliveryStarted = true;
-        await deliverResult(result, flags.result, io, strings, renderFallback);
+        await deliverResult(result, resultDestination, io, strings, renderFallback);
       }
       if (renderFallback) {
         renderOutcome(result, session?.warnings() ?? [], io, strings);
@@ -141,22 +153,22 @@ export async function runCommand(
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */
 async function deliverResult(
   result: RunResult,
-  destination: string,
+  destination: { readonly path: string; readonly announcement: string },
   io: CliIo,
   strings?: StringTable,
   announce = true,
 ): Promise<void> {
-  if (destination === '-') {
+  if (destination.path === '-') {
     io.stdout(JSON.stringify(result, null, 2));
     return;
   }
-  await writeResult(result, destination);
+  await writeResult(result, destination.path);
   if (!announce) {
     return;
   }
   io.stderr(
     strings === undefined
-      ? `result written to ${destination}`
-      : strings.chrome('rune.result.written', { path: destination }),
+      ? `result written to ${destination.announcement}`
+      : strings.chrome('rune.result.written', { path: destination.announcement }),
   );
 }
