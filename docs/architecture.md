@@ -505,6 +505,8 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 
 stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination.
 
+Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged.
+
 ### Result file (`--result`)
 
 Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. Hosts call it after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.

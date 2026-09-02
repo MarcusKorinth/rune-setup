@@ -8,7 +8,7 @@
 
 import { Command, CommanderError } from 'commander';
 
-import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
+import { exitCodeFor, formatIssues, RuneError, RUNE_VERSION } from '@rune/engine';
 
 import { ExitWithCode, type CliControl, type CliIo } from './io.js';
 import { runCommand, type RunFlags } from './runCmd.js';
@@ -99,7 +99,7 @@ function report(error: unknown, io: CliIo): number {
     return error.code;
   }
   if (error instanceof RuneError) {
-    io.stderr(error.message);
+    io.stderr(formatIssues(error.issues));
     return exitCodeFor(error);
   }
   if (error instanceof CommanderError) {

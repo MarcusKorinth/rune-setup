@@ -21,6 +21,18 @@ function capture(): Capture {
   return { out, err, stdout: (line) => out.push(line), stderr: (line) => err.push(line) };
 }
 
+function hasRawTerminalControl(text: string): boolean {
+  return [...text].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
+
 function fixture(lines: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-cli-'));
   const path = join(dir, 'installer.yaml');
@@ -105,6 +117,16 @@ describe('rune schema', () => {
     expect(resultValidator.safeParse(result).success).toBe(true);
     expect(resultValidator.safeParse({ ...result, resultSchemaVersion: 2 }).success).toBe(false);
   });
+
+  it('escapes only the human file announcement', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-cli-schema-announcement-'));
+    const output = join(dir, 'schema\u2028controlled.json');
+    const io = capture();
+
+    expect(await run(['schema', '--output', output], io)).toBe(0);
+    expect(io.err).toEqual([`schema written to ${output.replace('\u2028', '\\u2028')}`]);
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({ type: 'object' });
+  });
 });
 
 describe('rune validate', () => {
@@ -167,12 +189,53 @@ describe('rune validate', () => {
     expect(io.err).toEqual([]);
   });
 
+  it('escapes a composed localized validate line once', async () => {
+    const productName = 'Product\u001b\u2028';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${JSON.stringify(productName)}`,
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    writeLocaleOverlay(path, [
+      `rune.validate.valid: ${JSON.stringify('VALID\u0085 {productName} literal \\n')}`,
+    ]);
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', 'de'], io)).toBe(0);
+    expect(io.out[0]).toContain(String.raw`VALID\u0085 Product\u001b\u2028 literal \n`);
+    expect(io.out[0]).not.toContain(String.raw`\\u001b`);
+    expect(hasRawTerminalControl(io.out[0] ?? '')).toBe(false);
+  });
+
   it('exits 3 for an invalid manifest', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const io = capture();
     expect(await run(['validate', path], io)).toBe(3);
     expect(io.err.join('\n')).toContain('product');
   });
+
+  it.each([['validate'], ['run']])(
+    'keeps formatter line feeds while escaping %s issue data',
+    async (command) => {
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        `${JSON.stringify('unknown\u001b')}: true`,
+        `${JSON.stringify('unknown\u0085')}: true`,
+      ]);
+      const io = capture();
+
+      expect(await run([command, path], io)).toBe(3);
+      const aggregate = io.err[0] ?? '';
+      expect(aggregate.split('\n').length).toBeGreaterThanOrEqual(2);
+      expect(aggregate).toContain('\\u001b');
+      expect(aggregate).toContain('\\u0085');
+      expect(hasRawTerminalControl(aggregate.replaceAll('\n', ''))).toBe(false);
+    },
+  );
 
   it('exits 2 for an invalid explicit locale without reporting success', async () => {
     const path = fixture(MANIFEST);
@@ -194,6 +257,108 @@ describe('rune validate', () => {
 });
 
 describe('rune run', () => {
+  it('escapes composed locale chrome and child output without forged lines', async () => {
+    const childLine = 'child\r\u001b\u0085\u2028\u2029';
+    const script = `process.stdout.write(${JSON.stringify(childLine)})`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: controlled',
+      `    title: ${JSON.stringify('title\u001b')}`,
+      '    run:',
+      '      command: node',
+      `      args: ${JSON.stringify(['-e', script])}`,
+    ]);
+    writeLocaleOverlay(path, [
+      `rune.progress.output: ${JSON.stringify('chrome\u0007[{line}]\u007f')}`,
+      `rune.progress.step: ${JSON.stringify('step\u009f {index}/{total}: {title}')}`,
+    ]);
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--locale', 'de'], io)).toBe(0);
+
+    expect(io.err).toContain(String.raw`chrome\u0007[child\r\u001b\u0085\u2028\u2029]\u007f`);
+    expect(io.err).toContain(String.raw`step\u009f 1/1: title\u001b`);
+    expect(io.err).toHaveLength(6);
+    expect(io.err.some(hasRawTerminalControl)).toBe(false);
+  });
+
+  it('keeps control-containing result JSON machine-readable', async () => {
+    const controlled = 'value\u001b\u0085\u2028\u2029';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  value:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--set',
+          `value=${controlled}`,
+          '--result',
+          '-',
+        ],
+        io,
+      ),
+    ).toBe(0);
+    expect(io.out).toHaveLength(1);
+    expect(JSON.parse(io.out[0] ?? '')).toMatchObject({ inputs: [{ value: controlled }] });
+  });
+
+  it('escapes plan chrome and substitutions without doubling safe JSON escapes', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps:',
+      '  - id: controlled',
+      `    title: ${JSON.stringify('title\u001b')}`,
+      '    run:',
+      '      command: node',
+      `      args: ${JSON.stringify(['-e', 'literal\ntext'])}`,
+    ]);
+    writeLocaleOverlay(path, [`rune.plan.step: ${JSON.stringify('plan\u0085 {number}{title}')}`]);
+    const io = capture();
+
+    expect(await run(['run', path, '--dry-run', '--non-interactive', '--locale', 'de'], io)).toBe(
+      0,
+    );
+    expect(io.out).toContain(String.raw`plan\u0085 1. title\u001b`);
+    expect(io.out.join('\n')).toContain(String.raw`literal\ntext`);
+    expect(io.out.join('\n')).not.toContain(String.raw`literal\\ntext`);
+    expect(io.out.some(hasRawTerminalControl)).toBe(false);
+  });
+
+  it('escapes the result-file announcement after composition', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const resultPath = join(path, '..', 'result\u2029controlled.json');
+    const io = capture();
+
+    expect(await run(['run', path, '--non-interactive', '--result', resultPath], io)).toBe(0);
+    expect(io.err).toContain(`result written to ${resultPath.replace('\u2029', '\\u2029')}`);
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({ status: 'succeeded' });
+  });
   it('runs to success and honours --result -', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

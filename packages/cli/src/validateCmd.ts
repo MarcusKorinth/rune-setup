@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 
 import { formatLocation, validateManifest } from '@rune/engine';
 
-import type { CliIo } from './io.js';
+import { humanStdout, type CliIo } from './io.js';
 
 export async function validateCommand(
   manifestPath: string,
@@ -19,7 +19,8 @@ export async function validateCommand(
   const report = validateManifest(absolute, { locale: flags.locale });
   const { locales, manifest, strings } = report;
 
-  io.stdout(
+  humanStdout(
+    io,
     strings.chrome('rune.validate.valid', {
       path: manifestPath,
       schemaVersion: manifest.schemaVersion,
@@ -27,20 +28,22 @@ export async function validateCommand(
       productVersion: manifest.product.version,
     }),
   );
-  io.stdout(
+  humanStdout(
+    io,
     locales.length === 0
       ? strings.chrome('rune.validate.locales.none')
       : strings.chrome('rune.validate.locales.list', { locales: locales.join(', ') }),
   );
 
   if (report.environment.length === 0) {
-    io.stdout(strings.chrome('rune.validate.environment.none'));
+    humanStdout(io, strings.chrome('rune.validate.environment.none'));
     return;
   }
-  io.stdout(strings.chrome('rune.validate.environment.heading'));
+  humanStdout(io, strings.chrome('rune.validate.environment.heading'));
   for (const use of report.environment) {
     for (const location of use.locations) {
-      io.stdout(
+      humanStdout(
+        io,
         strings.chrome('rune.validate.environment.entry', {
           name: use.name,
           location: formatLocation(location),

@@ -8,7 +8,7 @@ import { writeFileSync } from 'node:fs';
 
 import { manifestJsonSchema, resultJsonSchema } from '@rune/engine';
 
-import type { CliIo } from './io.js';
+import { humanStderr, type CliIo } from './io.js';
 
 export function schemaCommand(
   flags: { output?: string | undefined; result?: boolean | undefined },
@@ -18,7 +18,7 @@ export function schemaCommand(
   const text = JSON.stringify(schema, null, 2);
   if (flags.output !== undefined) {
     writeFileSync(flags.output, `${text}\n`, 'utf8');
-    io.stderr(`schema written to ${flags.output}`);
+    humanStderr(io, `schema written to ${flags.output}`);
     return;
   }
   io.stdout(text);

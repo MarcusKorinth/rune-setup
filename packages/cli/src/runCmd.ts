@@ -11,6 +11,7 @@ import { normalize, resolve, toNamespacedPath } from 'node:path';
 import {
   CancelledError,
   createFailureResult,
+  formatIssues,
   InternalError,
   PlatformError,
   RuneError,
@@ -21,7 +22,7 @@ import {
 import type { ExecutionPlan, RunResult, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
-import { ExitWithCode, type CliControl, type CliIo } from './io.js';
+import { ExitWithCode, humanStderr, type CliControl, type CliIo } from './io.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
 
 export interface RunFlags {
@@ -135,7 +136,7 @@ export async function runCommand(
         error instanceof RuneError
           ? error
           : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
-      io.stderr(failure.message);
+      io.stderr(formatIssues(failure.issues));
       const result =
         executionFailureResult ??
         createFailureResult({
@@ -195,7 +196,8 @@ async function deliverResult(
   if (!announce) {
     return;
   }
-  io.stderr(
+  humanStderr(
+    io,
     strings === undefined
       ? `result written to ${destination.announcement}`
       : strings.chrome('rune.result.written', { path: destination.announcement }),
