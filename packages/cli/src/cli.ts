@@ -55,9 +55,8 @@ export async function run(
     .command('validate')
     .description('validate a manifest and report what it reads')
     .argument('<manifest>', 'path to the manifest file')
-    .option('--platform <platform>', 'preview a foreign platform (windows|linux)')
     .option('--locale <tag>', 'display locale')
-    .action(async (manifest: string, flags: { platform?: string; locale?: string }) => {
+    .action(async (manifest: string, flags: { locale?: string }) => {
       await validateCommand(manifest, flags, io);
     });
 

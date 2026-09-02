@@ -71,6 +71,15 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).toContain('locales: none');
   });
 
+  it('rejects --platform as an unknown option without reporting success', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+
+    expect(await run(['validate', path, '--platform', 'linux'], io)).toBe(2);
+    expect(io.err.join('\n')).toContain("unknown option '--platform'");
+    expect(io.out.join('\n')).not.toContain('is valid');
+  });
+
   it('reports every validated locale overlay', async () => {
     const path = fixture(MANIFEST);
     writeLocaleOverlay(path, ['rune.button.next: Weiter']);

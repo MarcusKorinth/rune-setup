@@ -78,7 +78,7 @@ export interface SessionOptions {
   readonly overrides?: Readonly<Record<string, string>> | undefined;
   /** `--locale`; beats `RUNE_LOCALE` and the system locale (§6.3). */
   readonly locale?: string | undefined;
-  /** A foreign platform to preview — `validate` and `--dry-run` only; such a plan never executes. */
+  /** A foreign platform to preview with `--dry-run`; such a plan never executes. */
   readonly platform?: Platform | undefined;
   /** `--log-file`; overrides the manifest's `execution.logFile` (§10). */
   readonly logFile?: string | undefined;

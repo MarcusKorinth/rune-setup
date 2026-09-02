@@ -82,11 +82,11 @@ Engine, CLI, and GUI shell live in one repository and one language: `@rune/engin
 The spec conflicts between §6 (`rune install`) and §13 (`rune run`). Decision: **`run` is canonical; there is no `install` alias.** RUNE's own subtitle promises setup workflows, not only installation; `run` is truthful for dev-env bootstrap and CI jobs. One spelling in docs, scripts, and CI. The manifest path is positional.
 
 ```
-rune validate installer.yaml [--platform windows|linux] [--locale TAG]
+rune validate installer.yaml [--locale TAG]
 rune run installer.yaml [--gui] [--non-interactive] [--dry-run]
                         [--set key=value]... [--values file.yaml]...
                         [--result path|-] [--log-file path] [--locale TAG]
-                        [--platform windows|linux]     # dry-run/validate only
+                        [--platform windows|linux]     # dry-run only
 rune schema [--output FILE] [--result]   # manifest JSON Schema (v1); --result: result-file schema
 rune gui install                         # author-time: fetch the prebuilt GUI shell into the per-user cache
 rune package installer.yaml              # milestone 4: self-contained end-user artifact (§9.5)
@@ -99,7 +99,7 @@ invocation uses the non-interactive path regardless of TTY state or whether
 `--non-interactive` is supplied. `--gui`, `gui install`, and `package` remain planned at
 their roadmap milestones.
 
-Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only by `validate` and `--dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
+Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
 `rune schema` prints the JSON Schema of manifest `schemaVersion: 1` to stdout (or `--output FILE`), **generated from the zod schemas** (zod's built-in `z.toJSONSchema()`, in its `input` view so that fields with defaults stay optional for the author) at call time so it can never drift from what `validate` enforces; `--result` emits the result-file schema (`resultSchemaVersion: 1`) instead. Intended consumers are YAML language servers (autocompletion, inline errors); the same generated schema is what §14's schema tests pin.
 
@@ -197,7 +197,7 @@ Resolvable names (flat scope; collisions rejected at validate):
 
 Platform definitions: Node's `win32` maps to `windows` and `linux` maps to `linux`; every other host platform is rejected before planning with `PlatformError` (RUNE-002, exit 2) rather than being treated as Linux. `${home}` is `os.homedir()` (`USERPROFILE` on Windows, `HOME` on Linux); `${temp}` is `os.tmpdir()` (`%TEMP%` on Windows, usually `/tmp` on Linux). `${env.NAME}` lookup uses the host platform's `process.env` semantics — case-insensitive on Windows, case-sensitive on Linux; portable manifests must reference environment names in their exact POSIX casing.
 
-**Foreign-platform preview (`--platform`).** When `validate` or `--dry-run` previews a platform other than the host, host-dependent built-ins render as visibly marked **placeholder tokens** — `<home@linux>`, `<temp@windows>` — rather than the host's real values, which would be lies about the target. The dry-run output states that the plan is a cross-platform preview, and the result file marks it (`"crossPlatformPreview": true` in the run block, §10). Placeholders never reach execution: real runs refuse `--platform` (§4.1).
+**Foreign-platform preview (`--platform`).** When `rune run --dry-run` previews a platform other than the host, host-dependent built-ins render as visibly marked **placeholder tokens** — `<home@linux>`, `<temp@windows>` — rather than the host's real values, which would be lies about the target. The dry-run output states that the plan is a cross-platform preview, and the result file marks it (`"crossPlatformPreview": true` in the run block, §10). Placeholders never reach execution: real runs refuse `--platform` (§4.1).
 
 Interpolable fields, exhaustively: `command`, each `args` item, `cwd`, `env` values, input `default`s, and variable references inside `when:`. Nothing else — in particular no `title`, `description`, `patternHint`, option labels, or `gui:` paths. String-context rendering stringifies (boolean → `true`/`false`; multiselect → comma-joined); inside `when:` a reference keeps its declared type.
 
@@ -370,7 +370,7 @@ export class Session {
     values?: readonly string[];            // --values files, in order (layer 2)
     overrides?: Readonly<Record<string, string>>; // --set (layer 4); RUNE_INPUT_* comes from the environment (layer 3)
     locale?: string;                       // --locale (§6.3)
-    platform?: Platform;                   // foreign-platform preview — validate/--dry-run only
+    platform?: Platform;                   // foreign-platform preview — --dry-run only
     logFile?: string;                      // --log-file; overrides execution.logFile (§10)
     environment?: Readonly<Record<string, string | undefined>>; // defaults to process.env
     systemLocale?: string;                 // host locale; defaults to Intl (injectable for hosts/tests)
