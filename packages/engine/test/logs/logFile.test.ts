@@ -89,6 +89,27 @@ describe('log-file sink', () => {
     expect(log).toContain('[***] complete');
   });
 
+  it('masks a registered literal created by rendering a control character', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    const renderedSecret = String.raw`\u001b`;
+    const registry = new SecretRegistry();
+    expect(registry.register(renderedSecret)).toBe(true);
+    const sink = await createLogFileSink(path, registry.mask.bind(registry));
+
+    sink.observer({
+      kind: 'stepOutput',
+      stepId: 'install',
+      stream: 'stdout',
+      line: '\u001b',
+    });
+    await sink.close();
+
+    const log = readFileSync(path, 'utf8');
+    expect(log).not.toContain('\u001b');
+    expect(log).not.toContain(renderedSecret);
+    expect(log).toContain('[install:stdout] ***');
+  });
+
   it.each([
     ['ESC', '\u001b', '\\u001b'],
     ['C1', '\u0085', '\\u0085'],

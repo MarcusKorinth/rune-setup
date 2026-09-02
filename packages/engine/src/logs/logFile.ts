@@ -101,7 +101,7 @@ export async function createLogFileSink(
       }
       try {
         const record = `${new Date().toISOString()} ${describe(event)}`;
-        stream.write(`${escapeDiagnosticText(mask(record))}\n`, (cause) => {
+        stream.write(`${mask(escapeDiagnosticText(mask(record)))}\n`, (cause) => {
           if (cause !== undefined && cause !== null) {
             rememberFailure('write to', cause);
           }
