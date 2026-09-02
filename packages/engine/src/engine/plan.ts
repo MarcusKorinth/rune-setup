@@ -23,6 +23,7 @@ import {
   createSecretString,
   isSecretString,
   MASK,
+  projectStructuredString,
   registryFromSecretMasker,
   resolveSecretPathFrom,
   secretMatches,
@@ -295,19 +296,19 @@ function maskPublicInputValue(
     return value;
   }
   if (typeof value === 'string') {
-    return secrets.mask(value);
+    return projectStructuredString(value, secrets);
   }
-  return value.map((entry) => secrets.mask(entry));
+  return value.map((entry) => projectStructuredString(entry, secrets));
 }
 
 function protectStep(step: PlannedStep, secrets: SecretMasker): PlannedStep {
-  const title = secrets.mask(step.title);
+  const title = projectStructuredString(step.title, secrets);
   if (step.state === 'SKIPPED') {
     return {
       id: step.id,
       title,
       state: step.state,
-      skipReason: secrets.mask(step.skipReason),
+      skipReason: projectStructuredString(step.skipReason, secrets),
     };
   }
 
@@ -334,7 +335,9 @@ function protectExecutionValue(
   value: string | SecretString,
   secrets: SecretMasker,
 ): string | SecretString {
-  return isSecretString(value) || secrets.mask(value) === value ? value : createSecretString(value);
+  return isSecretString(value) || projectStructuredString(value, secrets) === value
+    ? value
+    : createSecretString(value);
 }
 
 /** Planning is the last gate before execution, so incomplete frontend state fails closed. */

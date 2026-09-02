@@ -14,12 +14,53 @@ import {
   MASK,
   MAX_SECRET_REGISTRY_CODE_UNITS,
   MIN_MASKABLE_LENGTH,
+  projectStructuredString,
   resolveSecretPathFrom,
   secretLength,
   secretMatches,
   SecretRegistry,
   secretValuesEqual,
 } from '../../src/engine/secrets.js';
+
+describe('structured string projection', () => {
+  it.each([
+    ['direct match', 'raw-secret', 'raw-secret'],
+    ['quote escape', String.raw`\"\"`, '""'],
+    ['lone surrogate escape', String.raw`\ud800`, '\ud800'],
+    ['repeated backslash escape', String.raw`\\\\\\\\`, String.raw`\\\\`],
+    ['control escape', String.raw`\u001b`, '\u001b'],
+  ] as const)('fails closed for a %s', (_name, secret, value) => {
+    const registry = new SecretRegistry();
+    expect(registry.register(secret)).toBe(true);
+
+    const projected = projectStructuredString(value, registry);
+
+    expect(projected).toBe(MASK);
+    expect(projected).not.toContain(secret);
+    expect(JSON.stringify(projected).slice(1, -1)).not.toContain(secret);
+  });
+
+  it('preserves safe text and the stable mask', () => {
+    const registry = new SecretRegistry();
+    registry.register(String.raw`\"\"`);
+
+    expect(projectStructuredString('ordinary text', registry)).toBe('ordinary text');
+    expect(projectStructuredString(MASK, registry)).toBe(MASK);
+  });
+
+  it('projects ten thousand values without retaining per-value state', () => {
+    const registry = new SecretRegistry();
+    registry.register(String.raw`\u001b`);
+
+    const projected = Array.from({ length: 10_000 }, (_, index) =>
+      projectStructuredString(index % 2 === 0 ? '\u001b' : `safe-${index}`, registry),
+    );
+
+    expect(projected).toHaveLength(10_000);
+    expect(projected[0]).toBe(MASK);
+    expect(projected[9_999]).toBe('safe-9999');
+  });
+});
 
 describe('SecretString', () => {
   const secret = createSecretString('hunter2');

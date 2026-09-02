@@ -55,7 +55,7 @@ import {
 } from './inputs.js';
 import { buildPlan, type ExecutionPlan } from './plan.js';
 import { resolveManifestRelativePathFrom } from './paths.js';
-import { SecretRegistry } from './secrets.js';
+import { SecretRegistry, type SecretMasker } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
 export interface InputStateChanged {
@@ -156,7 +156,12 @@ export class Session {
     this.#environment = fields.environment;
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;
-    this.#sinkStrings = projectStringsForSink(fields.strings, (text) => this.#secrets.mask(text));
+    const liveSecrets: SecretMasker = {
+      mask: (text) => this.#secrets.mask(text),
+      maskFragments: (fragments) => this.#secrets.maskFragments(fragments),
+      safeFallbackMarker: () => this.#secrets.safeFallbackMarker(),
+    };
+    this.#sinkStrings = projectStringsForSink(fields.strings, liveSecrets);
     this.#values = fields.values;
     this.#overrides = fields.overrides;
     this.#resolution = fields.resolution;

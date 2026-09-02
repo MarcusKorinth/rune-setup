@@ -249,6 +249,52 @@ describe('opening a session', () => {
     expect(Object.isFrozen(rejected.rejection?.issue.location)).toBe(true);
   });
 
+  it('projects input views, rejections, strings, and window titles for JSON string content', async () => {
+    const quoted = '""';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      `  description: ${JSON.stringify(quoted)}`,
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      `    default: ${JSON.stringify(quoted)}`,
+      '  rejected:',
+      '    type: select',
+      '    options: [exact-option-identity]',
+      'steps: []',
+      'gui:',
+      `  windowTitle: ${JSON.stringify(quoted)}`,
+    ]);
+    const session = await Session.open(path, {
+      mode: 'interactive',
+      environment: {},
+      overrides: { token: String.raw`\"\"`, rejected: quoted },
+    });
+
+    expect(session.allInputs().find((input) => input.id === 'note')?.value).toBe('***');
+    expect(session.allInputs().find((input) => input.id === 'rejected')?.rejection?.candidate).toBe(
+      '***',
+    );
+    expect(session.allInputs().find((input) => input.id === 'rejected')?.spec).toMatchObject({
+      options: ['exact-option-identity'],
+    });
+    expect(session.getStrings().productDescription()).toBe('***');
+    expect(session.getThemeConfig()).toEqual({ windowTitle: '***' });
+
+    const failure = executor.createFailureResult({
+      error: new InputError('RUNE-202', 'test failure'),
+      manifestPath: path,
+      dryRun: false,
+      session,
+    });
+    expect(failure.inputs.find((input) => input.id === 'note')?.value).toBe('***');
+  });
+
   it('projects secret answer state consistently across empty and disabled cases', async () => {
     const session = await Session.open(
       fixture([
@@ -1803,6 +1849,89 @@ describe('planning and executing', () => {
     ]);
   });
 
+  it('protects structured plan fields while preserving exact execution bytes and identities', async () => {
+    const quoted = '""';
+    const commandSeen: Array<{ argv: string[]; cwd: string; env: Record<string, string> }> = [];
+    const runner: Runner = {
+      run: async (request) => {
+        const reveal = (value: (typeof request.command.argv)[number]): string =>
+          isSecretString(value) ? revealSecretString(value) : value;
+        commandSeen.push({
+          argv: request.command.argv.map(reveal),
+          cwd: reveal(request.command.cwd),
+          env: Object.fromEntries(
+            Object.entries(request.command.env).map(([name, value]) => [name, reveal(value)]),
+          ),
+        });
+        return { kind: 'exited', exitCode: 0 };
+      },
+    };
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${JSON.stringify(quoted)}`,
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      `    default: ${JSON.stringify(quoted)}`,
+      'steps:',
+      '  - id: exact-step-identity',
+      `    title: ${JSON.stringify(quoted)}`,
+      '    run:',
+      '      command: node',
+      `      args: ${JSON.stringify([quoted])}`,
+      `      cwd: ${JSON.stringify(quoted)}`,
+      '      env:',
+      `        EXACT_ENV_IDENTITY: ${JSON.stringify(quoted)}`,
+    ]);
+    const session = await openSessionWithRunner(
+      path,
+      {
+        mode: 'non-interactive',
+        environment: {},
+        overrides: { token: String.raw`\"\"` },
+      },
+      runner,
+    );
+    const plan = session.plan();
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') throw new Error('expected pending step');
+
+    expect(plan.resolvedInputs.find((input) => input.id === 'note')?.value).toBe('***');
+    expect(plan.resolvedInputs.map((input) => input.id)).toEqual(['token', 'note']);
+    expect(step.id).toBe('exact-step-identity');
+    expect(step.title).toBe('***');
+    expect(step.command.argv[0]).toBe('node');
+    expect(isSecretString(step.command.argv[1])).toBe(true);
+    expect(isSecretString(step.command.cwd)).toBe(true);
+    expect(Object.keys(step.command.env)).toEqual(['EXACT_ENV_IDENTITY']);
+    expect(isSecretString(step.command.env.EXACT_ENV_IDENTITY)).toBe(true);
+
+    const events: RunEvent[] = [];
+    const result = await session.execute((event) => events.push(event));
+    expect(commandSeen).toEqual([
+      {
+        argv: ['node', quoted],
+        cwd: join(path, '..', quoted),
+        env: { EXACT_ENV_IDENTITY: quoted },
+      },
+    ]);
+    expect(events.find((event) => event.kind === 'stepStarted')).toMatchObject({
+      stepId: 'exact-step-identity',
+      title: '***',
+    });
+    expect(result.product).toMatchObject({ name: quoted });
+    expect(result.inputs.find((input) => input.id === 'note')?.value).toBe('***');
+    expect(result.steps[0]).toMatchObject({
+      id: 'exact-step-identity',
+      title: '***',
+      command: ['node', '***'],
+    });
+  });
+
   it('does not start a runner until the log is open and releases a failed execution', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'blocked.log');
@@ -2028,15 +2157,21 @@ describe('strings and theme', () => {
       '  lateSecret:',
       '    type: secret',
       'steps: []',
+      'gui:',
+      `  windowTitle: ${JSON.stringify('\u001b')}`,
     ]);
     const session = await Session.open(path, { mode: 'interactive', environment: {} });
     const strings = session.getStrings();
     const renderedSecret = String.raw`\u001b`;
 
     expect(formatSessionTerminalLine(strings, '\u001b')).toBe(renderedSecret);
+    expect(strings.chrome('rune.warning', { message: '\u001b' })).toBe('warning: \u001b');
+    expect(session.getThemeConfig()).toEqual({ windowTitle: '\u001b' });
 
     expect(session.setValue('lateSecret', renderedSecret)).toEqual([]);
     expect(session.getStrings()).toBe(strings);
+    expect(strings.chrome('rune.warning', { message: '\u001b' })).toBe('***');
+    expect(session.getThemeConfig()).toEqual({ windowTitle: '***' });
     expect(formatSessionTerminalLine(strings, renderedSecret)).toBe('***');
     expect(formatSessionTerminalLine(strings, '\u001b')).toBe('***');
   });

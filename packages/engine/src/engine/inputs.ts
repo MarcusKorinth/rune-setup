@@ -51,7 +51,12 @@ import {
   type RuntimeContext,
 } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { isSecretString, SecretRegistry, type SecretMasker } from './secrets.js';
+import {
+  isSecretString,
+  projectStructuredString,
+  SecretRegistry,
+  type SecretMasker,
+} from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -355,9 +360,9 @@ function projectInputValue(
     return value;
   }
   if (typeof value === 'string') {
-    return secrets.mask(value);
+    return projectStructuredString(value, secrets);
   }
-  return Object.freeze(value.map((entry) => secrets.mask(entry)));
+  return Object.freeze(value.map((entry) => projectStructuredString(entry, secrets)));
 }
 
 function projectInputRejection(

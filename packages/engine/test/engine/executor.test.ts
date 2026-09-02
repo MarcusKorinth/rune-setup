@@ -515,6 +515,68 @@ describe('a run that succeeds', () => {
     }
   });
 
+  it('projects real output into both the event and failed-step tail JSON fields', async () => {
+    const quoted = '""';
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: output',
+        '    run:',
+        '      command: a',
+      ],
+      { overrides: new Map([['token', String.raw`\"\"`]]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner((request) => {
+        request.onOutput('stdout', quoted);
+        return { kind: 'exited', exitCode: 1 };
+      }),
+    });
+
+    expect(events.find((event) => event.kind === 'stepOutput')).toMatchObject({
+      stepId: 'output',
+      stream: 'stdout',
+      line: MASK,
+    });
+    expect(result.steps[0]?.outputTail?.[0]).toEqual({ stream: 'stdout', line: MASK });
+  });
+
+  it('projects a synthetic output diagnostic before publishing and retaining it', async () => {
+    const diagnostic = 'RUNE-403 step "start" command was not found';
+    const encodedDiagnostic = JSON.stringify(diagnostic).slice(1, -1);
+    const { plan } = setup(
+      [
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: start',
+        '    run:',
+        '      command: absent',
+      ],
+      { overrides: new Map([['token', encodedDiagnostic]]) },
+    );
+    const events: RunEvent[] = [];
+
+    const result = await executeRun({
+      plan,
+      observer: (event) => events.push(event),
+      runner: stubRunner(() => ({ kind: 'failedToStart', reason: 'commandNotFound' })),
+    });
+
+    expect(events.filter((event) => event.kind === 'stepOutput')).toEqual([
+      { kind: 'stepOutput', stepId: 'start', stream: 'stderr', line: MASK },
+    ]);
+    expect(result.steps[0]?.outputTail).toEqual([{ stream: 'stderr', line: MASK }]);
+  });
+
   it('freezes every event and the complete returned result graph', async () => {
     const { plan } = setup(FROZEN_RESULT_STEP);
     const events: RunEvent[] = [];

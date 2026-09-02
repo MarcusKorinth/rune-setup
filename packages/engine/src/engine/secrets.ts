@@ -31,6 +31,19 @@ export interface SecretMasker {
   safeFallbackMarker(): string;
 }
 
+/**
+ * Projects one dynamic string for a structured public sink.
+ *
+ * Raw masking protects the in-process value. The second check covers secret spellings that
+ * exist only inside JSON string content after quotes, controls, backslashes, or lone surrogates
+ * are escaped. JSON structure itself is deliberately outside this field-level contract.
+ */
+export function projectStructuredString(text: string, masker: SecretMasker): string {
+  const masked = masker.mask(text);
+  const jsonContent = JSON.stringify(masked).slice(1, -1);
+  return masker.mask(jsonContent) === jsonContent ? masked : MASK;
+}
+
 /** Private registry contents retained for authentic immutable masker snapshots. */
 const SECRET_MASKER_VALUES = new WeakMap<SecretMasker, readonly string[]>();
 

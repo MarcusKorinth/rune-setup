@@ -147,12 +147,59 @@ describe('the resolved string table', () => {
     const secrets = new SecretRegistry();
     secrets.register('raw-secret');
     secrets.register(String.raw`\u001b`);
-    const strings = projectStringsForSink(source, (text) => secrets.mask(text));
+    const strings = projectStringsForSink(source, secrets);
 
     expect(formatSessionTerminalLine(strings, 'raw-secret and \u001b')).toBe('*** and ***');
     expect(
       formatSessionTerminalLine(strings, strings.chrome('rune.warning', { message: '\u001b' })),
-    ).toBe('warning: ***');
+    ).toBe('***');
+  });
+
+  it('projects every dynamic accessor through its JSON string content', () => {
+    const quoted = '""';
+    const manifest = parseManifestText(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        `  description: ${JSON.stringify(quoted)}`,
+        'gui:',
+        `  windowTitle: ${JSON.stringify(quoted)}`,
+        'inputs:',
+        '  choice:',
+        '    type: select',
+        `    title: ${JSON.stringify(quoted)}`,
+        `    description: ${JSON.stringify(quoted)}`,
+        '    options:',
+        `      - value: exact-option-identity`,
+        `        label: ${JSON.stringify(quoted)}`,
+        'steps:',
+        '  - id: install',
+        `    title: ${JSON.stringify(quoted)}`,
+        '    run:',
+        '      command: node',
+      ].join('\n'),
+      'structured-strings.yaml',
+    );
+    const registry = new SecretRegistry();
+    registry.register(String.raw`\"\"`);
+    const strings = projectStringsForSink(
+      resolveStrings({ manifest, locale: undefined }),
+      registry,
+    );
+
+    expect(strings.productDescription()).toBe('***');
+    expect(strings.windowTitle()).toBe('***');
+    expect(strings.inputTitle('choice')).toBe('***');
+    expect(strings.inputDescription('choice')).toBe('***');
+    expect(strings.optionLabel('choice', 'exact-option-identity')).toBe('***');
+    expect(strings.stepTitle('install')).toBe('***');
+    expect(strings.chrome('rune.warning', { message: quoted })).toBe('***');
+    expect(Object.values(strings.entries)).not.toContain(quoted);
+    expect(strings.optionLabel('choice', 'missing-option-identity')).toBe(
+      'missing-option-identity',
+    );
   });
 
   it.each([
@@ -161,24 +208,21 @@ describe('the resolved string table', () => {
       'spread copy',
       () => {
         const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
-        return { ...projectStringsForSink(source, (text) => text) };
+        return { ...projectStringsForSink(source, new SecretRegistry()) };
       },
     ],
     [
       'prototype clone',
       () => {
         const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
-        return Object.create(projectStringsForSink(source, (text) => text)) as StringTable;
+        return Object.create(projectStringsForSink(source, new SecretRegistry())) as StringTable;
       },
     ],
     [
       'proxy',
       () => {
         const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
-        return new Proxy(
-          projectStringsForSink(source, (text) => text),
-          {},
-        );
+        return new Proxy(projectStringsForSink(source, new SecretRegistry()), {});
       },
     ],
   ] as const)('rejects an unauthenticated %s for terminal projection', (_name, makeTable) => {

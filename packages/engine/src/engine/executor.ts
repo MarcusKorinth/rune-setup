@@ -35,7 +35,13 @@ import { hostPlatform, type Platform } from './context.js';
 import type { InputState } from './inputs.js';
 import type { EngineObserver, RunEvent, StepFinished } from './events.js';
 import { deepFreeze } from './freeze.js';
-import { isSecretString, MASK, type SecretMasker, type SecretString } from './secrets.js';
+import {
+  isSecretString,
+  MASK,
+  projectStructuredString,
+  type SecretMasker,
+  type SecretString,
+} from './secrets.js';
 import { CancelToken } from './cancel.js';
 import { transitionStepState, type StepState } from './state.js';
 import {
@@ -302,7 +308,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       stepId: step.id,
       index,
       total: plan.steps.length,
-      title: secrets.mask(step.title),
+      title: projectStructuredString(step.title, secrets),
     });
 
     const tail: ResultOutputLine[] = [];
@@ -346,7 +352,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
                 Buffer.byteLength(rawLine, 'utf8') > MAX_OUTPUT_LINE_BYTES
                   ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER
                   : rawLine;
-              const line = secrets.mask(boundedLine);
+              const line = projectStructuredString(boundedLine, secrets);
               keepInTail(stream, line);
               emit({ kind: 'stepOutput', stepId: step.id, stream, line });
             });
@@ -427,7 +433,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     if (diagnostic !== undefined) {
-      const maskedDiagnostic = secrets.mask(diagnostic);
+      const maskedDiagnostic = projectStructuredString(diagnostic, secrets);
       const line =
         Buffer.byteLength(maskedDiagnostic, 'utf8') > MAX_OUTPUT_LINE_BYTES
           ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER
@@ -797,12 +803,16 @@ function failureSource(
       inputs: session
         .allInputs()
         .filter((input) => input.value !== undefined)
-        .map(sessionResultInput),
+        .map((input) => sessionResultInput(input, secrets)),
     };
   }
   return {
     product: null,
-    manifest: { path: secrets.mask(manifestPath), sha256: null, schemaVersion: null },
+    manifest: {
+      path: projectStructuredString(manifestPath, secrets),
+      sha256: null,
+      schemaVersion: null,
+    },
     inputs: [],
   };
 }
@@ -822,7 +832,7 @@ function failureSteps(
   );
 }
 
-function sessionResultInput(state: InputState): ResultInput {
+function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInput {
   if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value in a failure result`);
   }
@@ -832,14 +842,14 @@ function sessionResultInput(state: InputState): ResultInput {
     if (state.secret) {
       return { ...common, value: null, secret: true };
     }
-    return { ...common, value: state.value, secret: false };
+    return { ...common, value: maskInputValue(state.value, secrets), secret: false };
   }
   if (state.ignored === undefined) {
     const common = { id: state.id, source: null, enabled: false as const };
     if (state.secret) {
       return { ...common, value: null, secret: true };
     }
-    return { ...common, value: state.value, secret: false };
+    return { ...common, value: maskInputValue(state.value, secrets), secret: false };
   }
   if (state.ignored === 'default') {
     throw new InternalError('invalid disabled input provenance');
@@ -853,7 +863,7 @@ function sessionResultInput(state: InputState): ResultInput {
   if (state.secret) {
     return { ...common, value: null, secret: true };
   }
-  return { ...common, value: state.value, secret: false };
+  return { ...common, value: maskInputValue(state.value, secrets), secret: false };
 }
 
 function failureOutcome(projection: FailureErrorProjection, dryRun: boolean): RunOutcome {
@@ -1124,12 +1134,12 @@ function skippedResultStep(
 ): ResultStep {
   return {
     id: step.id,
-    title: secrets.mask(step.title),
+    title: projectStructuredString(step.title, secrets),
     state: 'SKIPPED',
     exitCode: null,
     durationMs: 0,
     command: null,
-    skipReason: secrets.mask(step.skipReason),
+    skipReason: projectStructuredString(step.skipReason, secrets),
   };
 }
 
@@ -1144,7 +1154,7 @@ function commandResultStep(
   const command = maskArgv(step, secrets);
   const identity = {
     id: step.id,
-    title: secrets.mask(step.title),
+    title: projectStructuredString(step.title, secrets),
     durationMs,
     command,
     skipReason: null,
@@ -1188,16 +1198,16 @@ function maskInputValue(
   secrets: SecretMasker,
 ): string | boolean | readonly string[] {
   if (typeof value === 'string') {
-    return secrets.mask(value);
+    return projectStructuredString(value, secrets);
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => secrets.mask(entry));
+    return value.map((entry) => projectStructuredString(entry, secrets));
   }
   return value;
 }
 
 function maskCommandValue(value: string | SecretString, secrets: SecretMasker): string {
-  return isSecretString(value) ? MASK : secrets.mask(value);
+  return isSecretString(value) ? MASK : projectStructuredString(value, secrets);
 }
 
 function maskArgv(
