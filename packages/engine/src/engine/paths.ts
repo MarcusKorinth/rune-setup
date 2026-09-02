@@ -17,6 +17,11 @@ export function isWindowsRootedPath(value: string): boolean {
   return WINDOWS_ROOTED_PATH_PATTERN.test(value);
 }
 
+/** Resolves an already-classified host-relative value from a fixed base directory. */
+export function resolveManifestRelativePathFrom(value: string, basePath: string): string {
+  return resolvePath(basePath, `.${sep}${value}`);
+}
+
 /**
  * Resolves a target-relative value from the manifest directory without allowing this host's
  * path grammar to reinterpret it as absolute. Target-absolute values stay byte-identical.
@@ -28,5 +33,5 @@ export function resolveTargetPathFrom(value: string, basePath: string, platform:
   }
   const hostRelative =
     platform === 'windows' ? value.replace(/[\\/]/g, sep) : value.replace(/\//g, sep);
-  return resolvePath(basePath, `.${sep}${hostRelative}`);
+  return resolveManifestRelativePathFrom(hostRelative, basePath);
 }

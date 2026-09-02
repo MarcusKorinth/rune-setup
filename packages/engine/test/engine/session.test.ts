@@ -1273,6 +1273,17 @@ describe('planning and executing', () => {
     expect(flagLog.plan().executionOptions.logFile).toBe(flagPath);
   });
 
+  it('anchors a drive-relative manifest log path during foreign-platform preview', async () => {
+    const path = fixture([...BASE, 'execution:', '  logFile: "C:run.log"']);
+    const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
+    const session = await Session.open(path, { environment: {}, platform: foreign });
+    const expected = join(path, '..', 'C:run.log');
+
+    expect(session.plan().executionOptions.logFile).toBe(expected);
+    expect(session.describe().crossPlatformPreview).toBe(true);
+    expect(session.plan().executionOptions.logFile).toBe(expected);
+  });
+
   it('preserves an explicit frontend mode in dry-run and live results', async () => {
     const session = await openSessionWithRunner(
       fixture(BASE),
@@ -1861,6 +1872,23 @@ describe('strings and theme', () => {
     expect(second).toEqual(first);
     expect(second).not.toBe(first);
     expect(Object.isFrozen(second)).toBe(true);
+  });
+
+  it('anchors every drive-relative theme path outside GUI mode without asset I/O', async () => {
+    const path = fixture([
+      ...BASE,
+      'gui:',
+      '  logo: "C:logo.png"',
+      '  banner: "C:banner.png"',
+      '  theme: "C:theme.css"',
+    ]);
+    const session = await Session.open(path, { mode: 'non-interactive', environment: {} });
+
+    expect(session.getThemeConfig()).toEqual({
+      logo: join(path, '..', 'C:logo.png'),
+      banner: join(path, '..', 'C:banner.png'),
+      theme: join(path, '..', 'C:theme.css'),
+    });
   });
 
   it('masks a localized overlay window title', async () => {

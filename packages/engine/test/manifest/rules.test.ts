@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -364,6 +364,28 @@ describe('gui asset rules', () => {
         manifestDir: projectDir(),
       }),
     ).not.toThrow();
+  });
+
+  it('treats drive-relative spelling as an ordinary manifest-relative asset path', () => {
+    const dir = projectDir();
+    if (process.platform !== 'win32') {
+      writeFileSync(join(dir, 'C:logo.png'), '');
+      expect(() =>
+        parseManifestText(manifest('  logo: "C:logo.png"'), 'installer.yaml', {
+          checkAssetFiles: true,
+          manifestDir: dir,
+        }),
+      ).not.toThrow();
+      return;
+    }
+
+    const drive = parse(dir).root.slice(0, 2);
+    expect(() =>
+      parseManifestText(manifest(`  logo: "${drive}."`), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: dir,
+      }),
+    ).toThrow(/does not exist/);
   });
 
   it('resolves relative assets against the manifest, not the working directory', () => {

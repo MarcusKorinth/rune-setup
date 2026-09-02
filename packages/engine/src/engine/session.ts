@@ -54,6 +54,7 @@ import {
   type ValuesDocument,
 } from './inputs.js';
 import { buildPlan, type ExecutionPlan } from './plan.js';
+import { resolveManifestRelativePathFrom } from './paths.js';
 import { SecretRegistry } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
@@ -506,7 +507,9 @@ export class Session {
       return Object.freeze({});
     }
     const anchor = (path: string | undefined): string | undefined =>
-      path === undefined || isAbsolute(path) ? path : resolvePath(this.#context.manifestDir, path);
+      path === undefined || isAbsolute(path)
+        ? path
+        : resolveManifestRelativePathFrom(path, this.#context.manifestDir);
     return Object.freeze({
       ...(gui.accentColor === undefined ? {} : { accentColor: gui.accentColor }),
       ...(gui.logo === undefined ? {} : { logo: anchor(gui.logo) }),
@@ -621,5 +624,7 @@ function effectiveLogFile(
   if (configured === undefined) {
     return undefined;
   }
-  return resolvePath(manifestDir, configured);
+  return isAbsolute(configured)
+    ? resolvePath(manifestDir, configured)
+    : resolveManifestRelativePathFrom(configured, manifestDir);
 }

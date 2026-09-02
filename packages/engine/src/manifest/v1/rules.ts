@@ -12,7 +12,7 @@
 
 import { statSync, type Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute } from 'node:path';
 
 import {
   childrenOf,
@@ -32,6 +32,7 @@ import {
   type InputReferenceIndex,
 } from '../../engine/context.js';
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
+import { resolveManifestRelativePathFrom } from '../../engine/paths.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
   formatLocation,
@@ -294,7 +295,7 @@ function guiAssets(
     assets.push({
       value,
       path,
-      absolute: isAbsolute(value) ? value : resolve(ctx.manifestDir, value),
+      absolute: isAbsolute(value) ? value : resolveManifestRelativePathFrom(value, ctx.manifestDir),
     });
   }
   return assets;
