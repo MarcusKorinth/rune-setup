@@ -3,7 +3,7 @@
  * program wiring can share them without a cycle.
  */
 
-import type { CancelToken } from '@rune/engine';
+import type { CancelToken, RuneError } from '@rune/engine';
 
 /** Minimal I/O seam so the CLI can be exercised in tests without touching process streams. */
 export interface CliIo {
@@ -46,6 +46,19 @@ export function humanStdout(io: CliIo, text: string): void {
 /** Writes one fully composed human line to stderr after terminal escaping. */
 export function humanStderr(io: CliIo, text: string): void {
   io.stderr(escapeTerminalText(text));
+}
+
+/**
+ * Writes an authentic engine RuneError without rebuilding its diagnostic composition.
+ * Aggregate messages already own their escaped physical separators and were masked only after
+ * full composition; single-issue messages still pass through the ordinary human writer.
+ */
+export function runeErrorStderr(io: CliIo, error: RuneError): void {
+  if (error.issues.length === 1) {
+    humanStderr(io, error.message);
+    return;
+  }
+  io.stderr(error.message);
 }
 
 /** Thrown by commands that finished with a known exit code that is not an error to report. */

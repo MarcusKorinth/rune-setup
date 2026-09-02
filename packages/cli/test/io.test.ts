@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { RuneError } from '@rune/engine';
+import { describe, expect, it, vi } from 'vitest';
 
-import { escapeTerminalText } from '../src/io.js';
+import { escapeTerminalText, runeErrorStderr } from '../src/io.js';
 
 describe('terminal text escaping', () => {
   it('visibly escapes every terminal control and preserves ordinary text', () => {
@@ -44,5 +45,16 @@ describe('terminal text escaping', () => {
 
     expect(escaped).toBe(String.raw`literal \n and \u001b, raw: \u001b\u0085\u2028\u2029`);
     expect(escapeTerminalText(escaped)).toBe(escaped);
+  });
+
+  it('terminal-escapes the fully masked message of a single-issue RuneError', () => {
+    const stderr = vi.fn();
+
+    runeErrorStderr(
+      { stdout: vi.fn(), stderr },
+      new RuneError('RUNE-202', 'single\nissue\u001b\u0085'),
+    );
+
+    expect(stderr).toHaveBeenCalledWith(String.raw`single\nissue\u001b\u0085`);
   });
 });

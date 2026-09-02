@@ -905,6 +905,73 @@ describe('rune run', () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
+  it('does not reconstruct a multiline secret at an aggregate issue boundary', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  masker:',
+      '    type: secret',
+      '    required: false',
+      '  invalidOptional:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "x+"',
+      '  firstMissing:',
+      '    type: text',
+      '  secondMissing:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const locationPrefix = process.platform === 'win32' ? parse(path).root.slice(0, 2) : '/';
+    const issueSuffix = process.platform === 'win32' ? '+' : 'x+';
+    const secret = `${issueSuffix}\n${locationPrefix}`;
+    const controlledCandidate = 'invalid\u001b\u0085';
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--result',
+        resultPath,
+        '--set',
+        `masker=${secret}`,
+        '--set',
+        `invalidOptional=${controlledCandidate}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(4);
+    const aggregate = io.err[0] ?? '';
+    expect(aggregate).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+    expect(aggregate).toContain(String.raw`\u001b\u0085`);
+    expect(hasRawTerminalControl(aggregate.replaceAll('\n', ''))).toBe(false);
+    expect(aggregate).toContain('\n');
+
+    const resultText = readFileSync(resultPath, 'utf8');
+    const resultStrings: string[] = [];
+    const result = JSON.parse(resultText, (_key, value: unknown) => {
+      if (typeof value === 'string') {
+        resultStrings.push(value);
+      }
+      return value;
+    }) as {
+      readonly status: string;
+      readonly error: { readonly message: string };
+    };
+    expect(result.status).toBe('input_error');
+    expect(result.error.message).toContain('\n');
+    expect(result.error.message).not.toContain(secret);
+    expect(resultStrings.every((value) => !value.includes(secret))).toBe(true);
+  });
+
   it('rejects __proto__ as an unknown --set key', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
