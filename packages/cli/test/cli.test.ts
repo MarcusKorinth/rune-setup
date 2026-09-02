@@ -529,7 +529,9 @@ describe('rune run', () => {
     expect(await run(['run', emptyPath, '--non-interactive', '--locale', 'de-DE'], empty)).toBe(0);
     expect(empty.err).toContain('Einrichtung abgeschlossen.');
     expect(empty.err).toContain('warning: Kein Schritt musste ausgeführt werden.');
-    expect(empty.err).toContain('succeeded: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 0)');
+    expect(empty.err).toContain(
+      'succeeded: 0 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 0)',
+    );
 
     const failedPath = fixture([
       'schemaVersion: 1',
@@ -549,7 +551,9 @@ describe('rune run', () => {
       1,
     );
     expect(failed.err).toContain('Setup failed.');
-    expect(failed.err).toContain('failed: 0 succeeded, 1 failed, 0 skipped, 0 not run (exit 1)');
+    expect(failed.err).toContain(
+      'failed: 0 succeeded, 1 failed, 0 skipped, 0 cancelled, 0 not run (exit 1)',
+    );
   });
 
   it('masks registered bytes in ordinary dry-run values and literal argv', async () => {
@@ -1496,7 +1500,9 @@ describe('result files for failed outcomes', () => {
       manifest: { path, sha256: null, schemaVersion: null },
     });
     expect(io.err).toContain(`result written to ${resultPath}`);
-    expect(io.err).toContain('config_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 3)');
+    expect(io.err).toContain(
+      'config_error: 0 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 3)',
+    );
   });
 
   it('suppresses unsafe fallback lines after a secret-bearing open failure', async () => {
@@ -1516,7 +1522,8 @@ describe('result files for failed outcomes', () => {
       'steps: []',
     ]);
     const resultPath = join(path, '..', 'open-failure.json');
-    const summary = 'input_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 4)';
+    const summary =
+      'input_error: 0 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 4)';
     const announcement = `result written to ${resultPath}`;
     const io = capture();
 
@@ -1615,7 +1622,8 @@ describe('result files for failed outcomes', () => {
       ]);
       const resultPath = join(path, '..', `${source}-overlay-failure.json`);
       const overlaySecret = `result written to ${resultPath}`;
-      const summarySecret = 'config_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 3)';
+      const summarySecret =
+        'config_error: 0 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 3)';
       writeLocaleOverlay(path, [`${JSON.stringify(overlaySecret)}: Unbekannt`]);
       if (source === 'values') {
         writeFileSync(

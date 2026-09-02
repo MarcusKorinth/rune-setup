@@ -60,6 +60,9 @@ describe('CLI cancellation control', () => {
     });
 
     expect(code).toBe(6);
+    expect(io.err).toContain(
+      'cancelled: 0 succeeded, 0 failed, 0 skipped, 1 cancelled, 1 not run (exit 6)',
+    );
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
     expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
@@ -109,6 +112,9 @@ describe('CLI cancellation control', () => {
 
     expect(code).toBe(6);
     expect(io.out).toEqual([]);
+    expect(io.err).toContain(
+      'cancelled: 0 succeeded, 0 failed, 1 skipped, 0 cancelled, 1 not run (exit 6)',
+    );
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
     expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({

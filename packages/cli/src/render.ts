@@ -170,12 +170,14 @@ export function renderOutcome(
     io,
     strings === undefined
       ? `${result.status}: ${result.stepsSucceeded} succeeded, ${result.stepsFailed} failed, ` +
-          `${result.stepsSkipped} skipped, ${result.stepsNotRun} not run (exit ${result.exitCode})`
+          `${result.stepsSkipped} skipped, ${result.stepsCancelled} cancelled, ` +
+          `${result.stepsNotRun} not run (exit ${result.exitCode})`
       : strings.chrome('rune.result.summary', {
           status: result.status,
           succeeded: result.stepsSucceeded,
           failed: result.stepsFailed,
           skipped: result.stepsSkipped,
+          cancelled: result.stepsCancelled,
           notRun: result.stepsNotRun,
           exitCode: result.exitCode,
         }),
