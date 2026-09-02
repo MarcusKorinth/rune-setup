@@ -39,9 +39,10 @@ The complete pipeline behind `rune validate`, `rune schema` and
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
-- five-layer value resolution with provenance (layers 1–4 here:
-  `defaults < values files < env < --set`; layer 5 = interactive answers lands with
-  Milestones 2 and 3)
+- five-layer value resolution with provenance (layers 1–4 delivered here:
+  `defaults < values files < env < --set`; layer 5 for interactive answers is exposed
+  through `Session.setValue` in the delivered first Milestone 2 slice; interactive CLI
+  and GUI clients remain planned for Milestones 2 and 3)
 - conditional inputs (`when:` on inputs, same typed grammar as steps, acyclicity rule,
   disabled ⇒ empty value, ignored supplied values with warning + provenance)
 - `${...}` interpolation and the typed `when:` condition language; `--platform`
