@@ -3,7 +3,7 @@
  * program wiring can share them without a cycle.
  */
 
-import { formatIssues, type CancelToken, type RuneError } from '@rune/engine';
+import { formatRuneError, type CancelToken, type RuneError } from '@rune/engine';
 
 /** Minimal I/O seam so the CLI can be exercised in tests without touching process streams. */
 export interface CliIo {
@@ -49,17 +49,12 @@ export function humanStderr(io: CliIo, text: string): void {
 }
 
 /**
- * Writes an authentic engine RuneError without rebuilding its diagnostic composition.
- * Aggregate messages already own their escaped physical separators and were masked only after
- * full composition; a single issue is formatted with its source location before passing through
- * the ordinary human writer.
+ * Writes the engine-formatted diagnostic without rebuilding or re-escaping its composition.
+ * Its issue data is control-escaped, its aggregate separators are physical, and projected errors
+ * retain the mask applied after full composition.
  */
 export function runeErrorStderr(io: CliIo, error: RuneError): void {
-  if (error.issues.length === 1) {
-    humanStderr(io, formatIssues(error.issues));
-    return;
-  }
-  io.stderr(error.message);
+  io.stderr(formatRuneError(error));
 }
 
 /** Thrown by commands that finished with a known exit code that is not an error to report. */

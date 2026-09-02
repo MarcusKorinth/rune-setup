@@ -844,6 +844,55 @@ describe('rune run', () => {
     expect(written['status']).toBe('input_error');
   });
 
+  it('does not reconstruct a secret between a single issue location and message', async () => {
+    const secret = '1: i';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  masker:',
+      '    type: secret',
+      '    required: false',
+      '  requiredInput:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(
+      ['run', path, '--non-interactive', '--result', resultPath, '--set', `masker=${secret}`],
+      io,
+    );
+
+    expect(code).toBe(4);
+    const stderr = io.err.join('\n');
+    expect(stderr).toContain(`${path}:1:***nput "requiredInput" is required`);
+    expect(stderr).not.toContain(secret);
+
+    const result = JSON.parse(readFileSync(resultPath, 'utf8')) as {
+      readonly status: string;
+      readonly error: {
+        readonly message: string;
+        readonly location: {
+          readonly file: string;
+          readonly line: number;
+          readonly column: number;
+        };
+      };
+      readonly inputs: readonly { readonly id: string; readonly value: unknown }[];
+    };
+    expect(result.status).toBe('input_error');
+    expect(result.error).toMatchObject({
+      message: `${path}:1:***nput "requiredInput" is required and has no value — supply it with --set requiredInput=... | RUNE_INPUT_REQUIREDINPUT | values-file key 'requiredInput'`,
+      location: { file: path, line: 1, column: 1 },
+    });
+    expect(result.inputs.find((input) => input.id === 'masker')?.value).toBeNull();
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
   it('reports an invalid seed with every missing input in stderr and the result', async () => {
     const secret = 'F090-OPEN-FAILURE-SECRET';
     const path = fixture([

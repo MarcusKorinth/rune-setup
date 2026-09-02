@@ -13,6 +13,7 @@ export {
   ExecutionError,
   exitCodeFor,
   formatIssues,
+  formatRuneError,
   InputError,
   InternalError,
   INTERNAL_EXIT_CODE,

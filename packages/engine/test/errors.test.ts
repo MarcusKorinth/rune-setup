@@ -6,6 +6,7 @@ import {
   ExecutionError,
   exitCodeFor,
   formatIssues,
+  formatRuneError,
   InputError,
   InternalError,
   ManifestError,
@@ -117,6 +118,23 @@ describe('RuneError', () => {
     expect(projected.message).toBe('unsupported ***-host');
   });
 
+  it('masks a projected diagnostic after composing its location and message', () => {
+    const secret = '1: i';
+    const secrets = new SecretRegistry();
+    secrets.register(secret);
+    const location = { file: 'installer.yaml', line: 1, column: 1 };
+    const projected = projectRuneError(
+      new InputError('RUNE-201', 'input is missing', { location }),
+      (text) => secrets.mask(text),
+    );
+
+    expect(projected.message).toBe('input is missing');
+    expect(projected.location).toEqual(location);
+    expect(projected.issues).toEqual([{ code: 'RUNE-201', message: 'input is missing', location }]);
+    expect(formatIssues(projected.issues)).toContain(secret);
+    expect(formatRuneError(projected)).toBe('installer.yaml:1:***nput is missing');
+  });
+
   it('collects many issues into one error whose message lists them all', () => {
     const issues: RuneIssue[] = [
       {
@@ -186,5 +204,13 @@ describe('formatIssues', () => {
         { code: 'RUNE-103', message: 'unlocated', location: undefined },
       ]),
     ).toBe('f.yaml:1:2: located\nunlocated');
+  });
+
+  it('formats an ordinary RuneError from its issues', () => {
+    const error = new ManifestError('RUNE-103', 'invalid', {
+      location: { file: 'installer.yaml', line: 2, column: 3 },
+    });
+
+    expect(formatRuneError(error)).toBe('installer.yaml:2:3: invalid');
   });
 });

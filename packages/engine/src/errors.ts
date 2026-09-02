@@ -49,6 +49,8 @@ export interface RuneIssue {
 
 /** Values-file order is internal diagnostic metadata, not part of the public issue shape. */
 const valuesDocumentOrdinals = new WeakMap<RuneIssue, number>();
+/** Fully composed sink diagnostics retained only for errors projected by this module. */
+const projectedRuneErrorDiagnostics = new WeakMap<RuneError, string>();
 
 /** Retains a values document's invocation order while its issue is being collected. */
 export function withValuesDocumentOrdinal(issue: RuneIssue, ordinal: number): RuneIssue {
@@ -72,6 +74,11 @@ export function formatIssues(issues: readonly RuneIssue[]): string {
         : escapeDiagnosticText(issue.message),
     )
     .join('\n');
+}
+
+/** Formats a RuneError without discarding a sink-safe projection of its full composition. */
+export function formatRuneError(error: RuneError): string {
+  return projectedRuneErrorDiagnostics.get(error) ?? formatIssues(error.issues);
 }
 
 /**
@@ -271,42 +278,39 @@ export function projectRuneError(
     ...(error.cause === undefined ? {} : { cause: projectCause(error.cause, projectText) }),
   };
   const message = projectText(error.message);
+  const diagnostic = projectText(formatIssues(issues));
+  let projected: RuneError;
 
   if (error instanceof UsageError) {
-    return new UsageError(message, options);
-  }
-  if (error instanceof PlatformError) {
-    return new PlatformError(message, options);
-  }
-  if (error instanceof ManifestError) {
-    return new ManifestError(error.code as ManifestCode, message, options);
-  }
-  if (error instanceof InputError) {
-    return new InputError(error.code as InputCode, message, options);
-  }
-  if (error instanceof ResolutionError) {
-    return new ResolutionError(error.code as ResolutionCode, message, options);
-  }
-  if (error instanceof ConditionError) {
-    return new ConditionError(error.code as ConditionCode, message, options);
-  }
-  if (error instanceof ExecutionError) {
-    return new ExecutionError(error.code as ExecutionCode, message, options);
-  }
-  if (error instanceof CancelledError) {
-    return new CancelledError(message, options);
-  }
-  if (error instanceof InternalError) {
+    projected = new UsageError(message, options);
+  } else if (error instanceof PlatformError) {
+    projected = new PlatformError(message, options);
+  } else if (error instanceof ManifestError) {
+    projected = new ManifestError(error.code as ManifestCode, message, options);
+  } else if (error instanceof InputError) {
+    projected = new InputError(error.code as InputCode, message, options);
+  } else if (error instanceof ResolutionError) {
+    projected = new ResolutionError(error.code as ResolutionCode, message, options);
+  } else if (error instanceof ConditionError) {
+    projected = new ConditionError(error.code as ConditionCode, message, options);
+  } else if (error instanceof ExecutionError) {
+    projected = new ExecutionError(error.code as ExecutionCode, message, options);
+  } else if (error instanceof CancelledError) {
+    projected = new CancelledError(message, options);
+  } else if (error instanceof InternalError) {
     const detail = error.message.endsWith(INTERNAL_ERROR_SUFFIX)
       ? error.message.slice(0, -INTERNAL_ERROR_SUFFIX.length)
       : error.message;
-    return new InternalError(
+    projected = new InternalError(
       projectText(`${detail}${INTERNAL_ERROR_SUFFIX}`),
       options,
       PROJECTED_INTERNAL_ERROR,
     );
+  } else {
+    projected = new RuneError(error.code, message, options);
   }
-  return new RuneError(error.code, message, options);
+  projectedRuneErrorDiagnostics.set(projected, diagnostic);
+  return projected;
 }
 
 function projectLocation(
