@@ -46,6 +46,78 @@ async function captureOpenErrorFrom(opening: Promise<Session>): Promise<RuneErro
 }
 
 describe('createFailureResult', () => {
+  it('keeps aggregate error JSON string content free of registered quote literals', async () => {
+    const secret = String.raw`\"\"`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      'steps: []',
+    ]);
+    const valuesPath = join(path, '..', 'values.yaml');
+    writeFileSync(valuesPath, '"": value\n', 'utf8');
+    const error = await captureOpenError(path, {
+      environment: {},
+      overrides: { token: secret },
+      values: [valuesPath],
+    });
+
+    const result = createFailureResult({ error, manifestPath: path, dryRun: true });
+    const dynamic = result.error?.message ?? '';
+
+    expect(JSON.stringify(dynamic).slice(1, -1)).not.toContain(secret);
+  });
+
+  it('checks the JSON string content of the complete multiline result error', async () => {
+    const first =
+      'input "alpha" is required and has no value — supply it with --set alpha=... | RUNE_INPUT_ALPHA | values-file key \'alpha\'';
+    const second =
+      'input "beta" is required and has no value — supply it with --set beta=... | RUNE_INPUT_BETA | values-file key \'beta\'';
+    const secret = JSON.stringify(`${first}\n${second}`).slice(1, -1);
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      '  alpha:',
+      '    type: text',
+      '  beta:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      overrides: { token: secret },
+    });
+    let error: RuneError | undefined;
+    try {
+      session.plan();
+    } catch (caught) {
+      if (caught instanceof RuneError) error = caught;
+    }
+
+    expect(error).toBeInstanceOf(InputError);
+    const result = createFailureResult({
+      error: error!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    const dynamic = result.error?.message ?? '';
+
+    expect(dynamic.split('\n')).toHaveLength(2);
+    expect(JSON.stringify(dynamic).slice(1, -1)).not.toContain(secret);
+  });
+
   it.each([
     {
       name: 'RUNE_LOCALE',

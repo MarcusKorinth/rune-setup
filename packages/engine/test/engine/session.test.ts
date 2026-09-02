@@ -17,7 +17,15 @@ import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
 import { isSecretString, revealSecretString } from '../../src/engine/secrets.js';
-import { ExecutionError, InputError, InternalError, ManifestError } from '../../src/errors.js';
+import {
+  ExecutionError,
+  formatIssues,
+  formatRuneError,
+  InputError,
+  InternalError,
+  ManifestError,
+  type RuneIssue,
+} from '../../src/errors.js';
 import {
   createSessionOptionsForTesting,
   Session,
@@ -1129,6 +1137,184 @@ describe('answering inputs', () => {
       rejection: { source: 'set', candidate: 'rejected' },
     });
     expect(session.pendingInputs().map((input) => input.id)).toEqual(['choice']);
+  });
+
+  it('keeps a collected rejection durable and authentic when plan adds a missing issue', async () => {
+    const candidate = `A"B\\C\ud800\u001bTAIL`;
+    const secondCandidate = `D"E\\F\ud800\u001bTAIL`;
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  masker:',
+        '    type: secret',
+        '    required: false',
+        '  choice:',
+        '    type: select',
+        '    options: [accepted]',
+        '    required: false',
+        '  choice2:',
+        '    type: select',
+        '    options: [accepted]',
+        '    required: false',
+        '  requiredInput:',
+        '    type: text',
+        'steps: []',
+      ],
+      {
+        'values.yaml': `choice: ${JSON.stringify(candidate)}\nchoice2: ${JSON.stringify(secondCandidate)}\n`,
+      },
+    );
+    const valuesPath = join(path, '..', 'values.yaml');
+    const secretLines = [
+      `${valuesPath}:1:1: choice (from ${valuesPath}): "A"B\\C\ud800\u001b`,
+      `${valuesPath}:2:1: choice2 (from ${valuesPath}): "D"E\\F\ud800\u001b`,
+      '***:1:1: ***',
+    ];
+    const secret = secretLines.join('\n');
+    const visibleSecrets = secretLines.map((line) =>
+      line
+        .replaceAll('\\', '\\\\')
+        .replaceAll('"', '\\"')
+        .replaceAll('\ud800', '\\ud800')
+        .replaceAll('\u001b', '\\u001b'),
+    );
+    const expectSafe = (text: string): void => {
+      for (const protectedText of [...secretLines, ...visibleSecrets]) {
+        expect(text).not.toContain(protectedText);
+      }
+    };
+    const session = await Session.open(path, {
+      mode: 'interactive',
+      environment: {},
+      values: [valuesPath],
+      overrides: { masker: secret },
+    });
+
+    const issue = session.pendingInputs().find((input) => input.id === 'choice')?.rejection?.issue;
+    expect(issue).toBeDefined();
+    const copies = [
+      structuredClone(issue!),
+      { ...issue!, location: issue?.location === undefined ? undefined : { ...issue.location } },
+      JSON.parse(JSON.stringify(issue)) as RuneIssue,
+    ];
+    for (const copied of copies) {
+      const conventional = `${copied.location?.file}:${copied.location?.line}:${copied.location?.column}: ${copied.message}`;
+      expectSafe(formatIssues([copied]));
+      expectSafe(conventional);
+    }
+
+    let error: InputError | undefined;
+    try {
+      session.plan();
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(InputError);
+      error = cause as InputError;
+    }
+    expect(error?.issues).toHaveLength(3);
+    const invalidIssues = error?.issues.filter((item) => item.code === 'RUNE-202') ?? [];
+    expect(invalidIssues).toHaveLength(2);
+    expect(invalidIssues[0]?.message).toBe(invalidIssues[1]?.message);
+    expect(error?.location).toBe(error?.issues.find((item) => item.location)?.location);
+    expect(error?.message).toContain('\n');
+    expect(error?.message).toContain('requiredInput');
+    for (const diagnostic of [
+      error?.message ?? '',
+      String(error),
+      error?.stack ?? '',
+      formatRuneError(error!),
+      formatIssues(error!.issues),
+    ]) {
+      expectSafe(diagnostic);
+    }
+
+    const failure = executor.createFailureResult({
+      error: error!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(failure.error?.message).toContain('\n');
+    expect(failure.error?.message).toContain('requiredInput');
+    expect(failure.error?.location).toEqual(error?.location);
+    expectSafe(JSON.stringify(failure));
+
+    session.setValue('requiredInput', 'provided');
+    session.setValue('choice2', 'accepted');
+    let singleError: InputError | undefined;
+    try {
+      session.plan();
+    } catch (cause) {
+      singleError = cause as InputError;
+    }
+    expect(singleError?.issues).toHaveLength(1);
+    expect(singleError?.location).toBeUndefined();
+    expectSafe(`${singleError?.location?.file ?? ''}: ${singleError?.message ?? ''}`);
+    const singleFailure = executor.createFailureResult({
+      error: singleError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(singleFailure.error?.location).toBeNull();
+    expectSafe(JSON.stringify(singleFailure));
+  });
+
+  it('keeps missing-input state and issue mappings through fallback collisions', async () => {
+    const ids = ['alpha', 'beta', 'gamma'] as const;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  rawCollision:',
+      '    type: secret',
+      '    required: false',
+      '  markerCollision:',
+      '    type: secret',
+      '    required: false',
+      '  emptyCollision:',
+      '    type: secret',
+      '    required: false',
+      ...ids.flatMap((id) => [`  ${id}:`, '    type: text']),
+      'steps: []',
+    ]);
+    const messages = ids.map(
+      (id) =>
+        `input "${id}" is required and has no value — supply it with --set ${id}=... | RUNE_INPUT_${id.toUpperCase()} | values-file key '${id}'`,
+    );
+    const rawAggregate = messages.map((message) => `${path}:1:1: ${message}`).join('\n');
+    const protectedTexts = [rawAggregate, String.raw`***\n\n`, String.raw`\n\n`];
+    const session = await Session.open(path, {
+      environment: {},
+      overrides: {
+        rawCollision: protectedTexts[0]!,
+        markerCollision: protectedTexts[1]!,
+        emptyCollision: protectedTexts[2]!,
+      },
+    });
+
+    expect(session.pendingInputs().map((input) => input.id)).toEqual(ids);
+    let error: InputError | undefined;
+    try {
+      session.plan();
+    } catch (caught) {
+      if (caught instanceof InputError) error = caught;
+    }
+
+    expect(error).toBeInstanceOf(InputError);
+    expect(error?.issues).toHaveLength(ids.length);
+    expect(error?.message.split('\n')).toHaveLength(ids.length);
+    expect(formatIssues(error!.issues)).toBe(error?.message);
+    const jsonContent = JSON.stringify(error?.message).slice(1, -1);
+    for (const secret of protectedTexts) {
+      expect(error?.message).not.toContain(secret);
+      expect(jsonContent).not.toContain(secret);
+    }
   });
 
   it('rolls back a rejected edit while retaining an independent seed rejection', async () => {

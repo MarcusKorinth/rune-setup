@@ -2449,6 +2449,28 @@ describe('secrets', () => {
     expectExistingRegistryUnchanged(secrets);
   });
 
+  it.each([
+    ['Named', 'message', 'Named: message'],
+    ['Named', '', 'Named'],
+    ['', 'message', 'message'],
+    ['', '', ''],
+  ])(
+    'preserves native in-place header semantics for name=%j message=%j',
+    (name, message, header) => {
+      const cause = new ResolutionError('RUNE-301', message);
+      cause.name = name;
+      cause.stack = `${header}\n    at resolver`;
+
+      const error = resolveWithRecursiveCause(cause, 'unrelated-secret');
+
+      expect(error.cause).toBe(cause);
+      expect(cause.name).toBe(name);
+      expect(cause.message).toBe(message);
+      expect(String(cause)).toBe(header);
+      expect(cause.stack).toBe(`${header}\n    at resolver`);
+    },
+  );
+
   it('escapes injected stack headers recursively while retaining real frame separators', () => {
     const secret = 'pass\nword';
     const injectedMessage =
@@ -2555,7 +2577,8 @@ describe('secrets', () => {
   it('fully escapes a recursive stack whose header does not match', () => {
     const secret = 'F054-FALLBACK-STACK-SECRET';
     const cause = new ResolutionError('RUNE-301', 'cannot resolve fallback stack');
-    cause.stack = `custom stack ${secret}${DIAGNOSTIC_CONTROLS}\u007f\n    at forged (attack.js:1:1)`;
+    const rawStack = `custom stack ${secret}${DIAGNOSTIC_CONTROLS}\u007f\n    at forged (attack.js:1:1)`;
+    cause.stack = rawStack;
 
     const error = resolveWithRecursiveCause(cause, secret);
 
@@ -2566,9 +2589,11 @@ describe('secrets', () => {
     expect(exitCodeFor(cause)).toBe(5);
     expect(cause.stack).not.toContain(secret);
     expect(cause.stack).toContain('***');
-    expect(cause.stack!.split('\n')).toHaveLength(1);
-    expect(hasRawDiagnosticControl(cause.stack!)).toBe(false);
-    for (const visible of [...VISIBLE_DIAGNOSTIC_ESCAPES, '\\u007f']) {
+    expect(cause.stack!.split('\n')).toHaveLength(rawStack.split('\n').length);
+    expect(hasRawDiagnosticControl(cause.stack!.split('\n').join(''))).toBe(false);
+    for (const visible of [...VISIBLE_DIAGNOSTIC_ESCAPES, '\\u007f'].filter(
+      (escape) => escape !== '\\n',
+    )) {
       expect(cause.stack).toContain(visible);
     }
   });
@@ -2734,6 +2759,27 @@ describe('secrets', () => {
     expect(rejection.issue.message).not.toContain('\\n');
     expect(rejection.issue.message).not.toContain('\\u001b');
     expect(hasRawDiagnosticControl(rejection.issue.message)).toBe(false);
+  });
+
+  it('fails closed when rejection escaping creates a registered literal', () => {
+    const renderedSecret = String.raw`\u001b`;
+    const manifest = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['token', renderedSecret],
+        ['note', '\u001b'],
+      ]),
+      invalidValues: 'collect',
+    });
+
+    expect(rejectionFor(resolution, 'note').issue.message).not.toContain(renderedSecret);
   });
 
   it('uses an overridden environment secret to redact thrown and collected diagnostics atomically', () => {

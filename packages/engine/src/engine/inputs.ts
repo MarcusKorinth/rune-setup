@@ -20,10 +20,16 @@ import {
   ManifestError,
   ResolutionError,
   RuneError,
+  projectErrorStackForSink,
+  projectIssuesForSink,
+  projectPublicHeader,
+  projectRuneErrorHeaderForSink,
+  projectRuneErrorLocationForSink,
   type RuneIssue,
+  withIssueDiagnosticParts,
   withValuesDocumentOrdinal,
 } from '../errors.js';
-import { escapeDiagnosticText, formatDiagnostic, quotedDiagnostic } from '../diagnostics.js';
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
 import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
@@ -366,13 +372,13 @@ function projectInputRejection(
     rejection.issue.location === undefined
       ? undefined
       : Object.freeze({
-          file: secrets.mask(rejection.issue.location.file),
+          file: formatDiagnostic([rejection.issue.location.file], secrets),
           line: rejection.issue.location.line,
           column: rejection.issue.location.column,
         });
   const issue = Object.freeze({
     code: rejection.issue.code,
-    message: secrets.mask(rejection.issue.message),
+    message: formatDiagnostic([rejection.issue.message], secrets),
     location,
   });
   return Object.freeze({ candidate, source: rejection.source, issue });
@@ -482,11 +488,10 @@ function resolveInputsStaged(
         if (supplied?.source === 'answer') {
           const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
           if (!coerced.ok) {
-            const issue: RuneIssue = {
-              code: 'RUNE-202',
-              message: coerced.message,
-              location: supplied.location,
-            };
+            const issue = withIssueDiagnosticParts(
+              { code: 'RUNE-202', message: coerced.message, location: supplied.location },
+              coerced.diagnosticParts,
+            );
             rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
             issues.push(issue);
           }
@@ -537,11 +542,10 @@ function resolveInputsStaged(
 
       const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
       if (!coerced.ok) {
-        const issue: RuneIssue = {
-          code: 'RUNE-202',
-          message: coerced.message,
-          location: supplied.location,
-        };
+        const issue = withIssueDiagnosticParts(
+          { code: 'RUNE-202', message: coerced.message, location: supplied.location },
+          coerced.diagnosticParts,
+        );
         rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
         issues.push(
           supplied.valuesDocumentOrdinal === undefined
@@ -600,7 +604,7 @@ function resolveInputsStaged(
     );
   }
 
-  const frozenIssues = issues.map((issue) => freezeIssue(redactIssue(issue, redactor)));
+  const frozenIssues = projectIssuesForSink(issues, redactor).map(freezeIssue);
   const issueReplacements = new Map(issues.map((issue, index) => [issue, frozenIssues[index]!]));
   for (const [id, state] of states) {
     if (state.rejection === undefined) {
@@ -629,7 +633,7 @@ function resolveInputsStaged(
   const canonicalById = new Map(inputs.map((state) => [state.id, state]));
   const publicById = Object.freeze(new ImmutableReadonlyMap(canonicalById));
   const frozenWarnings = Object.freeze(
-    warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
+    warnings.map((warning) => formatDiagnostic([warning], redactor)),
   );
   const problems = Object.freeze(frozenIssues);
   const secretMasker = stagedSecrets.snapshot();
@@ -685,8 +689,10 @@ function snapshotInputState(state: ResolvedInputState): ResolvedInputState {
 }
 
 function freezeIssue(issue: RuneIssue): RuneIssue {
-  const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
-  return Object.freeze({ ...issue, location });
+  if (issue.location !== undefined) {
+    Object.freeze(issue.location);
+  }
+  return Object.freeze(issue);
 }
 
 /** Throws collected issues under their aggregate code, preserving the existing taxonomy. */
@@ -790,28 +796,6 @@ function redactCandidate(
   return candidate;
 }
 
-function redactIssue(issue: RuneIssue, secrets: SecretRegistry): RuneIssue {
-  return {
-    ...issue,
-    message: escapeDiagnosticText(secrets.mask(issue.message)),
-    location: redactLocation(issue.location, secrets),
-  };
-}
-
-/** Redacts a source name without changing or retaining the caller-owned location object. */
-function redactLocation(
-  location: Location | undefined,
-  secrets: SecretRegistry,
-): Location | undefined {
-  return location === undefined
-    ? undefined
-    : {
-        file: secrets.mask(location.file),
-        line: location.line,
-        column: location.column,
-      };
-}
-
 /**
  * Sanitizes a deliberate resolver error in place, preserving its class, code, cause chain,
  * property descriptors, object identity, and exit-code identity. Reporting locations are
@@ -829,28 +813,34 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   seen.add(error);
 
   const rawMessage = error.message;
+  const rawName = error.name;
   const rawStack = error.stack;
   const messageWasFormattedFromIssues =
     error instanceof RuneError && rawMessage === formatIssues(error.issues);
   const redactedIssues =
-    error instanceof RuneError
-      ? error.issues.map((issue) => redactIssue(issue, secrets))
-      : undefined;
-  const maskedMessage = secrets.mask(rawMessage);
-  error.message =
+    error instanceof RuneError ? projectIssuesForSink(error.issues, secrets) : undefined;
+  const safeMessage =
     messageWasFormattedFromIssues && redactedIssues !== undefined
       ? formatIssues(redactedIssues)
-      : escapeDiagnosticText(maskedMessage);
+      : formatDiagnostic([rawMessage], secrets);
+  const header =
+    error instanceof RuneError
+      ? projectRuneErrorHeaderForSink(error, safeMessage, secrets)
+      : projectPublicHeader(rawName, rawMessage, safeMessage, secrets);
+  const safeLocation =
+    error instanceof RuneError
+      ? projectRuneErrorLocationForSink(error, redactedIssues!, safeMessage, secrets)
+      : undefined;
+  error.name = header.name;
+  error.message = header.message;
   if (rawStack !== undefined) {
-    const maskedStack = secrets.mask(rawStack);
-    const maskedHeader = secrets.mask(`${error.name}: ${rawMessage}`);
-    error.stack = sanitizeMaskedStack(maskedStack, maskedHeader);
+    error.stack = projectErrorStackForSink(rawStack, rawName, rawMessage, header.text, secrets);
   }
 
   if (error instanceof RuneError) {
     Object.defineProperty(error, 'location', {
       ...Object.getOwnPropertyDescriptor(error, 'location'),
-      value: redactLocation(error.location, secrets),
+      value: safeLocation,
     });
     Object.defineProperty(error, 'issues', {
       ...Object.getOwnPropertyDescriptor(error, 'issues'),
@@ -863,23 +853,9 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   } else if (typeof error.cause === 'string') {
     Object.defineProperty(error, 'cause', {
       ...Object.getOwnPropertyDescriptor(error, 'cause'),
-      value: escapeDiagnosticText(secrets.mask(error.cause)),
+      value: formatDiagnostic([error.cause], secrets),
     });
   }
-}
-
-/** Escapes stack content while retaining only the formatter's LF frame separators. */
-function sanitizeMaskedStack(maskedStack: string, maskedHeader: string): string {
-  if (!maskedStack.startsWith(maskedHeader)) {
-    return escapeDiagnosticText(maskedStack);
-  }
-
-  const suffix = maskedStack.slice(maskedHeader.length);
-  const safeSuffix = suffix
-    .split('\n')
-    .map((frame) => escapeDiagnosticText(frame))
-    .join('\n');
-  return escapeDiagnosticText(maskedHeader) + safeSuffix;
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */
@@ -926,15 +902,18 @@ function materializeValuesProblem(
   problem: DeferredValuesProblem,
   redactor: SecretRegistry,
 ): RuneIssue {
-  return 'kind' in problem
-    ? {
-        code: 'RUNE-202',
-        message: formatDiagnostic([quotedDiagnostic(problem.rawKey), ' ', problem.reason], (part) =>
-          redactor.mask(part),
-        ),
-        location: problem.location,
-      }
-    : { code: problem.code, message: problem.message, location: problem.location };
+  if (!('kind' in problem)) {
+    return { code: problem.code, message: problem.message, location: problem.location };
+  }
+  const parts = [quotedDiagnostic(problem.rawKey), ' ', problem.reason];
+  return withIssueDiagnosticParts(
+    {
+      code: 'RUNE-202',
+      message: formatDiagnostic(parts, redactor),
+      location: problem.location,
+    },
+    parts,
+  );
 }
 
 /**
@@ -1057,6 +1036,7 @@ type CoercionOutcome =
   | {
       readonly ok: false;
       readonly message: string;
+      readonly diagnosticParts: readonly DiagnosticPart[];
       readonly candidate: InputRejection['candidate'];
     };
 
@@ -1087,13 +1067,14 @@ function coerce(
     return result;
   }
 
-  const reason =
-    result.diagnosticParts === undefined
-      ? escapeDiagnosticText(secrets.mask(result.message))
-      : formatDiagnostic(result.diagnosticParts, (part) => secrets.mask(part));
+  const diagnosticParts: readonly DiagnosticPart[] = [
+    `${id} (from ${supplied.origin}): `,
+    ...(result.diagnosticParts ?? [result.message]),
+  ];
   return {
     ok: false,
-    message: escapeDiagnosticText(secrets.mask(`${id} (from ${supplied.origin}): ${reason}`)),
+    message: formatDiagnostic(diagnosticParts, secrets),
+    diagnosticParts,
     candidate: rejectedCandidate(raw, handler.secret),
   };
 }
@@ -1233,11 +1214,10 @@ function checkUnknownKeys(
       origin,
       ')',
     ];
-    const issue: RuneIssue = {
-      code: 'RUNE-203',
-      message: formatDiagnostic(parts, (part) => secrets.mask(part)),
-      location,
-    };
+    const issue = withIssueDiagnosticParts(
+      { code: 'RUNE-203', message: formatDiagnostic(parts, secrets), location },
+      parts,
+    );
     issues.push(
       documentOrdinal === undefined ? issue : withValuesDocumentOrdinal(issue, documentOrdinal),
     );

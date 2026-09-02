@@ -20,6 +20,7 @@ import {
   ResolutionError,
   type RuneError,
 } from '../errors.js';
+import { formatDiagnostic, formatDiagnosticRecords } from '../diagnostics.js';
 import { environmentName } from '../manifest/v1/rules.js';
 import { manifestDescriptorFor, type Manifest } from '../manifest/index.js';
 import { RUNE_VERSION } from '../version.js';
@@ -918,7 +919,16 @@ function failureOutcome(projection: FailureErrorProjection, dryRun: boolean): Ru
   throw new InternalError('this RuneError cannot produce a run result');
 }
 
-const IDENTITY_MASKER: SecretMasker = Object.freeze({ mask: (text: string): string => text });
+const IDENTITY_MASKER: SecretMasker = Object.freeze({
+  mask: (text: string): string => text,
+  maskFragments: (fragments: readonly string[]) =>
+    fragments.map((text, sourceIndex) => ({
+      text,
+      sourceIndices: [sourceIndex],
+      replacement: false,
+    })),
+  safeFallbackMarker: () => String.fromCodePoint(0x10000),
+});
 
 function snapshotFailureError(error: RuneError): FailureErrorProjection {
   const resultError = deepFreeze(toResultError(error, IDENTITY_MASKER));
@@ -970,12 +980,15 @@ function toResultError(error: RuneError, secrets: SecretMasker): ResultError {
   const location = error.location;
   return {
     code: code as ResultError['code'],
-    message: secrets.mask(message),
+    message: formatDiagnosticRecords(
+      message.split('\n').map((record) => [record]),
+      secrets,
+    ),
     location:
       location === undefined
         ? null
         : {
-            file: secrets.mask(location.file),
+            file: formatDiagnostic([location.file], secrets),
             line: location.line,
             column: location.column,
           },

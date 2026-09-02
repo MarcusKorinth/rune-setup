@@ -215,7 +215,7 @@ export class Session {
     try {
       manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
     } catch (error) {
-      const projected = projectOpeningError(error, (text) => text);
+      const projected = projectOpeningError(error, new SecretRegistry());
       registerPreManifestFailureContext(projected, {
         manifestPath: absolutePath,
         mode,
@@ -306,7 +306,7 @@ export class Session {
         runner,
       });
     } catch (error) {
-      const projected = projectOpeningError(error, (text) => secrets.mask(text));
+      const projected = projectOpeningError(error, secrets);
       const failureStrings = strings ?? Object.freeze({ locale });
       registerOpenFailureContext(
         projected,
@@ -553,7 +553,7 @@ export class Session {
     if (!(error instanceof RuneError)) {
       return error;
     }
-    const projected = projectRuneError(error, (text) => secrets.mask(text));
+    const projected = projectRuneError(error, secrets);
     registerFailureResultError(projected, this);
     return projected;
   }
@@ -605,12 +605,12 @@ function systemLocale(): string | undefined {
 }
 
 /** Projects every opening failure to a stable RuneError without exposing an unexpected cause. */
-function projectOpeningError(error: unknown, projectText: (text: string) => string): RuneError {
+function projectOpeningError(error: unknown, secrets: SecretRegistry): RuneError {
   const runeError =
     error instanceof RuneError
       ? error
       : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
-  return projectRuneError(runeError, projectText);
+  return projectRuneError(runeError, secrets);
 }
 
 /** The snapshotted `--log-file` beats `execution.logFile`; manifest paths anchor to its directory. */

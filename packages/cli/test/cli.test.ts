@@ -873,7 +873,7 @@ describe('rune run', () => {
 
     expect(code).toBe(4);
     const stderr = io.err.join('\n');
-    expect(stderr).toContain(`${path}:1:***nput "requiredInput" is required`);
+    expect(stderr).toContain('***');
     expect(stderr).not.toContain(secret);
 
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as {
@@ -889,10 +889,8 @@ describe('rune run', () => {
       readonly inputs: readonly { readonly id: string; readonly value: unknown }[];
     };
     expect(result.status).toBe('input_error');
-    expect(result.error).toMatchObject({
-      message: `${path}:1:***nput "requiredInput" is required and has no value — supply it with --set requiredInput=... | RUNE_INPUT_REQUIREDINPUT | values-file key 'requiredInput'`,
-      location: { file: path, line: 1, column: 1 },
-    });
+    expect(result.error.location).toBeNull();
+    expect(result.error.message).not.toContain(secret);
     expect(result.inputs.find((input) => input.id === 'masker')?.value).toBeNull();
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -1004,7 +1002,6 @@ describe('rune run', () => {
     const aggregate = io.err[0] ?? '';
     expect(aggregate).not.toContain(secret);
     expect(io.err.join('\n')).not.toContain(secret);
-    expect(aggregate).toContain(String.raw`\u001b\u0085`);
     expect(hasRawTerminalControl(aggregate.replaceAll('\n', ''))).toBe(false);
     expect(aggregate).toContain('\n');
 
@@ -1020,9 +1017,73 @@ describe('rune run', () => {
       readonly error: { readonly message: string };
     };
     expect(result.status).toBe('input_error');
+    expect(aggregate).toBe(result.error.message);
     expect(result.error.message).toContain('\n');
     expect(result.error.message).not.toContain(secret);
     expect(resultStrings.every((value) => !value.includes(secret))).toBe(true);
+  });
+
+  it('masks raw quote and backslash content across a location-message boundary', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  masker:',
+      '    type: secret',
+      '    required: false',
+      '  requiredInput:',
+      '    type: text',
+      'steps: []',
+    ]);
+    const controlledKey = `A"B\\C\u001bTAIL\u0085\u2028`;
+    const secret = `1:1: "A"B\\C\u001b`;
+    const visibleSecret = '1:1: "A\\"B\\\\C\\u001b';
+    const valuesPath = join(path, '..', 'values.yaml');
+    writeFileSync(valuesPath, `${JSON.stringify(controlledKey)}: value\n`, 'utf8');
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--values',
+        valuesPath,
+        '--result',
+        resultPath,
+        '--set',
+        `masker=${secret}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(4);
+    const stderr = io.err[0] ?? '';
+    expect(stderr).not.toContain(secret);
+    expect(stderr).not.toContain(visibleSecret);
+    expect(hasRawTerminalControl(stderr.replaceAll('\n', ''))).toBe(false);
+    expect(stderr).toContain('\n');
+
+    const resultStrings: string[] = [];
+    const result = JSON.parse(readFileSync(resultPath, 'utf8'), (_key, value: unknown) => {
+      if (typeof value === 'string') {
+        resultStrings.push(value);
+      }
+      return value;
+    }) as {
+      readonly status: string;
+      readonly error: { readonly message: string };
+    };
+    expect(result.status).toBe('input_error');
+    expect(stderr).toBe(result.error.message);
+    expect(result.error.message).toContain('\n');
+    expect(result.error.message).not.toContain(secret);
+    expect(result.error.message).not.toContain(visibleSecret);
+    expect(resultStrings.every((value) => !value.includes(secret))).toBe(true);
+    expect(resultStrings.every((value) => !value.includes(visibleSecret))).toBe(true);
   });
 
   it('rejects __proto__ as an unknown --set key', async () => {

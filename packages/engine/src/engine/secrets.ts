@@ -27,6 +27,8 @@ export const MIN_MASKABLE_LENGTH = 4;
 /** Internal mask-only capability captured with a resolved input set or execution plan. */
 export interface SecretMasker {
   mask(text: string): string;
+  maskFragments(fragments: readonly string[]): readonly MaskedFragmentRun[];
+  safeFallbackMarker(): string;
 }
 
 /** Private registry contents retained for authentic immutable masker snapshots. */
@@ -279,25 +281,34 @@ class SecretMatcher {
 
   /** Replaces every range containing a secret found in this version of `text`. */
   maskOnce(text: string): string {
-    if (this.#maximumPatternLength === 0 || text.length === 0) {
+    const ranges = this.matchingRanges(text);
+    if (ranges.length === 0) {
       return text;
     }
-
-    // Matches arrive in end-position order. Pending connected components are a numeric
-    // stack, not an object per occurrence. A component is emitted only after the maximum
-    // pattern length proves that no later match can overlap it; adjacent matches remain
-    // separate because the overlap comparison is strict.
-    const pendingStarts: number[] = [];
-    const pendingEnds: number[] = [];
-    let pendingHead = 0;
-    let state = 0;
     let out = '';
     let cursor = 0;
+    for (const [start, end] of ranges) {
+      out += text.slice(cursor, start) + MASK;
+      cursor = end;
+    }
+    return out + text.slice(cursor);
+  }
+
+  /** Returns the same merged replacement ranges as `maskOnce`, for structured diagnostics. */
+  matchingRanges(text: string): readonly (readonly [start: number, end: number])[] {
+    if (this.#maximumPatternLength === 0 || text.length === 0) {
+      return [];
+    }
+
+    const pendingStarts: number[] = [];
+    const pendingEnds: number[] = [];
+    const ranges: Array<readonly [number, number]> = [];
+    let pendingHead = 0;
+    let state = 0;
 
     const flushThrough = (safeStart: number): void => {
       while (pendingHead < pendingEnds.length && pendingEnds[pendingHead]! <= safeStart) {
-        out += text.slice(cursor, pendingStarts[pendingHead]!) + MASK;
-        cursor = pendingEnds[pendingHead]!;
+        ranges.push([pendingStarts[pendingHead]!, pendingEnds[pendingHead]!]);
         pendingHead += 1;
       }
 
@@ -328,12 +339,10 @@ class SecretMatcher {
       if (matchLength > 0) {
         let start = end - matchLength;
         let mergedEnd = end;
-
         while (pendingEnds.length > pendingHead && pendingEnds[pendingEnds.length - 1]! > start) {
           start = Math.min(start, pendingStarts.pop()!);
           mergedEnd = Math.max(mergedEnd, pendingEnds.pop()!);
         }
-
         pendingStarts.push(start);
         pendingEnds.push(mergedEnd);
       }
@@ -342,7 +351,7 @@ class SecretMatcher {
     }
 
     flushThrough(Number.POSITIVE_INFINITY);
-    return cursor === 0 ? text : out + text.slice(cursor);
+    return ranges;
   }
 }
 
@@ -353,6 +362,7 @@ function createMatcherNode(): MatcherNode {
 /** Shared only by registries whose independent value sets describe the same snapshot. */
 interface MatcherCache {
   matcher?: SecretMatcher;
+  safeFallbackMarker?: string;
 }
 
 /**
@@ -480,9 +490,15 @@ export class SecretRegistry {
   /** Captures the current secret set as an immutable mask-only capability. */
   snapshot(): SecretMasker {
     const matcher = this.#matcher();
+    const safeFallbackMarker = this.safeFallbackMarker();
     const snapshot = Object.freeze({
       mask: (text: string): string =>
         matcher === undefined ? text : maskWithMatcher(text, matcher),
+      maskFragments: (fragments: readonly string[]): readonly MaskedFragmentRun[] =>
+        matcher === undefined
+          ? identityMaskedFragments(fragments)
+          : maskFragmentsWithMatcher(fragments, matcher),
+      safeFallbackMarker: (): string => safeFallbackMarker,
     });
     SECRET_MASKER_VALUES.set(snapshot, Object.freeze([...this.#values]));
     return snapshot;
@@ -492,6 +508,19 @@ export class SecretRegistry {
   mask(text: string): string {
     const matcher = this.#matcher();
     return matcher === undefined ? text : maskWithMatcher(text, matcher);
+  }
+
+  /** Masks one composition while retaining which raw fragments each output run replaced. */
+  maskFragments(fragments: readonly string[]): readonly MaskedFragmentRun[] {
+    const matcher = this.#matcher();
+    return matcher === undefined
+      ? identityMaskedFragments(fragments)
+      : maskFragmentsWithMatcher(fragments, matcher);
+  }
+
+  /** Returns one cached marker that cannot occur in a registered direct or JSON bridge. */
+  safeFallbackMarker(): string {
+    return (this.#matcherCache.safeFallbackMarker ??= findSafeFallbackMarker(this.#values));
   }
 
   #matcher(): SecretMatcher | undefined {
@@ -507,6 +536,47 @@ export class SecretRegistry {
       ),
     ));
   }
+}
+
+function findSafeFallbackMarker(patterns: Iterable<string>): string {
+  const forbidden = new Set<number>();
+  for (const pattern of patterns) {
+    for (let index = 0; index < pattern.length; index += 1) {
+      const first = pattern.charCodeAt(index);
+      const second = pattern.charCodeAt(index + 1);
+      if (isHighSurrogate(first) && isLowSurrogate(second)) {
+        forbidden.add(supplementaryCodePoint(first, second));
+      }
+      const high = pattern.charCodeAt(index + 3);
+      if (
+        isLowSurrogate(first) &&
+        second === 0x5c &&
+        pattern.charCodeAt(index + 2) === 0x6e &&
+        isHighSurrogate(high)
+      ) {
+        forbidden.add(supplementaryCodePoint(high, first));
+      }
+    }
+  }
+
+  // A maskable direct or JSON-encoded fallback match contains either the marker's adjacent
+  // pair or its low-"\\n"-high bridge. Registry capacity cannot forbid this entire range.
+  for (let codePoint = 0x10000; codePoint <= 0x10ffff; codePoint += 1) {
+    if (!forbidden.has(codePoint)) return String.fromCodePoint(codePoint);
+  }
+  throw new Error('secret registry cannot produce a stable diagnostic fallback marker');
+}
+
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+function supplementaryCodePoint(high: number, low: number): number {
+  return ((high - 0xd800) << 10) + (low - 0xdc00) + 0x10000;
 }
 
 /** Creates a mutable plan-local registry from an authentic immutable masker snapshot. */
@@ -539,6 +609,84 @@ function maskWithMatcher(text: string, matcher: SecretMatcher): string {
   // shorter than every registrable secret, so masking the whole input is safely stable; the
   // extra masking is limited to this pathological budget-exhaustion path.
   return MASK;
+}
+
+interface MaskedFragmentRun {
+  readonly text: string;
+  readonly sourceIndices: readonly number[];
+  readonly replacement: boolean;
+}
+
+function identityMaskedFragments(fragments: readonly string[]): readonly MaskedFragmentRun[] {
+  return fragments.map((text, sourceIndex) => ({
+    text,
+    sourceIndices: [sourceIndex],
+    replacement: false,
+  }));
+}
+
+function maskFragmentsWithMatcher(
+  fragments: readonly string[],
+  matcher: SecretMatcher,
+): readonly MaskedFragmentRun[] {
+  let runs: readonly MaskedFragmentRun[] = identityMaskedFragments(fragments);
+
+  for (let pass = 0; pass < MAX_MASKING_PASSES; pass += 1) {
+    const text = runs.map((run) => run.text).join('');
+    const ranges = matcher.matchingRanges(text);
+    if (ranges.length === 0) {
+      return runs;
+    }
+    runs = replaceFragmentRanges(runs, ranges);
+  }
+
+  const sourceIndices = [...new Set(runs.flatMap((run) => run.sourceIndices))].sort(
+    (left, right) => left - right,
+  );
+  return [{ text: MASK, sourceIndices, replacement: true }];
+}
+
+function replaceFragmentRanges(
+  runs: readonly MaskedFragmentRun[],
+  ranges: readonly (readonly [start: number, end: number])[],
+): readonly MaskedFragmentRun[] {
+  const output: MaskedFragmentRun[] = [];
+  let runIndex = 0;
+  let runOffset = 0;
+  let position = 0;
+
+  const consume = (end: number, sources?: Set<number>): void => {
+    while (position < end) {
+      const run = runs[runIndex];
+      if (run === undefined) return;
+      if (runOffset === run.text.length) {
+        runIndex += 1;
+        runOffset = 0;
+        continue;
+      }
+      const length = Math.min(end - position, run.text.length - runOffset);
+      if (sources === undefined) {
+        output.push({ ...run, text: run.text.slice(runOffset, runOffset + length) });
+      } else {
+        for (const sourceIndex of run.sourceIndices) sources.add(sourceIndex);
+      }
+      runOffset += length;
+      position += length;
+    }
+  };
+
+  for (const [start, end] of ranges) {
+    consume(start);
+    const sources = new Set<number>();
+    consume(end, sources);
+    output.push({
+      text: MASK,
+      sourceIndices: [...sources].sort((left, right) => left - right),
+      replacement: true,
+    });
+  }
+  consume(runs.reduce((length, run) => length + run.text.length, 0));
+  return output;
 }
 
 function capacityError(): InputError {

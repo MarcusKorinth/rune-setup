@@ -5,7 +5,16 @@
  */
 
 import { formatLocation, type Location } from './manifest/source.js';
-import { escapeDiagnosticText } from './diagnostics.js';
+import {
+  escapeDiagnosticText,
+  finalizeRenderedDiagnosticRecords,
+  formatDiagnostic,
+  formatDiagnosticRecordList,
+  formatDiagnosticRecords,
+  projectDiagnosticRecordList,
+  type DiagnosticMasker,
+  type DiagnosticPart,
+} from './diagnostics.js';
 
 const INTERNAL_ERROR_SUFFIX =
   ' — this is a bug in RUNE, please report it with the manifest that triggered it';
@@ -49,12 +58,25 @@ export interface RuneIssue {
 
 /** Values-file order is internal diagnostic metadata, not part of the public issue shape. */
 const valuesDocumentOrdinals = new WeakMap<RuneIssue, number>();
-/** Fully composed sink diagnostics retained only for errors projected by this module. */
-const projectedRuneErrorDiagnostics = new WeakMap<RuneError, string>();
+interface RawIssuePresentation {
+  readonly parts: readonly DiagnosticPart[];
+  readonly location: Location | undefined;
+}
+/** Authentic record fields retained when public projected fields must fail closed. */
+const rawIssuePresentations = new WeakMap<RuneIssue, RawIssuePresentation>();
 
 /** Retains a values document's invocation order while its issue is being collected. */
 export function withValuesDocumentOrdinal(issue: RuneIssue, ordinal: number): RuneIssue {
   valuesDocumentOrdinals.set(issue, ordinal);
+  return issue;
+}
+
+/** Retains raw quoted/plain message parts until the issue reaches its complete sink record. */
+export function withIssueDiagnosticParts(
+  issue: RuneIssue,
+  parts: readonly DiagnosticPart[],
+): RuneIssue {
+  rawIssuePresentations.set(issue, { parts, location: issue.location });
   return issue;
 }
 
@@ -67,18 +89,12 @@ export interface RuneErrorOptions {
 
 /** Renders issues one per line, each prefixed with `file:line:col` when it has a location. */
 export function formatIssues(issues: readonly RuneIssue[]): string {
-  return issues
-    .map((issue) =>
-      issue.location
-        ? `${escapeDiagnosticText(formatLocation(issue.location))}: ${escapeDiagnosticText(issue.message)}`
-        : escapeDiagnosticText(issue.message),
-    )
-    .join('\n');
+  return formatDiagnosticRecords(issues.map(publicIssueRecord));
 }
 
 /** Formats a RuneError without discarding a sink-safe projection of its full composition. */
 export function formatRuneError(error: RuneError): string {
-  return projectedRuneErrorDiagnostics.get(error) ?? formatIssues(error.issues);
+  return formatIssues(error.issues);
 }
 
 /**
@@ -91,10 +107,11 @@ export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
   const seen = new Set<string>();
   const unique: RuneIssue[] = [];
   for (const issue of issues) {
-    const where = issue.location;
+    const raw = issuePresentation(issue);
+    const where = raw.location;
     // The file belongs in the identity: once values files and locale overlays share this
     // path, the same sentence about the same line of two documents is two problems.
-    const id = `${where?.file ?? ''}:${where?.line ?? 0}:${where?.column ?? 0}:${issue.message}`;
+    const id = `${where?.file ?? ''}:${where?.line ?? 0}:${where?.column ?? 0}:${partsIdentity(raw.parts)}`;
     if (!seen.has(id)) {
       seen.add(id);
       unique.push(issue);
@@ -107,13 +124,20 @@ export function orderIssues(issues: readonly RuneIssue[]): RuneIssue[] {
       (aValuesDocumentOrdinal !== undefined && bValuesDocumentOrdinal !== undefined
         ? aValuesDocumentOrdinal - bValuesDocumentOrdinal
         : 0) ||
-      (a.location?.line ?? 0) - (b.location?.line ?? 0) ||
-      (a.location?.column ?? 0) - (b.location?.column ?? 0) ||
+      (issuePresentation(a).location?.line ?? 0) - (issuePresentation(b).location?.line ?? 0) ||
+      (issuePresentation(a).location?.column ?? 0) - (issuePresentation(b).location?.column ?? 0) ||
       // Code-unit order, not locale order: the golden files must read the same on every
       // machine, whatever locale it runs in and whether its Node carries the full ICU data.
-      compareCodeUnits(a.message, b.message)
+      compareCodeUnits(
+        formatDiagnostic(issuePresentation(a).parts),
+        formatDiagnostic(issuePresentation(b).parts),
+      )
     );
   });
+}
+
+function partsIdentity(parts: readonly DiagnosticPart[]): string {
+  return JSON.stringify(parts);
 }
 
 function compareCodeUnits(a: string, b: string): number {
@@ -262,23 +286,22 @@ export class InternalError extends RuneError {
  * and a sanitized cause chain. The returned error never retains the original error object:
  * its message or stack could contain the very bytes this projection removes.
  */
-export function projectRuneError(
-  error: RuneError,
-  projectText: (text: string) => string,
-): RuneError {
-  const location = projectLocation(error.location, projectText);
-  const issues = error.issues.map((issue): RuneIssue => ({
-    code: issue.code,
-    message: projectText(issue.message),
-    location: projectLocation(issue.location, projectText),
-  }));
+export function projectRuneError(error: RuneError, masker: DiagnosticMasker): RuneError {
+  const issues = projectIssuesForSink(error.issues, masker);
+  const aggregateMessage = error.message === formatIssues(error.issues);
+  const defaultIssueMessage =
+    error.issues.length === 1 && error.issues[0]?.message === error.message;
+  const message = aggregateMessage
+    ? formatIssues(issues)
+    : defaultIssueMessage
+      ? issues[0]!.message
+      : formatDiagnostic([error.message], masker);
+  const location = projectRuneErrorLocationForSink(error, issues, message, masker);
   const options: RuneErrorOptions = {
     issues,
     ...(location === undefined ? {} : { location }),
-    ...(error.cause === undefined ? {} : { cause: projectCause(error.cause, projectText) }),
+    ...(error.cause === undefined ? {} : { cause: projectCause(error.cause, masker) }),
   };
-  const message = projectText(error.message);
-  const diagnostic = projectText(formatIssues(issues));
   let projected: RuneError;
 
   if (error instanceof UsageError) {
@@ -298,46 +321,276 @@ export function projectRuneError(
   } else if (error instanceof CancelledError) {
     projected = new CancelledError(message, options);
   } else if (error instanceof InternalError) {
-    const detail = error.message.endsWith(INTERNAL_ERROR_SUFFIX)
-      ? error.message.slice(0, -INTERNAL_ERROR_SUFFIX.length)
-      : error.message;
-    projected = new InternalError(
-      projectText(`${detail}${INTERNAL_ERROR_SUFFIX}`),
-      options,
-      PROJECTED_INTERNAL_ERROR,
-    );
+    projected = new InternalError(message, options, PROJECTED_INTERNAL_ERROR);
   } else {
     projected = new RuneError(error.code, message, options);
   }
-  projectedRuneErrorDiagnostics.set(projected, diagnostic);
+  const header = projectRuneErrorHeaderForSink(error, projected.message, masker);
+  projected.name = header.name;
+  if (error.stack !== undefined) {
+    projected.stack = projectErrorStackForSink(
+      error.stack,
+      error.name,
+      error.message,
+      header.text,
+      masker,
+    );
+  }
   return projected;
+}
+
+export function projectRuneErrorLocationForSink(
+  error: RuneError,
+  projectedIssues: readonly RuneIssue[],
+  publicMessage: string,
+  masker: DiagnosticMasker,
+): Location | undefined {
+  const location = error.location;
+  const issueIndex =
+    location === undefined
+      ? -1
+      : error.issues.findIndex((issue) => locationsEqual(issue.location, location));
+  if (issueIndex < 0 && location !== undefined) {
+    const projected = projectLocation(location, masker)!;
+    return locatedErrorIsCanonical(location, projected, error, publicMessage, masker)
+      ? projected
+      : undefined;
+  }
+  const projectedIndex =
+    issueIndex >= 0 && projectedIssues[issueIndex]?.location !== undefined
+      ? issueIndex
+      : projectedIssues.findIndex((issue) => issue.location !== undefined);
+  const projected = projectedIssues[projectedIndex]?.location;
+  const raw = error.issues[projectedIndex]?.location;
+  return projected !== undefined && raw !== undefined
+    ? locatedErrorIsCanonical(raw, projected, error, publicMessage, masker)
+      ? projected
+      : undefined
+    : undefined;
+}
+
+function locatedErrorIsCanonical(
+  rawLocation: Location,
+  projectedLocation: Location,
+  error: RuneError,
+  publicMessage: string,
+  masker: DiagnosticMasker,
+): boolean {
+  const records = errorMessageRecords(error);
+  const canonical = formatDiagnosticRecords(
+    [[formatLocation(rawLocation), ': ', ...(records[0] ?? [])], ...records.slice(1)],
+    masker,
+  );
+  return (
+    `${escapeDiagnosticText(formatLocation(projectedLocation))}: ${publicMessage}` === canonical
+  );
+}
+
+function locationsEqual(left: Location | undefined, right: Location): boolean {
+  return (
+    left !== undefined &&
+    left.file === right.file &&
+    left.line === right.line &&
+    left.column === right.column
+  );
 }
 
 function projectLocation(
   location: Location | undefined,
-  projectText: (text: string) => string,
+  masker: DiagnosticMasker,
 ): Location | undefined {
   return location === undefined
     ? undefined
-    : { file: projectText(location.file), line: location.line, column: location.column };
+    : {
+        file: masker.mask(location.file),
+        line: location.line,
+        column: location.column,
+      };
 }
 
-function projectCause(cause: unknown, projectText: (text: string) => string): unknown {
+function projectCause(cause: unknown, masker: DiagnosticMasker): unknown {
   if (cause instanceof RuneError) {
-    return projectRuneError(cause, projectText);
+    return projectRuneError(cause, masker);
   }
   if (cause instanceof Error) {
+    const safeMessage = formatDiagnostic([cause.message], masker);
+    const header = projectPublicHeader(cause.name, cause.message, safeMessage, masker);
     const projected = new Error(
-      projectText(cause.message),
-      cause.cause === undefined ? undefined : { cause: projectCause(cause.cause, projectText) },
+      header.message,
+      cause.cause === undefined ? undefined : { cause: projectCause(cause.cause, masker) },
     );
-    projected.name = cause.name;
+    projected.name = header.name;
+    if (cause.stack !== undefined) {
+      projected.stack = projectErrorStackForSink(
+        cause.stack,
+        cause.name,
+        cause.message,
+        header.text,
+        masker,
+      );
+    }
     return projected;
   }
   if (cause === null || typeof cause === 'boolean' || typeof cause === 'number') {
     return cause;
   }
-  return projectText(String(cause));
+  return formatDiagnostic([String(cause)], masker);
+}
+
+interface PublicErrorHeader {
+  readonly name: string;
+  readonly message: string;
+  readonly text: string;
+}
+
+/** Keeps the public message when possible and drops the name if their composition is unsafe. */
+export function projectPublicHeader(
+  rawName: string,
+  rawMessage: string,
+  publicMessage: string,
+  masker: DiagnosticMasker,
+  canonical = formatDiagnostic(errorHeaderParts(rawName, rawMessage, [rawMessage]), masker),
+): PublicErrorHeader {
+  const name = formatDiagnostic([rawName], masker);
+  const reconstructed = errorHeader(name, publicMessage);
+  return reconstructed === canonical
+    ? { name, message: publicMessage, text: reconstructed }
+    : { name: '', message: publicMessage, text: publicMessage };
+}
+
+/** Projects the public header while retaining authentic issue parts until the complete sink. */
+export function projectRuneErrorHeaderForSink(
+  error: RuneError,
+  publicMessage: string,
+  masker: DiagnosticMasker,
+): PublicErrorHeader {
+  const records = errorMessageRecords(error);
+  const canonical = formatDiagnosticRecords(
+    errorHeaderRecords(error.name, error.message, records),
+    masker,
+  );
+  return projectPublicHeader(error.name, error.message, publicMessage, masker, canonical);
+}
+
+function errorMessageRecords(error: RuneError): readonly (readonly DiagnosticPart[])[] {
+  if (error.message === formatIssues(error.issues)) return issueRecords(error.issues);
+  return [
+    error.issues.length === 1 && error.issues[0]?.message === error.message
+      ? issuePresentation(error.issues[0]).parts
+      : [error.message],
+  ];
+}
+
+function errorHeader(name: string, message: string): string {
+  return name.length === 0 ? message : message.length === 0 ? name : `${name}: ${message}`;
+}
+
+function errorHeaderParts(
+  name: string,
+  message: string,
+  messageParts: readonly DiagnosticPart[],
+): readonly DiagnosticPart[] {
+  return name.length === 0
+    ? messageParts
+    : message.length === 0
+      ? [name]
+      : [name, ': ', ...messageParts];
+}
+
+function errorHeaderRecords(
+  name: string,
+  message: string,
+  records: readonly (readonly DiagnosticPart[])[],
+): readonly (readonly DiagnosticPart[])[] {
+  if (message.length === 0) return [[name]];
+  if (name.length === 0) return records;
+  return [[name, ': ', ...(records[0] ?? [])], ...records.slice(1)];
+}
+
+/** Masks an authentic stack header and escapes data while retaining formatter-owned frame LFs. */
+export function projectErrorStackForSink(
+  rawStack: string,
+  rawName: string,
+  rawMessage: string,
+  safeHeader: string,
+  masker: DiagnosticMasker,
+): string {
+  const rawHeader = errorHeader(rawName, rawMessage);
+  if (!rawStack.startsWith(rawHeader)) {
+    return formatDiagnosticRecords(
+      rawStack.split('\n').map((record) => [record]),
+      masker,
+    );
+  }
+  const suffix = projectDiagnosticRecordList(
+    rawStack
+      .slice(rawHeader.length)
+      .split('\n')
+      .map((record) => [record]),
+    masker,
+  );
+  const combined = [safeHeader + (suffix.records[0] ?? ''), ...suffix.records.slice(1)];
+  const finalized = finalizeRenderedDiagnosticRecords(combined, masker);
+  if (!suffix.failClosed && !finalized.failClosed) return combined.join('\n');
+
+  const emptySuffix = [safeHeader, ...suffix.records.slice(1).map(() => '')];
+  const emptyProjection = finalizeRenderedDiagnosticRecords(emptySuffix, masker);
+  // If even header plus empty frame records collides, retain the already validated error
+  // header and drop only optional stack-frame separators.
+  return emptyProjection.failClosed ? safeHeader : emptyProjection.records.join('\n');
+}
+
+function issueRecords(issues: readonly RuneIssue[]): readonly (readonly DiagnosticPart[])[] {
+  return issues.map(issueRecord);
+}
+
+function issueRecord(issue: RuneIssue): readonly DiagnosticPart[] {
+  const raw = issuePresentation(issue);
+  return raw.location === undefined
+    ? raw.parts
+    : [formatLocation(raw.location), ': ', ...raw.parts];
+}
+
+function issuePresentation(issue: RuneIssue): RawIssuePresentation {
+  return (
+    rawIssuePresentations.get(issue) ?? {
+      parts: [issue.message],
+      location: issue.location,
+    }
+  );
+}
+
+function publicIssueRecord(issue: RuneIssue): readonly DiagnosticPart[] {
+  return issue.location === undefined
+    ? [issue.message]
+    : [formatLocation(issue.location), ': ', issue.message];
+}
+
+/** Projects issue fields and binds their canonical record-level sink presentation. */
+export function projectIssuesForSink(
+  issues: readonly RuneIssue[],
+  masker: DiagnosticMasker,
+): readonly RuneIssue[] {
+  const diagnostics = formatDiagnosticRecordList(issueRecords(issues), masker);
+  return issues.map((issue, index): RuneIssue => {
+    const raw = issuePresentation(issue);
+    let projected: RuneIssue = {
+      code: issue.code,
+      message: formatDiagnosticRecords([raw.parts], masker),
+      location: projectLocation(raw.location, masker),
+    };
+    if (formatIssues([projected]) !== diagnostics[index]) {
+      projected = {
+        code: issue.code,
+        message: diagnostics[index]!,
+        location: undefined,
+      };
+    }
+    const ordinal = valuesDocumentOrdinals.get(issue);
+    if (ordinal !== undefined) valuesDocumentOrdinals.set(projected, ordinal);
+    rawIssuePresentations.set(projected, raw);
+    return projected;
+  });
 }
 
 /** Exit codes are fixed and identical on every platform (docs/architecture.md §10). */

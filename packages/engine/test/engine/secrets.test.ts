@@ -155,6 +155,24 @@ describe('SecretRegistry', () => {
     expect(registry.mask('first-secret/later-secret')).toBe('***/***');
   });
 
+  it('caches a fallback marker per registry version and immutable snapshot', () => {
+    const registry = new SecretRegistry();
+    const first = String.fromCodePoint(0x10000);
+    const second = String.fromCodePoint(0x10001);
+    const [secondHigh, secondLow] = [second.charAt(0), second.charAt(1)];
+
+    expect(registry.safeFallbackMarker()).toBe(first);
+    const initialSnapshot = registry.snapshot();
+    registry.register(first.repeat(4));
+    expect(registry.safeFallbackMarker()).toBe(second);
+    registry.register(`${secondLow}\\n${secondHigh}`);
+    const laterSnapshot = registry.snapshot();
+
+    expect(initialSnapshot.safeFallbackMarker()).toBe(first);
+    expect(laterSnapshot.safeFallbackMarker()).toBe(String.fromCodePoint(0x10002));
+    expect(registry.safeFallbackMarker()).toBe(String.fromCodePoint(0x10002));
+  });
+
   it('removes a registered secret from text, wherever it appears', () => {
     const registry = new SecretRegistry();
     registry.register('hunter2');
