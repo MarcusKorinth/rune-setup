@@ -392,9 +392,16 @@ export class Session {
                                                  // async; resolves when the run is over
   cancel(): void;                                // fires the CancelToken of the running execute()
   getStrings(): StringTable;                     // resolved manifest + chrome text, session locale (§6.3)
-  getThemeConfig(): ThemeConfig;                 // gui: block, paths absolute; empty if absent
+  getThemeConfig(): ThemeConfig;                 // fresh frozen gui snapshot; paths absolute; empty if absent
 }
 ```
+
+`getThemeConfig()` returns a fresh, shallow-frozen plain-data snapshot on every call, including a
+fresh frozen `{}` when `gui` is absent. Its localized `windowTitle` is masked at this GUI sink
+against the session's current secret registry, so a successful edit affects subsequent snapshots
+without mutating earlier ones; the field remains absent when undeclared. `accentColor` and the
+absolute `logo`, `banner`, and `theme` paths are presentation or machine configuration and remain
+byte-exact even when their text collides with a secret.
 
 `allInputs()` and `pendingInputs()` are themselves renderer-safe snapshots, not views of the
 canonical resolution state. `InputState` is a plain-data union discriminated by `secret`:
@@ -449,7 +456,7 @@ Every frontend asserts at session open that it can render every input type the m
 **Theming model (three layers):**
 
 1. **RUNE default theme** — polished, modern, animated: page transitions, animated progress, success/failure micro-animations, light and dark variants; built on CSS custom properties (`--rune-accent`, `--rune-radius`, `--rune-font`, …). This is what every installer looks like when the author does nothing.
-2. **Manifest `gui:` block** (schema v1, §4.2) — `gui.accentColor`, `gui.logo` (window/taskbar icon and header logo), `gui.banner`, `gui.theme` (path to a CSS file), optional `gui.windowTitle`. Resolved by the engine (`getThemeConfig`, paths absolutized against `${manifestDir}`) and applied by the renderer as variable overrides; presentation-only, ignored by CLI and non-interactive — no parity impact.
+2. **Manifest `gui:` block** (schema v1, §4.2) — `gui.accentColor`, `gui.logo` (window/taskbar icon and header logo), `gui.banner`, `gui.theme` (path to a CSS file), optional `gui.windowTitle`. The engine returns each `getThemeConfig` call as a fresh frozen snapshot: the localized `windowTitle` is sink-masked against current secrets, while `accentColor` and the absolutized asset/CSS paths remain exact. The renderer applies it as variable overrides; presentation-only, ignored by CLI and non-interactive — no parity impact.
 3. **Author CSS** — the `gui.theme` file is loaded **after** the default theme and may override variables or any rule. Advanced tier, documented as *your CSS, your support*: RUNE guarantees the custom-property names, not the internal DOM.
 
 **Author-time delivery.** Authors and CI need Node 22 LTS only — `npm install -g @rune/cli` or `npx @rune/cli …`; nothing else is installed for engine/CLI use. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. The CLI npm package (`@rune/cli`) contains no Electron; the shell is a separate prebuilt artifact, and core/CI never see Electron. `rune run --gui` launches the cached shell or exits 2 with that hint. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).

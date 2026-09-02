@@ -1493,33 +1493,147 @@ describe('strings and theme', () => {
     },
   );
 
-  it('hands back the gui block with absolute paths, or nothing', async () => {
+  it('returns fresh frozen empty theme snapshots when gui is absent', async () => {
     const plain = await Session.open(fixture(BASE), { environment: {} });
-    expect(plain.getThemeConfig()).toEqual({});
+    const first = plain.getThemeConfig();
+    const second = plain.getThemeConfig();
 
-    const themed = await Session.open(
-      fixture(
-        [
-          ...BASE,
-          'gui:',
-          '  accentColor: "#3355ff"',
-          '  logo: assets/logo.png',
-          '  banner: assets/banner.png',
-          '  theme: assets/theme.css',
-        ],
-        {
-          'assets/logo.png': 'not-a-real-png',
-          'assets/banner.png': 'not-a-real-png',
-          'assets/theme.css': 'body {}',
-        },
-      ),
+    expect(first).toEqual({});
+    expect(Object.getPrototypeOf(first)).toBe(Object.prototype);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(second).not.toBe(first);
+    expect(Object.isFrozen(second)).toBe(true);
+  });
+
+  it('returns fresh frozen full theme snapshots and masks only the manifest window title', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  titleSecret:',
+        '    type: secret',
+        '  accentSecret:',
+        '    type: secret',
+        '  logoSecret:',
+        '    type: secret',
+        '  bannerSecret:',
+        '    type: secret',
+        '  themeSecret:',
+        '    type: secret',
+        'steps: []',
+        'gui:',
+        '  accentColor: "#3355ff"',
+        '  logo: assets/logo.png',
+        '  banner: assets/banner.png',
+        '  theme: assets/theme.css',
+        '  windowTitle: Manifest secret title',
+      ],
+      {
+        'assets/logo.png': 'not-a-real-png',
+        'assets/banner.png': 'not-a-real-png',
+        'assets/theme.css': 'body {}',
+      },
+    );
+    const logo = join(path, '..', 'assets', 'logo.png');
+    const banner = join(path, '..', 'assets', 'banner.png');
+    const themePath = join(path, '..', 'assets', 'theme.css');
+    const themed = await Session.open(path, {
+      mode: 'gui',
+      environment: {},
+      overrides: {
+        titleSecret: 'Manifest secret title',
+        accentSecret: '#3355ff',
+        logoSecret: logo,
+        bannerSecret: banner,
+        themeSecret: themePath,
+      },
+    });
+
+    const first = themed.getThemeConfig();
+    const second = themed.getThemeConfig();
+    expect(first).toEqual({
+      accentColor: '#3355ff',
+      logo,
+      banner,
+      theme: themePath,
+      windowTitle: '***',
+    });
+    expect(Object.getPrototypeOf(first)).toBe(Object.prototype);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
+    expect(Object.isFrozen(second)).toBe(true);
+  });
+
+  it('masks a localized overlay window title', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  titleSecret:',
+        '    type: secret',
+        'steps: []',
+        'gui:',
+        '  windowTitle: Manifest title',
+      ],
+      { 'locales/de.yaml': 'gui.windowTitle: Overlay secret title\n' },
+    );
+    const session = await Session.open(path, {
+      mode: 'gui',
+      locale: 'de',
+      environment: {},
+      overrides: { titleSecret: 'Overlay secret title' },
+    });
+
+    expect(session.getThemeConfig()).toEqual({ windowTitle: '***' });
+  });
+
+  it('remasks only new theme snapshots after a successful secret edit', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  lateSecret:',
+        '    type: secret',
+        '    required: false',
+        'steps: []',
+        'gui:',
+        '  accentColor: "#3355ff"',
+        '  windowTitle: "#3355ff"',
+      ]),
       { mode: 'gui', environment: {} },
     );
-    const theme = themed.getThemeConfig();
-    expect(theme.accentColor).toBe('#3355ff');
-    expect(theme.logo).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]logo\.png$/);
-    expect(theme.banner).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]banner\.png$/);
-    expect(theme.theme).toMatch(/^([A-Za-z]:)?[\\/].*assets[\\/]theme\.css$/);
+    const historical = session.getThemeConfig();
+
+    expect(historical).toEqual({ accentColor: '#3355ff', windowTitle: '#3355ff' });
+    expect(session.setValue('lateSecret', '#3355ff')).toEqual([]);
+
+    const current = session.getThemeConfig();
+    expect(current).toEqual({ accentColor: '#3355ff', windowTitle: '***' });
+    expect(current).not.toBe(historical);
+    expect(historical).toEqual({ accentColor: '#3355ff', windowTitle: '#3355ff' });
+    expect(Object.isFrozen(historical)).toBe(true);
+    expect(Object.isFrozen(current)).toBe(true);
+  });
+
+  it('omits windowTitle when gui does not declare it', async () => {
+    const session = await Session.open(fixture([...BASE, 'gui:', '  accentColor: "#3355ff"']), {
+      mode: 'gui',
+      environment: {},
+    });
+    const theme = session.getThemeConfig();
+
+    expect(theme).toEqual({ accentColor: '#3355ff' });
+    expect(Object.hasOwn(theme, 'windowTitle')).toBe(false);
   });
 });
 

@@ -457,19 +457,17 @@ export class Session {
   getThemeConfig(): ThemeConfig {
     const gui = this.manifest.gui;
     if (gui === undefined) {
-      return {};
+      return Object.freeze({});
     }
     const anchor = (path: string | undefined): string | undefined =>
       path === undefined || isAbsolute(path) ? path : resolvePath(this.#context.manifestDir, path);
-    return {
+    return Object.freeze({
       ...(gui.accentColor === undefined ? {} : { accentColor: gui.accentColor }),
       ...(gui.logo === undefined ? {} : { logo: anchor(gui.logo) }),
       ...(gui.banner === undefined ? {} : { banner: anchor(gui.banner) }),
       ...(gui.theme === undefined ? {} : { theme: anchor(gui.theme) }),
-      ...(gui.windowTitle === undefined
-        ? {}
-        : { windowTitle: this.#strings.windowTitle() ?? gui.windowTitle }),
-    };
+      ...(gui.windowTitle === undefined ? {} : { windowTitle: this.#sinkStrings.windowTitle() }),
+    });
   }
 
   #executionPlan(): ExecutionPlan {
