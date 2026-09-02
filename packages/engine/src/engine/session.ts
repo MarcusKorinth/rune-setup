@@ -160,26 +160,38 @@ export class Session {
   /** Opens a session: load, validate, resolve layers 1–4 — stages 1–3 of the pipeline (§7). */
   static async open(manifestPath: string, options: SessionOptions = {}): Promise<Session> {
     const runner = TEST_RUNNERS.get(options);
-    const absolutePath = resolvePath(manifestPath);
+    const invocationCwd = process.cwd();
+    const absolutePath = resolvePath(invocationCwd, manifestPath);
     const manifestDir = dirname(absolutePath);
     const mode = options.mode ?? 'non-interactive';
-    const manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
-    const descriptor = manifestDescriptorFor(manifest);
     const host = hostPlatform();
     const platform = options.platform ?? host;
     const preview = platform !== host;
-    const secrets = new SecretRegistry();
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
     const environment = snapshotEnvironment(options.environment);
+    const localeFlag = options.locale;
+    const openingSystemLocale = options.systemLocale ?? systemLocale();
+    const valueFiles = (options.values ?? []).map((file) => ({
+      path: resolvePath(invocationCwd, file),
+      file,
+    }));
+    const overrides = new Map(Object.entries(options.overrides ?? {}));
+    const logFileFlag = options.logFile;
+    const flagLogFile =
+      logFileFlag === undefined ? undefined : resolvePath(invocationCwd, logFileFlag);
+
+    const manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
+    const descriptor = manifestDescriptorFor(manifest);
+    const secrets = new SecretRegistry();
     let locale: string | undefined;
     let strings: StringTable | undefined;
     let resolution: Resolution | undefined;
     try {
       locale = selectLocale({
-        flag: options.locale,
+        flag: localeFlag,
         environment,
-        systemLocale: options.systemLocale ?? systemLocale(),
+        systemLocale: openingSystemLocale,
       });
       let overlay: LocaleOverlay | undefined;
       if (locale !== undefined) {
@@ -200,10 +212,9 @@ export class Session {
       const values: ValuesDocument[] = [];
       // Preserve invocation-order error precedence: one values file finishes before the next
       // starts, exactly as in the synchronous authoring path.
-      for (const path of options.values ?? []) {
-        values.push(await parseValuesFileAsync(resolvePath(path), path));
+      for (const file of valueFiles) {
+        values.push(await parseValuesFileAsync(file.path, file.file));
       }
-      const overrides = new Map(Object.entries(options.overrides ?? {}));
       resolution = resolveInputsWithRegistry(
         {
           manifest,
@@ -228,7 +239,7 @@ export class Session {
         // Automation is all-or-nothing. Interactive frontends retain rejected seed values so
         // they can render and replace them before planning (§5).
         resolution,
-        logFile: effectiveLogFile(options.logFile, manifest, manifestDir),
+        logFile: effectiveLogFile(flagLogFile, manifest, manifestDir),
         runner,
       });
     } catch (error) {
@@ -520,14 +531,14 @@ function systemLocale(): string | undefined {
   }
 }
 
-/** `--log-file` beats `execution.logFile`; a relative manifest path anchors to its directory. */
+/** The snapshotted `--log-file` beats `execution.logFile`; manifest paths anchor to its directory. */
 function effectiveLogFile(
-  flag: string | undefined,
+  absoluteFlag: string | undefined,
   manifest: Manifest,
   manifestDir: string,
 ): string | undefined {
-  if (flag !== undefined) {
-    return resolvePath(flag);
+  if (absoluteFlag !== undefined) {
+    return absoluteFlag;
   }
   const configured = manifest.execution.logFile;
   if (configured === undefined) {
