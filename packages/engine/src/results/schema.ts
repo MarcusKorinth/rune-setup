@@ -162,7 +162,7 @@ const resolutionResultErrorSchema = resultErrorSchema(
 );
 
 /**
- * Shape source for `resultSchemaVersion: 1`. It is deliberately separate from the readonly
+ * Shape source for `resultSchemaVersion: 2`. It is deliberately separate from the readonly
  * facade types in model.ts: readonly has no JSON representation. The compile-time checks below
  * pin the two structural views in both directions.
  */
@@ -201,7 +201,7 @@ const potentiallyUnvalidatedResultShape = {
   manifest: potentiallyUnvalidatedResultManifestSchema,
 };
 
-const resultV1ShapeSchema = z.union([
+const resultV2ShapeSchema = z.union([
   z.strictObject({
     ...validatedResultShape,
     status: z.literal('succeeded'),
@@ -274,7 +274,7 @@ const resultV1ShapeSchema = z.union([
   }),
 ]);
 
-export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+export const resultV2Schema = resultV2ShapeSchema.superRefine((result, context) => {
   if (result.crossPlatformPreview && !result.dryRun) {
     context.addIssue({
       code: 'custom',
@@ -457,13 +457,13 @@ type Mutable<T> = T extends readonly (infer Item)[]
     : T;
 type Assert<Condition extends true> = Condition;
 type _SchemaMatchesModel = Assert<
-  z.output<typeof resultV1Schema> extends Mutable<RunResult> ? true : false
+  z.output<typeof resultV2Schema> extends Mutable<RunResult> ? true : false
 >;
 type _ModelMatchesSchema = Assert<
-  Mutable<RunResult> extends z.output<typeof resultV1Schema> ? true : false
+  Mutable<RunResult> extends z.output<typeof resultV2Schema> ? true : false
 >;
 
 /** The JSON Schema emitted by `rune schema --result`. */
 export function resultJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(resultV1Schema, { io: 'output' }) as Record<string, unknown>;
+  return z.toJSONSchema(resultV2Schema, { io: 'output' }) as Record<string, unknown>;
 }

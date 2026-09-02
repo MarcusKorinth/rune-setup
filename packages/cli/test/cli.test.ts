@@ -115,7 +115,7 @@ describe('rune schema', () => {
 
     const result = JSON.parse(resultIo.out.join('\n')) as Record<string, unknown>;
     expect(resultValidator.safeParse(result).success).toBe(true);
-    expect(resultValidator.safeParse({ ...result, resultSchemaVersion: 2 }).success).toBe(false);
+    expect(resultValidator.safeParse({ ...result, resultSchemaVersion: 1 }).success).toBe(false);
   });
 
   it('escapes only the human file announcement', async () => {

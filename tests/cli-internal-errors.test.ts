@@ -32,7 +32,7 @@ vi.mock('@rune/engine', async (importOriginal) => {
 
 import { RuneError, Session, type RunResult } from '@rune/engine';
 import { run, type CliIo } from '@rune/cli';
-import { resultV1Schema } from '../packages/engine/src/results/schema.js';
+import { resultV2Schema } from '../packages/engine/src/results/schema.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -92,7 +92,7 @@ describe('CLI internal-error boundary', () => {
     expect(engineMock.failureErrors).toHaveLength(1);
     expect((engineMock.failureErrors[0] as Error).cause).toBe(cause);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'internal_error',
       exitCode: 70,
@@ -145,7 +145,7 @@ describe('CLI internal-error boundary', () => {
     expect(engineMock.failureErrors).toHaveLength(1);
     expect(engineMock.writeCalls).toHaveLength(1);
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result.status).toBe('config_error');
   });
 

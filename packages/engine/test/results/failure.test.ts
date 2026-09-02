@@ -18,7 +18,7 @@ import {
 } from '../../src/errors.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
-import { resultV1Schema } from '../../src/results/schema.js';
+import { resultV2Schema } from '../../src/results/schema.js';
 
 const SECRET = 'factory-secret-value';
 
@@ -205,7 +205,7 @@ describe('createFailureResult', () => {
       plan,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'internal_error',
       exitCode: 70,
@@ -277,7 +277,7 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result.manifest).toMatchObject({
       path,
       sha256: manifestDescriptorFor(session.manifest).sha256,
@@ -345,7 +345,7 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'input_error',
       product: { name: productName, version: productVersion },
@@ -457,7 +457,7 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({ status: 'input_error', exitCode: 4, steps: [] });
     expect(result.inputs).toEqual([
       { id: 'enabled', value: false, source: 'default', secret: false, enabled: true },
@@ -754,7 +754,7 @@ describe('createFailureResult', () => {
       plan,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       dryRun: true,
       stepsExecuted: 0,
@@ -990,7 +990,7 @@ describe('createFailureResult', () => {
       session,
     });
 
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(result).toMatchObject({
       status: 'failed',
       exitCode: 1,
@@ -1053,7 +1053,7 @@ describe('createFailureResult', () => {
         platform: hostPlatform(),
       });
 
-      expect(() => resultV1Schema.parse(result)).not.toThrow();
+      expect(() => resultV2Schema.parse(result)).not.toThrow();
       expect(result).toMatchObject({
         status,
         exitCode,

@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { InternalError } from '../errors.js';
 import type { RunResult } from './model.js';
-import { resultV1Schema } from './schema.js';
+import { resultV2Schema } from './schema.js';
 
 const renameQueues = new Map<string, Promise<void>>();
 
@@ -41,14 +41,14 @@ async function renameForTarget(temporary: string, path: string): Promise<void> {
 }
 
 export function serializeResult(result: RunResult): string {
-  let parsed: ReturnType<typeof resultV1Schema.safeParse>;
+  let parsed: ReturnType<typeof resultV2Schema.safeParse>;
   try {
-    parsed = resultV1Schema.safeParse(result);
+    parsed = resultV2Schema.safeParse(result);
   } catch {
-    throw new InternalError('the run result does not match resultSchemaVersion 1');
+    throw new InternalError('the run result does not match resultSchemaVersion 2');
   }
   if (!parsed.success) {
-    throw new InternalError('the run result does not match resultSchemaVersion 1');
+    throw new InternalError('the run result does not match resultSchemaVersion 2');
   }
   return `${JSON.stringify(parsed.data, null, 2)}\n`;
 }

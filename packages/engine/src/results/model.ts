@@ -16,7 +16,7 @@ import {
   type ResolutionCode,
 } from '../errors.js';
 
-export const RESULT_SCHEMA_VERSION = 1;
+export const RESULT_SCHEMA_VERSION = 2;
 
 /** The frontend mode that drove a run (§10). */
 export const RUN_MODES = ['gui', 'interactive', 'non-interactive'] as const;
@@ -25,7 +25,7 @@ export type RunMode = (typeof RUN_MODES)[number];
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
- * is complete from version 1 on.
+ * is complete for result schema version 2.
  */
 export const RUN_STATUSES = [
   'succeeded',

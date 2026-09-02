@@ -38,7 +38,7 @@ RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framewo
 
 ### Versioning
 
-`schemaVersion` (manifest, currently `1`), `resultSchemaVersion` (result file), and the **product version** (SemVer, starting at 0.1.0) are independent. Roadmap milestones map to indicative product versions: M0+M1+M2 → 0.1.0 (engine library, `validate`/`schema`, non-interactive, interactive CLI, `Session` facade frozen as the frontend contract, i18n resolution), M3 → 0.2.0 (Electron GUI shell + theming), M4 → 0.3.0 (`rune package` self-contained end-user artifact). **The MVP is milestones 0–3 (product 0.2.0)** — the spec's success criteria include the graphical wizard; milestone 4 is a committed core milestone beyond the MVP. The manifest stays `schemaVersion: 1` throughout.
+`schemaVersion` (manifest, currently `1`), `resultSchemaVersion` (result file, currently `2`), and the **product version** (SemVer, starting at 0.1.0) are independent. Roadmap milestones map to indicative product versions: M0+M1+M2 → 0.1.0 (engine library, `validate`/`schema`, non-interactive, interactive CLI, `Session` facade frozen as the frontend contract, i18n resolution), M3 → 0.2.0 (Electron GUI shell + theming), M4 → 0.3.0 (`rune package` self-contained end-user artifact). **The MVP is milestones 0–3 (product 0.2.0)** — the spec's success criteria include the graphical wizard; milestone 4 is a committed core milestone beyond the MVP. The manifest stays `schemaVersion: 1` throughout.
 
 ## 2) Core principles (short contracts)
 
@@ -108,7 +108,7 @@ but before execution or either sink is opened. Comparison is case-insensitive on
 case-sensitive on Linux. Dry-run may write its result to the configured log path because it never
 opens the log, and `--result -` remains valid.
 
-`rune schema` prints the JSON Schema of manifest `schemaVersion: 1` to stdout (or `--output FILE`), **generated from the zod schemas** (zod's built-in `z.toJSONSchema()`, in its `input` view so that fields with defaults stay optional for the author) at call time so it can never drift from what `validate` enforces; `--result` emits the result-file schema (`resultSchemaVersion: 1`) instead. Intended consumers are YAML language servers (autocompletion, inline errors); the same generated schema is what §14's schema tests pin.
+`rune schema` prints the JSON Schema of manifest `schemaVersion: 1` to stdout (or `--output FILE`), **generated from the zod schemas** (zod's built-in `z.toJSONSchema()`, in its `input` view so that fields with defaults stay optional for the author) at call time so it can never drift from what `validate` enforces; `--result` emits the result-file schema (`resultSchemaVersion: 2`) instead. Intended consumers are YAML language servers (autocompletion, inline errors); the same generated schema is what §14's schema tests pin.
 
 `--locale TAG` selects the display locale for every text RUNE renders (§6.3) and takes precedence over `RUNE_LOCALE` and the system locale. It is accepted by `validate` and by `run` in all three modes; `rune run --gui` forwards it to the shell's session.
 
@@ -509,7 +509,7 @@ Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 afte
 
 ### Result file (`--result`)
 
-Versioned independently of the manifest schema (`resultSchemaVersion: 1`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. Hosts call it after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.
+Versioned independently of the manifest schema (`resultSchemaVersion: 2`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. Hosts call it after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.
 
 Result construction remains engine-owned. `Session.describe()` and `Session.execute()` produce normal results; the public `createFailureResult` factory builds failures around `Session.open()`, planning, or pre-execution setup while preserving every available manifest, session, input, locale, platform, and plan fact. With session or plan context, detailed error fields are accepted only from the exact engine-produced error bound to the current session generation. An external, cross-session, or stale error becomes one fixed generic internal-error projection without consulting the session's secret registry; the host-created dry-run cancellation likewise uses one fixed canonical RUNE-601 projection. Plan-time RUNE-401/404/405 failures have no completed plan and therefore keep the zero-step form. A pre-execution log-file failure (RUNE-406) may project an already completed plan as unchanged `SKIPPED` steps plus `NOT_RUN` executable steps. If log writing or closing fails after execution, `Session` instead preserves the completed run's real step states, output tails, and counters and reclassifies only the run-level outcome. Consequently, this documented run-level `failed` form need not contain a `FAILED` step. Hosts capture the engine-produced terminal result and never duplicate these semantics. Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code from a configured run implies exactly one status once `dryRun` is known — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other configured-run code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
 
@@ -613,8 +613,8 @@ packages/
 │       │   ├── base.ts            # Runner interface
 │       │   └── spawnRunner.ts     # child_process.spawn (shell:false), stream splitting, POSIX group/Windows tree kill
 │       ├── results/
-│       │   ├── model.ts           # RunResult/ResultStep (resultSchemaVersion 1): counters, outputTail, provenance
-│       │   ├── schema.ts          # JSON Schema and runtime correlations for resultSchemaVersion 1
+│       │   ├── model.ts           # RunResult/ResultStep (resultSchemaVersion 2): counters, outputTail, provenance
+│       │   ├── schema.ts          # JSON Schema and runtime correlations for resultSchemaVersion 2
 │       │   └── writer.ts          # atomic write, always-on-outcome
 │       └── logs/
 │           └── logFile.ts         # append-only event-log sink; receives already-masked output

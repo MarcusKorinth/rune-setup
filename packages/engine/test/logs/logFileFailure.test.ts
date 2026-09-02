@@ -27,7 +27,7 @@ import { createLogFileSink } from '../../src/logs/logFile.js';
 import { createSessionOptionsForTesting, Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { InternalError } from '../../src/errors.js';
-import { resultV1Schema } from '../../src/results/schema.js';
+import { resultV2Schema } from '../../src/results/schema.js';
 
 function openedWritable(path: string, options: WritableOptions): fs.WriteStream {
   const fd = fs.openSync(path, 'a');
@@ -161,7 +161,7 @@ describe('log-file sink failures', () => {
       nothingExecuted: false,
       steps: [{ id: 'install', state: 'SUCCEEDED', command: ['node'] }],
     });
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(Object.isFrozen(result)).toBe(true);
     expect(terminals.some((event) => event.result.status === 'succeeded')).toBe(false);
   });
@@ -256,7 +256,7 @@ describe('log-file sink failures', () => {
         },
       ],
     });
-    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(() => resultV2Schema.parse(result)).not.toThrow();
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result?.steps)).toBe(true);
     expect(Object.isFrozen(result?.steps[0]?.outputTail)).toBe(true);

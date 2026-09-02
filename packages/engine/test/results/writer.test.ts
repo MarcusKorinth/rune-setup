@@ -22,7 +22,7 @@ const SHA256 = 'a'.repeat(64);
 
 function result(id: string): Extract<RunResult, { status: 'succeeded' }> {
   return {
-    resultSchemaVersion: 1,
+    resultSchemaVersion: 2,
     id: RESULT_ID,
     status: 'succeeded',
     exitCode: 0,
@@ -320,7 +320,7 @@ function expectGenericResultError(caught: unknown): void {
   const error = caught as InternalError;
   expect(error.code).toBe('RUNE-500');
   expect(error.message).toBe(
-    'the run result does not match resultSchemaVersion 1 — this is a bug in RUNE, please report it with the manifest that triggered it',
+    'the run result does not match resultSchemaVersion 2 — this is a bug in RUNE, please report it with the manifest that triggered it',
   );
   expect(
     `${error.name}\n${error.message}\n${String(error.cause)}\n${JSON.stringify(error.issues)}`,
@@ -435,7 +435,7 @@ describe('writeResult', () => {
 
     expect(serialized).not.toContain(SECRET_SENTINEL);
     expect(JSON.parse(serialized)).toMatchObject({
-      resultSchemaVersion: 1,
+      resultSchemaVersion: 2,
       id: RESULT_ID,
       product: { name: 'Writer test parsed-copy', version: '1.0.0' },
     });
