@@ -392,15 +392,17 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
 /**
  * Internal resolver seam for a session that retains masking across re-resolution.
  * `rejectAnswerId` keeps one in-flight interactive Session edit fatal while seeds are collected.
+ * `missingIssue` supplements a completed non-interactive failure with frontend-ready prompts.
  */
 export function resolveInputsWithRegistry(
   options: ResolveInputsOptions,
   secrets: SecretRegistry,
   rejectAnswerId?: string,
+  missingIssue?: (id: string) => RuneIssue,
 ): Resolution {
   const attempt: ResolutionAttempt = { stagedSecrets: new SecretRegistry() };
   try {
-    return resolveInputsStaged(options, secrets, attempt, rejectAnswerId);
+    return resolveInputsStaged(options, secrets, attempt, rejectAnswerId, missingIssue);
   } catch (cause) {
     if (cause instanceof RuneError) {
       const redactor = attempt.redactor ?? secrets.combinedWith(attempt.stagedSecrets);
@@ -436,6 +438,7 @@ function resolveInputsStaged(
   publishedSecrets: SecretRegistry,
   attempt: ResolutionAttempt,
   rejectAnswerId: string | undefined,
+  missingIssue: ((id: string) => RuneIssue) | undefined,
 ): Resolution {
   const { manifest, context } = options;
   const { stagedSecrets } = attempt;
@@ -579,12 +582,22 @@ function resolveInputsStaged(
     throw cause;
   }
 
+  const missing = Object.freeze(
+    order.filter((id) => {
+      const state = states.get(id);
+      return state !== undefined && stillNeeded(state);
+    }),
+  );
+
   const hasUnknownKey = issues.some((issue) => issue.code === 'RUNE-203');
   if (
     issues.length > 0 &&
     ((options.invalidValues ?? 'throw') === 'throw' || hasUnknownKey || hasDeferredValuesProblems)
   ) {
-    throwCollectedInputIssues(issues);
+    throwCollectedInputIssues(
+      issues,
+      missingIssue === undefined ? [] : missing.map((id) => missingIssue(id)),
+    );
   }
 
   const frozenIssues = issues.map((issue) => freezeIssue(redactIssue(issue, redactor)));
@@ -615,9 +628,6 @@ function resolveInputsStaged(
   );
   const canonicalById = new Map(inputs.map((state) => [state.id, state]));
   const publicById = Object.freeze(new ImmutableReadonlyMap(canonicalById));
-  const missing = Object.freeze(
-    inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-  );
   const frozenWarnings = Object.freeze(
     warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
   );
@@ -680,11 +690,17 @@ function freezeIssue(issue: RuneIssue): RuneIssue {
 }
 
 /** Throws collected issues under their aggregate code, preserving the existing taxonomy. */
-function throwCollectedInputIssues(issues: readonly RuneIssue[]): never {
+function throwCollectedInputIssues(
+  issues: readonly RuneIssue[],
+  supplementalIssues: readonly RuneIssue[] = [],
+): never {
   // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
   // the values (§7).
   const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-  throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+  throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', [
+    ...issues,
+    ...supplementalIssues,
+  ]);
 }
 
 interface StagedSecret {

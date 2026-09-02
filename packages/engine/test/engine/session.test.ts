@@ -78,6 +78,59 @@ const BASE = [
 ];
 
 describe('opening a session', () => {
+  it.each(['default', 'values', 'environment', 'set'] as const)(
+    'rejects an invalid %s seed with every independently missing required input',
+    async (source) => {
+      const path = fixture(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  invalidOptional:',
+          '    type: text',
+          '    required: false',
+          '    pattern: "x+"',
+          ...(source === 'default' ? ['    default: bad'] : []),
+          '  firstMissing:',
+          '    type: text',
+          '  secondMissing:',
+          '    type: secret',
+          'steps: []',
+        ],
+        source === 'values' ? { 'values.yaml': 'invalidOptional: bad\n' } : {},
+      );
+      const options: SessionOptions = {
+        mode: 'non-interactive',
+        environment: source === 'environment' ? { RUNE_INPUT_INVALIDOPTIONAL: 'bad' } : {},
+        ...(source === 'values' ? { values: [join(path, '..', 'values.yaml')] } : {}),
+        ...(source === 'set' ? { overrides: { invalidOptional: 'bad' } } : {}),
+      };
+      let opened: Session | undefined;
+      let thrown: unknown;
+
+      try {
+        opened = await Session.open(path, options);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(opened).toBeUndefined();
+      expect(thrown).toBeInstanceOf(InputError);
+      const inputError = thrown as InputError;
+      expect(inputError.code).toBe('RUNE-202');
+      expect(inputError.issues.filter((issue) => issue.code === 'RUNE-202')).toHaveLength(1);
+      expect(inputError.issues.filter((issue) => issue.code === 'RUNE-201')).toHaveLength(2);
+      expect(inputError.message).toContain('invalidOptional');
+      for (const id of ['firstMissing', 'secondMissing']) {
+        expect(inputError.message).toContain(
+          `input "${id}" is required and has no value — supply it with --set ${id}=... | RUNE_INPUT_${id.toUpperCase()} | values-file key '${id}'`,
+        );
+      }
+    },
+  );
+
   it('returns clone-safe masked input views with exact machine identities', async () => {
     const secret = 'text';
     const path = fixture(
@@ -688,7 +741,17 @@ describe('opening a session', () => {
     expect(thrown).toBeInstanceOf(InputError);
     const error = thrown as InputError;
     expect(error.code).toBe('RUNE-202');
-    expect(error.issues.map((issue) => issue.location?.file)).toEqual([first, second]);
+    expect(
+      error.issues
+        .filter((issue) => issue.code === 'RUNE-202')
+        .map((issue) => issue.location?.file),
+    ).toEqual([first, second]);
+    expect(error.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'RUNE-201',
+        message: expect.stringContaining('openingSecret'),
+      }),
+    );
   });
 
   it.runIf(process.platform === 'win32')(

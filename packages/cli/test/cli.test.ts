@@ -679,6 +679,67 @@ describe('rune run', () => {
     expect(written['status']).toBe('input_error');
   });
 
+  it('reports an invalid seed with every missing input in stderr and the result', async () => {
+    const secret = 'F090-OPEN-FAILURE-SECRET';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  masker:',
+      '    type: secret',
+      '    required: false',
+      '  invalidOptional:',
+      '    type: text',
+      '    required: false',
+      '    pattern: "x+"',
+      '  firstMissing:',
+      '    type: text',
+      '  secondMissing:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const resultPath = join(path, '..', 'result.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--non-interactive',
+        '--result',
+        resultPath,
+        '--set',
+        `masker=${secret}`,
+        '--set',
+        `invalidOptional=${secret}`,
+      ],
+      io,
+    );
+
+    expect(code).toBe(4);
+    const stderr = io.err.join('\n');
+    expect(stderr).toContain('invalidOptional (from --set invalidOptional=…)');
+    for (const id of ['firstMissing', 'secondMissing']) {
+      expect(stderr).toContain(
+        `input "${id}" is required and has no value — supply it with --set ${id}=... | RUNE_INPUT_${id.toUpperCase()} | values-file key '${id}'`,
+      );
+    }
+    expect(stderr).not.toContain(secret);
+
+    const result = JSON.parse(readFileSync(resultPath, 'utf8')) as {
+      readonly status: string;
+      readonly error: { readonly code: string; readonly message: string };
+    };
+    expect(result.status).toBe('input_error');
+    expect(result.error.code).toBe('RUNE-202');
+    expect(result.error.message).toContain('invalidOptional (from --set invalidOptional=…)');
+    expect(result.error.message).toContain('input "firstMissing" is required and has no value');
+    expect(result.error.message).toContain('input "secondMissing" is required and has no value');
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
   it('rejects __proto__ as an unknown --set key', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

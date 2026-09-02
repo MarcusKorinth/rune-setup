@@ -283,6 +283,8 @@ export class Session {
           invalidValues: mode === 'non-interactive' ? 'throw' : 'collect',
         },
         secrets,
+        undefined,
+        mode === 'non-interactive' ? (id) => missingInputIssue(descriptor.path, id) : undefined,
       );
       inputSnapshot = projectInputFacadeSnapshot(resolution);
 
@@ -526,7 +528,7 @@ export class Session {
       if (missing.length > 0 || problems.length > 0) {
         throw InputError.fromIssues(problems.length > 0 ? 'RUNE-202' : 'RUNE-201', [
           ...problems,
-          ...missing.map((id) => this.#missingIssue(id)),
+          ...missing.map((id) => missingInputIssue(this.#manifestPath, id)),
         ]);
       }
       if (this.#plan !== undefined) {
@@ -570,15 +572,15 @@ export class Session {
       this.mode === 'non-interactive' ? undefined : editedAnswerId,
     );
   }
+}
 
-  #missingIssue(id: string): RuneIssue {
-    const sources = `--set ${id}=... | ${environmentName(id)} | values-file key '${id}'`;
-    return {
-      code: 'RUNE-201',
-      message: `input "${id}" is required and has no value — supply it with ${sources}`,
-      location: startOfFile(this.#manifestPath),
-    };
-  }
+function missingInputIssue(manifestPath: string, id: string): RuneIssue {
+  const sources = `--set ${id}=... | ${environmentName(id)} | values-file key '${id}'`;
+  return {
+    code: 'RUNE-201',
+    message: `input "${id}" is required and has no value — supply it with ${sources}`,
+    location: startOfFile(manifestPath),
+  };
 }
 
 /** Observer failures are isolated per sink and can never change execution or finalization. */

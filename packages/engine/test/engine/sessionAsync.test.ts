@@ -303,12 +303,13 @@ describe.sequential('asynchronous Session I/O', () => {
       process.chdir(laterDirectory);
 
       await expect(opening).rejects.toMatchObject({
-        issues: [
+        issues: expect.arrayContaining([
           expect.objectContaining({
             message: expect.stringContaining('must contain a mapping'),
             location: expect.objectContaining({ file: 'values.yaml' }),
           }),
-        ],
+          expect.objectContaining({ code: 'RUNE-201', message: expect.stringContaining('target') }),
+        ]),
       });
     } finally {
       process.chdir(previousCwd);

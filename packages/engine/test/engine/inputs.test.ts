@@ -1044,6 +1044,37 @@ describe('keys that name no input', () => {
     expect(error.issues).toMatchObject([{ code: 'RUNE-203' }]);
   });
 
+  it('keeps an unknown-only aggregate at RUNE-203 when missing issues are supplemental', () => {
+    const manifest = manifestOf(...SIMPLE);
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
+
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          overrides: new Map([['unknown', 'value']]),
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues.map((issue) => issue.code).sort()).toEqual(['RUNE-201', 'RUNE-203']);
+    expect(missingIssue).toHaveBeenCalledExactlyOnceWith('target');
+  });
+
   it('keeps the values-file origin and location when collecting invalid values', () => {
     const error = inputError(manifestOf(...SIMPLE), {
       values: [valuesFromFile('nope: x\n')],
@@ -3762,6 +3793,59 @@ describe('values files', () => {
     },
   );
 
+  it('keeps deferred primary issue taxonomy and values order with supplemental missing issues', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  firstMissing:',
+      '    type: text',
+      '  badShape:',
+      '    type: text',
+      '    required: false',
+      '  known:',
+      '    type: boolean',
+      '    required: false',
+    );
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
+
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          values: [
+            valuesFromFile(
+              ['badShape:', '  nested: value', 'mistake: value', 'known: perhaps', ''].join('\n'),
+            ),
+          ],
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-202');
+    expect(
+      error.issues
+        .filter((issue) => issue.code !== 'RUNE-201')
+        .map((issue) => [issue.code, issue.location]),
+    ).toEqual([
+      ['RUNE-202', { file: 'v.yaml', line: 1, column: 1 }],
+      ['RUNE-203', { file: 'v.yaml', line: 3, column: 1 }],
+      ['RUNE-202', { file: 'v.yaml', line: 4, column: 1 }],
+    ]);
+    expect(missingIssue).toHaveBeenCalledExactlyOnceWith('firstMissing');
+  });
+
   it.each([undefined, 'collect'] as const)(
     'orders aggregate values-file issues by document before their source positions with invalidValues=%s',
     (invalidValues) => {
@@ -3816,6 +3900,8 @@ describe('values files', () => {
   it('keeps a deferred values problem ahead of a later input condition resolution error', () => {
     const manifest = manifestOf(
       'inputs:',
+      '  firstMissing:',
+      '    type: text',
       '  badShape:',
       '    type: text',
       '    required: false',
@@ -3824,10 +3910,30 @@ describe('values files', () => {
       '    required: false',
       '    when: \'${env.MISSING} == "enabled"\'',
     );
-    const error = inputError(manifest, {
-      values: [valuesFromFile(['badShape:', '  nested: value', ''].join('\n'))],
-    });
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
 
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          values: [valuesFromFile(['badShape:', '  nested: value', ''].join('\n'))],
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
     expect(error.code).toBe('RUNE-202');
     expect(error.issues).toEqual([
       {
@@ -3837,5 +3943,33 @@ describe('values files', () => {
         location: { file: 'v.yaml', line: 1, column: 1 },
       },
     ]);
+    expect(missingIssue).not.toHaveBeenCalled();
+  });
+
+  it('does not supplement partial missing state after default resolution aborts traversal', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  firstMissing:',
+      '    type: text',
+      '  unresolvedDefault:',
+      '    type: text',
+      '    required: false',
+      '    default: "${env.MISSING}"',
+    );
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+
+    expect(() =>
+      resolveInputsWithRegistry(
+        { manifest, context: contextFor(manifest) },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      ),
+    ).toThrow(ResolutionError);
+    expect(missingIssue).not.toHaveBeenCalled();
   });
 });
