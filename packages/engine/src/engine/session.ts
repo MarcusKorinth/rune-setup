@@ -457,17 +457,16 @@ export class Session {
       notifyObserver(observer, terminal);
       return completed;
     } catch (error) {
-      let failure = error;
       if (log !== undefined && !closeAttempted) {
         closeAttempted = true;
         try {
           await log.close();
-        } catch (closeError) {
-          failure = closeError;
+        } catch {
+          // A cleanup failure must not replace the failure that interrupted execution.
         }
       }
 
-      const projected = this.#projectError(failure);
+      const projected = this.#projectError(error);
       const terminalResult = completed ?? terminal?.result;
       if (terminalResult !== undefined) {
         const runError =

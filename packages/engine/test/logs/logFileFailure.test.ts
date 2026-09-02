@@ -26,6 +26,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import { createLogFileSink } from '../../src/logs/logFile.js';
 import { createSessionOptionsForTesting, Session } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
+import { InternalError } from '../../src/errors.js';
 import { resultV1Schema } from '../../src/results/schema.js';
 
 function openedWritable(path: string, options: WritableOptions): fs.WriteStream {
@@ -163,5 +164,102 @@ describe('log-file sink failures', () => {
     expect(() => resultV1Schema.parse(result)).not.toThrow();
     expect(Object.isFrozen(result)).toBe(true);
     expect(terminals.some((event) => event.result.status === 'succeeded')).toBe(false);
+  });
+
+  it('preserves a runner contract failure when cleanup close also fails', async () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), 'rune-log-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const logPath = join(directory, 'run.log');
+    fs.writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    mockedFs.streamFactory = (target) =>
+      openedWritable(target, {
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+        final(callback) {
+          callback(new Error('close failed'));
+        },
+      });
+    const session = await Session.open(
+      manifestPath,
+      createSessionOptionsForTesting(
+        { environment: {}, logFile: logPath },
+        {
+          run: async (request) => {
+            request.onOutput('stdout', 'installed');
+            return { kind: 'exited', exitCode: Number.NaN };
+          },
+        },
+      ),
+    );
+    const events: RunEvent[] = [];
+    let thrown: unknown;
+
+    try {
+      await session.execute((event) => events.push(event));
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InternalError);
+    expect(thrown).toMatchObject({ code: 'RUNE-500', name: InternalError.name });
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepOutput',
+      'stepOutput',
+      'stepFinished',
+      'runFinished',
+    ]);
+    const terminals = events.filter((event) => event.kind === 'runFinished');
+    expect(terminals).toHaveLength(1);
+    const result = terminals[0]?.result;
+    expect(result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      error: { code: 'RUNE-500' },
+      stepsTotal: 1,
+      stepsExecuted: 1,
+      stepsSucceeded: 0,
+      stepsFailed: 1,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+      steps: [
+        {
+          id: 'install',
+          state: 'FAILED',
+          exitCode: null,
+          command: ['node'],
+          outputTail: [
+            { stream: 'stdout', line: 'installed' },
+            {
+              stream: 'stderr',
+              line: 'RUNE-500 runner returned an invalid outcome for step "install"',
+            },
+          ],
+        },
+      ],
+    });
+    expect(() => resultV1Schema.parse(result)).not.toThrow();
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result?.steps)).toBe(true);
+    expect(Object.isFrozen(result?.steps[0]?.outputTail)).toBe(true);
+    expect(terminals.some((event) => event.result.error?.code === 'RUNE-406')).toBe(false);
   });
 });
