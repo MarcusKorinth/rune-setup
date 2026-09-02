@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, parse, resolve } from 'node:path';
+import { join, parse, resolve, toNamespacedPath } from 'node:path';
 
 import { resultJsonSchema } from '@rune/engine';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { run, type CliIo } from '../src/cli.js';
+import { samePath } from '../src/runCmd.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -945,6 +946,63 @@ describe('rune run', () => {
 
       expect(readFileSync(resultPath, 'utf8')).toBe(original);
       expect(existsSync(childMarker)).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects namespaced local-drive aliases before touching either sink',
+    async () => {
+      const aliases: readonly [string, (path: string) => string][] = [
+        ['namespaced', toNamespacedPath],
+        ['drive-device', (path) => `\\\\.\\${path}`],
+      ];
+
+      for (const [aliasName, alias] of aliases) {
+        const directory = mkdtempSync(join(tmpdir(), `rune-cli-${aliasName}-output-`));
+        const manifestPath = join(directory, 'installer.yaml');
+        const destination = join(directory, 'run.json');
+        const childMarker = join(directory, 'child-ran');
+        const original = 'existing output\n';
+        writeExecutionMarkerManifest(manifestPath, childMarker);
+        writeFileSync(destination, original, 'utf8');
+        const io = capture();
+
+        expect(
+          await run(
+            [
+              'run',
+              manifestPath,
+              '--non-interactive',
+              '--log-file',
+              alias(destination),
+              '--result',
+              destination,
+            ],
+            io,
+          ),
+          aliasName,
+        ).toBe(2);
+
+        expect(readFileSync(destination, 'utf8'), aliasName).toBe(original);
+        expect(existsSync(childMarker), aliasName).toBe(false);
+        expect(io.out, aliasName).toEqual([]);
+        expect(io.err, aliasName).toContain(
+          '--result and the effective log file must use different paths for a real run',
+        );
+        expect(io.err.join('\n'), aliasName).not.toContain('result written');
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'treats ordinary and namespaced UNC sink paths as identical without filesystem access',
+    () => {
+      expect(
+        samePath(
+          String.raw`\\server\share\out\run.json`,
+          String.raw`\\?\UNC\server\share\out\run.json`,
+        ),
+      ).toBe(true);
     },
   );
 

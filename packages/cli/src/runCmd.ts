@@ -6,7 +6,7 @@
  * invocation uses the non-interactive path regardless of TTY state or flag presence.
  */
 
-import { normalize, resolve } from 'node:path';
+import { normalize, resolve, toNamespacedPath } from 'node:path';
 
 import {
   CancelledError,
@@ -165,13 +165,18 @@ export async function runCommand(
   }
 }
 
-/** Compare normalized absolute spellings under the host's path-casing rule. */
-function samePath(left: string, right: string): boolean {
-  const normalizedLeft = normalize(left);
-  const normalizedRight = normalize(right);
-  return process.platform === 'win32'
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
+/** @internal Compare absolute sink paths under the host's path-spelling rules. */
+export function samePath(left: string, right: string): boolean {
+  if (process.platform === 'win32') {
+    return windowsPathKey(left) === windowsPathKey(right);
+  }
+  return normalize(left) === normalize(right);
+}
+
+function windowsPathKey(path: string): string {
+  return toNamespacedPath(normalize(path))
+    .replace(/^\\\\\.\\([a-z]:\\)/iu, String.raw`\\?\$1`)
+    .toLowerCase();
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */
