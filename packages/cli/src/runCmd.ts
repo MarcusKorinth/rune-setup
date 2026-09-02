@@ -21,7 +21,14 @@ import {
 import type { ExecutionPlan, RunResult, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
-import { ExitWithCode, humanStderr, runeErrorStderr, type CliControl, type CliIo } from './io.js';
+import {
+  ExitWithCode,
+  humanStderr,
+  runeErrorStderr,
+  sessionHumanStderr,
+  type CliControl,
+  type CliIo,
+} from './io.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
 
 export interface RunFlags {
@@ -195,10 +202,13 @@ async function deliverResult(
   if (!announce) {
     return;
   }
-  humanStderr(
-    io,
-    strings === undefined
-      ? `result written to ${destination.announcement}`
-      : strings.chrome('rune.result.written', { path: destination.announcement }),
-  );
+  if (strings === undefined) {
+    humanStderr(io, `result written to ${destination.announcement}`);
+  } else {
+    sessionHumanStderr(
+      io,
+      strings,
+      strings.chrome('rune.result.written', { path: destination.announcement }),
+    );
+  }
 }

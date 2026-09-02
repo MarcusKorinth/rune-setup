@@ -6,7 +6,7 @@
 
 import type { ChromeKey, ExecutionPlan, RunEvent, RunResult, StringTable } from '@rune/engine';
 
-import { humanStderr, humanStdout, type CliIo } from './io.js';
+import { humanStderr, sessionHumanStderr, sessionHumanStdout, type CliIo } from './io.js';
 
 /** Renders the immutable plan itself — the dry-run output (§10: requested output, stdout). */
 export function renderPlan(
@@ -15,8 +15,9 @@ export function renderPlan(
   io: CliIo,
   strings: StringTable,
 ): void {
-  humanStdout(
+  sessionHumanStdout(
     io,
+    strings,
     strings.chrome(plan.preview ? 'rune.plan.headingPreview' : 'rune.plan.heading', {
       planVersion: plan.planSchemaVersion,
       productName: product.name,
@@ -26,17 +27,19 @@ export function renderPlan(
       platform: plan.platform,
     }),
   );
-  humanStdout(
+  sessionHumanStdout(
     io,
+    strings,
     strings.chrome('rune.plan.executionOptions', {
       failFast: String(plan.executionOptions.failFast),
       logFile: safeJson(plan.executionOptions.logFile),
     }),
   );
-  humanStdout(io, strings.chrome('rune.plan.inputs'));
+  sessionHumanStdout(io, strings, strings.chrome('rune.plan.inputs'));
   for (const input of plan.resolvedInputs) {
-    humanStdout(
+    sessionHumanStdout(
       io,
+      strings,
       strings.chrome('rune.plan.input', {
         id: input.id,
         value: safeJson(input.value),
@@ -47,12 +50,13 @@ export function renderPlan(
       }),
     );
   }
-  humanStdout(io, strings.chrome('rune.plan.steps'));
+  sessionHumanStdout(io, strings, strings.chrome('rune.plan.steps'));
   plan.steps.forEach((step, index) => {
     const number = `${index + 1}.`.padEnd(3);
     if (step.state === 'SKIPPED') {
-      humanStdout(
+      sessionHumanStdout(
         io,
+        strings,
         strings.chrome('rune.plan.stepSkipped', {
           number,
           title: step.title,
@@ -61,18 +65,36 @@ export function renderPlan(
       );
       return;
     }
-    humanStdout(io, strings.chrome('rune.plan.step', { number, title: step.title }));
-    humanStdout(io, strings.chrome('rune.plan.argv', { value: safeJson(step.command.argv) }));
-    humanStdout(io, strings.chrome('rune.plan.cwd', { value: safeJson(step.command.cwd) }));
-    humanStdout(io, strings.chrome('rune.plan.env', { value: safeJson(step.command.env) }));
-    humanStdout(
+    sessionHumanStdout(
       io,
+      strings,
+      strings.chrome('rune.plan.step', { number, title: step.title }),
+    );
+    sessionHumanStdout(
+      io,
+      strings,
+      strings.chrome('rune.plan.argv', { value: safeJson(step.command.argv) }),
+    );
+    sessionHumanStdout(
+      io,
+      strings,
+      strings.chrome('rune.plan.cwd', { value: safeJson(step.command.cwd) }),
+    );
+    sessionHumanStdout(
+      io,
+      strings,
+      strings.chrome('rune.plan.env', { value: safeJson(step.command.env) }),
+    );
+    sessionHumanStdout(
+      io,
+      strings,
       strings.chrome('rune.plan.timeoutSeconds', {
         value: safeJson(step.command.timeoutSeconds),
       }),
     );
-    humanStdout(
+    sessionHumanStdout(
       io,
+      strings,
       strings.chrome('rune.plan.successExitCodes', {
         value: safeJson(step.command.successExitCodes),
       }),
@@ -90,8 +112,9 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
-        humanStderr(
+        sessionHumanStderr(
           io,
+          strings,
           strings.chrome('rune.progress.runStarted', {
             total: event.plan.steps.length,
             platform: event.plan.platform,
@@ -99,8 +122,9 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
         );
         break;
       case 'stepStarted':
-        humanStderr(
+        sessionHumanStderr(
           io,
+          strings,
           strings.chrome('rune.progress.step', {
             index: event.index + 1,
             total: event.total,
@@ -109,12 +133,17 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
         );
         break;
       case 'stepOutput':
-        humanStderr(io, strings.chrome('rune.progress.output', { line: event.line }));
+        sessionHumanStderr(
+          io,
+          strings,
+          strings.chrome('rune.progress.output', { line: event.line }),
+        );
         break;
       case 'stepFinished':
         if (event.exitCode === undefined) {
-          humanStderr(
+          sessionHumanStderr(
             io,
+            strings,
             strings.chrome('rune.progress.stepFinishedWithoutExitCode', {
               state: event.state,
               durationMs: event.durationMs,
@@ -122,8 +151,9 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
           );
           break;
         }
-        humanStderr(
+        sessionHumanStderr(
           io,
+          strings,
           strings.chrome('rune.progress.stepFinished', {
             state: event.state,
             exitCode: event.exitCode,
@@ -144,9 +174,15 @@ export function renderOutcome(
   io: CliIo,
   strings?: StringTable,
 ): void {
+  const writeStderr = (text: string): void => {
+    if (strings === undefined) {
+      humanStderr(io, text);
+    } else {
+      sessionHumanStderr(io, strings, text);
+    }
+  };
   for (const warning of warnings) {
-    humanStderr(
-      io,
+    writeStderr(
       strings === undefined
         ? `warning: ${warning}`
         : strings.chrome('rune.warning', { message: warning }),
@@ -154,11 +190,10 @@ export function renderOutcome(
   }
   const resultKey = resultChromeKey(result.status);
   if (resultKey !== undefined && strings !== undefined) {
-    humanStderr(io, strings.chrome(resultKey));
+    writeStderr(strings.chrome(resultKey));
   }
   if (result.status === 'succeeded' && result.nothingExecuted) {
-    humanStderr(
-      io,
+    writeStderr(
       strings === undefined
         ? 'warning: nothing was executed — every step was skipped'
         : strings.chrome('rune.warning', {
@@ -166,8 +201,7 @@ export function renderOutcome(
           }),
     );
   }
-  humanStderr(
-    io,
+  writeStderr(
     strings === undefined
       ? `${result.status}: ${result.stepsSucceeded} succeeded, ${result.stepsFailed} failed, ` +
           `${result.stepsSkipped} skipped, ${result.stepsCancelled} cancelled, ` +

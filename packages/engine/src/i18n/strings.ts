@@ -8,6 +8,7 @@
  */
 
 import { InternalError } from '../errors.js';
+import { escapeDiagnosticText } from '../diagnostics.js';
 import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
@@ -46,6 +47,8 @@ export interface StringTableContext {
 }
 
 const stringTableContexts = new WeakMap<StringTable, StringTableContext>();
+/** Live terminal maskers belong only to exact tables returned by Session.getStrings(). */
+const sessionTerminalMaskers = new WeakMap<StringTable, (text: string) => string>();
 
 /** Internal fail-closed lookup: structural table copies have no resolution provenance. */
 export function stringTableContextFor(table: StringTable): StringTableContext {
@@ -87,7 +90,22 @@ export function projectStringsForSink(
   };
   const frozenTable = Object.freeze(table);
   stringTableContexts.set(frozenTable, context);
+  sessionTerminalMaskers.set(frozenTable, mask);
   return frozenTable;
+}
+
+/**
+ * Projects one fully composed human line for a terminal using an authentic session table.
+ * The second mask catches registered literals created by visible control-character escaping.
+ */
+export function formatSessionTerminalLine(strings: StringTable, line: string): string {
+  const mask = sessionTerminalMaskers.get(strings);
+  if (mask === undefined) {
+    throw new InternalError(
+      'terminal rendering requires the exact StringTable returned by Session.getStrings',
+    );
+  }
+  return mask(escapeDiagnosticText(mask(line)));
 }
 
 /** Builds the one string table of a session. */

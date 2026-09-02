@@ -33,6 +33,7 @@ import {
 } from '../../src/engine/session.js';
 import type { RunEvent } from '../../src/engine/events.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
+import { formatSessionTerminalLine } from '../../src/i18n/strings.js';
 import type { Runner, SpawnOutcome, SpawnRequest } from '../../src/runners/base.js';
 
 const okRunner: Runner = { run: async () => ({ kind: 'exited', exitCode: 0 }) };
@@ -2015,6 +2016,29 @@ describe('strings and theme', () => {
     expect(plan.executionOptions.logFile).toBe(logFile);
     expect(result.product).toEqual({ name: productName, version: '1.0.0' });
     expect(result.manifest.path).toBe(path);
+  });
+
+  it('updates a previously returned terminal projector after a successful secret edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  lateSecret:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { mode: 'interactive', environment: {} });
+    const strings = session.getStrings();
+    const renderedSecret = String.raw`\u001b`;
+
+    expect(formatSessionTerminalLine(strings, '\u001b')).toBe(renderedSecret);
+
+    expect(session.setValue('lateSecret', renderedSecret)).toEqual([]);
+    expect(session.getStrings()).toBe(strings);
+    expect(formatSessionTerminalLine(strings, renderedSecret)).toBe('***');
+    expect(formatSessionTerminalLine(strings, '\u001b')).toBe('***');
   });
 
   it.each(['logo', 'banner', 'theme'] as const)(

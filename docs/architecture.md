@@ -71,7 +71,7 @@ locales/<lang>.yaml ──▶ i18n/locale ──▶ overlay ──▶ strings �
 Engine, CLI, and GUI shell live in one repository and one language: `@rune/engine` (the library, `packages/engine`), `rune` (the CLI, `packages/cli`), and the Electron GUI shell (`packages/gui-shell`). Dependency directions (enforced by an import-boundary test, §14):
 
 - `@rune/engine` — `manifest`, `inputs`, `i18n`, `engine`, `runners`, `results`, `logs`, `errors` — never imports `cli` or `gui-shell`. It is a plain library: no CLI parsing, no Electron, no process-global side effects.
-- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `StringTable`, `ThemeConfig` — plus `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `validateManifest().environment` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
+- `cli` imports the engine only through its public API (`Session`, the event types, `errors`, the value types the facade returns — `ExecutionPlan`, `RunResult`, `InputState`, `StringTable`, `ThemeConfig` — plus `formatSessionTerminalLine` for authenticated terminal projection, `parseManifest` for `validate`, `manifestJsonSchema()`/`resultJsonSchema()` for `rune schema`, `validateManifest().environment` for the validate audit report, and `writeResult` (§10)) and drives it exclusively through the `Session` facade plus one observer interface (`EngineObserver`).
 - `gui-shell/src/main` (Electron main process) imports `@rune/engine` the same way the CLI does and hosts it in-process; `gui-shell/src/preload` exposes the IPC bridge (§9.2) — a 1:1 projection of that same facade and event stream — through `contextBridge`; `gui-shell/src/renderer` never imports the engine (only the bridge's type declarations) and never reads the manifest, `locales/`, or values files itself. There is no GUI-only engine surface and no engine sidecar process: the engine package never depends on the shell, and core, CLI, and CI never see Electron.
 - Everything downstream of the `ExecutionPlan` is frontend-agnostic; dry-run is "build the plan, render it, stop" — by construction, what dry-run shows is what run would execute.
 
@@ -260,7 +260,7 @@ Locale overlays and resolved string tables retain private provenance for the exa
 
 **Fallback chain, per string:** requested locale overlay → the manifest's own text (for manifest strings) / the English built-in (for chrome strings). Fallback is per key, never per file: a partial overlay is valid and fills the gaps from the defaults.
 
-**What the engine emits.** Localized titles are what appear in events (`StepStarted.title`), prompts, dry-run output, the GUI, and `result.json`; the result file additionally carries the never-localized input and step **ids**, so machine consumers never depend on a locale. `getStrings()` on the `Session` facade (§9.1) returns the fully resolved string table for the session's locale — the one table every frontend renders; there is no per-call locale, so no frontend can mix locales.
+**What the engine emits.** Localized titles are what appear in events (`StepStarted.title`), prompts, dry-run output, the GUI, and `result.json`; the result file additionally carries the never-localized input and step **ids**, so machine consumers never depend on a locale. `getStrings()` on the `Session` facade (§9.1) returns the fully resolved string table for the session's locale — the one table every frontend renders; there is no per-call locale, so no frontend can mix locales. Its accessors apply the session's current secret registry to their complete composed value. A terminal frontend additionally passes each complete human line and that exact table to the public `formatSessionTerminalLine(strings, line)` helper: the engine masks the raw line, visibly escapes terminal controls, and masks once more so the escape spelling itself cannot create a registered secret.
 
 ## 7) Execution model
 
@@ -401,7 +401,16 @@ export class Session {
   getStrings(): StringTable;                     // resolved manifest + chrome text, session locale (§6.3)
   getThemeConfig(): ThemeConfig;                 // fresh frozen gui snapshot; paths absolute; empty if absent
 }
+
+export function formatSessionTerminalLine(strings: StringTable, line: string): string;
 ```
+
+`formatSessionTerminalLine` is a terminal-rendering helper, not another facade operation and not a
+generic masking capability. It accepts only the exact frozen sink table returned by
+`Session.getStrings()`; a raw resolved table, structural copy, or proxy fails closed. Its private
+binding retains a live masking closure, so a table obtained before a successful `setValue()` uses
+the replacement secret registry on its next call. The helper exposes neither that closure nor the
+registry and is not projected over the Electron bridge.
 
 `getThemeConfig()` returns a fresh, shallow-frozen plain-data snapshot on every call, including a
 fresh frozen `{}` when `gui` is absent. Its localized `windowTitle` is masked at this GUI sink
@@ -505,7 +514,7 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 
 stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination.
 
-Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged.
+Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged. Lines rendered from a session use its authenticated `StringTable` and `formatSessionTerminalLine`: raw mask → control escape → final live mask. The second mask prevents an actual control from becoming a registered literal such as `\u001b` only after presentation. Authoring commands with no runtime secret registry (`validate`, `schema`) and pre-session fallback text use ordinary control escaping; requested JSON output bypasses human rendering entirely.
 
 ### Result file (`--result`)
 
@@ -691,7 +700,7 @@ All suites run under **vitest** unless stated otherwise; core CI runs them on Wi
 - **Import-boundary test**: dependency-cruiser enforces §3's dependency directions — `@rune/engine` (`manifest`/`inputs`/`i18n`/`engine`/`runners`/`results`/`logs`/`errors`) never imports `cli` or `gui-shell`; `cli` imports the engine only through its public API; `gui-shell/src/renderer` never imports the engine (only the preload bridge's type declarations). Every workspace package name is mapped to its sources in the root `tsconfig.paths.json` (the single source of truth shared by the cruise, `tsconfig.test.json` and the vitest aliases), and a suite asserts that mapping is complete: an unmapped name would resolve into that package's `dist/` output, be dropped as excluded, and silently make the rules above vacuous.
 - **Version-constant test**: the version constants exported by the packages (`RUNE_VERSION`, `RUNE_CLI_VERSION`) are asserted equal to their own `package.json` version, so a release bump cannot leave the CLI banner, `rune --version` or result-file provenance reporting a stale number.
 - **Exit-code reachability**: every code in §10's table produced by at least one test (incl. RUNE-002 / exit 2 for an unsupported host platform, exit 2 for `--gui` without the shell, for a cached shell whose engine version differs from the CLI's (§9.4), and for `--gui --result -`, and exit 0 with `nothingExecuted: true`); the result-file status↔exit-code mapping of §10 (including the `dryRun` disambiguation of exit 0) checked case by case against the generated result JSON Schema.
-- **Masking suite**: secrets absent from console, log file, result file (incl. `outputTail`), dry-run output, main→renderer IPC payloads (via the bridge unit test), and child-stdout echo scenarios.
+- **Masking suite**: secrets absent from console, log file, result file (incl. `outputTail`), dry-run output, main→renderer IPC payloads (via the bridge unit test), and child-stdout echo scenarios; terminal output also covers registered literals created only by visible control escaping in dry-run titles and live step output.
 - **Runner integration on real Windows and Linux CI**: argv quoting, `.bat`/`.cmd` refusal, the exact 64 KiB UTF-8 logical-line limit (single placeholder, discard through newline, recovery, CRLF/EOF and independent-stream behavior), a real default-runner-to-Executor masking regression with a secret crossing the omission boundary, and timeout/cancel process-tree kill — `taskkill /T /F` on Windows, SIGTERM then SIGKILL on the process group on Linux (the flakiest platform surface — tested, not hoped).
 - **Electron smoke suite** (dedicated shell lane, Node 22 LTS + Playwright for Electron; skippable on regular PR CI, required for a release of the shell): field renderer per input type, greyed-out disabled fields flipping on the `InputStateChanged` list resolved by `rune.setValue`, red pattern state with `patternHint` and disabled `Next`, label display vs value submission, the three theming layers (default, `gui:` overrides, author CSS), light/dark, cancel-during-output-flood, close-window-during-run, a `RuneError` inside the shell shown as a named error with its exit code, a hard shell crash → exit 70 without result file, headless `--non-interactive` run of the same artifact, exit-code forwarding through `rune run --gui`.
 

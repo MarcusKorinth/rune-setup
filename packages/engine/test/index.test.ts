@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
-import { PlatformError } from '../src/index.js';
+import { formatSessionTerminalLine, PlatformError } from '../src/index.js';
 import type {
   ChromeKey,
   InputState,
@@ -234,6 +234,7 @@ describe('@rune/engine public API', () => {
   it('exports the Session facade and engine-owned failure-result construction', () => {
     expect(engine.Session).toBeTypeOf('function');
     expect(engine.createFailureResult).toBeTypeOf('function');
+    expect(engine.formatSessionTerminalLine).toBe(formatSessionTerminalLine);
     expect(sessionOptionsExcludesRunner).toBe(true);
   });
 

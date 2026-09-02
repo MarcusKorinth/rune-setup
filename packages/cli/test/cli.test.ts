@@ -362,6 +362,89 @@ describe('rune run', () => {
     expect(io.out.some(hasRawTerminalControl)).toBe(false);
   });
 
+  it('remasks a control escape created while rendering a dry-run title', async () => {
+    const renderedSecret = String.raw`\u001b`;
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: controlled',
+      `    title: ${JSON.stringify('\u001b')}`,
+      '    run:',
+      '      command: node',
+    ]);
+    const io = capture();
+
+    expect(
+      await run(
+        ['run', path, '--dry-run', '--non-interactive', '--set', `token=${renderedSecret}`],
+        io,
+      ),
+    ).toBe(0);
+
+    const output = [...io.out, ...io.err].join('\n');
+    expect(output).toContain('***');
+    expect(output).not.toContain(renderedSecret);
+    expect([...io.out, ...io.err].some(hasRawTerminalControl)).toBe(false);
+  });
+
+  it('remasks live output and localized outcome lines after terminal escaping', async () => {
+    const renderedSecret = String.raw`\u001b`;
+    const script = 'process.stdout.write(String.fromCharCode(27))';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: controlled',
+      '    run:',
+      '      command: node',
+      `      args: ${JSON.stringify(['-e', script])}`,
+    ]);
+    writeLocaleOverlay(path, [
+      `rune.result.succeeded: ${JSON.stringify('\u001b complete')}`,
+      `rune.result.summary: ${JSON.stringify('\u001b {status}')}`,
+      `rune.result.written: ${JSON.stringify('\u001b {path}')}`,
+    ]);
+    const resultPath = join(path, '..', 'terminal-result.json');
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--non-interactive',
+          '--locale',
+          'de',
+          '--set',
+          `token=${renderedSecret}`,
+          '--result',
+          resultPath,
+        ],
+        io,
+      ),
+    ).toBe(0);
+
+    const output = [...io.out, ...io.err].join('\n');
+    expect(output).toContain('***');
+    expect(output).not.toContain(renderedSecret);
+    expect([...io.out, ...io.err].some(hasRawTerminalControl)).toBe(false);
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'succeeded',
+      inputs: [{ id: 'token', value: null, secret: true }],
+    });
+  });
+
   it('escapes the result-file announcement after composition', async () => {
     const path = fixture([
       'schemaVersion: 1',

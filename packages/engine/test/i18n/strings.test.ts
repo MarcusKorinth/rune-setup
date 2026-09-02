@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { InternalError } from '../../src/errors.js';
+import { SecretRegistry } from '../../src/engine/secrets.js';
 import { formatChrome } from '../../src/i18n/catalog.js';
 import { loadOverlayText } from '../../src/i18n/overlay.js';
-import { resolveStrings } from '../../src/i18n/strings.js';
+import {
+  formatSessionTerminalLine,
+  projectStringsForSink,
+  resolveStrings,
+  type StringTable,
+} from '../../src/i18n/strings.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 
 const MANIFEST = parseManifestText(
@@ -134,6 +140,53 @@ describe('the resolved string table', () => {
     }).toThrow(TypeError);
     expect(strings.stepTitle('install')).toBe('Install');
     expect(strings.entries['steps.install.title']).toBe('Install');
+  });
+
+  it('masks raw and control-escaped secrets in an authenticated terminal line', () => {
+    const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
+    const secrets = new SecretRegistry();
+    secrets.register('raw-secret');
+    secrets.register(String.raw`\u001b`);
+    const strings = projectStringsForSink(source, (text) => secrets.mask(text));
+
+    expect(formatSessionTerminalLine(strings, 'raw-secret and \u001b')).toBe('*** and ***');
+    expect(
+      formatSessionTerminalLine(strings, strings.chrome('rune.warning', { message: '\u001b' })),
+    ).toBe('warning: ***');
+  });
+
+  it.each([
+    ['raw table', () => resolveStrings({ manifest: MANIFEST, locale: undefined })],
+    [
+      'spread copy',
+      () => {
+        const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
+        return { ...projectStringsForSink(source, (text) => text) };
+      },
+    ],
+    [
+      'prototype clone',
+      () => {
+        const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
+        return Object.create(projectStringsForSink(source, (text) => text)) as StringTable;
+      },
+    ],
+    [
+      'proxy',
+      () => {
+        const source = resolveStrings({ manifest: MANIFEST, locale: undefined });
+        return new Proxy(
+          projectStringsForSink(source, (text) => text),
+          {},
+        );
+      },
+    ],
+  ] as const)('rejects an unauthenticated %s for terminal projection', (_name, makeTable) => {
+    const strings = makeTable() as StringTable;
+
+    expect(() => formatSessionTerminalLine(strings, 'safe')).toThrow(
+      'terminal rendering requires the exact StringTable returned by Session.getStrings',
+    );
   });
 
   it('fills chrome placeholders without re-scanning the substituted text', () => {

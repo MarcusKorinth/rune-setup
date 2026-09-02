@@ -3,7 +3,13 @@
  * program wiring can share them without a cycle.
  */
 
-import { formatRuneError, type CancelToken, type RuneError } from '@rune/engine';
+import {
+  formatRuneError,
+  formatSessionTerminalLine,
+  type CancelToken,
+  type RuneError,
+  type StringTable,
+} from '@rune/engine';
 
 /** Minimal I/O seam so the CLI can be exercised in tests without touching process streams. */
 export interface CliIo {
@@ -46,6 +52,16 @@ export function humanStdout(io: CliIo, text: string): void {
 /** Writes one fully composed human line to stderr after terminal escaping. */
 export function humanStderr(io: CliIo, text: string): void {
   io.stderr(escapeTerminalText(text));
+}
+
+/** Writes one fully composed session line to stdout through its live terminal projector. */
+export function sessionHumanStdout(io: CliIo, strings: StringTable, text: string): void {
+  io.stdout(formatSessionTerminalLine(strings, text));
+}
+
+/** Writes one fully composed session line to stderr through its live terminal projector. */
+export function sessionHumanStderr(io: CliIo, strings: StringTable, text: string): void {
+  io.stderr(formatSessionTerminalLine(strings, text));
 }
 
 /**
