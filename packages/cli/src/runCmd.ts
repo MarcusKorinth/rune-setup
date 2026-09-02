@@ -150,7 +150,8 @@ export async function runCommand(
       // An open failure may have registered secret candidates without returning the session's
       // masking StringTable. In that case the projected diagnostic above is the only safe human
       // output; still deliver the machine result, but do not compose additional fallback lines.
-      const renderFallback = session !== undefined || result.status === 'config_error';
+      const renderFallback =
+        session !== undefined || (result.status === 'config_error' && result.product === null);
       if (resultDestination !== undefined) {
         deliveryStarted = true;
         await deliverResult(result, resultDestination, io, strings, renderFallback);

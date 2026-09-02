@@ -570,6 +570,127 @@ describe('opening a session', () => {
     ).rejects.toMatchObject({ code: 'RUNE-001' });
   });
 
+  it.each(['set', 'environment', 'values'] as const)(
+    'masks a selected-overlay key supplied by the %s layer before resolution',
+    async (source) => {
+      const secret = `unknown-overlay-${source}-secret`;
+      const path = fixture(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  openingSecret:',
+          '    type: secret',
+          'steps: []',
+        ],
+        {
+          'locales/de.yaml': `${JSON.stringify(secret)}: Unbekannt\n`,
+          ...(source === 'values'
+            ? { 'values.yaml': `openingSecret: ${JSON.stringify(secret)}\n` }
+            : {}),
+        },
+      );
+      const options: SessionOptions = {
+        locale: 'de',
+        environment: source === 'environment' ? { RUNE_INPUT_OPENINGSECRET: secret } : {},
+        ...(source === 'set' ? { overrides: { openingSecret: secret } } : {}),
+        ...(source === 'values' ? { values: [join(path, '..', 'values.yaml')] } : {}),
+      };
+
+      let thrown: unknown;
+      try {
+        await Session.open(path, options);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ManifestError);
+      const error = thrown as ManifestError;
+      expect(error.code).toBe('RUNE-104');
+      const projected = JSON.stringify({
+        message: error.message,
+        issues: error.issues,
+        location: error.location,
+        stack: error.stack,
+      });
+      expect(projected).not.toContain(secret);
+      expect(error.message).toContain('*** does not name a localizable text');
+    },
+  );
+
+  it('masks a declared override in a deferred invalid explicit locale diagnostic', async () => {
+    const secret = 'definitely_invalid';
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  openingSecret:',
+        '    type: secret',
+        'steps: []',
+      ],
+      { 'invalid-values.yaml': '- invalid\n' },
+    );
+
+    let thrown: unknown;
+    try {
+      await Session.open(path, {
+        locale: secret,
+        environment: {},
+        overrides: { openingSecret: secret },
+        values: [join(path, '..', 'invalid-values.yaml')],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: 'RUNE-001' });
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).not.toContain(secret);
+    expect(message).toContain('invalid locale "***" from --locale');
+  });
+
+  it('keeps selected-overlay precedence while preserving values document order', async () => {
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  openingSecret:',
+        '    type: secret',
+        'steps: []',
+      ],
+      {
+        'locales/de.yaml': 'unknown.overlay.key: Unbekannt\n',
+        'first.yaml': '- invalid\n',
+        'second.yaml': '- also-invalid\n',
+      },
+    );
+    const first = join(path, '..', 'first.yaml');
+    const second = join(path, '..', 'second.yaml');
+    const options = { locale: 'de', environment: {}, values: [first, second] } as const;
+
+    await expect(Session.open(path, options)).rejects.toMatchObject({ code: 'RUNE-104' });
+
+    writeFileSync(join(path, '..', 'locales', 'de.yaml'), 'rune.button.next: Weiter\n', 'utf8');
+    let thrown: unknown;
+    try {
+      await Session.open(path, options);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-202');
+    expect(error.issues.map((issue) => issue.location?.file)).toEqual([first, second]);
+  });
+
   it.runIf(process.platform === 'win32')(
     'uses Windows casing semantics for interpolation, inputs, and locale selection',
     async () => {

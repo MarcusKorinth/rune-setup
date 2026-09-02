@@ -47,6 +47,7 @@ import {
   parseValuesFileAsync,
   projectInputFacadeSnapshot,
   resolveInputsWithRegistry,
+  stageOpeningSecretCandidates,
   type InputFacadeSnapshot,
   type InputState,
   type Resolution,
@@ -229,6 +230,33 @@ export class Session {
     let resolution: Resolution | undefined;
     let inputSnapshot: InputFacadeSnapshot | undefined;
     try {
+      const context = createRuntimeContext(
+        {
+          manifestDir,
+          product: manifest.product,
+          platform,
+          environment,
+        },
+        hostBuiltIns,
+      );
+      const values: ValuesDocument[] = [];
+      let deferredValuesReadError: unknown;
+      let valuesReadFailed = false;
+      // Values paths were snapshotted before the first await. Read them now so declared secret
+      // candidates can redact deferred locale and selected-overlay diagnostics. Expected loader
+      // and shape problems stay on their ValuesDocument until authoritative resolution, preserving
+      // overlay-vs-values precedence and document order. Defer only an unexpected thrown failure.
+      for (const file of valueFiles) {
+        try {
+          values.push(await parseValuesFileAsync(file.path, file.file));
+        } catch (error) {
+          valuesReadFailed = true;
+          deferredValuesReadError = error;
+          break;
+        }
+      }
+      stageOpeningSecretCandidates({ manifest, context, values, overrides }, secrets);
+
       if (localeSelectionFailed) {
         throw localeSelectionError;
       }
@@ -242,20 +270,8 @@ export class Session {
       }
       strings = resolveStrings({ manifest, locale, overlay });
 
-      const context = createRuntimeContext(
-        {
-          manifestDir,
-          product: manifest.product,
-          platform,
-          environment,
-        },
-        hostBuiltIns,
-      );
-      const values: ValuesDocument[] = [];
-      // Preserve invocation-order error precedence: one values file finishes before the next
-      // starts, exactly as in the synchronous authoring path.
-      for (const file of valueFiles) {
-        values.push(await parseValuesFileAsync(file.path, file.file));
+      if (valuesReadFailed) {
+        throw deferredValuesReadError;
       }
       resolution = resolveInputsWithRegistry(
         {

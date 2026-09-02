@@ -410,6 +410,22 @@ export function resolveInputsWithRegistry(
   }
 }
 
+/**
+ * Stages every safely readable layer-2–4 secret candidate needed while a Session is opening.
+ *
+ * Locale selection and overlay validation can fail before authoritative input resolution. This
+ * package-internal seam reuses the resolver's candidate discovery and registration rules so those
+ * earlier diagnostics have the same bounded, proxy-safe redactor. Resolution still recomputes the
+ * layers, owns precedence and provenance, and transactionally replaces this opening snapshot.
+ */
+export function stageOpeningSecretCandidates(
+  options: Pick<ResolveInputsOptions, 'manifest' | 'context' | 'values' | 'overrides'>,
+  secrets: SecretRegistry,
+): void {
+  const ids = Object.keys(options.manifest.inputs);
+  stageSuppliedSecrets(options, ids, indexValuesLayer(options.values), secrets);
+}
+
 interface ResolutionAttempt {
   readonly stagedSecrets: SecretRegistry;
   redactor?: SecretRegistry;

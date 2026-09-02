@@ -1160,6 +1160,93 @@ describe('result files for failed outcomes', () => {
     expect((written['manifest'] as Record<string, unknown>)['sha256']).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it.each(['set', 'environment', 'values'] as const)(
+    'masks %s-layer secrets in an invalid selected-overlay CLI outcome',
+    async (source) => {
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  overlaySecret:',
+        '    type: secret',
+        '  summarySecret:',
+        '    type: secret',
+        'steps: []',
+      ]);
+      const resultPath = join(path, '..', `${source}-overlay-failure.json`);
+      const overlaySecret = `result written to ${resultPath}`;
+      const summarySecret = 'config_error: 0 succeeded, 0 failed, 0 skipped, 0 not run (exit 3)';
+      writeLocaleOverlay(path, [`${JSON.stringify(overlaySecret)}: Unbekannt`]);
+      if (source === 'values') {
+        writeFileSync(
+          join(path, '..', 'values.yaml'),
+          [
+            `overlaySecret: ${JSON.stringify(overlaySecret)}`,
+            `summarySecret: ${JSON.stringify(summarySecret)}`,
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+      }
+
+      const environmentName = 'RUNE_INPUT_OVERLAYSECRET';
+      const summaryEnvironmentName = 'RUNE_INPUT_SUMMARYSECRET';
+      const previousEnvironment = process.env[environmentName];
+      const previousSummaryEnvironment = process.env[summaryEnvironmentName];
+      if (source === 'environment') {
+        process.env[environmentName] = overlaySecret;
+        process.env[summaryEnvironmentName] = summarySecret;
+      } else {
+        delete process.env[environmentName];
+        delete process.env[summaryEnvironmentName];
+      }
+      const io = capture();
+      const args = [
+        'run',
+        path,
+        '--non-interactive',
+        '--locale',
+        'de',
+        '--result',
+        resultPath,
+        ...(source === 'set'
+          ? ['--set', `overlaySecret=${overlaySecret}`, '--set', `summarySecret=${summarySecret}`]
+          : []),
+        ...(source === 'values' ? ['--values', join(path, '..', 'values.yaml')] : []),
+      ];
+
+      try {
+        expect(await run(args, io)).toBe(3);
+      } finally {
+        if (previousEnvironment === undefined) {
+          delete process.env[environmentName];
+        } else {
+          process.env[environmentName] = previousEnvironment;
+        }
+        if (previousSummaryEnvironment === undefined) {
+          delete process.env[summaryEnvironmentName];
+        } else {
+          process.env[summaryEnvironmentName] = previousSummaryEnvironment;
+        }
+      }
+
+      const output = [...io.err, ...io.out].join('\n');
+      expect(output).not.toContain(overlaySecret);
+      expect(output).not.toContain(summarySecret);
+      expect(io.out).toEqual([]);
+      const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
+      expect(written).toMatchObject({
+        status: 'config_error',
+        exitCode: 3,
+        error: { code: 'RUNE-104' },
+      });
+      expect(JSON.stringify(written)).not.toContain(overlaySecret);
+      expect(JSON.stringify(written)).not.toContain(summarySecret);
+    },
+  );
+
   it('keeps stdout pure JSON under --dry-run --result -', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
