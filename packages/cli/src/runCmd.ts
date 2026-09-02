@@ -74,6 +74,17 @@ export async function runCommand(
     strings = session.getStrings();
 
     plan = session.plan();
+    if (
+      flags.dryRun !== true &&
+      resultDestination !== undefined &&
+      resultDestination.path !== '-' &&
+      plan.executionOptions.logFile !== undefined &&
+      samePath(resultDestination.path, plan.executionOptions.logFile)
+    ) {
+      throw new UsageError(
+        '--result and the effective log file must use different paths for a real run',
+      );
+    }
     if (flags.dryRun === true && control.cancel?.isCancelled === true) {
       throw new CancelledError();
     }
@@ -148,6 +159,11 @@ export async function runCommand(
     }
     throw error;
   }
+}
+
+/** Both paths are normalized absolutes; only the host's path-casing rule remains. */
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */

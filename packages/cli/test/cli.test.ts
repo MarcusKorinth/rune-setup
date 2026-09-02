@@ -31,6 +31,30 @@ function writeLocaleOverlay(manifestPath: string, lines: readonly string[]): voi
   writeFileSync(join(locales, 'de.yaml'), [...lines, ''].join('\n'), 'utf8');
 }
 
+function writeExecutionMarkerManifest(
+  manifestPath: string,
+  childMarker: string,
+  execution: readonly string[] = [],
+): void {
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      ...execution,
+      'steps:',
+      '  - id: run',
+      '    run:',
+      '      command: node',
+      `      args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", ${JSON.stringify(childMarker)}]`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
 const MANIFEST = [
   'schemaVersion: 1',
   'product:',
@@ -763,6 +787,115 @@ describe('rune run', () => {
       rmSync(invocationDirectory, { recursive: true, force: true });
       rmSync(laterDirectory, { recursive: true, force: true });
     }
+  });
+
+  it('rejects an explicit log file that collides with the result before touching either sink', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-cli-colliding-output-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const destination = join(directory, 'run.json');
+    const childMarker = join(directory, 'child-ran');
+    const original = 'existing output\n';
+    writeExecutionMarkerManifest(manifestPath, childMarker);
+    writeFileSync(destination, original, 'utf8');
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          manifestPath,
+          '--non-interactive',
+          '--log-file',
+          destination,
+          '--result',
+          destination,
+        ],
+        io,
+      ),
+    ).toBe(2);
+
+    expect(readFileSync(destination, 'utf8')).toBe(original);
+    expect(existsSync(childMarker)).toBe(false);
+    expect(io.out).toEqual([]);
+    expect(io.err).toContain(
+      '--result and the effective log file must use different paths for a real run',
+    );
+    expect(io.err.join('\n')).not.toContain('result written');
+  });
+
+  it('rejects a manifest log file that collides with the result before execution', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-cli-manifest-colliding-output-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const destination = join(directory, 'run.json');
+    const childMarker = join(directory, 'child-ran');
+    const original = 'existing output\n';
+    writeExecutionMarkerManifest(manifestPath, childMarker, ['execution:', '  logFile: run.json']);
+    writeFileSync(destination, original, 'utf8');
+    const io = capture();
+
+    expect(await run(['run', manifestPath, '--non-interactive', '--result', destination], io)).toBe(
+      2,
+    );
+
+    expect(readFileSync(destination, 'utf8')).toBe(original);
+    expect(existsSync(childMarker)).toBe(false);
+    expect(io.out).toEqual([]);
+    expect(io.err).toContain(
+      '--result and the effective log file must use different paths for a real run',
+    );
+    expect(io.err.join('\n')).not.toContain('result written');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'compares colliding output paths case-insensitively on Windows',
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'rune-cli-case-colliding-output-'));
+      const manifestPath = join(directory, 'installer.yaml');
+      const resultPath = join(directory, 'run.json');
+      const logPath = join(directory, 'RUN.JSON');
+      const childMarker = join(directory, 'child-ran');
+      const original = 'existing output\n';
+      writeExecutionMarkerManifest(manifestPath, childMarker);
+      writeFileSync(resultPath, original, 'utf8');
+      const io = capture();
+
+      expect(
+        await run(
+          ['run', manifestPath, '--non-interactive', '--log-file', logPath, '--result', resultPath],
+          io,
+        ),
+      ).toBe(2);
+
+      expect(readFileSync(resultPath, 'utf8')).toBe(original);
+      expect(existsSync(childMarker)).toBe(false);
+    },
+  );
+
+  it('allows a dry-run result to use the configured log path', async () => {
+    const path = fixture([...MANIFEST, 'execution:', '  logFile: planned.json']);
+    const destination = join(path, '..', 'planned.json');
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--set',
+          'greeting=hello',
+          '--result',
+          destination,
+        ],
+        io,
+      ),
+    ).toBe(0);
+
+    expect(JSON.parse(readFileSync(destination, 'utf8'))).toMatchObject({
+      status: 'planned',
+      dryRun: true,
+    });
   });
 
   it('refuses --platform without --dry-run as a usage error', async () => {
