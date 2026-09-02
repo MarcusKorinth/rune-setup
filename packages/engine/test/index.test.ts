@@ -27,6 +27,7 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'loadYamlFileAsync',
   'parseManifestAsync',
   'parseValuesFileAsync',
+  'snapshotHostBuiltIns',
 ] as const;
 
 type StringTableIsExported = StringTable extends object ? true : false;
@@ -78,6 +79,8 @@ import type { SpawnOutcome as ForbiddenSpawnOutcome } from '../src/index.js';
 import type { SpawnRequest as ForbiddenSpawnRequest } from '../src/index.js';
 // @ts-expect-error runner start-failure reasons are not package-root API
 import type { StartFailureReason as ForbiddenStartFailureReason } from '../src/index.js';
+// @ts-expect-error host built-in snapshots are not package-root API
+import type { HostBuiltInSnapshot as ForbiddenHostBuiltInSnapshot } from '../src/index.js';
 
 type ForbiddenRootTypes = readonly [
   ForbiddenResolution,
@@ -89,6 +92,7 @@ type ForbiddenRootTypes = readonly [
   ForbiddenSpawnOutcome,
   ForbiddenSpawnRequest,
   ForbiddenStartFailureReason,
+  ForbiddenHostBuiltInSnapshot,
 ];
 
 function assertNoLowLevelRootTypes(_types: ForbiddenRootTypes): void {}

@@ -29,6 +29,7 @@ import { CancelToken } from './cancel.js';
 import {
   createRuntimeContext,
   hostPlatform,
+  snapshotHostBuiltIns,
   type Platform,
   type RuntimeContext,
 } from './context.js';
@@ -167,6 +168,7 @@ export class Session {
     const host = hostPlatform();
     const platform = options.platform ?? host;
     const preview = platform !== host;
+    const hostBuiltIns = preview ? undefined : snapshotHostBuiltIns();
     // A session is a snapshot of its opening invocation. Keeping a caller-owned environment
     // object would let later mutations change input resolution or interpolation after open.
     const environment = snapshotEnvironment(options.environment);
@@ -203,12 +205,15 @@ export class Session {
       }
       strings = resolveStrings({ manifest, locale, overlay });
 
-      const context = createRuntimeContext({
-        manifestDir,
-        product: manifest.product,
-        platform,
-        environment,
-      });
+      const context = createRuntimeContext(
+        {
+          manifestDir,
+          product: manifest.product,
+          platform,
+          environment,
+        },
+        hostBuiltIns,
+      );
       const values: ValuesDocument[] = [];
       // Preserve invocation-order error precedence: one values file finishes before the next
       // starts, exactly as in the synchronous authoring path.

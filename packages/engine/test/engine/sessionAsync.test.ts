@@ -1,11 +1,19 @@
 import type * as fs from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
 const synchronousFsCalls = vi.hoisted(() => [] as string[]);
+
+function restoreEnvironmentVariable(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>();
@@ -161,6 +169,57 @@ describe.sequential('asynchronous Session I/O', () => {
       { id: 'overrideInput', value: 'override-at-call', source: 'set' },
     ]);
     expect(session.plan().executionOptions.logFile).toBe(invocationLog);
+  });
+
+  it('snapshots host built-ins before the first asynchronous boundary', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rune-session-host-snapshot-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  homeAtCall:',
+        '    type: text',
+        '    default: "${home}"',
+        '  tempAtCall:',
+        '    type: text',
+        '    default: "${temp}"',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const homeName = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+    const tempName = process.platform === 'win32' ? 'TEMP' : 'TMPDIR';
+    const originalHomeEnvironment = process.env[homeName];
+    const originalTempEnvironment = process.env[tempName];
+    const expectedHome = homedir();
+    const expectedTemp = tmpdir();
+    const laterHome = join(directory, 'later-home');
+    const laterTemp = join(directory, 'later-temp');
+
+    try {
+      const opening = Session.open(manifestPath, { environment: {} });
+      process.env[homeName] = laterHome;
+      process.env[tempName] = laterTemp;
+      expect(homedir()).toBe(laterHome);
+      expect(tmpdir()).toBe(laterTemp);
+
+      const session = await opening;
+
+      expect(session.allInputs()).toMatchObject([
+        { id: 'homeAtCall', value: expectedHome, source: 'default' },
+        { id: 'tempAtCall', value: expectedTemp, source: 'default' },
+      ]);
+    } finally {
+      restoreEnvironmentVariable(homeName, originalHomeEnvironment);
+      restoreEnvironmentVariable(tempName, originalTempEnvironment);
+    }
   });
 
   it('anchors relative values and flag log paths to the invocation cwd', async () => {
