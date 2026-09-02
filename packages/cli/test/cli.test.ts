@@ -1058,6 +1058,62 @@ describe('rune run', () => {
     expect(existsSync(resultPath)).toBe(false);
   });
 
+  it.each(['set', 'environment'] as const)(
+    'does not expose a %s secret in an invalid --platform usage error',
+    async (source) => {
+      const secret = 'R9-F095-PLATFORM-SECRET';
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps: []',
+      ]);
+      const resultPath = join(path, '..', `${source}-result.json`);
+      const environmentName = 'RUNE_INPUT_TOKEN';
+      const previousEnvironment = process.env[environmentName];
+      if (source === 'environment') {
+        process.env[environmentName] = secret;
+      } else {
+        delete process.env[environmentName];
+      }
+      const io = capture();
+
+      try {
+        expect(
+          await run(
+            [
+              'run',
+              path,
+              '--dry-run',
+              '--non-interactive',
+              ...(source === 'set' ? ['--set', `token=${secret}`] : []),
+              '--platform',
+              secret,
+              '--result',
+              resultPath,
+            ],
+            io,
+          ),
+        ).toBe(2);
+      } finally {
+        if (previousEnvironment === undefined) {
+          delete process.env[environmentName];
+        } else {
+          process.env[environmentName] = previousEnvironment;
+        }
+      }
+
+      const output = [...io.out, ...io.err].join('\n');
+      expect(io.err).toEqual(['--platform must be windows or linux']);
+      expect(output).not.toContain(secret);
+      expect(existsSync(resultPath)).toBe(false);
+    },
+  );
+
   it('accepts an empty value in a syntactically valid --set pair', async () => {
     const path = fixture([
       'schemaVersion: 1',

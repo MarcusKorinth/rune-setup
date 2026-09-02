@@ -19,7 +19,7 @@ export function parsePlatform(raw: string | undefined): 'windows' | 'linux' | un
     return undefined;
   }
   if (raw !== 'windows' && raw !== 'linux') {
-    throw new UsageError(`--platform must be windows or linux, got "${raw}"`);
+    throw new UsageError('--platform must be windows or linux');
   }
   return raw;
 }
