@@ -573,5 +573,5 @@ function effectiveLogFile(
   if (configured === undefined) {
     return undefined;
   }
-  return isAbsolute(configured) ? configured : resolvePath(manifestDir, configured);
+  return resolvePath(manifestDir, configured);
 }

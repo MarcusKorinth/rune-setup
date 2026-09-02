@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -872,6 +872,36 @@ describe('rune run', () => {
     );
     expect(io.err.join('\n')).not.toContain('result written');
   });
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a drive-unbound rooted manifest log alias of the result before execution',
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'rune-cli-rooted-log-alias-'));
+      const manifestPath = join(directory, 'installer.yaml');
+      const destination = join(directory, 'run.json');
+      const driveUnboundLogPath = destination.slice(parse(destination).root.length - 1);
+      const childMarker = join(directory, 'child-ran');
+      const original = 'existing output\n';
+      writeExecutionMarkerManifest(manifestPath, childMarker, [
+        'execution:',
+        `  logFile: ${JSON.stringify(driveUnboundLogPath)}`,
+      ]);
+      writeFileSync(destination, original, 'utf8');
+      const io = capture();
+
+      expect(
+        await run(['run', manifestPath, '--non-interactive', '--result', destination], io),
+      ).toBe(2);
+
+      expect(readFileSync(destination, 'utf8')).toBe(original);
+      expect(existsSync(childMarker)).toBe(false);
+      expect(io.out).toEqual([]);
+      expect(io.err).toContain(
+        '--result and the effective log file must use different paths for a real run',
+      );
+      expect(io.err.join('\n')).not.toContain('result written');
+    },
+  );
 
   it.runIf(process.platform === 'win32')(
     'compares colliding output paths case-insensitively on Windows',
