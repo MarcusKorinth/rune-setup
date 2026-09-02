@@ -1387,7 +1387,7 @@ describe('a run that fails', () => {
     },
   );
 
-  it.each(['invalid stream', 'non-string line'])(
+  it.each(['invalid stream', 'non-string line', 'embedded LF'])(
     'contains an injected runner %s as a value-free internal contract failure',
     async (invalidPayload) => {
       const { plan } = setup(TWO_STEPS, { failFast: false });
@@ -1405,8 +1405,10 @@ describe('a run that fails', () => {
       const runner = stubRunner((request) => {
         if (invalidPayload === 'invalid stream') {
           emitUnsafe(request, 'private-stream-payload', 'private-line-payload');
-        } else {
+        } else if (invalidPayload === 'non-string line') {
           emitUnsafe(request, 'stdout', privateObject);
+        } else {
+          emitUnsafe(request, 'stdout', 'private-line-payload\nprivate-injected-record');
         }
         emitUnsafe(request, 'private-second-stream', privateObject);
         request.onOutput('stderr', 'private-output-after-contract-failure');
@@ -1479,6 +1481,7 @@ describe('a run that fails', () => {
       for (const forbidden of [
         'private-stream-payload',
         'private-line-payload',
+        'private-injected-record',
         'private-object-payload',
         'private-stringified-payload',
         'private-second-stream',

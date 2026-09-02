@@ -299,7 +299,11 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
               if (!acceptingOutput) {
                 return;
               }
-              if ((stream !== 'stdout' && stream !== 'stderr') || typeof rawLine !== 'string') {
+              if (
+                (stream !== 'stdout' && stream !== 'stderr') ||
+                typeof rawLine !== 'string' ||
+                rawLine.includes('\n')
+              ) {
                 acceptingOutput = false;
                 outputContractError = new InternalError(
                   `runner emitted an invalid output payload for step "${step.id}"`,
