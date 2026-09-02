@@ -100,8 +100,8 @@ export async function createLogFileSink(
         return;
       }
       try {
-        const line = `${new Date().toISOString()} ${describe(event)}`;
-        stream.write(`${mask(line)}\n`, (cause) => {
+        const record = `${new Date().toISOString()} ${describe(event)}`;
+        stream.write(`${escapeDiagnosticText(mask(record))}\n`, (cause) => {
           if (cause !== undefined && cause !== null) {
             rememberFailure('write to', cause);
           }
@@ -168,9 +168,9 @@ function describe(event: RunEvent): string {
     case 'runStarted':
       return `run started: ${event.plan.steps.length} steps, platform ${event.plan.platform}`;
     case 'stepStarted':
-      return `[${event.stepId}] started (${event.index + 1}/${event.total}): ${escapeDiagnosticText(event.title)}`;
+      return `[${event.stepId}] started (${event.index + 1}/${event.total}): ${event.title}`;
     case 'stepOutput':
-      return `[${event.stepId}:${event.stream}] ${escapeDiagnosticText(event.line)}`;
+      return `[${event.stepId}:${event.stream}] ${event.line}`;
     case 'stepFinished':
       return `[${event.stepId}] ${event.state}${
         event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`

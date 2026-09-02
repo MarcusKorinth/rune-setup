@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { SecretRegistry } from '../../src/engine/secrets.js';
 import { createLogFileSink } from '../../src/logs/logFile.js';
 
 describe('log-file sink', () => {
@@ -87,4 +88,31 @@ describe('log-file sink', () => {
     expect(log).not.toContain(marker);
     expect(log).toContain('[***] complete');
   });
+
+  it.each([
+    ['ESC', '\u001b', '\\u001b'],
+    ['C1', '\u0085', '\\u0085'],
+  ])(
+    'masks a secret spanning the step-output prefix before escaping %s',
+    async (_name, control, visibleControl) => {
+      const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+      const secret = `[hello:stdout] ${control}TOKEN`;
+      const registry = new SecretRegistry();
+      expect(registry.register(secret)).toBe(true);
+      const sink = await createLogFileSink(path, registry.mask.bind(registry));
+
+      sink.observer({
+        kind: 'stepOutput',
+        stepId: 'hello',
+        stream: 'stdout',
+        line: `${control}TOKEN\u0001remaining\u2029`,
+      });
+      await sink.close();
+
+      const log = readFileSync(path, 'utf8');
+      expect(log).not.toContain(secret);
+      expect(log).not.toContain(`[hello:stdout] ${visibleControl}TOKEN`);
+      expect(log).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z \*\*\*\\u0001remaining\\u2029\n$/u);
+    },
+  );
 });
