@@ -10,7 +10,13 @@ import { Command, CommanderError } from 'commander';
 
 import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
 
-import { ExitWithCode, runeErrorStderr, type CliControl, type CliIo } from './io.js';
+import {
+  escapeTerminalText,
+  ExitWithCode,
+  runeErrorStderr,
+  type CliControl,
+  type CliIo,
+} from './io.js';
 import { runCommand, type RunFlags } from './runCmd.js';
 import { schemaCommand } from './schemaCmd.js';
 import { validateCommand } from './validateCmd.js';
@@ -47,8 +53,9 @@ export async function run(
     .version(`rune ${RUNE_CLI_VERSION} (engine ${RUNE_VERSION})`, '--version')
     .exitOverride()
     .configureOutput({
-      writeOut: (text) => io.stdout(text.replace(/\n$/, '')),
-      writeErr: (text) => io.stderr(text.replace(/\n$/, '')),
+      writeOut: (text) => io.stdout(projectCommanderLayout(text)),
+      writeErr: (text) => io.stderr(projectCommanderLayout(text)),
+      outputError: (text, write) => write(escapeTerminalText(withoutFinalLf(text))),
     });
 
   program
@@ -116,4 +123,13 @@ function report(error: unknown, io: CliIo): number {
 
 function collect(value: string, previous: readonly string[]): string[] {
   return [...previous, value];
+}
+
+/** Escapes each Commander-owned layout line without turning its separators into text. */
+function projectCommanderLayout(text: string): string {
+  return withoutFinalLf(text).split('\n').map(escapeTerminalText).join('\n');
+}
+
+function withoutFinalLf(text: string): string {
+  return text.endsWith('\n') ? text.slice(0, -1) : text;
 }

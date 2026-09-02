@@ -147,6 +147,24 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).not.toContain('is valid');
   });
 
+  it('escapes controls in an unknown option without injecting stderr lines', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const option = '--unknown\u001b\r\nforged\u0085\u2028\u2029';
+
+    expect(await run(['validate', path, option], io)).toBe(2);
+
+    expect(io.out).toEqual([]);
+    expect(io.err).toHaveLength(1);
+    const stderr = io.err[0]!;
+    expect(hasRawTerminalControl(stderr)).toBe(false);
+    for (const visible of ['\\u001b', '\\r', '\\n', '\\u0085', '\\u2028', '\\u2029']) {
+      expect(stderr).toContain(visible);
+    }
+    expect(stderr).toContain('unknown option');
+    expect(stderr).not.toContain('\nforged');
+  });
+
   it('reports every validated locale overlay', async () => {
     const path = fixture(MANIFEST);
     writeLocaleOverlay(path, ['rune.button.next: Weiter']);
@@ -1543,8 +1561,20 @@ describe('rune run', () => {
 
 describe('help and misuse', () => {
   it('exits 0 for requested help and 2 for a bare invocation', async () => {
-    expect(await run(['--help'], capture())).toBe(0);
-    expect(await run([], capture())).toBe(2);
+    const help = capture();
+    const bare = capture();
+
+    expect(await run(['--help'], help)).toBe(0);
+    expect(await run([], bare)).toBe(2);
+    expect(help.err).toEqual([]);
+    expect(help.out).toHaveLength(1);
+    expect(help.out[0]).toMatch(/^Usage: rune/u);
+    expect(help.out[0]).toContain('\nCommands:');
+    expect(help.out[0]).not.toMatch(/\n$/u);
+    expect(bare.out).toEqual([]);
+    expect(bare.err).toHaveLength(1);
+    expect(bare.err[0]).toMatch(/^Usage: rune/u);
+    expect(bare.err[0]).toContain('\nCommands:');
   });
 });
 
@@ -2020,6 +2050,9 @@ describe('rune --version', () => {
   it('prints its own version and the engine version', async () => {
     const io = capture();
     expect(await run(['--version'], io)).toBe(0);
+    expect(io.out).toHaveLength(1);
+    expect(io.err).toEqual([]);
+    expect(io.out[0]).not.toContain('\n');
     expect(io.out.join('\n')).toMatch(/rune .*engine /);
   });
 });
