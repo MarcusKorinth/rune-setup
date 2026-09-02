@@ -14,8 +14,9 @@ import {
   InternalError,
   ManifestError,
   ResolutionError,
+  RuneError,
 } from '../../src/errors.js';
-import { Session } from '../../src/engine/session.js';
+import { Session, type SessionOptions } from '../../src/engine/session.js';
 import { manifestDescriptorFor } from '../../src/manifest/index.js';
 import { resultV1Schema } from '../../src/results/schema.js';
 
@@ -28,7 +29,141 @@ function fixture(lines: readonly string[]): string {
   return path;
 }
 
+async function captureOpenError(path: string, options: SessionOptions): Promise<RuneError> {
+  return captureOpenErrorFrom(Session.open(path, options));
+}
+
+async function captureOpenErrorFrom(opening: Promise<Session>): Promise<RuneError> {
+  try {
+    await opening;
+    throw new Error('expected Session.open to fail');
+  } catch (error) {
+    if (error instanceof RuneError) {
+      return error;
+    }
+    throw error;
+  }
+}
+
 describe('createFailureResult', () => {
+  it.each([
+    {
+      name: 'RUNE_LOCALE',
+      options: { environment: { RUNE_LOCALE: 'fr_CA' }, systemLocale: 'en-US' },
+      locale: 'fr-CA',
+    },
+    {
+      name: 'system locale',
+      options: { environment: {}, systemLocale: 'sr_RS.UTF-8' },
+      locale: 'sr-RS',
+    },
+    {
+      name: 'explicit C defaults',
+      options: { locale: 'C', environment: { RUNE_LOCALE: 'de-DE' } },
+      locale: null,
+    },
+    {
+      name: 'POSIX environment defaults',
+      options: { environment: { RUNE_LOCALE: 'POSIX' }, systemLocale: 'de-DE' },
+      locale: null,
+    },
+  ])('preserves $name selection in a pre-manifest failure', async ({ options, locale }) => {
+    const path = fixture(['schemaVersion: 1', 'product:', '  name: Invalid']);
+    const error = await captureOpenError(path, options);
+
+    const result = createFailureResult({ error, manifestPath: path, dryRun: false });
+
+    expect(result).toMatchObject({
+      status: 'config_error',
+      manifest: { path },
+      locale,
+    });
+  });
+
+  it('authenticates exact mutation-safe pre-manifest provenance', async () => {
+    const path = fixture(['schemaVersion: 1', 'product:', '  name: Invalid']);
+    const validPath = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Foreign',
+      '  version: "1.0.0"',
+      'steps: []',
+    ]);
+    const host = hostPlatform();
+    const foreign = host === 'windows' ? 'linux' : 'windows';
+    const callerEnvironment: Record<string, string | undefined> = { RUNE_LOCALE: 'de_DE' };
+    const callerOptions: {
+      mode: 'interactive' | 'gui';
+      platform: 'windows' | 'linux';
+      environment: Record<string, string | undefined>;
+      systemLocale: string;
+    } = {
+      mode: 'interactive',
+      platform: foreign,
+      environment: callerEnvironment,
+      systemLocale: 'en-US',
+    };
+
+    const opening = Session.open(path, callerOptions);
+    callerOptions.mode = 'gui';
+    callerOptions.platform = host;
+    callerEnvironment.RUNE_LOCALE = 'fr-FR';
+    const authenticError = await captureOpenErrorFrom(opening);
+    const originalMessage = authenticError.message;
+    const foreignSession = await Session.open(validPath, { environment: {} });
+    const foreignPlan = foreignSession.plan();
+
+    Object.assign(authenticError as unknown as Record<string, unknown>, {
+      code: 'RUNE-500',
+      message: 'mutated after registration',
+      location: null,
+    });
+    const result = createFailureResult({
+      error: authenticError,
+      manifestPath: 'spoofed.yaml',
+      dryRun: true,
+      mode: 'gui',
+      platform: host,
+    });
+
+    expect(result).toMatchObject({
+      status: 'config_error',
+      mode: 'interactive',
+      platform: foreign,
+      crossPlatformPreview: true,
+      locale: 'de-DE',
+      manifest: { path, sha256: null, schemaVersion: null },
+      product: null,
+      steps: [],
+      error: { code: 'RUNE-103', message: originalMessage },
+    });
+    expect(() =>
+      createFailureResult({
+        error: authenticError,
+        manifestPath: 'spoofed.yaml',
+        dryRun: true,
+        session: foreignSession,
+        plan: foreignPlan,
+      }),
+    ).toThrow('a pre-manifest failure result cannot carry session or plan context');
+
+    const copiedError = new ManifestError('RUNE-103', originalMessage);
+    const copiedResult = createFailureResult({
+      error: copiedError,
+      manifestPath: 'spoofed.yaml',
+      dryRun: true,
+      mode: 'gui',
+      platform: host,
+    });
+    expect(copiedResult).toMatchObject({
+      mode: 'gui',
+      platform: host,
+      crossPlatformPreview: false,
+      locale: null,
+      manifest: { path: 'spoofed.yaml' },
+    });
+  });
+
   it('projects an external error generically while preserving a completed plan', async () => {
     const path = fixture([
       'schemaVersion: 1',

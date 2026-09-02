@@ -558,6 +558,18 @@ describe('opening a session', () => {
     }
   });
 
+  it('keeps an invalid manifest ahead of an invalid explicit locale', async () => {
+    const invalidPath = fixture(['schemaVersion: 1', 'product:', '  name: Invalid']);
+    const validPath = fixture(BASE);
+
+    await expect(
+      Session.open(invalidPath, { environment: {}, locale: 'definitely_invalid' }),
+    ).rejects.toMatchObject({ code: 'RUNE-103' });
+    await expect(
+      Session.open(validPath, { environment: {}, locale: 'definitely_invalid' }),
+    ).rejects.toMatchObject({ code: 'RUNE-001' });
+  });
+
   it.runIf(process.platform === 'win32')(
     'uses Windows casing semantics for interpolation, inputs, and locale selection',
     async () => {

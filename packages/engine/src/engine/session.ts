@@ -40,6 +40,7 @@ import {
   registerFailureResultError,
   registerFailureResultSession,
   registerOpenFailureContext,
+  registerPreManifestFailureContext,
 } from './executor.js';
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
@@ -192,19 +193,45 @@ export class Session {
     const flagLogFile =
       logFileFlag === undefined ? undefined : resolvePath(invocationCwd, logFileFlag);
 
-    const manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
-    const descriptor = manifestDescriptorFor(manifest);
-    const secrets = new SecretRegistry();
     let locale: string | undefined;
-    let strings: StringTable | undefined;
-    let resolution: Resolution | undefined;
-    let inputSnapshot: InputFacadeSnapshot | undefined;
+    let localeSelectionError: unknown;
+    let localeSelectionFailed = false;
     try {
       locale = selectLocale({
         flag: localeFlag,
         environment,
         systemLocale: openingSystemLocale,
       });
+    } catch (error) {
+      // Manifest errors retain precedence over locale usage errors. Keep the snapshotted
+      // selection failure until parsing has established that the manifest itself is valid.
+      localeSelectionFailed = true;
+      localeSelectionError = error;
+    }
+
+    let manifest: Manifest;
+    try {
+      manifest = await parseManifestAsync(absolutePath, { checkAssetFiles: mode === 'gui' });
+    } catch (error) {
+      const projected = projectOpeningError(error, (text) => text);
+      registerPreManifestFailureContext(projected, {
+        manifestPath: absolutePath,
+        mode,
+        platform,
+        preview,
+        locale: locale ?? null,
+      });
+      throw projected;
+    }
+    const descriptor = manifestDescriptorFor(manifest);
+    const secrets = new SecretRegistry();
+    let strings: StringTable | undefined;
+    let resolution: Resolution | undefined;
+    let inputSnapshot: InputFacadeSnapshot | undefined;
+    try {
+      if (localeSelectionFailed) {
+        throw localeSelectionError;
+      }
       let overlay: LocaleOverlay | undefined;
       if (locale !== undefined) {
         const match = await discoverSelectedOverlayAsync(manifestDir, locale);
@@ -260,23 +287,20 @@ export class Session {
         runner,
       });
     } catch (error) {
-      const projected =
-        error instanceof RuneError ? projectRuneError(error, (text) => secrets.mask(text)) : error;
+      const projected = projectOpeningError(error, (text) => secrets.mask(text));
       const failureStrings = strings ?? Object.freeze({ locale });
-      if (projected instanceof RuneError) {
-        registerOpenFailureContext(
-          projected,
-          Object.freeze({
-            manifest,
-            mode,
-            platform,
-            preview,
-            allInputs: () => inputSnapshot?.all ?? EMPTY_INPUTS,
-            getStrings: () => failureStrings,
-          }),
-          secrets.snapshot(),
-        );
-      }
+      registerOpenFailureContext(
+        projected,
+        Object.freeze({
+          manifest,
+          mode,
+          platform,
+          preview,
+          allInputs: () => inputSnapshot?.all ?? EMPTY_INPUTS,
+          getStrings: () => failureStrings,
+        }),
+        secrets.snapshot(),
+      );
       throw projected;
     }
   }
@@ -558,6 +582,15 @@ function systemLocale(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Projects every opening failure to a stable RuneError without exposing an unexpected cause. */
+function projectOpeningError(error: unknown, projectText: (text: string) => string): RuneError {
+  const runeError =
+    error instanceof RuneError
+      ? error
+      : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
+  return projectRuneError(runeError, projectText);
 }
 
 /** The snapshotted `--log-file` beats `execution.logFile`; manifest paths anchor to its directory. */

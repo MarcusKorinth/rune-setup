@@ -1017,19 +1017,24 @@ describe('result files for failed outcomes', () => {
     }
   });
 
-  it('writes a config_error result when the manifest is invalid', async () => {
+  it('writes the explicit canonical locale in an invalid-manifest result', async () => {
     const path = fixture(['schemaVersion: 1', 'product:', '  name: X']);
     const resultPath = join(path, '..', 'result.json');
     const io = capture();
 
-    expect(await run(['run', path, '--non-interactive', '--result', resultPath], io)).toBe(3);
+    expect(
+      await run(
+        ['run', path, '--non-interactive', '--locale', 'de_DE', '--result', resultPath],
+        io,
+      ),
+    ).toBe(3);
     const written = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
     expect(written['status']).toBe('config_error');
     expect(written['exitCode']).toBe(3);
     expect(written).toMatchObject({
       mode: 'non-interactive',
       product: null,
-      locale: null,
+      locale: 'de-DE',
       manifest: { path, sha256: null, schemaVersion: null },
     });
     expect(io.err).toContain(`result written to ${resultPath}`);

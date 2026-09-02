@@ -110,12 +110,29 @@ interface FailureErrorProjection {
   readonly error: ResultError;
 }
 
-interface RegisteredFailureError {
+interface RegisteredSessionFailureError {
+  readonly kind: 'session';
   readonly session: FailureResultSession;
   readonly projection: FailureErrorProjection;
   readonly sessionContext?: FailureResultSessionContext;
   readonly openSecrets?: SecretMasker;
 }
+
+interface PreManifestFailureContext {
+  readonly manifestPath: string;
+  readonly mode: RunMode;
+  readonly platform: Platform;
+  readonly preview: boolean;
+  readonly locale: string | null;
+}
+
+interface RegisteredPreManifestFailureError {
+  readonly kind: 'pre_manifest';
+  readonly context: PreManifestFailureContext;
+  readonly projection: FailureErrorProjection;
+}
+
+type RegisteredFailureError = RegisteredSessionFailureError | RegisteredPreManifestFailureError;
 
 const registeredFailureErrors = new WeakMap<RuneError, RegisteredFailureError>();
 
@@ -135,6 +152,7 @@ export function registerFailureResultError(error: RuneError, session: FailureRes
     throw new InternalError('a failure error requires an authentic opened Session');
   }
   registeredFailureErrors.set(error, {
+    kind: 'session',
     session,
     sessionContext,
     projection: snapshotSessionFailureError(error),
@@ -148,9 +166,22 @@ export function registerOpenFailureContext(
   secrets: SecretMasker,
 ): void {
   registeredFailureErrors.set(error, {
+    kind: 'session',
     session: context,
     projection: snapshotSessionFailureError(error),
     openSecrets: secrets,
+  });
+}
+
+/** Package-internal binding for a failure before a validated Manifest exists. */
+export function registerPreManifestFailureContext(
+  error: RuneError,
+  context: PreManifestFailureContext,
+): void {
+  registeredFailureErrors.set(error, {
+    kind: 'pre_manifest',
+    context: Object.freeze({ ...context }),
+    projection: snapshotSessionFailureError(error),
   });
 }
 
@@ -575,7 +606,7 @@ export function describePlan(options: {
 export function createFailureResult(options: FailureResultOptions): RunResult {
   // Snapshot every caller-controlled option once. In particular, a getter must not supply one
   // error for provenance lookup and a different error for result projection.
-  const plan = options.plan;
+  const optionPlan = options.plan;
   const error = options.error;
   const manifestPath = options.manifestPath;
   const dryRun = options.dryRun;
@@ -583,24 +614,48 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   const optionPlatform = options.platform;
   const explicitSession = options.session;
   const registeredError = registeredFailureErrors.get(error);
+  const registeredPreManifestError =
+    registeredError?.kind === 'pre_manifest' ? registeredError : undefined;
+  const preManifestContext = registeredPreManifestError?.context;
+  const registeredSessionError = registeredError?.kind === 'session' ? registeredError : undefined;
+  const plan = preManifestContext === undefined ? optionPlan : undefined;
+  const effectiveExplicitSession = preManifestContext === undefined ? explicitSession : undefined;
   const session =
-    explicitSession ??
-    (registeredError?.openSecrets === undefined ? undefined : registeredError.session);
+    preManifestContext === undefined
+      ? (effectiveExplicitSession ??
+        (registeredSessionError?.openSecrets === undefined
+          ? undefined
+          : registeredSessionError.session))
+      : undefined;
   const sessionContext =
-    explicitSession === undefined ? undefined : sessionFailureContexts.get(explicitSession);
+    effectiveExplicitSession === undefined
+      ? undefined
+      : sessionFailureContexts.get(effectiveExplicitSession);
   const sessionSecrets =
-    explicitSession === undefined ? registeredError?.openSecrets : sessionContext?.secrets;
+    effectiveExplicitSession === undefined
+      ? registeredSessionError?.openSecrets
+      : sessionContext?.secrets;
   const registeredErrorIsCurrent =
-    registeredError !== undefined &&
-    registeredError.session === session &&
-    (registeredError.openSecrets !== undefined
-      ? registeredError.openSecrets === sessionSecrets
-      : registeredError.sessionContext === sessionContext);
+    registeredSessionError !== undefined &&
+    registeredSessionError.session === session &&
+    (registeredSessionError.openSecrets !== undefined
+      ? registeredSessionError.openSecrets === sessionSecrets
+      : registeredSessionError.sessionContext === sessionContext);
 
-  if (explicitSession !== undefined && sessionSecrets === undefined) {
+  if (
+    preManifestContext !== undefined &&
+    (explicitSession !== undefined || optionPlan !== undefined)
+  ) {
+    throw new InternalError('a pre-manifest failure result cannot carry session or plan context');
+  }
+  if (effectiveExplicitSession !== undefined && sessionSecrets === undefined) {
     throw new InternalError('a failure result requires an authentic opened Session');
   }
-  if (explicitSession === undefined && session !== undefined && sessionSecrets === undefined) {
+  if (
+    effectiveExplicitSession === undefined &&
+    session !== undefined &&
+    sessionSecrets === undefined
+  ) {
     throw new InternalError('an open failure context requires its secret snapshot');
   }
   if (plan !== undefined && session === undefined) {
@@ -612,7 +667,7 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   if (
     plan !== undefined &&
     registeredErrorIsCurrent &&
-    registeredError.projection.kind === 'plan_failure'
+    registeredSessionError?.projection.kind === 'plan_failure'
   ) {
     throw new InternalError('a pre-execution failure result cannot carry a completed plan');
   }
@@ -620,34 +675,49 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   const executionContext = plan === undefined ? undefined : executionContextFor(plan);
   const secrets = executionContext?.secrets ?? sessionSecrets ?? IDENTITY_MASKER;
   const projection =
-    session === undefined
-      ? snapshotFailureError(error)
-      : registeredErrorIsCurrent
-        ? registeredError.projection
-        : registeredError === undefined && error instanceof CancelledError
-          ? CANONICAL_CANCELLED_PROJECTION
-          : GENERIC_INTERNAL_PROJECTION;
+    registeredPreManifestError !== undefined
+      ? registeredPreManifestError.projection
+      : session === undefined
+        ? snapshotFailureError(error)
+        : registeredErrorIsCurrent && registeredSessionError !== undefined
+          ? registeredSessionError.projection
+          : registeredSessionError === undefined && error instanceof CancelledError
+            ? CANONICAL_CANCELLED_PROJECTION
+            : GENERIC_INTERNAL_PROJECTION;
   const outcome = failureOutcome(projection, dryRun);
   if (
     session === undefined &&
+    preManifestContext === undefined &&
     outcome.status !== 'config_error' &&
     outcome.status !== 'internal_error'
   ) {
     throw new InternalError('a post-validation failure result requires opened-session context');
   }
 
-  const platform = plan?.platform ?? session?.platform ?? optionPlatform ?? hostPlatform();
-  const preview = plan?.preview ?? session?.preview ?? platform !== hostPlatform();
-  const source = failureSource(manifestPath, plan, executionContext, session, secrets);
+  const platform =
+    preManifestContext?.platform ??
+    plan?.platform ??
+    session?.platform ??
+    optionPlatform ??
+    hostPlatform();
+  const preview =
+    preManifestContext?.preview ?? plan?.preview ?? session?.preview ?? platform !== hostPlatform();
+  const source = failureSource(
+    preManifestContext?.manifestPath ?? manifestPath,
+    plan,
+    executionContext,
+    session,
+    secrets,
+  );
   const steps = failureSteps(plan, dryRun, secrets);
   const now = new Date();
 
   return assembleFailureResult({
     runId: randomUUID(),
-    mode: session?.mode ?? optionMode ?? 'non-interactive',
+    mode: preManifestContext?.mode ?? session?.mode ?? optionMode ?? 'non-interactive',
     platform,
     preview,
-    locale: plan?.locale ?? session?.getStrings().locale ?? null,
+    locale: preManifestContext?.locale ?? plan?.locale ?? session?.getStrings().locale ?? null,
     source,
     steps,
     outcome,
