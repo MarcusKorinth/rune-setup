@@ -165,7 +165,10 @@ Five layers, lowest to highest; later layers override earlier ones per key. Comp
 4. **`--set key=value`** — repeatable; last occurrence wins
 5. **Interactive answers** — CLI prompts and summary edit loop, or GUI pages
 
-The resulting public resolution snapshot is immutable at runtime: its arrays and states are frozen, and its id lookup is a frozen `ReadonlyMap` view without mutation operations. The lookup and `inputs` array represent the same frozen state objects in declaration order.
+The resulting canonical resolution state is engine-internal and immutable at runtime: its arrays
+and states are frozen, and its id lookup is a frozen `ReadonlyMap` view without mutation
+operations. The lookup and `inputs` array represent the same frozen state objects in declaration
+order. The separate public input projection is defined in §9.1.
 
 Rationale — an explicitness gradient: each layer is more specific to *this invocation* than the one below. Env below `--set` matters operationally: a stray `RUNE_INPUT_*` in a CI image can never silently defeat an explicit flag in the pipeline script.
 
@@ -377,7 +380,7 @@ export class Session {
   readonly platform: Platform;                    // selected target platform
   readonly preview: boolean;                      // true for a foreign-platform session
   pendingInputs(): readonly InputState[];         // unresolved AND enabled, declaration order
-  allInputs(): readonly InputState[];             // {id, spec, value, enabled, source, rejection, ignored}
+  allInputs(): readonly InputState[];             // plain, sink-safe input views (defined below)
   warnings(): readonly string[];                  // §5/§10 warnings a frontend says out loud
   setValue(id: string, raw: unknown): readonly InputStateChanged[];
                                                   // an answer is always layer 5; registry-validated
@@ -392,6 +395,21 @@ export class Session {
   getThemeConfig(): ThemeConfig;                 // gui: block, paths absolute; empty if absent
 }
 ```
+
+`allInputs()` and `pendingInputs()` are themselves renderer-safe snapshots, not views of the
+canonical resolution state. `InputState` is a plain-data union discriminated by `secret`:
+`secret: true` carries `value: null` for a resolved value and `value: undefined` for an
+unanswered or rejected value; `secret: false` carries only a masked
+`string | boolean | readonly string[] | undefined`. Its `spec` is the minimal
+`InputViewSpec`: `type` and `required`, plus the exact frozen option values for `select` and
+`multiselect`. It never carries manifest titles, descriptions, defaults, patterns, pattern
+hints, conditions, or option labels; frontends obtain all display text from `getStrings()`.
+Input ids, type discriminators, option values, provenance, and enabled/ignored state are machine
+identities and remain byte-exact even when their text collides with a secret. Rejection
+candidates, messages, and locations are masked copies. Every successful resolution publishes one
+deep-frozen `allInputs` array and one `pendingInputs` array that share their frozen state objects;
+repeated calls retain both array identities until the next successful edit. A rejected edit
+publishes nothing, while earlier snapshots remain immutable after a successful edit.
 
 The engine is **asynchronous**: `Session.open()` and `execute()` return Promises and run on the Node event loop. Their lifecycle performs no synchronous filesystem, process, or stream I/O; those operations are awaited so the CLI process or Electron main process stays responsive. Bounded in-memory YAML decoding/parsing, zod validation, and input/plan resolution remain CPU work on the event loop — RUNE neither promises nor introduces worker threads for them. The separate synchronous authoring APIs `parseManifest()` and `validateManifest()` keep their existing contract.
 
@@ -408,7 +426,7 @@ The IPC bridge is how the GUI shell's renderer drives the engine. The engine run
 - **Transport:** Electron IPC — request/response via `ipcRenderer.invoke` ↔ `ipcMain.handle` (one channel per facade method), run events pushed main → renderer via `webContents.send` and subscribed through `rune.onEvent(listener)` in the preload. Preload and renderer are built and shipped together in the same artifact, so the bridge is an internal contract pinned by a unit test (§14), not a versioned wire format.
 - **Opening:** the renderer calls `rune.open()`; main opens the `Session` from the **invocation it was launched with** (manifest path, `--values`, `--set`, `--locale`, `--result`, `--log-file` — the CLI's layers 2–4 and flags, resolved by the engine exactly as for the CLI). The renderer never supplies a manifest path or any layer-1–4 value; `rune.open()` resolves to `{ runeVersion, inputTypes }` — the input-type names the manifest uses, checked against the renderer's field-renderer registry (§9.3).
 - **Methods:** `rune.open`, `rune.pendingInputs`, `rune.allInputs`, `rune.warnings`, `rune.setValue`, `rune.plan`, `rune.describe`, `rune.execute`, `rune.cancel`, `rune.getStrings`, `rune.getThemeConfig` — every one returns a Promise. `rune.execute` is long-running: run events are pushed while it is in flight and its promise resolves with the `RunResult`; `rune.cancel` is the only call serviced concurrently with it.
-- **Events (main → renderer):** `runStarted`, `stepStarted`, `stepOutput`, `stepFinished`, `runFinished` — the run events only; the live enable/disable signal for §5's disabled inputs (`InputStateChanged`) is the resolved value of `rune.setValue`, not a pushed event. Payloads are **bridge projections**: main runs every event and every return value through the bridge serializer (JSON-safe plain data; `SecretString` → `***` / `value: null`, `mask()` applied) before `webContents.send` / the invoke return — Electron's structured clone then carries only plain masked data, never an engine object (structured clone ignores `toJSON()`, so a raw `SecretString` must never reach it). Ordering and bracketing rules of §9.1 hold across the bridge.
+- **Events (main → renderer):** `runStarted`, `stepStarted`, `stepOutput`, `stepFinished`, `runFinished` — the run events only; the live enable/disable signal for §5's disabled inputs (`InputStateChanged`) is the resolved value of `rune.setValue`, not a pushed event. `allInputs()` and `pendingInputs()` already return their plain sink-safe snapshots from the facade. Other payloads remain **bridge projections**: main runs events and other return values through the bridge serializer (JSON-safe plain data; `SecretString` → `***`, `mask()` applied) before `webContents.send` / the invoke return — Electron's structured clone then carries only plain masked data, never an engine object (structured clone ignores `toJSON()`, so a raw `SecretString` must never reach it). Ordering and bracketing rules of §9.1 hold across the bridge.
 - **Secrets:** values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
 - **Errors:** a `RuneError` thrown by the facade rejects the bridge promise with a serialized error carrying the `RUNE-xxx` code, message, location, and the exit code the CLI would have used. Two classes: rejections of `rune.setValue` and `rune.plan` are **recoverable** — the renderer shows them inline (red field with `patternHint`, `Next` disabled while inputs are incomplete or invalid, §9.3) and the session continues; only errors from `rune.open`, `rune.execute`, and failures outside any bridge call (e.g. window close during a run) are **fatal** — main, not the renderer, maps those through `exitCodeFor` and exits with that code (§9.4).
 

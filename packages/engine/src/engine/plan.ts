@@ -38,7 +38,7 @@ import { resolveReference, runtimeContextFor, type RuntimeContext } from './cont
 import { scanTemplate, type TemplateReference } from './interpolate.js';
 import {
   resolutionSnapshotFor,
-  type InputState,
+  type ResolvedInputState,
   type Resolution,
   type ResolutionSnapshot,
   type ValueSource,
@@ -267,7 +267,7 @@ function snapshotExecutionContext(
   });
 }
 
-function snapshotInput(state: InputState, secrets: SecretMasker): PlanInput {
+function snapshotInput(state: ResolvedInputState, secrets: SecretMasker): PlanInput {
   if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value after resolution was accepted`);
   }

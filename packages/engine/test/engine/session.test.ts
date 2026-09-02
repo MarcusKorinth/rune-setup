@@ -9,6 +9,7 @@ import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
+import { isSecretString, revealSecretString } from '../../src/engine/secrets.js';
 import { ExecutionError, InputError, InternalError, ManifestError } from '../../src/errors.js';
 import {
   createSessionOptionsForTesting,
@@ -40,6 +41,17 @@ function fixture(lines: readonly string[], extra: Record<string, string> = {}): 
   return join(dir, 'installer.yaml');
 }
 
+function containsSecretString(value: unknown, seen = new Set<object>()): boolean {
+  if (isSecretString(value)) {
+    return true;
+  }
+  if (value === null || typeof value !== 'object' || seen.has(value)) {
+    return false;
+  }
+  seen.add(value);
+  return Object.values(value).some((entry) => containsSecretString(entry, seen));
+}
+
 const BASE = [
   'schemaVersion: 1',
   'product:',
@@ -59,6 +71,188 @@ const BASE = [
 ];
 
 describe('opening a session', () => {
+  it('returns clone-safe masked input views with exact machine identities', async () => {
+    const secret = 'text';
+    const path = fixture(
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  text:',
+        '    type: secret',
+        '  fromDefault:',
+        '    type: text',
+        '    title: Raw title',
+        '    description: Raw description',
+        '    default: text',
+        '    pattern: text',
+        '    patternHint: Raw hint',
+        '  fromValues:',
+        '    type: text',
+        '  fromEnvironment:',
+        '    type: text',
+        '  choice:',
+        '    type: select',
+        '    options:',
+        '      - value: text',
+        '        label: Raw label',
+        '    default: text',
+        '  fromSet:',
+        '    type: multiselect',
+        '    options: [text, stable]',
+        '  rejected:',
+        '    type: multiselect',
+        '    options: [text]',
+        'steps: []',
+      ],
+      { 'values.yaml': 'fromValues: text\nrejected: [text, invalid]\n' },
+    );
+    const session = await Session.open(path, {
+      mode: 'gui',
+      values: [join(path, '..', 'values.yaml')],
+      environment: { RUNE_INPUT_FROMENVIRONMENT: secret },
+      overrides: {
+        text: secret,
+        fromSet: '["text","stable"]',
+      },
+    });
+
+    const all = session.allInputs();
+    const pending = session.pendingInputs();
+    expect(session.allInputs()).toBe(all);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toBe(all.find((state) => state.id === 'rejected'));
+    expect(structuredClone(all)).toEqual(all);
+    expect(containsSecretString(all)).toBe(false);
+
+    expect(all.find((state) => state.id === 'text')).toMatchObject({
+      id: 'text',
+      secret: true,
+      spec: { type: 'secret', required: true },
+      value: null,
+      source: 'set',
+      enabled: true,
+    });
+    expect(all.find((state) => state.id === 'fromDefault')).toMatchObject({
+      secret: false,
+      value: '***',
+      source: 'default',
+      spec: { type: 'text', required: true },
+    });
+    expect(all.find((state) => state.id === 'fromValues')?.value).toBe('***');
+    expect(all.find((state) => state.id === 'fromEnvironment')?.value).toBe('***');
+    expect(all.find((state) => state.id === 'choice')).toMatchObject({
+      value: '***',
+      spec: { type: 'select', options: ['text'] },
+    });
+    expect(all.find((state) => state.id === 'fromSet')).toMatchObject({
+      value: ['***', 'stable'],
+      source: 'set',
+      spec: { type: 'multiselect', options: ['text', 'stable'] },
+    });
+    expect(Object.keys(all.find((state) => state.id === 'fromDefault')!.spec).sort()).toEqual([
+      'required',
+      'type',
+    ]);
+
+    const rejected = all.find((state) => state.id === 'rejected')!;
+    expect(rejected).toMatchObject({
+      value: undefined,
+      source: undefined,
+      rejection: {
+        candidate: ['***', 'invalid'],
+        source: 'values',
+        issue: { code: 'RUNE-202' },
+      },
+      spec: { type: 'multiselect', options: ['text'] },
+    });
+    expect(Object.isFrozen(all)).toBe(true);
+    expect(Object.isFrozen(pending)).toBe(true);
+    expect(Object.isFrozen(rejected)).toBe(true);
+    expect(Object.isFrozen(rejected.spec)).toBe(true);
+    expect(Object.isFrozen('options' in rejected.spec ? rejected.spec.options : [])).toBe(true);
+    expect(Object.isFrozen(rejected.rejection)).toBe(true);
+    expect(Object.isFrozen(rejected.rejection?.candidate)).toBe(true);
+    expect(Object.isFrozen(rejected.rejection?.issue)).toBe(true);
+    expect(Object.isFrozen(rejected.rejection?.issue.location)).toBe(true);
+  });
+
+  it('publishes fresh remasked snapshots atomically and preserves historical views', async () => {
+    const oldSecret = 'F062-old-secret';
+    const newSecret = 'F062-new-secret';
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '  oldCollision:',
+        '    type: text',
+        `    default: ${oldSecret}`,
+        '  newCollision:',
+        '    type: text',
+        `    default: ${newSecret}`,
+        '  enabled:',
+        '    type: boolean',
+        '    default: true',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${token}", "${oldCollision}", "${newCollision}"]',
+      ]),
+      { environment: {} },
+    );
+
+    const unanswered = session.allInputs().find((state) => state.id === 'token');
+    expect(unanswered).toMatchObject({ secret: true, value: undefined, source: undefined });
+    expect(session.pendingInputs()).toContain(unanswered);
+
+    session.setValue('token', oldSecret);
+    const oldAll = session.allInputs();
+    const oldPending = session.pendingInputs();
+    const oldStates = [...oldAll];
+    const oldPlan = session.plan();
+    expect(oldAll.find((state) => state.id === 'oldCollision')?.value).toBe('***');
+    expect(oldAll.find((state) => state.id === 'newCollision')?.value).toBe(newSecret);
+
+    expect(session.setValue('token', newSecret)).toEqual([]);
+    const newAll = session.allInputs();
+    const newPending = session.pendingInputs();
+    expect(newAll).not.toBe(oldAll);
+    expect(newPending).not.toBe(oldPending);
+    expect(newAll.every((state, index) => state !== oldStates[index])).toBe(true);
+    expect(newAll.find((state) => state.id === 'oldCollision')?.value).toBe(oldSecret);
+    expect(newAll.find((state) => state.id === 'newCollision')?.value).toBe('***');
+    expect(oldAll.find((state) => state.id === 'oldCollision')?.value).toBe('***');
+    expect(oldAll.find((state) => state.id === 'newCollision')?.value).toBe(newSecret);
+    const newPlan = session.plan();
+    expect(newPlan).not.toBe(oldPlan);
+    const newStep = newPlan.steps[0];
+    expect(newStep?.state).toBe('PENDING');
+    if (newStep?.state !== 'PENDING' || !isSecretString(newStep.command.argv[1])) {
+      throw new Error('expected the canonical secret wrapper in the execution plan');
+    }
+    expect(revealSecretString(newStep.command.argv[1])).toBe(newSecret);
+
+    const acceptedAll = session.allInputs();
+    const acceptedPending = session.pendingInputs();
+    const acceptedStates = [...acceptedAll];
+    const acceptedPlan = session.plan();
+    expect(() => session.setValue('enabled', 'not-a-boolean')).toThrow(InputError);
+    expect(session.allInputs()).toBe(acceptedAll);
+    expect(session.pendingInputs()).toBe(acceptedPending);
+    expect(session.allInputs().every((state, index) => state === acceptedStates[index])).toBe(true);
+    expect(session.plan()).toBe(acceptedPlan);
+    expect(revealSecretString(newStep.command.argv[1])).toBe(newSecret);
+  });
+
   it('resolves layers 1-4 and reports what is still pending', async () => {
     const path = fixture(BASE);
     const session = await Session.open(path, { environment: {} });

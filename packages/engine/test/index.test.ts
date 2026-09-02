@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
 import { PlatformError } from '../src/index.js';
-import type { ChromeKey, ResultError, RunMode, SessionOptions, StringTable } from '../src/index.js';
+import type {
+  ChromeKey,
+  InputState,
+  InputViewSpec,
+  ResultError,
+  RunMode,
+  SessionOptions,
+  StringTable,
+} from '../src/index.js';
 
 const INTERNAL_RUNTIME_EXPORTS = [
   'EXIT_CODE_BY_STATUS',
@@ -65,8 +73,16 @@ const compileTimeReadonlyAccessorContract = (strings: StringTable): void => {
 import type { Resolution as ForbiddenResolution } from '../src/index.js';
 // @ts-expect-error input resolver options are not package-root API
 import type { ResolveInputsOptions as ForbiddenResolveInputsOptions } from '../src/index.js';
+// @ts-expect-error canonical input state is not package-root API
+import type { ResolvedInputState as ForbiddenResolvedInputState } from '../src/index.js';
+// @ts-expect-error input facade snapshot internals are not package-root API
+import type { InputFacadeSnapshot as ForbiddenInputFacadeSnapshot } from '../src/index.js';
 // @ts-expect-error opaque secret capabilities are not package-root API
 import type { SecretString as ForbiddenSecretString } from '../src/index.js';
+// @ts-expect-error secret masking capabilities are not package-root API
+import type { SecretMasker as ForbiddenSecretMasker } from '../src/index.js';
+// @ts-expect-error secret registries are not package-root API
+import type { SecretRegistry as ForbiddenSecretRegistry } from '../src/index.js';
 // @ts-expect-error low-level planning options are not package-root API
 import type { PlanOptions as ForbiddenPlanOptions } from '../src/index.js';
 // @ts-expect-error low-level execution options are not package-root API
@@ -85,7 +101,11 @@ import type { HostBuiltInSnapshot as ForbiddenHostBuiltInSnapshot } from '../src
 type ForbiddenRootTypes = readonly [
   ForbiddenResolution,
   ForbiddenResolveInputsOptions,
+  ForbiddenResolvedInputState,
+  ForbiddenInputFacadeSnapshot,
   ForbiddenSecretString,
+  ForbiddenSecretMasker,
+  ForbiddenSecretRegistry,
   ForbiddenPlanOptions,
   ForbiddenExecuteOptions,
   ForbiddenRunner,
@@ -98,6 +118,33 @@ type ForbiddenRootTypes = readonly [
 function assertNoLowLevelRootTypes(_types: ForbiddenRootTypes): void {}
 
 void assertNoLowLevelRootTypes;
+
+const compileTimeInputViewContract = (state: InputState, spec: InputViewSpec): void => {
+  if (state.secret) {
+    const value: null | undefined = state.value;
+    const type: 'secret' = state.spec.type;
+    void value;
+    void type;
+  } else {
+    const value: string | boolean | readonly string[] | undefined = state.value;
+    // @ts-expect-error a non-secret state cannot carry a secret spec.
+    const type: 'secret' = state.spec.type;
+    void value;
+    void type;
+  }
+  if (spec.type === 'select' || spec.type === 'multiselect') {
+    const options: readonly string[] = spec.options;
+    void options;
+  }
+  // @ts-expect-error display text is available through StringTable, not InputViewSpec.
+  void spec.title;
+  // @ts-expect-error defaults are canonical manifest data, not frontend state.
+  void spec.default;
+  // @ts-expect-error patterns are enforced by setValue and not exposed in the state spec.
+  void spec.pattern;
+};
+
+void compileTimeInputViewContract;
 
 const compileTimeSessionRunnerContract = (manifestPath: string): void => {
   // @ts-expect-error runner injection is not part of public SessionOptions.
@@ -123,6 +170,7 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'isTerminal',
   'STEP_STATES',
   'serializeResult',
+  'projectInputFacadeSnapshot',
 ] as const;
 
 const PUBLIC_RUN_MODES = [
@@ -204,6 +252,7 @@ describe('@rune/engine public API', () => {
     expect(engine).not.toHaveProperty('VALUE_SOURCES');
     expect(engine).not.toHaveProperty('isSecretString');
     expect(engine).not.toHaveProperty('MASK');
+    expect(engine).not.toHaveProperty('mask');
     expect(engine).not.toHaveProperty('SecretRegistry');
     expect(engine).not.toHaveProperty('SecretString');
     expect(engine).not.toHaveProperty('inputTypes');

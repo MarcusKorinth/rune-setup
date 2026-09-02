@@ -63,7 +63,7 @@ export type {
 
 export { Session } from './engine/session.js';
 export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/session.js';
-export type { InputState } from './engine/inputs.js';
+export type { InputRejection, InputState, InputViewSpec } from './engine/inputs.js';
 
 export { createFailureResult } from './engine/executor.js';
 

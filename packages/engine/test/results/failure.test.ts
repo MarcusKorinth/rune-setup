@@ -121,6 +121,9 @@ describe('createFailureResult', () => {
       'inputs:',
       '  token:',
       '    type: secret',
+      '  mirror:',
+      '    type: text',
+      `    default: ${SECRET}`,
       'steps: []',
     ]);
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
@@ -152,7 +155,10 @@ describe('createFailureResult', () => {
       crossPlatformPreview: true,
       locale: 'de-DE',
     });
-    expect(result.inputs).toMatchObject([{ id: 'token', value: null, secret: true }]);
+    expect(result.inputs).toMatchObject([
+      { id: 'token', value: null, secret: true },
+      { id: 'mirror', value: '***', secret: false },
+    ]);
     expect(result.steps).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });

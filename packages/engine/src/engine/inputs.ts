@@ -30,7 +30,7 @@ import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
 import { loadYamlFile, loadYamlFileAsync, type LoadedDocument } from '../manifest/loader.js';
 import { startOfFile, type Location, type SourceMap } from '../manifest/source.js';
 import { environmentName } from '../manifest/v1/rules.js';
-import type { InputSpec, ManifestV1 } from '../manifest/v1/schema.js';
+import { optionValue, type InputSpec, type ManifestV1 } from '../manifest/v1/schema.js';
 import { suggest } from '../suggest.js';
 import {
   evaluateCondition,
@@ -45,7 +45,7 @@ import {
   type RuntimeContext,
 } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretRegistry, type SecretMasker } from './secrets.js';
+import { isSecretString, SecretRegistry, type SecretMasker } from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -56,7 +56,7 @@ export interface InputRejection {
   /** The value a frontend may prefill; unsafe native values and secrets are never retained. */
   readonly candidate: string | boolean | readonly string[] | undefined;
   readonly source: ValueSource;
-  /** The exact issue also present in {@link Resolution.problems}. */
+  /** The rejection issue; the facade receives its own sink-safe frozen copy. */
   readonly issue: RuneIssue;
 }
 
@@ -78,7 +78,65 @@ const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
 export const UNKNOWN_KEY_SUGGESTION_WORK_BUDGET = 250_000;
 const SUGGESTION_WORK_CAP = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET + 1;
 
-export interface InputState {
+/** Minimal manifest shape exposed to frontends; display text comes from `getStrings()`. */
+export type InputViewSpec =
+  | {
+      readonly type: 'text';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'secret';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'boolean';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'file';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'directory';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'select';
+      readonly required: boolean;
+      /** Machine values, never localized or secret-masked. */
+      readonly options: readonly string[];
+    }
+  | {
+      readonly type: 'multiselect';
+      readonly required: boolean;
+      /** Machine values, never localized or secret-masked. */
+      readonly options: readonly string[];
+    };
+
+interface InputStateBase {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly source: ValueSource | undefined;
+  readonly rejection: InputRejection | undefined;
+  readonly ignored: ValueSource | undefined;
+}
+
+/** Plain, sink-safe state returned by the Session facade. */
+export type InputState =
+  | (InputStateBase & {
+      readonly secret: true;
+      readonly spec: Extract<InputViewSpec, { readonly type: 'secret' }>;
+      /** Null means resolved; undefined means unanswered or rejected. */
+      readonly value: null | undefined;
+    })
+  | (InputStateBase & {
+      readonly secret: false;
+      readonly spec: Exclude<InputViewSpec, { readonly type: 'secret' }>;
+      readonly value: string | boolean | readonly string[] | undefined;
+    });
+
+/** Authentic resolution state retained inside the engine and never root-exported. */
+export interface ResolvedInputState {
   readonly id: string;
   readonly spec: InputSpec;
   /** False when the input's `when:` is false: not required, never prompted, empty (§5). */
@@ -130,8 +188,8 @@ export interface ResolveInputsOptions {
 }
 
 export interface Resolution {
-  readonly inputs: readonly InputState[];
-  readonly byId: ReadonlyMap<string, InputState>;
+  readonly inputs: readonly ResolvedInputState[];
+  readonly byId: ReadonlyMap<string, ResolvedInputState>;
   /**
    * Enabled required inputs still without an answer — what a frontend must ask for. A value
    * that resolves to nothing counts as no answer: an environment variable that was never set
@@ -149,8 +207,8 @@ export interface ResolutionSnapshot {
   readonly manifest: ManifestV1;
   readonly context: RuntimeContext;
   readonly inputIndex: InputReferenceIndex;
-  readonly inputs: readonly InputState[];
-  readonly byId: ReadonlyMap<string, InputState>;
+  readonly inputs: readonly ResolvedInputState[];
+  readonly byId: ReadonlyMap<string, ResolvedInputState>;
   readonly secrets: SecretMasker;
   readonly missing: readonly string[];
   readonly warnings: readonly string[];
@@ -211,6 +269,112 @@ export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapsho
     throw new InternalError('the input resolution was not created by resolveInputs');
   }
   return snapshot;
+}
+
+/** The two cached arrays published by one successful Session resolution. */
+export interface InputFacadeSnapshot {
+  readonly all: readonly InputState[];
+  readonly pending: readonly InputState[];
+}
+
+/**
+ * Projects canonical resolution state into the field-specific, structured-clone-safe facade
+ * contract. Machine identities remain exact; only sink text and ordinary values are masked.
+ */
+export function projectInputFacadeSnapshot(resolution: Resolution): InputFacadeSnapshot {
+  const secrets = resolutionSnapshotFor(resolution).secrets;
+  const all = Object.freeze(
+    resolution.inputs.map((state) => projectInputStateForFacade(state, secrets)),
+  );
+  const missing = new Set(resolution.missing);
+  const pending = Object.freeze(
+    all.filter(
+      (state) => state.enabled && (missing.has(state.id) || state.rejection !== undefined),
+    ),
+  );
+  return Object.freeze({ all, pending });
+}
+
+function projectInputStateForFacade(state: ResolvedInputState, secrets: SecretMasker): InputState {
+  const common = {
+    id: state.id,
+    enabled: state.enabled,
+    source: state.source,
+    rejection: projectInputRejection(state.rejection, secrets),
+    ignored: state.ignored,
+  };
+
+  if (state.spec.type === 'secret') {
+    if (state.value !== undefined && !isSecretString(state.value)) {
+      throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
+    }
+    return Object.freeze({
+      ...common,
+      secret: true,
+      spec: Object.freeze({ type: 'secret', required: state.spec.required }),
+      value: state.value === undefined ? undefined : null,
+    });
+  }
+
+  if (isSecretString(state.value)) {
+    throw new InternalError(`non-secret input "${state.id}" resolved to a secret wrapper`);
+  }
+  return Object.freeze({
+    ...common,
+    secret: false,
+    spec: projectInputViewSpec(state.spec),
+    value: projectInputValue(state.value, secrets),
+  });
+}
+
+function projectInputViewSpec(
+  spec: Exclude<InputSpec, { readonly type: 'secret' }>,
+): Exclude<InputViewSpec, { readonly type: 'secret' }> {
+  if (spec.type === 'select' || spec.type === 'multiselect') {
+    return Object.freeze({
+      type: spec.type,
+      required: spec.required,
+      options: Object.freeze(spec.options.map(optionValue)),
+    });
+  }
+  return Object.freeze({ type: spec.type, required: spec.required });
+}
+
+function projectInputValue(
+  value: string | boolean | readonly string[] | undefined,
+  secrets: SecretMasker,
+): string | boolean | readonly string[] | undefined {
+  if (value === undefined || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return secrets.mask(value);
+  }
+  return Object.freeze(value.map((entry) => secrets.mask(entry)));
+}
+
+function projectInputRejection(
+  rejection: InputRejection | undefined,
+  secrets: SecretMasker,
+): InputRejection | undefined {
+  if (rejection === undefined) {
+    return undefined;
+  }
+  const candidate = projectInputValue(rejection.candidate, secrets);
+  const location =
+    rejection.issue.location === undefined
+      ? undefined
+      : Object.freeze({
+          file: secrets.mask(rejection.issue.location.file),
+          line: rejection.issue.location.line,
+          column: rejection.issue.location.column,
+        });
+  const issue = Object.freeze({
+    code: rejection.issue.code,
+    message: secrets.mask(rejection.issue.message),
+    location,
+  });
+  return Object.freeze({ candidate, source: rejection.source, issue });
 }
 
 /**
@@ -276,7 +440,7 @@ function resolveInputsStaged(
 
   checkUnknownKeys(options, inputIndex, valuesLayer.entries, issues, redactor);
 
-  const states = new Map<string, InputState>();
+  const states = new Map<string, ResolvedInputState>();
   const order: string[] = [];
 
   try {
@@ -479,7 +643,7 @@ function rejectEditedAnswer(
   }
 }
 
-function snapshotInputState(state: InputState): InputState {
+function snapshotInputState(state: ResolvedInputState): ResolvedInputState {
   const value = Array.isArray(state.value) ? Object.freeze([...state.value]) : state.value;
   const rejection =
     state.rejection === undefined
@@ -686,7 +850,7 @@ function sanitizeMaskedStack(maskedStack: string, maskedHeader: string): string 
 }
 
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */
-function stillNeeded(state: InputState): boolean {
+function stillNeeded(state: ResolvedInputState): boolean {
   if (!state.enabled || !state.spec.required) {
     return false;
   }
@@ -948,7 +1112,7 @@ function isEnabled(
   id: string,
   inputIndex: InputReferenceIndex,
   visibleInputCount: number,
-  states: ReadonlyMap<string, InputState>,
+  states: ReadonlyMap<string, ResolvedInputState>,
   context: RuntimeContext,
 ): boolean {
   if (spec.when === undefined) {
@@ -980,7 +1144,7 @@ function lookup(
   reference: ConditionReference,
   inputIndex: InputReferenceIndex,
   visibleInputCount: number,
-  states: ReadonlyMap<string, InputState>,
+  states: ReadonlyMap<string, ResolvedInputState>,
   context: RuntimeContext,
 ): ConditionValue {
   const resolved = resolveReference(reference.segments, inputIndex, visibleInputCount);

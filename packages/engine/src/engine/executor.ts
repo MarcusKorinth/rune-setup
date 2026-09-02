@@ -645,7 +645,7 @@ function failureSource(
       inputs: session
         .allInputs()
         .filter((input) => input.value !== undefined)
-        .map((input) => sessionResultInput(input, secrets)),
+        .map(sessionResultInput),
     };
   }
   return {
@@ -670,24 +670,24 @@ function failureSteps(
   );
 }
 
-function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInput {
-  const value = state.value;
-  if (value === undefined) {
+function sessionResultInput(state: InputState): ResultInput {
+  if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value in a failure result`);
   }
-  const secret = state.spec.type === 'secret' || isSecretString(value);
 
   if (state.enabled) {
     const common = { id: state.id, source: state.source ?? null, enabled: true as const };
-    return secret
-      ? { ...common, value: null, secret: true }
-      : { ...common, value: maskSessionInputValue(value, secrets), secret: false };
+    if (state.secret) {
+      return { ...common, value: null, secret: true };
+    }
+    return { ...common, value: state.value, secret: false };
   }
   if (state.ignored === undefined) {
     const common = { id: state.id, source: null, enabled: false as const };
-    return secret
-      ? { ...common, value: null, secret: true }
-      : { ...common, value: maskSessionInputValue(value, secrets), secret: false };
+    if (state.secret) {
+      return { ...common, value: null, secret: true };
+    }
+    return { ...common, value: state.value, secret: false };
   }
   if (state.ignored === 'default') {
     throw new InternalError('invalid disabled input provenance');
@@ -698,19 +698,10 @@ function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInp
     enabled: false as const,
     ignored: 'input disabled' as const,
   };
-  return secret
-    ? { ...common, value: null, secret: true }
-    : { ...common, value: maskSessionInputValue(value, secrets), secret: false };
-}
-
-function maskSessionInputValue(
-  value: InputState['value'],
-  secrets: SecretMasker,
-): string | boolean | readonly string[] {
-  if (value === undefined || isSecretString(value)) {
-    throw new InternalError('a secret or missing value reached a public result input');
+  if (state.secret) {
+    return { ...common, value: null, secret: true };
   }
-  return maskInputValue(value, secrets);
+  return { ...common, value: state.value, secret: false };
 }
 
 function failureOutcome(error: RuneError, dryRun: boolean, secrets: SecretMasker): RunOutcome {

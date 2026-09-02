@@ -42,7 +42,9 @@ import {
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
   parseValuesFileAsync,
+  projectInputFacadeSnapshot,
   resolveInputsWithRegistry,
+  type InputFacadeSnapshot,
   type InputState,
   type Resolution,
   type ValuesDocument,
@@ -85,6 +87,7 @@ export interface SessionOptions {
 }
 
 const TEST_RUNNERS = new WeakMap<SessionOptions, Runner>();
+const EMPTY_INPUTS: readonly InputState[] = Object.freeze([]);
 
 /**
  * Engine-internal test seam for binding a runner to one options object. Package consumers cannot
@@ -120,6 +123,7 @@ export class Session {
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
   #resolution: Resolution;
+  #inputSnapshot: InputFacadeSnapshot;
   #plan: ExecutionPlan | undefined;
   #activeExecution: ActiveExecution | undefined;
 
@@ -134,6 +138,7 @@ export class Session {
     values: readonly ValuesDocument[];
     overrides: ReadonlyMap<string, string>;
     resolution: Resolution;
+    inputSnapshot: InputFacadeSnapshot;
     logFile: string | undefined;
     runner: Runner | undefined;
   }) {
@@ -150,6 +155,7 @@ export class Session {
     this.#values = fields.values;
     this.#overrides = fields.overrides;
     this.#resolution = fields.resolution;
+    this.#inputSnapshot = fields.inputSnapshot;
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
     this.#plan = undefined;
@@ -189,6 +195,7 @@ export class Session {
     let locale: string | undefined;
     let strings: StringTable | undefined;
     let resolution: Resolution | undefined;
+    let inputSnapshot: InputFacadeSnapshot | undefined;
     try {
       locale = selectLocale({
         flag: localeFlag,
@@ -230,6 +237,7 @@ export class Session {
         },
         secrets,
       );
+      inputSnapshot = projectInputFacadeSnapshot(resolution);
 
       return new Session({
         manifest,
@@ -244,6 +252,7 @@ export class Session {
         // Automation is all-or-nothing. Interactive frontends retain rejected seed values so
         // they can render and replace them before planning (§5).
         resolution,
+        inputSnapshot,
         logFile: effectiveLogFile(flagLogFile, manifest, manifestDir),
         runner,
       });
@@ -259,7 +268,7 @@ export class Session {
             mode,
             platform,
             preview,
-            allInputs: () => resolution?.inputs ?? Object.freeze([]),
+            allInputs: () => inputSnapshot?.all ?? EMPTY_INPUTS,
             getStrings: () => failureStrings,
             [MASK_FOR_SINK]: (text: string) => secrets.mask(text),
           }),
@@ -271,17 +280,12 @@ export class Session {
 
   /** Enabled unresolved inputs a frontend can correct, in declaration order. */
   pendingInputs(): readonly InputState[] {
-    const missing = new Set(this.#resolution.missing);
-    return Object.freeze(
-      this.#resolution.inputs.filter(
-        (state) => state.enabled && (missing.has(state.id) || state.rejection !== undefined),
-      ),
-    );
+    return this.#inputSnapshot.pending;
   }
 
   /** Every input with its resolved state — what a GUI prefills (§9.1). */
   allInputs(): readonly InputState[] {
-    return this.#resolution.inputs;
+    return this.#inputSnapshot.all;
   }
 
   /** Warnings a frontend should say out loud but not fail over (§5, §10). */
@@ -309,8 +313,18 @@ export class Session {
     this.#answers.set(id, Array.isArray(raw) ? [...raw] : raw);
     const candidateSecrets = new SecretRegistry();
     let after: Resolution;
+    let afterInputSnapshot: InputFacadeSnapshot;
+    let changes: readonly InputStateChanged[];
     try {
       after = this.#resolve(candidateSecrets, id);
+      afterInputSnapshot = projectInputFacadeSnapshot(after);
+      const projectedChanges: InputStateChanged[] = [];
+      for (const state of after.inputs) {
+        if (before.byId.get(state.id)?.enabled !== state.enabled) {
+          projectedChanges.push({ inputId: state.id, enabled: state.enabled });
+        }
+      }
+      changes = Object.freeze(projectedChanges.map((change) => Object.freeze(change)));
     } catch (error) {
       // Restore, never delete: a rejected edit must not discard an earlier accepted answer.
       if (hadPrevious) {
@@ -322,15 +336,9 @@ export class Session {
     }
     this.#resolution = after;
     this.#secrets = candidateSecrets;
+    this.#inputSnapshot = afterInputSnapshot;
     this.#plan = undefined;
-
-    const changes: InputStateChanged[] = [];
-    for (const state of after.inputs) {
-      if (before.byId.get(state.id)?.enabled !== state.enabled) {
-        changes.push({ inputId: state.id, enabled: state.enabled });
-      }
-    }
-    return Object.freeze(changes.map((change) => Object.freeze(change)));
+    return changes;
   }
 
   /** Stage 4: the frozen plan. Throws listing EVERY missing input with its accepted sources. */
