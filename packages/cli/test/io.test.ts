@@ -47,14 +47,24 @@ describe('terminal text escaping', () => {
     expect(escapeTerminalText(escaped)).toBe(escaped);
   });
 
-  it('terminal-escapes the fully masked message of a single-issue RuneError', () => {
+  it('formats and terminal-escapes a located single-issue RuneError', () => {
     const stderr = vi.fn();
 
     runeErrorStderr(
       { stdout: vi.fn(), stderr },
-      new RuneError('RUNE-202', 'single\nissue\u001b\u0085'),
+      new RuneError('RUNE-202', 'single\nissue\u001b\u0085', {
+        issues: [
+          {
+            code: 'RUNE-202',
+            message: 'single\nissue\u001b\u0085',
+            location: { file: 'installer\u001b.yaml', line: 7, column: 9 },
+          },
+        ],
+      }),
     );
 
-    expect(stderr).toHaveBeenCalledWith(String.raw`single\nissue\u001b\u0085`);
+    expect(stderr).toHaveBeenCalledWith(
+      String.raw`installer\u001b.yaml:7:9: single\nissue\u001b\u0085`,
+    );
   });
 });
