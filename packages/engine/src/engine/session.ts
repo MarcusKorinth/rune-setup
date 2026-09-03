@@ -9,6 +9,7 @@
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { snapshotEnvironment, type Environment } from '../environment.js';
+import { formatDiagnostic } from '../diagnostics.js';
 import {
   InputError,
   InternalError,
@@ -16,7 +17,7 @@ import {
   RuneError,
   type RuneIssue,
 } from '../errors.js';
-import { environmentName } from '../manifest/v1/rules.js';
+import { environmentName, secretArgumentWarnings } from '../manifest/v1/rules.js';
 import { manifestDescriptorFor, parseManifestAsync, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
 import { discoverSelectedOverlayAsync, selectLocale } from '../i18n/locale.js';
@@ -127,7 +128,9 @@ export class Session {
   readonly #answers = new Map<string, unknown>();
   readonly #logFile: string | undefined;
   readonly #runner: Runner | undefined;
+  readonly #manifestWarnings: readonly string[];
   #resolution: Resolution;
+  #warnings: readonly string[];
   #inputSnapshot: InputFacadeSnapshot;
   #plan: ExecutionPlan | undefined;
   #activeExecution: ActiveExecution | undefined;
@@ -164,7 +167,12 @@ export class Session {
     this.#sinkStrings = projectStringsForSink(fields.strings, liveSecrets);
     this.#values = fields.values;
     this.#overrides = fields.overrides;
+    this.#manifestWarnings = secretArgumentWarnings(fields.manifest);
     this.#resolution = fields.resolution;
+    this.#warnings = combineWarnings(
+      projectManifestWarnings(this.#manifestWarnings, fields.secrets),
+      fields.resolution.warnings,
+    );
     this.#inputSnapshot = fields.inputSnapshot;
     this.#logFile = fields.logFile;
     this.#runner = fields.runner;
@@ -341,7 +349,7 @@ export class Session {
 
   /** Warnings a frontend should say out loud but not fail over (§5, §10). */
   warnings(): readonly string[] {
-    return this.#resolution.warnings;
+    return this.#warnings;
   }
 
   /**
@@ -369,10 +377,15 @@ export class Session {
     const candidateSecrets = new SecretRegistry().combinedWith(this.#secrets);
     let after: Resolution;
     let afterInputSnapshot: InputFacadeSnapshot;
+    let afterWarnings: readonly string[];
     let changes: readonly InputStateChanged[];
     try {
       after = this.#resolve(candidateSecrets, id);
       afterInputSnapshot = projectInputFacadeSnapshot(after);
+      afterWarnings = combineWarnings(
+        projectManifestWarnings(this.#manifestWarnings, candidateSecrets),
+        after.warnings,
+      );
       const projectedChanges: InputStateChanged[] = [];
       for (const state of after.inputs) {
         if (before.byId.get(state.id)?.enabled !== state.enabled) {
@@ -390,6 +403,7 @@ export class Session {
       throw this.#projectError(error, candidateSecrets);
     }
     this.#resolution = after;
+    this.#warnings = afterWarnings;
     this.#secrets = candidateSecrets;
     this.#inputSnapshot = afterInputSnapshot;
     this.#plan = undefined;
@@ -577,6 +591,28 @@ export class Session {
       this.mode === 'non-interactive' ? undefined : editedAnswerId,
     );
   }
+}
+
+/** Projects raw manifest warnings through the complete diagnostic sink contract. */
+function projectManifestWarnings(
+  manifestWarnings: readonly string[],
+  secrets: SecretRegistry,
+): readonly string[] {
+  return Object.freeze(manifestWarnings.map((warning) => formatDiagnostic([warning], secrets)));
+}
+
+/** One immutable facade snapshot for the static manifest and current dynamic resolution state. */
+function combineWarnings(
+  manifestWarnings: readonly string[],
+  resolutionWarnings: readonly string[],
+): readonly string[] {
+  if (manifestWarnings.length === 0) {
+    return resolutionWarnings;
+  }
+  if (resolutionWarnings.length === 0) {
+    return manifestWarnings;
+  }
+  return Object.freeze([...manifestWarnings, ...resolutionWarnings]);
 }
 
 function missingInputIssue(manifestPath: string, id: string): RuneIssue {

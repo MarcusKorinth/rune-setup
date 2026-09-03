@@ -22,7 +22,57 @@ describe('validateManifest', () => {
 
     expect(report.manifest.product.name).toBe('Example');
     expect(report.locales).toEqual([]);
+    expect(report.warnings).toEqual([]);
+    expect(Object.isFrozen(report.warnings)).toBe(true);
     expect(report.environment).toEqual([]);
+  });
+
+  it('warns once per secret and argument template across every run shape', () => {
+    const report = validateManifest(
+      manifestFile(
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '    required: false',
+        '  certificate:',
+        '    type: secret',
+        '    required: false',
+        '  label:',
+        '    type: text',
+        '    default: public',
+        'steps:',
+        '  - id: common',
+        '    run:',
+        '      command: "${token}"',
+        '      args:',
+        '        - "${token}"',
+        '        - "prefix-${token}-${token}-suffix"',
+        '        - "${label}"',
+        '        - "literal $${token}"',
+        '      cwd: "${token}"',
+        '      env:',
+        '        TOKEN: "${token}"',
+        '  - id: platform',
+        '    run:',
+        '      windows:',
+        '        command: tool.exe',
+        '        args: ["${token}-${certificate}-${token}"]',
+        '      linux:',
+        '        command: tool',
+        '        args: ["${token}"]',
+      ),
+      DEFAULT_LOCALE,
+    );
+
+    expect(report.warnings).toEqual([
+      'steps[0].run.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
+      'steps[0].run.args[1] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
+      'steps[1].run.windows.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
+      'steps[1].run.windows.args[0] interpolates secret input "certificate" into argv, which may be visible in OS process listings — use env: instead',
+      'steps[1].run.linux.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
+    ]);
+    expect(Object.isFrozen(report.warnings)).toBe(true);
+    expect(() => (report.warnings as string[]).push('corrupted')).toThrow(TypeError);
   });
 
   it('rejects an invalid explicit locale after accepting the manifest', () => {

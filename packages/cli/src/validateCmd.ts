@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 
 import { formatLocation, validateManifest } from '@rune/engine';
 
-import { humanStdout, type CliIo } from './io.js';
+import { humanStderr, humanStdout, type CliIo } from './io.js';
 
 export async function validateCommand(
   manifestPath: string,
@@ -34,6 +34,10 @@ export async function validateCommand(
       ? strings.chrome('rune.validate.locales.none')
       : strings.chrome('rune.validate.locales.list', { locales: locales.join(', ') }),
   );
+
+  for (const warning of report.warnings) {
+    humanStderr(io, strings.chrome('rune.warning', { message: warning }));
+  }
 
   if (report.environment.length === 0) {
     humanStdout(io, strings.chrome('rune.validate.environment.none'));

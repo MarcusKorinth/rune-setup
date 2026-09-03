@@ -22,6 +22,7 @@ import {
   checkSemantics,
   checkSemanticsAsync,
   environmentReferences,
+  secretArgumentWarnings,
   type EnvironmentUse,
 } from './v1/rules.js';
 import { manifestV1Schema, type ManifestV1 } from './v1/schema.js';
@@ -94,6 +95,8 @@ export interface ValidationReport {
   readonly strings: StringTable;
   /** Every valid locale overlay found beside the manifest, in deterministic order. */
   readonly locales: readonly string[];
+  /** Value-free static warnings for security-sensitive manifest constructs. */
+  readonly warnings: readonly string[];
   /** Every environment variable the manifest reads, with the places that read it (§4.3). */
   readonly environment: readonly EnvironmentUse[];
 }
@@ -129,6 +132,7 @@ export function validateManifest(
     manifest,
     strings: resolveStrings({ manifest, locale, overlay }),
     locales: Object.freeze(overlays.map((candidate) => candidate.locale)),
+    warnings: secretArgumentWarnings(manifest),
     environment: environmentReferences(manifest, {
       file: document.file,
       sourceMap: document.sourceMap,

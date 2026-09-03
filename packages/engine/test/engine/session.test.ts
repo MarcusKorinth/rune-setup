@@ -908,6 +908,123 @@ describe('answering inputs', () => {
     expect(() => session.setValue('nope', 'x')).toThrow(/names no input/);
   });
 
+  it.each([
+    { collision: 'input id', secret: 'token' },
+    { collision: 'argument path', secret: 'steps[0].run.args[0]' },
+    { collision: 'fixed wording', secret: 'OS process listings' },
+    { collision: 'JSON-only escape', secret: String.raw`\"token\"` },
+  ])(
+    'projects a static argv warning against a secret colliding with its $collision',
+    async ({ secret }) => {
+      const session = await Session.open(
+        fixture([
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  token:',
+          '    type: secret',
+          '    required: false',
+          'steps:',
+          '  - id: install',
+          '    run:',
+          '      command: node',
+          '      args: ["${token}"]',
+        ]),
+        { environment: {}, overrides: { token: secret } },
+      );
+
+      const warnings = session.warnings();
+      expect(warnings).toHaveLength(1);
+      expect(Object.isFrozen(warnings)).toBe(true);
+      expect(warnings.join('\n')).not.toContain(secret);
+      expect(JSON.stringify(warnings)).not.toContain(secret);
+    },
+  );
+
+  it('publishes a fresh safe warning snapshot only after a successful secret edit', async () => {
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        '    required: false',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["${token}"]',
+      ]),
+      { environment: {}, overrides: { token: 'initial-secret-value' } },
+    );
+    const initial = session.warnings();
+    const initialContent = [...initial];
+
+    expect(initial[0]).toContain('secret input "token"');
+    expect(initial[0]).toContain('OS process listings');
+    expect(session.setValue('token', 'OS process listings')).toEqual([]);
+
+    // A replaced secret stays registered, so only a value that never was one may stay visible.
+    const updated = session.warnings();
+    expect(updated).not.toBe(initial);
+    expect(updated[0]).toContain('secret input "token"');
+    expect(updated[0]).not.toContain('OS process listings');
+    expect(initial).toEqual(initialContent);
+
+    expect(() => session.setValue('token', false)).toThrow(InputError);
+    expect(session.warnings()).toBe(updated);
+  });
+
+  it('combines static argv warnings with transactional resolution warnings', async () => {
+    const secret = 'session-warning-secret';
+    const session = await Session.open(
+      fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        '  ignored:',
+        '    type: text',
+        '    required: false',
+        '    when: "${enabled}"',
+        '  token:',
+        '    type: secret',
+        '    required: false',
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: node',
+        '      args: ["prefix-${token}-${token}"]',
+      ]),
+      { environment: {}, overrides: { ignored: 'discarded', token: secret } },
+    );
+
+    const initial = session.warnings();
+    expect(initial).toEqual([
+      'steps[0].run.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
+      'ignored was set from --set, but its condition is false — the value is ignored',
+    ]);
+    expect(Object.isFrozen(initial)).toBe(true);
+    expect(initial.join('\n')).not.toContain(secret);
+
+    expect(session.setValue('enabled', true)).toEqual([{ inputId: 'ignored', enabled: true }]);
+    const updated = session.warnings();
+    expect(updated).not.toBe(initial);
+    expect(updated).toEqual([initial[0]]);
+
+    expect(() => session.setValue('enabled', 'not-a-boolean')).toThrow(InputError);
+    expect(session.warnings()).toBe(updated);
+  });
+
   it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
     'rejects inherited input id %s without changing the session',
     async (id) => {
@@ -2011,13 +2128,16 @@ describe('planning and executing', () => {
         '  target:',
         '    type: text',
         '    default: before',
+        '  token:',
+        '    type: secret',
+        '    required: false',
         'steps:',
         '  - id: install',
         '    run:',
         '      command: node',
-        '      args: ["${target}"]',
+        '      args: ["${target}", "${token}"]',
       ]),
-      { environment: {} },
+      { environment: {}, overrides: { token: 'token' } },
       {
         run: async (request) => {
           requests.push(request);
@@ -2028,6 +2148,8 @@ describe('planning and executing', () => {
     );
     const inputs = session.allInputs();
     const warnings = session.warnings();
+    expect(warnings).toHaveLength(1);
+    expect(JSON.stringify(warnings)).not.toContain('token');
     const plan = session.plan();
 
     const active = session.execute();
@@ -2046,7 +2168,8 @@ describe('planning and executing', () => {
     expect(session.allInputs()).toBe(inputs);
     expect(session.warnings()).toBe(warnings);
     expect(session.plan()).toBe(plan);
-    expect(requests[0]?.command.argv).toEqual(['node', 'before']);
+    expect(requests[0]?.command.argv.slice(0, 2)).toEqual(['node', 'before']);
+    expect(String(requests[0]?.command.argv[2])).toBe('***');
 
     releaseRunner();
     await expect(active).resolves.toMatchObject({ status: 'succeeded' });
@@ -2059,7 +2182,8 @@ describe('planning and executing', () => {
     if (updatedStep?.state !== 'PENDING') {
       throw new Error('the updated plan must retain the pending step');
     }
-    expect(updatedStep.command.argv).toEqual(['node', 'after']);
+    expect(updatedStep.command.argv.slice(0, 2)).toEqual(['node', 'after']);
+    expect(String(updatedStep.command.argv[2])).toBe('***');
   });
 
   it('describes a dry run without executing', async () => {

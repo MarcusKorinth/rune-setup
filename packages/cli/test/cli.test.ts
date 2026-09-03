@@ -138,6 +138,39 @@ describe('rune validate', () => {
     expect(io.out.join('\n')).toContain('locales: none');
   });
 
+  it('reports secret argv warnings only on stderr and keeps the environment audit on stdout', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      'steps:',
+      '  - id: inspect',
+      '    run:',
+      '      command: node',
+      '      args: ["${token}", "${env.VALIDATE_AUDIT}"]',
+    ]);
+    writeLocaleOverlay(path, ['rune.warning: "WARNUNG: {message}"']);
+    const io = capture();
+
+    expect(await run(['validate', path, '--locale', 'de'], io)).toBe(0);
+
+    const warning = io.err.filter((line) => line.startsWith('WARNUNG:'));
+    const environmentIndex = io.out.findIndex((line) => line === 'environment variables read:');
+    expect(warning).toHaveLength(1);
+    expect(warning[0]).toContain('secret input "token"');
+    expect(warning[0]).toContain('OS process listings');
+    expect(warning[0]).toContain('use env: instead');
+    expect(io.out.join('\n')).not.toContain('WARNUNG:');
+    expect(io.out.join('\n')).not.toContain('OS process listings');
+    expect(environmentIndex).toBeGreaterThan(1);
+    expect(io.out[environmentIndex + 1]).toContain('VALIDATE_AUDIT');
+  });
+
   it('rejects --platform as an unknown option without reporting success', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
@@ -275,6 +308,53 @@ describe('rune validate', () => {
 });
 
 describe('rune run', () => {
+  it.each([
+    { name: 'real', dryRun: false },
+    { name: 'dry', dryRun: true },
+  ])(
+    'keeps $name-run secret argv warnings on stderr and machine output intact',
+    async ({ dryRun }) => {
+      const secret = 'cli-argv-warning-secret';
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps:',
+        '  - id: inspect',
+        '    run:',
+        '      command: node',
+        '      args: ["-e", "process.exit(0)", "${token}"]',
+      ]);
+      const io = capture();
+      const args = [
+        'run',
+        path,
+        '--non-interactive',
+        '--set',
+        `token=${secret}`,
+        '--result',
+        '-',
+        ...(dryRun ? ['--dry-run'] : []),
+      ];
+
+      expect(await run(args, io)).toBe(0);
+
+      expect(io.out).toHaveLength(1);
+      expect(JSON.parse(io.out[0] ?? '')).toMatchObject({
+        status: dryRun ? 'planned' : 'succeeded',
+      });
+      const warning = io.err.filter((line) => line.includes('OS process listings'));
+      expect(warning).toHaveLength(1);
+      expect(warning[0]).toContain('warning: steps[0].run.args[2]');
+      expect(warning[0]).toContain('use env: instead');
+      expect([...io.out, ...io.err].join('\n')).not.toContain(secret);
+    },
+  );
+
   it('escapes composed locale chrome and child output without forged lines', async () => {
     const childLine = 'child\r\u001b\u0085\u2028\u2029';
     const script = `process.stdout.write(${JSON.stringify(childLine)})`;

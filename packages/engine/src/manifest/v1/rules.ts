@@ -42,7 +42,13 @@ import {
   type PathSegment,
   type SourceMap,
 } from '../source.js';
-import { isCommandSpec, optionValue, type InputSpec, type ManifestV1 } from './schema.js';
+import {
+  isCommandSpec,
+  optionValue,
+  type CommandSpec,
+  type InputSpec,
+  type ManifestV1,
+} from './schema.js';
 
 export interface SemanticContext {
   readonly file: string;
@@ -356,6 +362,29 @@ interface InterpolatedField {
   readonly mayReferenceInputs: boolean;
 }
 
+interface CommandField {
+  readonly path: readonly PathSegment[];
+  readonly command: CommandSpec;
+}
+
+function* commandFields(manifest: ManifestV1): Generator<CommandField> {
+  for (const [index, step] of manifest.steps.entries()) {
+    const runPath: PathSegment[] = ['steps', index, 'run'];
+    const commands = isCommandSpec(step.run)
+      ? [{ path: runPath, command: step.run }]
+      : [
+          { path: [...runPath, 'windows'], command: step.run.windows },
+          { path: [...runPath, 'linux'], command: step.run.linux },
+        ];
+
+    for (const { path, command } of commands) {
+      if (command !== undefined) {
+        yield { path, command };
+      }
+    }
+  }
+}
+
 function* interpolatedFields(manifest: ManifestV1): Generator<InterpolatedField> {
   for (const [id, input] of Object.entries(manifest.inputs)) {
     // Only the free-text defaults are templates; a select default is one of its option
@@ -368,31 +397,65 @@ function* interpolatedFields(manifest: ManifestV1): Generator<InterpolatedField>
     }
   }
 
-  for (const [index, step] of manifest.steps.entries()) {
-    const runPath: PathSegment[] = ['steps', index, 'run'];
-    const commands = isCommandSpec(step.run)
-      ? [{ path: runPath, command: step.run }]
-      : [
-          { path: [...runPath, 'windows'], command: step.run.windows },
-          { path: [...runPath, 'linux'], command: step.run.linux },
-        ];
+  for (const { path, command } of commandFields(manifest)) {
+    yield { path: [...path, 'command'], text: command.command, mayReferenceInputs: true };
+    for (const [position, argument] of command.args.entries()) {
+      yield { path: [...path, 'args', position], text: argument, mayReferenceInputs: true };
+    }
+    if (command.cwd !== undefined) {
+      yield { path: [...path, 'cwd'], text: command.cwd, mayReferenceInputs: true };
+    }
+    for (const [name, value] of Object.entries(command.env)) {
+      yield { path: [...path, 'env', name], text: value, mayReferenceInputs: true };
+    }
+  }
+}
 
-    for (const { path, command } of commands) {
-      if (command === undefined) {
+/**
+ * Value-free warnings for declared secrets interpolated into argv (§4.3). This runs only after
+ * semantic validation, so every reference already resolves; scanning here classifies the exact
+ * argument templates without inspecting or resolving any input value.
+ */
+export function secretArgumentWarnings(manifest: ManifestV1): readonly string[] {
+  const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
+  const warnings: string[] = [];
+
+  for (const { path, command } of commandFields(manifest)) {
+    for (const [position, argument] of command.args.entries()) {
+      const argumentPath = [...path, 'args', position];
+      const scan = scanTemplate(argument);
+      if (!scan.ok) {
         continue;
       }
-      yield { path: [...path, 'command'], text: command.command, mayReferenceInputs: true };
-      for (const [position, argument] of command.args.entries()) {
-        yield { path: [...path, 'args', position], text: argument, mayReferenceInputs: true };
-      }
-      if (command.cwd !== undefined) {
-        yield { path: [...path, 'cwd'], text: command.cwd, mayReferenceInputs: true };
-      }
-      for (const [name, value] of Object.entries(command.env)) {
-        yield { path: [...path, 'env', name], text: value, mayReferenceInputs: true };
+      const warned = new Set<string>();
+      for (const part of scan.parts) {
+        if (part.kind !== 'reference') {
+          continue;
+        }
+        const resolved = resolveReference(
+          part.reference.segments,
+          inputIndex,
+          inputIds.length,
+          false,
+        );
+        if (
+          !resolved.ok ||
+          resolved.reference.kind !== 'input' ||
+          manifest.inputs[resolved.reference.id]?.type !== 'secret' ||
+          warned.has(resolved.reference.id)
+        ) {
+          continue;
+        }
+        warned.add(resolved.reference.id);
+        warnings.push(
+          `${formatPath(argumentPath)} interpolates secret input "${resolved.reference.id}" into argv, which may be visible in OS process listings — use env: instead`,
+        );
       }
     }
   }
+
+  return Object.freeze(warnings);
 }
 
 /** Every `when:` in the manifest: the steps', and the inputs' with what each may look at. */

@@ -39,6 +39,7 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'loadYamlFileAsync',
   'parseManifestAsync',
   'parseValuesFileAsync',
+  'secretArgumentWarnings',
   'snapshotHostBuiltIns',
 ] as const;
 
