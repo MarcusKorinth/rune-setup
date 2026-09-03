@@ -70,7 +70,7 @@ export interface ResultError<Code extends ResultErrorCode = ResultErrorCode> {
   readonly location: Location | null;
 }
 
-/** The status/exit/dry-run combinations permitted by the version-1 result contract (§10). */
+/** The status/exit/dry-run combinations permitted by the version-2 result contract (§10). */
 export type RunOutcome =
   | {
       readonly status: 'succeeded';

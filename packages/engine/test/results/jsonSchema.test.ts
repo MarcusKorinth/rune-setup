@@ -412,7 +412,7 @@ describe('resultJsonSchema', () => {
     }
   });
 
-  it('is the strict version-1 JSON Schema exported from the package root', () => {
+  it('is the strict version-2 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
     const branches = schema['anyOf'] as readonly SchemaNode[];
 
