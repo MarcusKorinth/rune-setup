@@ -51,7 +51,7 @@ export type {
 } from './manifest/index.js';
 
 export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
-export type { ValueType } from './engine/context.js';
+export type { Platform, ValueType } from './engine/context.js';
 
 export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {
@@ -67,6 +67,7 @@ export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/se
 export type { InputRejection, InputState, InputViewSpec } from './engine/inputs.js';
 
 export { createFailureResult } from './engine/executor.js';
+export type { FailureResultOptions, FailureResultSession } from './engine/executor.js';
 
 export { CancelToken } from './engine/cancel.js';
 export type { EngineObserver, RunEvent } from './engine/events.js';

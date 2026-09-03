@@ -8,10 +8,14 @@ import * as engine from '../src/index.js';
 import { formatSessionTerminalLine, PlatformError } from '../src/index.js';
 import type {
   ChromeKey,
+  FailureResultOptions,
+  FailureResultSession,
   InputState,
   InputViewSpec,
+  Platform,
   ResultError,
   RunMode,
+  RunResult,
   SessionOptions,
   StringTable,
 } from '../src/index.js';
@@ -160,6 +164,27 @@ const compileTimeSessionRunnerContract = (manifestPath: string): void => {
 };
 
 void compileTimeSessionRunnerContract;
+
+// A host names every type in the public Session and failure-result signatures from the root.
+const compileTimeHostTypeContract = (
+  platform: Platform,
+  session: FailureResultSession,
+  error: engine.RuneError,
+): RunResult => {
+  const options: SessionOptions = { platform, environment: {} };
+  const failure: FailureResultOptions = {
+    error,
+    manifestPath: 'installer.yaml',
+    dryRun: false,
+    mode: session.mode,
+    platform: session.platform,
+    session,
+  };
+  void options;
+  return engine.createFailureResult(failure);
+};
+
+void compileTimeHostTypeContract;
 
 const FORBIDDEN_RUNTIME_EXPORTS = [
   'buildPlan',
