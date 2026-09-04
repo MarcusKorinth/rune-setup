@@ -504,7 +504,7 @@ Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pip
 | 4 | Input error (missing required input, coercion/pattern failure, malformed JSON array, unknown key in `--set`/values) |
 | 5 | Resolution/condition error (RUNE-3xx) |
 | 6 | Cancelled |
-| 70 | Internal error (always a RUNE bug; also a hard crash of the GUI shell process hosting the engine — no result file, §9.4 — and any shell exit that is not a code from this table) |
+| 70 | Internal error (always a RUNE bug; also a hard crash of the GUI shell process hosting the engine — no result file, §9.4 — requested stdout output lost to a stream error other than an early-closing consumer (stream discipline below), and any shell exit that is not a code from this table) |
 
 Codes 7–19 reserved for future features.
 
@@ -514,7 +514,7 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 
 ### Stream discipline
 
-stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination. With `--dry-run --result -` stdout carries only the result JSON and the human plan is not rendered; `--result <path>` keeps the plan on stdout. A consumer that closes stdout or stderr early (`| head -1`, a viewer quit mid-stream) ends RUNE's output on that stream but never changes the exit code: the CLI owns the stream's `error` event, writes nothing further to the closed pipe, and prints no stack trace.
+stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination. With `--dry-run --result -` stdout carries only the result JSON and the human plan is not rendered; `--result <path>` keeps the plan on stdout. A consumer that closes stdout or stderr early (`| head -1`, a viewer quit mid-stream) ends RUNE's output on that stream but never changes the exit code: the CLI owns the stream's `error` event, writes nothing further to the closed pipe, and prints no stack trace. Only that early-closing consumer (EPIPE, ECONNRESET) is silent: any other write error on stdout (a full disk, an I/O error) has lost requested machine output, so the CLI prints one fixed line on stderr — never the stream error itself — and exits 70; stderr diagnostics are best-effort, and a write error there never changes the exit code.
 
 Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged. Lines rendered from a session use its authenticated `StringTable` and `formatSessionTerminalLine`: raw mask → control escape → final live mask. The second mask prevents an actual control from becoming a registered literal such as `\u001b` only after presentation. Authoring commands with no runtime secret registry (`validate`, `schema`) and pre-session fallback text use ordinary control escaping; requested JSON output bypasses human rendering entirely.
 
@@ -654,7 +654,7 @@ packages/
 │       ├── runCmd.ts              # non-interactive execution and dry-run orchestration
 │       ├── schemaCmd.ts           # `rune schema [--output] [--result]` from the zod schemas
 │       ├── signals.ts             # cooperative first signal, forced cancellation on the second
-│       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, no writes to a closed pipe
+│       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, silent only for a consumer that went away
 │       ├── validateCmd.ts         # validation and environment-variable audit report
 │       ├── guiCmd.ts              # planned `gui install` + --gui launch/exit-code forwarding
 │       ├── prompt.ts              # planned readline prompts and summary edit loop
