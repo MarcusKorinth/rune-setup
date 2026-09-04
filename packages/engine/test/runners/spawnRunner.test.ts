@@ -1,6 +1,7 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
-import type { spawn as spawnChildProcess } from 'node:child_process';
+import type { ChildProcess, spawn as spawnChildProcess } from 'node:child_process';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { Readable } from 'node:stream';
@@ -167,6 +168,7 @@ function createRealProcessTreeFixture(): {
  */
 function createFailingTaskkillFixture(): {
   readonly directory: string;
+  readonly helper: string;
   readonly parentEnv: Readonly<Record<string, string | undefined>>;
   readonly childSystemRoot: string;
 } {
@@ -177,14 +179,66 @@ function createFailingTaskkillFixture(): {
   const directory = mkdtempSync(join(tmpdir(), 'rune-failing-taskkill-'));
   const system32 = join(directory, 'System32');
   mkdirSync(system32);
-  copyFileSync(process.execPath, join(system32, 'taskkill.exe'));
+  const helper = join(system32, 'taskkill.exe');
+  copyFileSync(process.execPath, helper);
   const parentEnv = Object.freeze({
     ...Object.fromEntries(
       Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'SYSTEMROOT'),
     ),
     SystemRoot: directory,
   });
-  return { directory, parentEnv, childSystemRoot };
+  return { directory, helper, parentEnv, childSystemRoot };
+}
+
+interface SpawnRecorder {
+  readonly spawned: readonly ChildProcess[];
+  readonly stop: () => void;
+}
+
+/**
+ * Records every child process this worker spawns, through the runtime's own `child_process`
+ * diagnostics channel: the runner keeps spawning for real, and a test can tell an invocation of
+ * the Windows tree-kill helper apart from its absence.
+ */
+function recordSpawnedProcesses(): SpawnRecorder {
+  const spawned: ChildProcess[] = [];
+  const record = (message: unknown): void => {
+    spawned.push((message as { readonly process: ChildProcess }).process);
+  };
+  subscribe('child_process', record);
+  return {
+    spawned,
+    stop: () => {
+      unsubscribe('child_process', record);
+    },
+  };
+}
+
+/** The argv of every recorded run of one executable, in spawn order. */
+function recordedRuns(recorder: SpawnRecorder, executable: string): readonly (readonly string[])[] {
+  return recorder.spawned
+    .filter((child) => child.spawnfile === executable)
+    .map((child) => [...child.spawnargs]);
+}
+
+/** The recorded child process that reported this PID on its own stdout. */
+function recordedProcess(recorder: SpawnRecorder, pid: number): ChildProcess {
+  const child = recorder.spawned.find((candidate) => candidate.pid === pid);
+  if (child === undefined) {
+    throw new Error(`no spawned process with PID ${String(pid)} was recorded`);
+  }
+  return child;
+}
+
+/** Waits until the runner has observed the child's exit, which is what the pre-check reads. */
+async function waitForObservedExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (child.exitCode === null && child.signalCode === null) {
+    if (Date.now() > deadline) {
+      throw new Error('the direct child did not end within the deadline');
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
 }
 
 /** A direct child that exits while a detached grandchild keeps its inherited stdio open. */
@@ -1883,6 +1937,7 @@ describe('SpawnRunner', () => {
     'confirms cancellation of a direct child that had already ended when the helper fails',
     async () => {
       const fixture = createFailingTaskkillFixture();
+      const recorder = recordSpawnedProcesses();
       const cancel = new CancelToken();
       let pending: ReturnType<typeof run> | undefined;
       let parentPid: number | undefined;
@@ -1908,10 +1963,9 @@ describe('SpawnRunner', () => {
           },
         );
         [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
-        const started = Date.now();
-        while (processIsAlive(parentPid) && Date.now() - started < 5000) {
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-        }
+        // The runner must have observed the exit before the cancel arrives; the OS reports the
+        // PID gone about thirty milliseconds earlier, which is not yet the state under test.
+        await waitForObservedExit(recordedProcess(recorder, parentPid), 5000);
         expect(processIsAlive(parentPid)).toBe(false);
 
         cancel.cancel();
@@ -1919,7 +1973,10 @@ describe('SpawnRunner', () => {
         stopProcess(grandchildPid);
 
         await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'cancelled' });
+        // The pre-check keeps the forced tree kill away from a PID Windows may have recycled.
+        expect(recordedRuns(recorder, fixture.helper)).toEqual([]);
       } finally {
+        recorder.stop();
         cancel.cancel();
         if (grandchildPid !== undefined) {
           stopProcess(grandchildPid);
@@ -1941,6 +1998,7 @@ describe('SpawnRunner', () => {
     'confirms cancellation of a direct child that ends while the failing helper runs',
     async () => {
       const fixture = createFailingTaskkillFixture();
+      const recorder = recordSpawnedProcesses();
       const cancel = new CancelToken();
       let pending: ReturnType<typeof run> | undefined;
       let pid: number | undefined;
@@ -1967,7 +2025,13 @@ describe('SpawnRunner', () => {
         await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'cancelled' });
         expect(pid).toBeDefined();
         expect(processIsAlive(pid!)).toBe(false);
+        // The exit is not observed yet when the cancel arrives, so the helper runs once and only
+        // the re-check after its failure can confirm this termination.
+        expect(recordedRuns(recorder, fixture.helper)).toEqual([
+          [fixture.helper, '/PID', String(pid), '/T', '/F'],
+        ]);
       } finally {
+        recorder.stop();
         cancel.cancel();
         if (pending !== undefined) {
           try {
