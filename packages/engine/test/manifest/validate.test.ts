@@ -37,6 +37,41 @@ describe('validateManifest', () => {
     ]);
   });
 
+  it('rejects a drive-relative execution.logFile at the field on every platform', () => {
+    let thrown: unknown;
+    try {
+      validateManifest(
+        manifestFile('execution:', '  logFile: "C:run.log"', 'steps: []'),
+        DEFAULT_LOCALE,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-104');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-104',
+        message:
+          'execution.logFile "C:run.log" is drive-relative and cannot be anchored to ${manifestDir} — use an absolute or manifest-relative path',
+        location: expect.objectContaining({ line: 6, column: 3 }),
+      }),
+    ]);
+  });
+
+  it.each(['C:\\run.log', 'C:/run.log', '/var/log/run.log', 'logs/run.log', 'run.log'])(
+    'accepts the absolute or manifest-relative execution.logFile %s',
+    (logFile) => {
+      const report = validateManifest(
+        manifestFile('execution:', `  logFile: ${JSON.stringify(logFile)}`, 'steps: []'),
+        DEFAULT_LOCALE,
+      );
+
+      expect(report.manifest.execution.logFile).toBe(logFile);
+    },
+  );
+
   it('returns the manifest it accepted', () => {
     const report = validateManifest(manifestFile('steps: []'), DEFAULT_LOCALE);
 

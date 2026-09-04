@@ -80,8 +80,32 @@ function checkInMemorySemantics(manifest: ManifestV1, ctx: SemanticContext): Run
   const issues: RuneIssue[] = [];
   checkInputs(manifest, ctx, issues);
   checkSteps(manifest, ctx, issues);
+  checkExecution(manifest, ctx, issues);
   checkExpressions(manifest, ctx, issues);
   return issues;
+}
+
+/** A Windows drive letter followed by anything but a separator, such as `C:run.log`. */
+const WINDOWS_DRIVE_RELATIVE_PATH_PATTERN = /^[A-Za-z]:(?![\\/])/;
+
+/**
+ * A drive-relative log path cannot be anchored to the manifest directory: its meaning depends on
+ * per-drive process state, and anchoring it as a literal component addresses an NTFS alternate
+ * data stream on Windows. It is rejected like a drive-relative command (§8, §10).
+ */
+function checkExecution(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
+  const logFile = manifest.execution.logFile;
+  if (logFile === undefined || !WINDOWS_DRIVE_RELATIVE_PATH_PATTERN.test(logFile)) {
+    return;
+  }
+  const path: PathSegment[] = ['execution', 'logFile'];
+  issues.push(
+    issue(
+      `${formatPath(path)} "${logFile}" is drive-relative and cannot be anchored to \${manifestDir} — use an absolute or manifest-relative path`,
+      path,
+      ctx,
+    ),
+  );
 }
 
 function checkInputs(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {

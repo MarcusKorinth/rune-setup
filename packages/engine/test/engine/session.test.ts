@@ -1686,15 +1686,16 @@ describe('planning and executing', () => {
     expect(flagLog.plan().executionOptions.logFile).toBe(flagPath);
   });
 
-  it('anchors a drive-relative manifest log path during foreign-platform preview', async () => {
+  it('rejects a drive-relative manifest log path at open, natively and in preview', async () => {
     const path = fixture([...BASE, 'execution:', '  logFile: "C:run.log"']);
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
-    const session = await Session.open(path, { environment: {}, platform: foreign });
-    const expected = join(path, '..', 'C:run.log');
 
-    expect(session.plan().executionOptions.logFile).toBe(expected);
-    expect(session.describe().crossPlatformPreview).toBe(true);
-    expect(session.plan().executionOptions.logFile).toBe(expected);
+    await expect(Session.open(path, { environment: {} })).rejects.toMatchObject({
+      code: 'RUNE-104',
+    });
+    await expect(Session.open(path, { environment: {}, platform: foreign })).rejects.toMatchObject({
+      code: 'RUNE-104',
+    });
   });
 
   it('preserves an explicit frontend mode in dry-run and live results', async () => {
