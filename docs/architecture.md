@@ -402,6 +402,7 @@ export class Session {
   getThemeConfig(): ThemeConfig;                 // fresh frozen gui snapshot; paths absolute; empty if absent
 }
 
+// packages/engine/src/i18n/strings.ts
 export function formatSessionTerminalLine(strings: StringTable, line: string): string;
 ```
 
@@ -621,7 +622,7 @@ packages/
 │       │   ├── overlay.ts          # hardened YAML loading and localizable-key validation
 │       │   └── strings.ts          # per-key fallback resolution into the engine-owned StringTable
 │       ├── engine/
-│       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async)
+│       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async); InputStateChanged
 │       │   ├── context.ts         # built-in names/reference resolution and runtime platform/preview values
 │       │   ├── inputs.ts          # 5-layer merge, provenance, coercion via inputs/registry, input when:
 │       │   ├── interpolate.ts     # ${...} scanner/renderer; single-pass, no eval
@@ -629,7 +630,7 @@ packages/
 │       │   ├── secrets.ts         # SecretString wrapper + SecretRegistry + mask()
 │       │   ├── plan.ts            # Planner -> frozen ExecutionPlan / PlannedStep / ResolvedCommand
 │       │   ├── state.ts           # StepState + legal-transition table
-│       │   ├── events.ts          # frozen event types (+ InputStateChanged) + EngineObserver interface
+│       │   ├── events.ts          # frozen run-event types + EngineObserver interface
 │       │   ├── cancel.ts          # CancelToken (flag + listener list)
 │       │   └── executor.ts        # sequential async step loop, failFast, timeout, kill path, output-tail ring buffer
 │       ├── runners/
