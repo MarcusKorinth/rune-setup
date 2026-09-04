@@ -391,11 +391,18 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     } else {
       switch (outcome.kind) {
         case 'exited': {
-          exitCode = outcome.exitCode;
-          terminalState = step.command.successExitCodes.includes(outcome.exitCode)
-            ? 'SUCCEEDED'
-            : 'FAILED';
-          if (terminalState === 'FAILED') {
+          if (step.command.successExitCodes.includes(outcome.exitCode)) {
+            exitCode = outcome.exitCode;
+            terminalState = 'SUCCEEDED';
+          } else if (cancel.isCancelled) {
+            // The requested cancellation is the cause of a non-success exit that arrives after
+            // it — on Windows a console Ctrl+C reaches a console-attached child before the
+            // runner's kill path (§7). The step takes the shape of a runner-reported
+            // cancellation: no exit code, no diagnostic.
+            terminalState = 'CANCELLED';
+          } else {
+            exitCode = outcome.exitCode;
+            terminalState = 'FAILED';
             diagnostic = `RUNE-401 step "${step.id}" exited with code ${outcome.exitCode}; expected one of [${step.command.successExitCodes.join(', ')}]`;
           }
           break;

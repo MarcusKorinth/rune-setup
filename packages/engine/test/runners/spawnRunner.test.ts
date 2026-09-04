@@ -160,6 +160,44 @@ function createRealProcessTreeFixture(): {
   return { directory, parentScript };
 }
 
+/**
+ * A snapshotted SystemRoot whose taskkill helper is this Node binary: it exits non-zero for the
+ * runner's argv without touching any process, which is what taskkill reports for a PID that has
+ * already gone. Children still need the real SystemRoot to start.
+ */
+function createFailingTaskkillFixture(): {
+  readonly directory: string;
+  readonly parentEnv: Readonly<Record<string, string | undefined>>;
+  readonly childSystemRoot: string;
+} {
+  const childSystemRoot = process.env.SystemRoot;
+  if (childSystemRoot === undefined) {
+    throw new Error('Windows test host has no SystemRoot');
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'rune-failing-taskkill-'));
+  const system32 = join(directory, 'System32');
+  mkdirSync(system32);
+  copyFileSync(process.execPath, join(system32, 'taskkill.exe'));
+  const parentEnv = Object.freeze({
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'SYSTEMROOT'),
+    ),
+    SystemRoot: directory,
+  });
+  return { directory, parentEnv, childSystemRoot };
+}
+
+/** A direct child that exits while a detached grandchild keeps its inherited stdio open. */
+function orphanSpawnerScript(exitAfterMs: number): string {
+  return [
+    'const { spawn } = require("node:child_process");',
+    `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit", detached: true });`,
+    'grandchild.unref();',
+    'console.log(`${process.pid}:${grandchild.pid}`);',
+    `setTimeout(() => process.exit(0), ${String(exitAfterMs)});`,
+  ].join('\n');
+}
+
 describe('SpawnRunner', () => {
   it.each([
     ['win32', 'setup.cmd', true],
@@ -1635,10 +1673,9 @@ describe('SpawnRunner', () => {
       grandchildPid = await withDeadline(reportedGrandchild, 5000);
       expect(processIsAlive(grandchildPid)).toBe(true);
 
-      // Windows cannot confirm a tree kill on an already exited direct child; Linux finds the
-      // process group absent and keeps the timeout cause. Either way, run() must resolve.
-      const outcome = await withDeadline(pending, 15000);
-      expect(['timedOut', 'terminationFailed']).toContain(outcome.kind);
+      // The direct child has ended, so both platforms confirm the tree absent and keep the
+      // timeout cause; the bounded close wait then expires because the orphan holds the pipes.
+      await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'timedOut' });
       // The orphan is still alive: the host is released by dropping the pipe ends, not by
       // killing it.
       expect(processIsAlive(grandchildPid)).toBe(true);
@@ -1837,6 +1874,112 @@ describe('SpawnRunner', () => {
           stopProcess(pid);
         }
         rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'confirms cancellation of a direct child that had already ended when the helper fails',
+    async () => {
+      const fixture = createFailingTaskkillFixture();
+      const cancel = new CancelToken();
+      let pending: ReturnType<typeof run> | undefined;
+      let parentPid: number | undefined;
+      let grandchildPid: number | undefined;
+      let resolveProcessIds = (_ids: readonly [number, number]): void => undefined;
+      const processIds = new Promise<readonly [number, number]>((resolveIds) => {
+        resolveProcessIds = resolveIds;
+      });
+      try {
+        // The grandchild keeps the inherited pipes open, so the direct child's exit is observed
+        // while its close is still pending: the window a console Ctrl+C opens on Windows.
+        pending = run(
+          nodeCommand(orphanSpawnerScript(100), { env: { SystemRoot: fixture.childSystemRoot } }),
+          {
+            cancel,
+            parentEnv: fixture.parentEnv,
+            onOutput: (_stream, line) => {
+              const match = /^(\d+):(\d+)$/.exec(line);
+              if (match?.[1] !== undefined && match[2] !== undefined) {
+                resolveProcessIds([Number(match[1]), Number(match[2])]);
+              }
+            },
+          },
+        );
+        [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
+        const started = Date.now();
+        while (processIsAlive(parentPid) && Date.now() - started < 5000) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+        }
+        expect(processIsAlive(parentPid)).toBe(false);
+
+        cancel.cancel();
+        // Release the pipes only after the cause is recorded, so the close cannot settle first.
+        stopProcess(grandchildPid);
+
+        await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'cancelled' });
+      } finally {
+        cancel.cancel();
+        if (grandchildPid !== undefined) {
+          stopProcess(grandchildPid);
+        }
+        if (pending !== undefined) {
+          try {
+            await withDeadline(pending, 5000);
+          } catch {
+            // The explicit PID cleanup above remains the integration-test backstop.
+          }
+        }
+        rmSync(fixture.directory, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'confirms cancellation of a direct child that ends while the failing helper runs',
+    async () => {
+      const fixture = createFailingTaskkillFixture();
+      const cancel = new CancelToken();
+      let pending: ReturnType<typeof run> | undefined;
+      let pid: number | undefined;
+      try {
+        // The child exits on its own the moment its READY line is out, and the cancel request
+        // arrives on that line — the runner then re-checks the child after the helper fails.
+        pending = run(
+          nodeCommand(
+            'process.stdout.write(String(process.pid) + String.fromCharCode(10), () => process.exit(0))',
+            { env: { SystemRoot: fixture.childSystemRoot } },
+          ),
+          {
+            cancel,
+            parentEnv: fixture.parentEnv,
+            onOutput: (stream, line) => {
+              if (stream === 'stdout') {
+                pid = Number(line);
+                cancel.cancel();
+              }
+            },
+          },
+        );
+
+        await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'cancelled' });
+        expect(pid).toBeDefined();
+        expect(processIsAlive(pid!)).toBe(false);
+      } finally {
+        cancel.cancel();
+        if (pending !== undefined) {
+          try {
+            await withDeadline(pending, 5000);
+          } catch {
+            // The child exits by itself; nothing else is left to clean up.
+          }
+        }
+        if (pid !== undefined && processIsAlive(pid)) {
+          stopProcess(pid);
+        }
+        rmSync(fixture.directory, { recursive: true, force: true });
       }
     },
     20000,

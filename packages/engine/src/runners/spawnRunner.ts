@@ -293,7 +293,10 @@ async function terminateTree(
 
   let confirmed: boolean;
   if (process.platform === 'win32') {
-    confirmed = await runTaskkill(pid, parentEnv);
+    // A direct child that has already ended counts as absent, like ESRCH on POSIX (§8): the
+    // helper cannot find it, and descendants that outlive it are outside the tree guarantee.
+    // The check repeats after an unsuccessful helper because the child may end while it runs.
+    confirmed = hasEnded(child) || (await runTaskkill(pid, parentEnv)) || hasEnded(child);
   } else {
     confirmed = await terminateProcessGroup(pid);
   }
@@ -301,6 +304,11 @@ async function terminateTree(
     killDirectChild(child);
   }
   return confirmed;
+}
+
+/** Whether the runner has already observed the direct child's exit. */
+function hasEnded(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 /** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
