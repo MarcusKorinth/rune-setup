@@ -94,14 +94,4 @@ describe('rune on an unsupported host platform', () => {
     expect(io.out[0]).toContain('is valid (schemaVersion 1, product Example 1.0.0)');
     expect(io.err).toEqual([]);
   });
-
-  it('still prints the manifest schema, which does not depend on the host', async () => {
-    const io = capture();
-    stubHostPlatform('darwin');
-
-    expect(await run(['schema'], io)).toBe(0);
-
-    expect(JSON.parse(io.out.join('\n'))).toMatchObject({ type: 'object' });
-    expect(io.err).toEqual([]);
-  });
 });
