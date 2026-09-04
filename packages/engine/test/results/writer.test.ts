@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { InternalError } from '../../src/errors.js';
+import { ExecutionError, InternalError } from '../../src/errors.js';
 import type { RunResult } from '../../src/results/model.js';
 import { serializeResult, writeResult } from '../../src/results/writer.js';
 
@@ -656,4 +656,65 @@ describe('writeResult', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it('reports a destination that is a directory as RUNE-407 without the raw OS message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destination = join(directory, 'destination');
+
+    try {
+      mkdirSync(destination);
+
+      const error = await rejectionOf(writeResult(result('directory-destination'), destination));
+
+      expectOperationalResultError(error, 'finalize', destination);
+      expect(temporaryFiles(directory)).toEqual([]);
+      expect(readdirSync(destination)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a parent that is a regular file as RUNE-407 without the raw OS message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const blocker = join(directory, 'blocker');
+    const destination = join(blocker, 'result.json');
+
+    try {
+      writeFileSync(blocker, 'occupied', 'utf8');
+
+      const error = await rejectionOf(writeResult(result('blocked-parent'), destination));
+
+      expectOperationalResultError(error, 'prepare the directory for', destination);
+      expect(existsSync(destination)).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the promise to reject');
+}
+
+/** RUNE-407 names the destination and a fixed errno-derived reason; the OS text stays internal. */
+function expectOperationalResultError(caught: unknown, action: string, destination: string): void {
+  expect(caught).toBeInstanceOf(ExecutionError);
+  const error = caught as ExecutionError;
+  expect(error.code).toBe('RUNE-407');
+  expect(error.cause).toBeInstanceOf(Error);
+  const cause = error.cause as NodeJS.ErrnoException;
+  expect(cause.code).toMatch(/^E[A-Z]+$/u);
+  expect(error.message).toMatch(
+    new RegExp(`^could not ${action} result file "[^"]+": [a-z ]+ [(]${cause.code}[)]$`, 'u'),
+  );
+  expect(error.message).toContain(`"${destination}"`);
+  expect(error.message).not.toContain(cause.message);
+  expect(error.message).not.toContain(`${cause.code}:`);
+  expect(error.message).not.toContain('.rune-result-');
+}

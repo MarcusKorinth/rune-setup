@@ -2,14 +2,16 @@
  * Writing the result file (docs/architecture.md §10).
  *
  * Atomically: the file either holds the previous run or the complete new one, never half of
- * each — a pipeline may read it the moment the process exits.
+ * each — a pipeline may read it the moment the process exits. A filesystem failure is the
+ * operational RUNE-407, never an internal error: like the log sink's RUNE-406 it names the
+ * destination and a fixed reason, and keeps the cause internally.
  */
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
-import { InternalError } from '../errors.js';
+import { ExecutionError, filesystemFailureReason, InternalError } from '../errors.js';
 import type { RunResult } from './model.js';
 import { resultV2Schema } from './schema.js';
 
@@ -53,6 +55,16 @@ export function serializeResult(result: RunResult): string {
   return `${JSON.stringify(parsed.data, null, 2)}\n`;
 }
 
+type ResultFileAction = 'prepare the directory for' | 'open' | 'write to' | 'close' | 'finalize';
+
+function resultError(action: ResultFileAction, path: string, cause: unknown): ExecutionError {
+  return new ExecutionError(
+    'RUNE-407',
+    `could not ${action} result file "${path}": ${filesystemFailureReason(cause)}`,
+    { cause },
+  );
+}
+
 /** Writes the result to `path`, creating the directory it lives in when needed. */
 export async function writeResult(result: RunResult, path: string): Promise<void> {
   // Validate and serialize the schema-produced copy before touching the filesystem. Besides
@@ -60,27 +72,35 @@ export async function writeResult(result: RunResult, path: string): Promise<void
   const serialized = serializeResult(result);
   const destination = resolve(path);
   const directory = dirname(destination);
-  await mkdir(directory, { recursive: true });
+  try {
+    await mkdir(directory, { recursive: true });
+  } catch (cause) {
+    throw resultError('prepare the directory for', path, cause);
+  }
 
   const temporary = join(directory, `.rune-result-${randomUUID()}.tmp`);
   let created = false;
   let handle: FileHandle | undefined;
+  let action: ResultFileAction = 'open';
 
   try {
     handle = await open(temporary, 'wx');
     created = true;
+    action = 'write to';
     await handle.writeFile(serialized, 'utf8');
+    action = 'close';
     await handle.close();
     handle = undefined;
+    action = 'finalize';
     await renameForTarget(temporary, destination);
     created = false;
-  } catch (error) {
+  } catch (cause) {
     if (handle !== undefined) {
       await handle.close().catch(() => undefined);
     }
     if (created) {
       await rm(temporary, { force: true }).catch(() => undefined);
     }
-    throw error;
+    throw resultError(action, path, cause);
   }
 }

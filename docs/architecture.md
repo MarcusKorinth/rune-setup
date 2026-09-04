@@ -320,7 +320,8 @@ RuneError
 ├── ExecutionError       RUNE-401 step exit code or unclassified execution failure,
 │                        402 timeout, 403 command not found,
 │                        404 invalid cwd, 405 shell-required refused, 406 operational
-│                        log-file I/O (prepare/open/write/close)
+│                        log-file I/O (prepare/open/write/close), 407 operational
+│                        result-file I/O (prepare/open/write/close/finalize)
 ├── CancelledError       RUNE-601 user/system abort
 └── InternalError        RUNE-500 (always a RUNE bug; asks for an issue report)
 ```
@@ -497,7 +498,7 @@ Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pip
 | Code | Meaning |
 |---|---|
 | 0 | Success (all steps succeeded or skipped — including `nothingExecuted: true`; also successful `validate` / `--dry-run` / `schema`) |
-| 1 | One or more steps failed or timed out (regardless of `failFast`) |
+| 1 | One or more steps failed or timed out (regardless of `failFast`); or result-file delivery failed with RUNE-407 — no result file exists, the exit code and the stderr diagnostic are the only signals |
 | 2 | Usage or unsupported-host error (unknown flag, malformed `--set`, an empty `--log-file` value, a real run whose non-stdout result and effective log file are the same path, host platform other than Node's `win32` or `linux`, `--gui` without the GUI shell installed or with a cached shell of a different engine version (§9.4), `--gui` with `--non-interactive`/`--dry-run`/`--result -`); `commander` runs with `exitOverride()` so RUNE, not the parser, emits CLI errors |
 | 3 | Manifest invalid (RUNE-1xx, incl. locale-overlay errors); `validate` failure |
 | 4 | Input error (missing required input, coercion/pattern failure, malformed JSON array, unknown key in `--set`/values) |
@@ -519,7 +520,7 @@ Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 afte
 
 ### Result file (`--result`)
 
-Versioned independently of the manifest schema (`resultSchemaVersion: 2`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), writer crashes, and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. Hosts call it after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.
+Versioned independently of the manifest schema (`resultSchemaVersion: 2`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), a failed result-file delivery (RUNE-407, exit 1), and a hard crash of the process hosting the engine (exit 70 — under `--gui` the shell process, §9.4) skip it. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. Failure to prepare its directory or to open, write, close, or finalize the result file is an operational `ExecutionError` (RUNE-407, exit 1), never an `InternalError`: its message names the destination path and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally; because delivery is never retried, the exit code and that stderr diagnostic are the only signals of the failure. Hosts call `writeResult` after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.
 
 Result construction remains engine-owned. `Session.describe()` and `Session.execute()` produce normal results; the public `createFailureResult` factory builds failures around `Session.open()`, planning, or pre-execution setup while preserving every available manifest, session, input, locale, platform, and plan fact. With session or plan context, detailed error fields are accepted only from the exact engine-produced error bound to the current session generation. An external, cross-session, or stale error becomes one fixed generic internal-error projection without consulting the session's secret registry; the host-created dry-run cancellation likewise uses one fixed canonical RUNE-601 projection. Plan-time RUNE-401/404/405 failures have no completed plan and therefore keep the zero-step form. A pre-execution log-file failure (RUNE-406) may project an already completed plan as unchanged `SKIPPED` steps plus `NOT_RUN` executable steps. If log writing or closing fails after execution, `Session` instead preserves the completed run's real step states, output tails, and counters and reclassifies only the run-level outcome. Consequently, this documented run-level `failed` form need not contain a `FAILED` step. Hosts capture the engine-produced terminal result and never duplicate these semantics. Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code from a configured run implies exactly one status once `dryRun` is known — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other configured-run code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
 
@@ -527,7 +528,7 @@ Result construction remains engine-owned. `Session.describe()` and `Session.exec
 |---|---|---|
 | `succeeded` | 0 | real run, all steps succeeded or skipped (`nothingExecuted` tells the two apart) |
 | `planned` | 0 | `--dry-run` (`"dryRun": true`), plan built successfully; counters describe the plan (`stepsExecuted` is 0, `nothingExecuted` always `true`, no warning — §7) |
-| `failed` | 1 | one or more executed steps failed or timed out; planning rejected an execution spelling with RUNE-401/404/405 before a plan existed; or operational log-file I/O failed with RUNE-406, preserving the real `NOT_RUN`/`SKIPPED` or already-completed step topology |
+| `failed` | 1 | one or more executed steps failed or timed out; planning rejected an execution spelling with RUNE-401/404/405 before a plan existed; or operational log-file I/O failed with RUNE-406, preserving the real `NOT_RUN`/`SKIPPED` or already-completed step topology. Exit 1 is also the code of a run whose result-file delivery failed with RUNE-407 — no result file exists, the exit code and the stderr diagnostic are the only signals |
 | `config_error` | 3 | manifest invalid (RUNE-1xx) |
 | `input_error` | 4 | missing/invalid input, unknown `--set`/values key (RUNE-2xx) |
 | `resolution_error` | 5 | interpolation or condition error (RUNE-3xx) |
@@ -543,8 +544,9 @@ Contents:
   status: RUNE-401/404/405 for the zero-step plan-time `failed` form, or RUNE-406 for
   the operational log-file `failed` form; RUNE-101..104 for
   `config_error`; RUNE-201..203 for `input_error`; RUNE-301/302/311/312 for
-  `resolution_error`; RUNE-601 for `cancelled`; and RUNE-500 for `internal_error`. Usage and
-  unsupported-platform errors are never represented in a result.
+  `resolution_error`; RUNE-601 for `cancelled`; and RUNE-500 for `internal_error`. Usage,
+  unsupported-platform, and result-file delivery (RUNE-407) errors are never represented in
+  a result.
 - `product` and manifest identity are required after manifest validation: `succeeded`,
   `planned`, both `failed` forms, `cancelled`, `input_error`, and `resolution_error` carry a
   non-null `product` plus a 64-character lowercase-hex `manifest.sha256` and an integer

@@ -46,6 +46,7 @@ export type RuneCode =
   | 'RUNE-404' // invalid working directory
   | 'RUNE-405' // shell-required command refused
   | 'RUNE-406' // operational log-file I/O
+  | 'RUNE-407' // operational result-file I/O
   | 'RUNE-500' // internal error
   | 'RUNE-601'; // cancelled
 
@@ -149,6 +150,45 @@ export function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/** Fixed phrases for the errno codes an operational sink can meet; the code itself is appended. */
+const FILESYSTEM_FAILURE_PHRASES: Readonly<Record<string, string>> = {
+  EACCES: 'permission denied',
+  EPERM: 'the operation is not permitted',
+  EISDIR: 'the path is a directory',
+  ENOTDIR: 'a path component is not a directory',
+  ENOENT: 'the path does not exist',
+  EEXIST: 'a path component already exists and is not a directory',
+  ENOTEMPTY: 'the path is a non-empty directory',
+  EBUSY: 'the path is in use',
+  EROFS: 'the file system is read-only',
+  ENOSPC: 'no space is left on the device',
+  EMFILE: 'too many files are open',
+  ENFILE: 'too many files are open',
+  ENAMETOOLONG: 'the path is too long',
+  EINVAL: 'the path is invalid',
+};
+
+/**
+ * A fixed, value-free reason for a failed filesystem operation, derived only from the errno
+ * code of what was thrown. Operational sink errors name the destination plus this reason
+ * instead of the raw OS message, which embeds path fragments RUNE did not compose.
+ */
+export function filesystemFailureReason(cause: unknown): string {
+  const code = errnoCodeOf(cause);
+  if (code === undefined) {
+    return 'the operation failed';
+  }
+  return `${FILESYSTEM_FAILURE_PHRASES[code] ?? 'the operation failed'} (${code})`;
+}
+
+/** The errno code of a thrown Node system error; anything not shaped like one is ignored. */
+export function errnoCodeOf(cause: unknown): string | undefined {
+  if (!(cause instanceof Error) || !('code' in cause) || typeof cause.code !== 'string') {
+    return undefined;
+  }
+  return /^E[A-Z0-9]+$/u.test(cause.code) ? cause.code : undefined;
+}
+
 /** Base class of every error RUNE raises on purpose. */
 export class RuneError extends Error {
   readonly code: RuneCode;
@@ -170,7 +210,7 @@ export type InputCode = 'RUNE-201' | 'RUNE-202' | 'RUNE-203';
 export type ResolutionCode = 'RUNE-301' | 'RUNE-302';
 export type ConditionCode = 'RUNE-311' | 'RUNE-312';
 export type ExecutionCode =
-  'RUNE-401' | 'RUNE-402' | 'RUNE-403' | 'RUNE-404' | 'RUNE-405' | 'RUNE-406';
+  'RUNE-401' | 'RUNE-402' | 'RUNE-403' | 'RUNE-404' | 'RUNE-405' | 'RUNE-406' | 'RUNE-407';
 
 /** The command line was used wrongly (exit 2). */
 export class UsageError extends RuneError {
@@ -614,6 +654,7 @@ export const EXIT_CODE_BY_RUNE_CODE = {
   'RUNE-404': 1,
   'RUNE-405': 1,
   'RUNE-406': 1,
+  'RUNE-407': 1,
   'RUNE-500': 70,
   'RUNE-601': 6,
 } as const satisfies Readonly<Record<RuneCode, number>>;

@@ -4,9 +4,10 @@
  * can never drift from what `validate` enforces.
  */
 
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
-import { manifestJsonSchema, resultJsonSchema } from '@rune/engine';
+import { manifestJsonSchema, resultJsonSchema, UsageError } from '@rune/engine';
 
 import { humanStderr, type CliIo } from './io.js';
 
@@ -17,9 +18,27 @@ export function schemaCommand(
   const schema = flags.result === true ? resultJsonSchema() : manifestJsonSchema();
   const text = JSON.stringify(schema, null, 2);
   if (flags.output !== undefined) {
-    writeFileSync(flags.output, `${text}\n`, 'utf8');
+    try {
+      mkdirSync(dirname(flags.output), { recursive: true });
+      writeFileSync(flags.output, `${text}\n`, 'utf8');
+    } catch (cause) {
+      // A destination the caller cannot write to is CLI misuse, not a RUNE bug (§10). The
+      // errno code is a fixed token; the raw OS message stays internal as the cause.
+      const code = errnoCode(cause);
+      throw new UsageError(
+        `cannot write --output "${flags.output}"${code === undefined ? '' : ` (${code})`}`,
+        { cause },
+      );
+    }
     humanStderr(io, `schema written to ${flags.output}`);
     return;
   }
   io.stdout(text);
+}
+
+function errnoCode(cause: unknown): string | undefined {
+  if (!(cause instanceof Error) || !('code' in cause) || typeof cause.code !== 'string') {
+    return undefined;
+  }
+  return /^E[A-Z0-9]+$/u.test(cause.code) ? cause.code : undefined;
 }
