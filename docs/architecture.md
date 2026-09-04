@@ -650,6 +650,7 @@ packages/
 │   ├── package.json
 │   └── src/
 │       ├── args.ts                # shared flag parsing and validation
+│       ├── bootstrap.ts           # process-stream wiring: guarded writers, effective exit code
 │       ├── cli.ts                 # commander wiring, CLI execution and error-to-exit-code mapping
 │       ├── io.ts                  # I/O and process-control seams
 │       ├── main.ts                # executable entry point and the single process.exit site

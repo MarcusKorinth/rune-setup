@@ -32,6 +32,11 @@ export const RUNE_CLI_VERSION = '0.0.0';
 export { ExitWithCode } from './io.js';
 export type { CliControl, CliIo } from './io.js';
 
+/**
+ * Default sink for a host that lets RUNE write to its own process streams. Unguarded on
+ * purpose: owning a process stream's `error` event is the host's decision, and this package
+ * makes it only where it owns the process — `bootstrap.ts` for the `rune` binary.
+ */
 const processIo: CliIo = {
   stdout: (line) => {
     process.stdout.write(`${line}\n`);
