@@ -79,6 +79,11 @@ export async function runCommand(
     if (flags.logFile === '') {
       throw new UsageError('--log-file needs a non-empty path');
     }
+    // A values-file diagnostic keeps the operator's own spelling, which names nothing when
+    // that spelling is empty: the reader would see a location and a message without a path.
+    if ((flags.values ?? []).includes('')) {
+      throw new UsageError('--values needs a non-empty path');
+    }
 
     session = await Session.open(absoluteManifestPath, {
       mode: 'non-interactive',
