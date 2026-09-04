@@ -31,6 +31,8 @@ function fixture(lines: readonly string[]): {
 }
 
 const DELIVERY_FAILURE = /^could not finalize result file "([^"]+)": [a-z ]+ [(]E[A-Z]+[)]$/u;
+/** The same shape for a failure that happens before the rename, whatever the action was. */
+const ANY_DELIVERY_FAILURE = /^could not [a-z ]+ result file "([^"]+)": [a-z ]+ [(]E[A-Z]+[)]$/u;
 
 describe('result-file delivery failures and secrets', () => {
   it('masks a RUNE-407 diagnostic whose destination equals a session secret', async () => {
@@ -67,6 +69,47 @@ describe('result-file delivery failures and secrets', () => {
     expect(diagnostic).toMatch(DELIVERY_FAILURE);
     expect(DELIVERY_FAILURE.exec(diagnostic)?.[1]).toBe('***');
     expect(readdirSync(destination)).toEqual([]);
+  });
+
+  it('masks a destination secret that carries a control character', async () => {
+    const { manifestPath, destination } = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  resultSecret:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    // A file where the destination expects a directory fails delivery on every host, so the
+    // tab stays a property of the secret instead of a property of the platform's path rules.
+    const blocker = join(destination, 'blocker.txt');
+    writeFileSync(blocker, 'blocked', 'utf8');
+    const secretDestination = join(blocker, 'se\tcret-value-1234.json');
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        manifestPath,
+        '--non-interactive',
+        '--set',
+        `resultSecret=${secretDestination}`,
+        '--result',
+        secretDestination,
+      ],
+      io,
+    );
+
+    expect(code).toBe(1);
+    const humanOutput = [...io.out, ...io.err].join('\n');
+    expect(humanOutput).not.toContain(secretDestination);
+    expect(humanOutput).not.toContain(secretDestination.replaceAll('\t', String.raw`\t`));
+    const diagnostic = io.err.at(-1) ?? '';
+    expect(diagnostic).toMatch(ANY_DELIVERY_FAILURE);
+    expect(ANY_DELIVERY_FAILURE.exec(diagnostic)?.[1]).toBe('***');
+    expect(readdirSync(destination)).toEqual(['blocker.txt']);
   });
 
   it('names nothing after a secret-bearing open failure without a StringTable', async () => {

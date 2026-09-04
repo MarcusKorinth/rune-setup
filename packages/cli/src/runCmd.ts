@@ -13,7 +13,6 @@ import {
   createFailureResult,
   ExecutionError,
   exitCodeFor,
-  formatRuneError,
   InternalError,
   PlatformError,
   RuneError,
@@ -234,6 +233,9 @@ async function deliverResult(
  * RUNE-407 is raised host-side, so no engine projection masks it, and its message names the
  * destination — a value the session may hold as a secret. Render it exactly like the success
  * line for the same path: through the session's terminal projector, the CLI's only masking sink.
+ * The projector needs the raw message: its first mask is the only one that can see a secret
+ * spelled with a control character, and formatRuneError would already have escaped that
+ * character away. RUNE-407 carries one locationless issue, so both render the same line.
  * Without a StringTable the path may be named only where no secret can have been registered.
  */
 function reportDeliveryFailure(
@@ -243,7 +245,7 @@ function reportDeliveryFailure(
   safeToCompose: boolean,
 ): void {
   if (strings !== undefined) {
-    sessionHumanStderr(io, strings, formatRuneError(error));
+    sessionHumanStderr(io, strings, error.message);
   } else if (safeToCompose) {
     // The manifest never parsed, so no secret candidate exists: the path is plain argv.
     runeErrorStderr(io, error);
