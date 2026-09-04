@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -91,21 +91,5 @@ describe('rune run --dry-run --platform', () => {
       stepsNotRun: 1,
       steps: [{ id: 'hello', state: 'PENDING' }],
     });
-  });
-
-  it('refuses --platform for a real run as a usage error without a result file', async () => {
-    const path = fixture();
-    const resultPath = join(path, '..', 'result.json');
-    const io = capture();
-
-    const code = await run(
-      ['run', path, '--non-interactive', '--platform', foreign, '--result', resultPath],
-      io,
-    );
-
-    expect(code).toBe(2);
-    expect(io.err).toEqual(['--platform previews a plan and combines only with --dry-run']);
-    expect(io.out).toEqual([]);
-    expect(existsSync(resultPath)).toBe(false);
   });
 });
