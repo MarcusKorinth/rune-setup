@@ -1601,6 +1601,65 @@ describe('SpawnRunner', () => {
     }
   }, 25000);
 
+  it('releases the child stdio after the bounded close wait so an orphan cannot pin the host', async () => {
+    // The grandchild inherits the step's stdout/stderr pipes, leaves the process group, and
+    // outlives the direct child; only the runner's read ends decide whether the host can exit.
+    const grandchildScript = 'setTimeout(() => {}, 20000);';
+    const parentScript = [
+      'const { spawn } = require("node:child_process");',
+      `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "inherit", detached: true });`,
+      'grandchild.unref();',
+      'console.log(`grandchild:${grandchild.pid}`);',
+      'setTimeout(() => process.exit(0), 200);',
+    ].join('\n');
+    // Node reports libuv pipe handles as PipeWrap on Windows and Linux alike. The baseline
+    // holds the worker's own pipes, which do not change during this test.
+    const pipeCount = (): number =>
+      process.getActiveResourcesInfo().filter((resource) => resource === 'PipeWrap').length;
+    const baseline = pipeCount();
+    let reportGrandchild = (_pid: number): void => undefined;
+    const reportedGrandchild = new Promise<number>((resolvePid) => {
+      reportGrandchild = resolvePid;
+    });
+    let grandchildPid: number | undefined;
+    const pending = run(nodeCommand(parentScript, { timeoutSeconds: 1 }), {
+      onOutput: (_stream, line) => {
+        const match = /^grandchild:(\d+)$/.exec(line);
+        if (match?.[1] !== undefined) {
+          reportGrandchild(Number(match[1]));
+        }
+      },
+    });
+
+    try {
+      grandchildPid = await withDeadline(reportedGrandchild, 5000);
+      expect(processIsAlive(grandchildPid)).toBe(true);
+
+      // Windows cannot confirm a tree kill on an already exited direct child; Linux finds the
+      // process group absent and keeps the timeout cause. Either way, run() must resolve.
+      const outcome = await withDeadline(pending, 15000);
+      expect(['timedOut', 'terminationFailed']).toContain(outcome.kind);
+      // The orphan is still alive: the host is released by dropping the pipe ends, not by
+      // killing it.
+      expect(processIsAlive(grandchildPid)).toBe(true);
+
+      const settled = Date.now();
+      while (pipeCount() !== baseline && Date.now() - settled < 2000) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      }
+      expect(pipeCount()).toBe(baseline);
+    } finally {
+      if (grandchildPid !== undefined) {
+        stopProcess(grandchildPid);
+      }
+      try {
+        await withDeadline(pending, 5000);
+      } catch {
+        // The explicit PID cleanup above remains the integration-test backstop.
+      }
+    }
+  }, 20000);
+
   it('does not resolve a timeout until a real child process tree is gone', async () => {
     const { directory, parentScript } = createRealProcessTreeFixture();
     let parentPid: number | undefined;
