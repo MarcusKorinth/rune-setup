@@ -8,16 +8,25 @@ import * as engine from '../src/index.js';
 import { formatSessionTerminalLine, PlatformError } from '../src/index.js';
 import type {
   ChromeKey,
+  EngineObserver,
+  ExecutionPlan,
   FailureResultOptions,
   FailureResultSession,
   InputState,
   InputViewSpec,
   Platform,
   ResultError,
+  RunEvent,
+  RunFinished,
   RunMode,
   RunResult,
+  RunStarted,
   SessionOptions,
+  StepFinished,
+  StepOutput,
+  StepStarted,
   StringTable,
+  ValueSource,
 } from '../src/index.js';
 
 const INTERNAL_RUNTIME_EXPORTS = [
@@ -186,6 +195,46 @@ const compileTimeHostTypeContract = (
 
 void compileTimeHostTypeContract;
 
+// A host names every run-event member from the root, so a per-kind IPC channel (§9.2) or a
+// parity client cannot drift from the engine's union.
+const compileTimeEventMemberContract = (
+  onRunStarted: (event: RunStarted) => ExecutionPlan,
+  onStepStarted: (event: StepStarted) => number,
+  onStepOutput: (event: StepOutput) => string,
+  onStepFinished: (event: StepFinished) => number | undefined,
+  onRunFinished: (event: RunFinished) => RunResult,
+): EngineObserver => {
+  return (event: RunEvent): void => {
+    switch (event.kind) {
+      case 'runStarted':
+        void onRunStarted(event);
+        break;
+      case 'stepStarted':
+        void onStepStarted(event);
+        break;
+      case 'stepOutput':
+        void onStepOutput(event);
+        break;
+      case 'stepFinished':
+        void onStepFinished(event);
+        break;
+      case 'runFinished':
+        void onRunFinished(event);
+        break;
+    }
+  };
+};
+
+void compileTimeEventMemberContract;
+
+// A host names the provenance recorded on input state, plan inputs, and results from the root.
+const compileTimeProvenanceContract = (state: InputState): ValueSource => {
+  const answered: ValueSource = 'answer';
+  return state.source ?? state.ignored ?? answered;
+};
+
+void compileTimeProvenanceContract;
+
 const FORBIDDEN_RUNTIME_EXPORTS = [
   'buildPlan',
   'describePlan',
@@ -262,6 +311,21 @@ describe('@rune/engine public API', () => {
     expect(engine.createFailureResult).toBeTypeOf('function');
     expect(engine.formatSessionTerminalLine).toBe(formatSessionTerminalLine);
     expect(sessionOptionsExcludesRunner).toBe(true);
+  });
+
+  it('keeps run-event members and value provenance as type-only exports', () => {
+    expect(compileTimeEventMemberContract).toBeTypeOf('function');
+    expect(compileTimeProvenanceContract).toBeTypeOf('function');
+    for (const name of [
+      'RunStarted',
+      'StepStarted',
+      'StepOutput',
+      'StepFinished',
+      'RunFinished',
+      'ValueSource',
+    ]) {
+      expect(engine).not.toHaveProperty(name);
+    }
   });
 
   it('exposes no symbol-based masking capability on Session', async () => {

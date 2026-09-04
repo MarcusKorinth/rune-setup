@@ -64,13 +64,21 @@ export type {
 
 export { Session } from './engine/session.js';
 export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/session.js';
-export type { InputRejection, InputState, InputViewSpec } from './engine/inputs.js';
+export type { InputRejection, InputState, InputViewSpec, ValueSource } from './engine/inputs.js';
 
 export { createFailureResult } from './engine/executor.js';
 export type { FailureResultOptions, FailureResultSession } from './engine/executor.js';
 
 export { CancelToken } from './engine/cancel.js';
-export type { EngineObserver, RunEvent } from './engine/events.js';
+export type {
+  EngineObserver,
+  RunEvent,
+  RunFinished,
+  RunStarted,
+  StepFinished,
+  StepOutput,
+  StepStarted,
+} from './engine/events.js';
 
 export type { StepState } from './engine/state.js';
 
