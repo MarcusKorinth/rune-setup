@@ -120,7 +120,7 @@ opens the log, and `--result -` remains valid.
 | `product` | mapping, required | `name` and `version` are required, `description` is optional (and localizable, §6.3) |
 | `inputs` | mapping of id → InputSpec | discriminated on `type`; ids match `[A-Za-z_][A-Za-z0-9_]*`, must not collide with built-ins; declaration order is evaluation and prompting order |
 | `steps` | list of Step, required | `id` (unique, `[a-z][a-z0-9-]*`), `title` (localizable), optional `when`, `run`. The key must be present; an empty list is legal and simply produces `nothingExecuted: true` (§7) |
-| `execution` | mapping | `failFast: boolean = true`, `logFile: string` — nothing else in v1 |
+| `execution` | mapping | `failFast: boolean = true`, `logFile: non-empty string` — nothing else in v1 |
 | `gui` | mapping, optional | presentation-only: `accentColor: string` (CSS color), `logo: string` (window/taskbar icon + header logo), `banner: string`, `theme: string` (CSS file), `windowTitle: string` (localizable). Paths are relative to `${manifestDir}`, not interpolable; `rune validate` and `rune run --gui` check that the referenced files exist — `run` without `--gui` never touches them, so a missing logo can never fail a CI run. Read by the GUI shell through `getThemeConfig` (§9.1, §9.2); **ignored by interactive CLI and non-interactive** — no parity impact (§9.4) |
 
 **InputSpec fields.** Common to all seven types:
@@ -498,7 +498,7 @@ Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pip
 |---|---|
 | 0 | Success (all steps succeeded or skipped — including `nothingExecuted: true`; also successful `validate` / `--dry-run` / `schema`) |
 | 1 | One or more steps failed or timed out (regardless of `failFast`) |
-| 2 | Usage or unsupported-host error (unknown flag, malformed `--set`, a real run whose non-stdout result and effective log file are the same path, host platform other than Node's `win32` or `linux`, `--gui` without the GUI shell installed or with a cached shell of a different engine version (§9.4), `--gui` with `--non-interactive`/`--dry-run`/`--result -`); `commander` runs with `exitOverride()` so RUNE, not the parser, emits CLI errors |
+| 2 | Usage or unsupported-host error (unknown flag, malformed `--set`, an empty `--log-file` value, a real run whose non-stdout result and effective log file are the same path, host platform other than Node's `win32` or `linux`, `--gui` without the GUI shell installed or with a cached shell of a different engine version (§9.4), `--gui` with `--non-interactive`/`--dry-run`/`--result -`); `commander` runs with `exitOverride()` so RUNE, not the parser, emits CLI errors |
 | 3 | Manifest invalid (RUNE-1xx, incl. locale-overlay errors); `validate` failure |
 | 4 | Input error (missing required input, coercion/pattern failure, malformed JSON array, unknown key in `--set`/values) |
 | 5 | Resolution/condition error (RUNE-3xx) |

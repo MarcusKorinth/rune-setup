@@ -72,6 +72,10 @@ export async function runCommand(
       throw new UsageError('--platform previews a plan and combines only with --dry-run');
     }
     platform = parsePlatform(flags.platform);
+    // An empty path would resolve to the invocation cwd and fail only at execution setup.
+    if (flags.logFile === '') {
+      throw new UsageError('--log-file needs a non-empty path');
+    }
 
     session = await Session.open(absoluteManifestPath, {
       mode: 'non-interactive',

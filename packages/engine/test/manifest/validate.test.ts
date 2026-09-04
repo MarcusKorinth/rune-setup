@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import type { ManifestError } from '../../src/errors.js';
 import { validateManifest } from '../../src/manifest/index.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
@@ -17,6 +18,25 @@ function manifestFile(...lines: readonly string[]): string {
 }
 
 describe('validateManifest', () => {
+  it('rejects an empty execution.logFile at the field', () => {
+    let thrown: unknown;
+    try {
+      validateManifest(manifestFile('execution:', '  logFile: ""', 'steps: []'), DEFAULT_LOCALE);
+    } catch (error) {
+      thrown = error;
+    }
+
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-103');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-103',
+        message: 'execution.logFile must not be empty',
+        location: expect.objectContaining({ line: 6, column: 3 }),
+      }),
+    ]);
+  });
+
   it('returns the manifest it accepted', () => {
     const report = validateManifest(manifestFile('steps: []'), DEFAULT_LOCALE);
 
