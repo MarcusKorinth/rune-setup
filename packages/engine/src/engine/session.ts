@@ -347,7 +347,7 @@ export class Session {
     return this.#inputSnapshot.all;
   }
 
-  /** Warnings a frontend should say out loud but not fail over (§5, §10). */
+  /** Warnings a frontend should say out loud but not fail over (§4.3, §5, §10). */
   warnings(): readonly string[] {
     return this.#warnings;
   }
