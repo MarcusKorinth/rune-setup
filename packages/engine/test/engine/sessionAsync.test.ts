@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 const synchronousFsCalls = vi.hoisted(() => [] as string[]);
+const forbiddenSyncApis = vi.hoisted(() => [] as string[]);
 
 function restoreEnvironmentVariable(name: string, value: string | undefined): void {
   if (value === undefined) {
@@ -23,13 +24,13 @@ vi.mock('node:fs', async (importOriginal) => {
       synchronousFsCalls.push(name);
       throw new Error(`Session lifecycle called synchronous filesystem API ${name}`);
     };
+  // Every synchronous export of the real module is forbidden, so the guard follows the §9.1
+  // contract (no synchronous filesystem I/O in the lifecycle) rather than the APIs the engine
+  // happened to use when this test was written.
+  forbiddenSyncApis.push(...Object.keys(actual).filter((name) => name.endsWith('Sync')));
   return {
     ...actual,
-    lstatSync: forbidden('lstatSync'),
-    mkdirSync: forbidden('mkdirSync'),
-    readFileSync: forbidden('readFileSync'),
-    readdirSync: forbidden('readdirSync'),
-    statSync: forbidden('statSync'),
+    ...Object.fromEntries(forbiddenSyncApis.map((name) => [name, forbidden(name)])),
   };
 });
 
@@ -80,6 +81,15 @@ describe.sequential('asynchronous Session I/O', () => {
     expect(session.getStrings().chrome('rune.button.next')).toBe('Weiter');
     expect(result.status).toBe('succeeded');
     expect(await readFile(logPath, 'utf8')).toContain('run finished: succeeded');
+    expect(forbiddenSyncApis).toEqual(
+      expect.arrayContaining([
+        'existsSync',
+        'lstatSync',
+        'readFileSync',
+        'readdirSync',
+        'statSync',
+      ]),
+    );
     expect(synchronousFsCalls).toEqual([]);
   });
 
