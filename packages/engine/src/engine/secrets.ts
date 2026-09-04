@@ -400,10 +400,21 @@ export class SecretRegistry {
     // Each line is registered as well, which is what actually protects a key or certificate.
     const lines = value.split(/\r\n|\r|\n/);
     const parts = lines.length > 1 ? [value, ...lines] : lines;
+    // A value stored with surrounding spaces or tabs reaches the child byte-exact, and a child
+    // that trims it before printing would otherwise print it in the clear. Both spellings are
+    // registered, and both count against the snapshot budget.
+    const candidates: string[] = [];
+    for (const part of parts) {
+      candidates.push(part);
+      const trimmed = part.trim();
+      if (trimmed !== part) {
+        candidates.push(trimmed);
+      }
+    }
     const additions = new Set<string>();
     let addedCodeUnits = 0;
 
-    for (const part of parts) {
+    for (const part of candidates) {
       // Length alone is not enough: four spaces would pass, and masking them would black out
       // the indentation of every line a child process prints.
       if (

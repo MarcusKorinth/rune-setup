@@ -412,6 +412,66 @@ describe('SecretRegistry', () => {
     expect(registry.mask('    indented output')).toBe('    indented output');
   });
 
+  it('masks a whitespace-padded secret in both its raw and its trimmed spelling', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register(' abcd ')).toBe(true);
+    // The raw spelling is what a sink sees when the child prints the value unchanged...
+    expect(registry.mask('x abcd y')).toBe(`x${MASK}y`);
+    // ...and the trimmed spelling is what it sees after `.trim()`, `xargs`, or an HTTP client.
+    expect(registry.mask('abcd')).toBe(MASK);
+    expect(registry.mask('T=abcd')).toBe(`T=${MASK}`);
+    // Both spellings are distinct registry parts; registering either again adds nothing.
+    expect(registry.size).toBe(2);
+    expect(registry.register('abcd')).toBe(true);
+    expect(registry.size).toBe(2);
+  });
+
+  it('masks the trimmed spelling of a tab-padded secret', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register('\tsecret-with-tab\t')).toBe(true);
+    expect(registry.mask('value: secret-with-tab')).toBe(`value: ${MASK}`);
+    expect(registry.mask('\tsecret-with-tab\t')).toBe(MASK);
+  });
+
+  it('masks the trimmed spelling of every padded line of a multiline secret', () => {
+    const registry = new SecretRegistry();
+    const secret = '  first-long  \n  second-long  ';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask('first-long')).toBe(MASK);
+    expect(registry.mask('second-long')).toBe(MASK);
+    expect(registry.mask('  first-long  ')).toBe(MASK);
+    expect(registry.mask(secret)).toBe(MASK);
+  });
+
+  it('counts the trimmed spelling of a padded part against the snapshot budget', () => {
+    // ' yyyy ' costs six code units raw plus four trimmed: ten in total.
+    const overBudget = new SecretRegistry();
+    for (const pattern of nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS - 9, 'x')) {
+      overBudget.register(pattern);
+    }
+    const size = overBudget.size;
+    const error = capacityErrorFrom(() => overBudget.register(' yyyy '));
+
+    expect(error.code).toBe('RUNE-202');
+    expect(overBudget.size).toBe(size);
+    expect(overBudget.mask(' yyyy ')).toBe(' yyyy ');
+    expect(overBudget.mask('yyyy')).toBe('yyyy');
+
+    const exact = new SecretRegistry();
+    for (const pattern of nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS - 10, 'x')) {
+      exact.register(pattern);
+    }
+    const exactSize = exact.size;
+
+    expect(exact.register(' yyyy ')).toBe(true);
+    expect(exact.size).toBe(exactSize + 2);
+    expect(exact.mask('yyyy')).toBe(MASK);
+    expect(capacityErrorFrom(() => exact.register('zzzz')).code).toBe('RUNE-202');
+  });
+
   it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {
     const registry = new SecretRegistry();
     const key = ['-----BEGIN KEY-----', 'MIIBpayloadLine', '-----END KEY-----'].join('\n');
