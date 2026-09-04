@@ -395,10 +395,12 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
             exitCode = outcome.exitCode;
             terminalState = 'SUCCEEDED';
           } else if (cancel.isCancelled) {
-            // The requested cancellation is the cause of a non-success exit that arrives after
-            // it — on Windows a console Ctrl+C reaches a console-attached child before the
-            // runner's kill path (§7). The step takes the shape of a runner-reported
-            // cancellation: no exit code, no diagnostic.
+            // A runner that reports a non-success exit after cancellation was requested makes
+            // the request the cause (§7); the step takes the shape of a runner-reported
+            // cancellation: no exit code, no diagnostic. SpawnRunner never reports one — its
+            // kill path owns a requested cancellation and settles cancelled or
+            // terminationFailed — so this branch covers a runner that ignores the token, not
+            // the Windows console Ctrl+C race (§8).
             terminalState = 'CANCELLED';
           } else {
             exitCode = outcome.exitCode;
