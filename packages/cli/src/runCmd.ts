@@ -11,6 +11,9 @@ import { normalize, resolve, toNamespacedPath } from 'node:path';
 import {
   CancelledError,
   createFailureResult,
+  ExecutionError,
+  exitCodeFor,
+  formatRuneError,
   InternalError,
   PlatformError,
   RuneError,
@@ -204,7 +207,15 @@ async function deliverResult(
     io.stdout(serializeResult(result).replace(/\n$/u, ''));
     return;
   }
-  await writeResult(result, destination.path);
+  try {
+    await writeResult(result, destination.path);
+  } catch (error) {
+    if (!(error instanceof ExecutionError) || error.code !== 'RUNE-407') {
+      throw error;
+    }
+    reportDeliveryFailure(error, io, strings, announce);
+    throw new ExitWithCode(exitCodeFor(error));
+  }
   if (!announce) {
     return;
   }
@@ -216,5 +227,29 @@ async function deliverResult(
       strings,
       strings.chrome('rune.result.written', { path: destination.announcement }),
     );
+  }
+}
+
+/**
+ * RUNE-407 is raised host-side, so no engine projection masks it, and its message names the
+ * destination — a value the session may hold as a secret. Render it exactly like the success
+ * line for the same path: through the session's terminal projector, the CLI's only masking sink.
+ * Without a StringTable the path may be named only where no secret can have been registered.
+ */
+function reportDeliveryFailure(
+  error: ExecutionError,
+  io: CliIo,
+  strings: StringTable | undefined,
+  safeToCompose: boolean,
+): void {
+  if (strings !== undefined) {
+    sessionHumanStderr(io, strings, formatRuneError(error));
+  } else if (safeToCompose) {
+    // The manifest never parsed, so no secret candidate exists: the path is plain argv.
+    runeErrorStderr(io, error);
+  } else {
+    // A failed open may have registered secret candidates without returning the session's
+    // StringTable; like the suppressed announcement, a line naming the path cannot be masked.
+    humanStderr(io, 'could not write the result file');
   }
 }
