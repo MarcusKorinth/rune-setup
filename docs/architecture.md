@@ -604,10 +604,12 @@ packages/
 │       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
 │       ├── diagnostics.ts         # safe diagnostic escaping and JSON-style quoting
 │       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
+│       ├── environment.ts         # one immutable invocation-environment snapshot; host name semantics
 │       ├── manifest/
 │       │   ├── index.ts           # parseManifest()/validateManifest() facade, schemaVersion registry dispatch
 │       │   ├── loader.ts          # `yaml` core schema, key checks, SourceMap build (also overlays/values)
 │       │   ├── source.ts          # Location(file,line,col), SourceMap(jsonPath -> Location)
+│       │   ├── provenance.ts      # private source identity (path, digest, schemaVersion, manifestDir)
 │       │   └── v1/
 │       │       ├── schema.ts      # zod schemas: Manifest, InputSpec union, OptionSpec, Step,
 │       │       │                  #   CommandSpec, GuiConfig; source of `rune schema` (z.toJSONSchema)
