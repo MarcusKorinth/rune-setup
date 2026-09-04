@@ -108,7 +108,7 @@ but before execution or either sink is opened. Comparison is case-insensitive on
 case-sensitive on Linux. Dry-run may write its result to the configured log path because it never
 opens the log, and `--result -` remains valid.
 
-`rune schema` prints the JSON Schema of manifest `schemaVersion: 1` to stdout (or `--output FILE`), **generated from the zod schemas** (zod's built-in `z.toJSONSchema()`, in its `input` view so that fields with defaults stay optional for the author) at call time so it can never drift from what `validate` enforces; `--result` emits the result-file schema (`resultSchemaVersion: 2`) instead. Intended consumers are YAML language servers (autocompletion, inline errors); the same generated schema is what §14's schema tests pin.
+`rune schema` prints the JSON Schema of manifest `schemaVersion: 1` to stdout (or `--output FILE`), **generated from the zod schemas** (zod's built-in `z.toJSONSchema()`, in its `input` view so that fields with defaults stay optional for the author) at call time so it can never drift from what `validate` enforces; `--result` emits the result-file schema (`resultSchemaVersion: 2`) instead. `--output FILE` creates the directory the file lives in; a destination that cannot be written is a usage error (exit 2) naming the path and the errno code, never the raw OS message. Intended consumers are YAML language servers (autocompletion, inline errors); the same generated schema is what §14's schema tests pin.
 
 `--locale TAG` selects the display locale for every text RUNE renders (§6.3) and takes precedence over `RUNE_LOCALE` and the system locale. It is accepted by `validate` and by `run` in all three modes; `rune run --gui` forwards it to the shell's session.
 
@@ -499,7 +499,7 @@ Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pip
 |---|---|
 | 0 | Success (all steps succeeded or skipped — including `nothingExecuted: true`; also successful `validate` / `--dry-run` / `schema`) |
 | 1 | One or more steps failed or timed out (regardless of `failFast`); or result-file delivery failed with RUNE-407 — no result file exists, the exit code and the stderr diagnostic are the only signals |
-| 2 | Usage or unsupported-host error (unknown flag, malformed `--set`, an empty `--log-file` value, a real run whose non-stdout result and effective log file are the same path, host platform other than Node's `win32` or `linux`, `--gui` without the GUI shell installed or with a cached shell of a different engine version (§9.4), `--gui` with `--non-interactive`/`--dry-run`/`--result -`); `commander` runs with `exitOverride()` so RUNE, not the parser, emits CLI errors |
+| 2 | Usage or unsupported-host error (unknown flag, malformed `--set`, an empty `--log-file` value, a real run whose non-stdout result and effective log file are the same path, a `schema --output` destination that cannot be written (§4.1), host platform other than Node's `win32` or `linux`, `--gui` without the GUI shell installed or with a cached shell of a different engine version (§9.4), `--gui` with `--non-interactive`/`--dry-run`/`--result -`); `commander` runs with `exitOverride()` so RUNE, not the parser, emits CLI errors |
 | 3 | Manifest invalid (RUNE-1xx, incl. locale-overlay errors); `validate` failure |
 | 4 | Input error (missing required input, coercion/pattern failure, malformed JSON array, unknown key in `--set`/values) |
 | 5 | Resolution/condition error (RUNE-3xx) |
