@@ -95,7 +95,7 @@ export type {
   RunStatus,
 } from './results/model.js';
 export { resultJsonSchema } from './results/schema.js';
-export { writeResult } from './results/writer.js';
+export { serializeResult, writeResult } from './results/writer.js';
 
 export type { StringTable } from './i18n/strings.js';
 export { formatSessionTerminalLine } from './i18n/strings.js';

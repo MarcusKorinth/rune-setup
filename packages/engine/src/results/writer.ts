@@ -42,6 +42,12 @@ async function renameForTarget(temporary: string, path: string): Promise<void> {
   }
 }
 
+/**
+ * Returns exactly the text `writeResult` writes: the schema-validated copy of the result in
+ * the schema's member order, two-space indented, newline-terminated. Both result sinks —
+ * the file and `--result -` on stdout — go through here, so a result that does not match
+ * resultSchemaVersion 2 fails closed before it reaches either one.
+ */
 export function serializeResult(result: RunResult): string {
   let parsed: ReturnType<typeof resultV2Schema.safeParse>;
   try {

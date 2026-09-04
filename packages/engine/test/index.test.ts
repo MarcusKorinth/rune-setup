@@ -248,7 +248,6 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'isLegalTransition',
   'isTerminal',
   'STEP_STATES',
-  'serializeResult',
   'projectInputFacadeSnapshot',
 ] as const;
 
@@ -326,6 +325,11 @@ describe('@rune/engine public API', () => {
     ]) {
       expect(engine).not.toHaveProperty(name);
     }
+  });
+
+  it('exports the one result serializer both result sinks share', () => {
+    expect(engine.serializeResult).toBeTypeOf('function');
+    expect(engine.writeResult).toBeTypeOf('function');
   });
 
   it('exposes no symbol-based masking capability on Session', async () => {

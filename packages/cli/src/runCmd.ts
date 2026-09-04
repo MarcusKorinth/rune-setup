@@ -14,6 +14,7 @@ import {
   InternalError,
   PlatformError,
   RuneError,
+  serializeResult,
   Session,
   UsageError,
   writeResult,
@@ -199,7 +200,8 @@ async function deliverResult(
   announce = true,
 ): Promise<void> {
   if (destination.path === '-') {
-    io.stdout(JSON.stringify(result, null, 2));
+    // The same validated text the file sink writes; the stdout seam appends the newline.
+    io.stdout(serializeResult(result).replace(/\n$/u, ''));
     return;
   }
   await writeResult(result, destination.path);
