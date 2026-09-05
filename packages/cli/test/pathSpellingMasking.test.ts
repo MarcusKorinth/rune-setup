@@ -6,9 +6,11 @@
  * spelling therefore meets masks that cannot match it and prints the secret in the clear.
  *
  * Each scenario below declares a `secret` input whose value *is* the path RUNE will name,
- * spelled so that `resolve` rewrites it, and the one assertion helper checks every sink the
- * run touches — stdout, stderr, the log file and the result file — for the supplied spelling,
- * the resolved spelling and both of their JSON-escaped forms. Adding a path-bearing output
+ * spelled so that RUNE rewrites it — `SPELLINGS` covers all four derivations §10 forbids:
+ * anchoring, resolving and normalizing through a "." segment or a win32 forward slash, and
+ * escaping through a control character. The one assertion helper checks every sink the run
+ * touches — stdout, stderr, the log file and the result file — for the supplied spelling, the
+ * resolved spelling, and their JSON- and control-escaped forms. Adding a path-bearing output
  * means adding one entry to `SCENARIOS`, not a new test.
  *
  * §10 exempts exactly one field: the structured `manifest.path` of a plan or a result keeps
@@ -36,17 +38,44 @@ function capture(): Capture {
   return { out, err, stdout: (line) => out.push(line), stderr: (line) => err.push(line) };
 }
 
-/** Rewrites an absolute path into a spelling `resolve` normalizes back to it. */
-type Spelling = (path: string) => string;
+/** Rewrites an absolute path into a spelling RUNE rewrites again before a sink sees it. */
+type Rewrite = (path: string) => string;
 
-/** Platform-neutral: `path.resolve` drops a `.` segment everywhere. */
-const dotSegment: Spelling = (path) => {
-  const cut = path.lastIndexOf(sep);
-  return `${path.slice(0, cut)}${sep}.${path.slice(cut)}`;
-};
+interface Spelling {
+  readonly name: string;
+  readonly rewrite: Rewrite;
+  /** Limits the spelling to the one host that rewrites it. */
+  readonly platform?: NodeJS.Platform;
+  /**
+   * True when no host stores such a path portably, so it runs only against scenarios that
+   * merely report the path. Those never open it, and the spelling exercises §10's fourth
+   * derivation — escaping — instead of anchoring.
+   */
+  readonly unopenable?: true;
+}
 
-/** Windows only: `path.resolve` rewrites every forward slash into a backslash. */
-const forwardSlash: Spelling = (path) => path.replaceAll('\\', '/');
+const SPELLINGS: readonly Spelling[] = [
+  {
+    // Platform-neutral: `path.resolve` drops a `.` segment everywhere.
+    name: 'a "." segment',
+    rewrite: (path) => {
+      const cut = path.lastIndexOf(sep);
+      return `${path.slice(0, cut)}${sep}.${path.slice(cut)}`;
+    },
+  },
+  {
+    // `path.resolve` rewrites every forward slash into a backslash.
+    name: 'forward slashes',
+    rewrite: (path) => path.replaceAll('\\', '/'),
+    platform: 'win32',
+  },
+  {
+    // A terminal sink escapes controls visibly, which is how R12-SEC-1 defeated the mask.
+    name: 'a control character',
+    rewrite: (path) => path.replace(/([^\\/]+)$/u, 'se\tcret-$1'),
+    unopenable: true,
+  },
+];
 
 interface Run {
   readonly argv: readonly string[];
@@ -61,7 +90,9 @@ interface Run {
 
 interface Scenario {
   readonly name: string;
-  readonly build: (directory: string, spell: Spelling) => Run;
+  /** True when the run only reports this path, so nothing has to open or read it. */
+  readonly reportedOnly?: true;
+  readonly build: (directory: string, spell: Rewrite) => Run;
 }
 
 const MANIFEST = [
@@ -93,6 +124,7 @@ const SCENARIOS: readonly Scenario[] = [
   {
     // §10: the RUNE-406 log-sink diagnostic names the operator's `--log-file` spelling.
     name: 'the RUNE-406 log-file diagnostic',
+    reportedOnly: true,
     build: (directory, spell) => {
       const secret = spell(blocked(directory, 'secret-log-1234.log'));
       return {
@@ -113,6 +145,7 @@ const SCENARIOS: readonly Scenario[] = [
   {
     // §10: the dry-run preview names the same spelling as the diagnostic for that path.
     name: 'the dry-run plan preview of the log path',
+    reportedOnly: true,
     build: (directory, spell) => {
       const secret = spell(join(directory, 'logs', 'secret-log-1234.log'));
       return {
@@ -159,6 +192,7 @@ const SCENARIOS: readonly Scenario[] = [
   {
     // §10: the RUNE-407 delivery diagnostic names the operator's `--result` spelling.
     name: 'the RUNE-407 result-delivery diagnostic',
+    reportedOnly: true,
     build: (directory, spell) => {
       const secret = spell(blocked(directory, 'secret-result-1234.json'));
       return {
@@ -279,13 +313,23 @@ function jsonEscaped(text: string): string {
 /** Stands in for a spelling §10 keeps exact, so the surrounding content stays scannable. */
 const EXEMPT = '<exact by contract>';
 
+/** How a terminal sink prints a path: RUNE escapes controls visibly and leaves the rest. */
+function controlEscaped(text: string): string {
+  return [...text]
+    .map((character) => (character < ' ' ? jsonEscaped(character) : character))
+    .join('');
+}
+
 /** Every spelling of the secret that would disclose it if it reached a sink. */
 function disclosingSpellings(secret: string): readonly string[] {
   const anchored = resolve(secret);
-  return [...new Set([secret, anchored, jsonEscaped(secret), jsonEscaped(anchored)])];
+  const spellings = [secret, anchored];
+  return [
+    ...new Set([...spellings, ...spellings.map(jsonEscaped), ...spellings.map(controlEscaped)]),
+  ];
 }
 
-async function expectNoSpellingInAnySink(scenario: Scenario, spell: Spelling): Promise<void> {
+async function expectNoSpellingInAnySink(scenario: Scenario, spell: Rewrite): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'rune-path-spelling-'));
   const subject = scenario.build(directory, spell);
   const io = capture();
@@ -314,14 +358,17 @@ async function expectNoSpellingInAnySink(scenario: Scenario, spell: Spelling): P
 }
 
 describe('paths RUNE names and declared secrets', () => {
-  it.each(SCENARIOS)('masks a secret spelled with a "." segment in $name', async (scenario) => {
-    await expectNoSpellingInAnySink(scenario, dotSegment);
-  });
-
-  it.runIf(process.platform === 'win32').each(SCENARIOS)(
-    'masks a secret spelled with forward slashes in $name',
-    async (scenario) => {
-      await expectNoSpellingInAnySink(scenario, forwardSlash);
-    },
-  );
+  for (const spelling of SPELLINGS) {
+    const scenarios = SCENARIOS.filter(
+      (scenario) => spelling.unopenable !== true || scenario.reportedOnly === true,
+    );
+    it
+      .runIf(spelling.platform === undefined || spelling.platform === process.platform)
+      .each(scenarios)(
+      `masks a secret spelled with ${spelling.name} in $name`,
+      async (scenario) => {
+        await expectNoSpellingInAnySink(scenario, spelling.rewrite);
+      },
+    );
+  }
 });
