@@ -9,8 +9,9 @@ import { lstatSync, readdirSync } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import { environmentValue } from '../environment.js';
-import { ManifestError, UsageError, messageOf } from '../errors.js';
+import { ManifestError, UsageError, messageOf, withIssueDiagnosticParts } from '../errors.js';
 
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
@@ -48,9 +49,19 @@ function normalizeExplicitLocale(
 
   const tag = normalizeLocaleTag(value);
   if (tag === undefined) {
-    throw new UsageError(
-      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
+    // The value is a runtime string a session may hold as a secret, so it travels as a raw
+    // quoted part: quoting it here would hand every masker an escaped spelling the registry
+    // never held, and the mask would miss it (§10, "Path spellings").
+    const parts: readonly DiagnosticPart[] = [
+      'invalid locale ',
+      quotedDiagnostic(raw),
+      ` from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
+    ];
+    const issue = withIssueDiagnosticParts(
+      { code: 'RUNE-001', message: formatDiagnostic(parts), location: undefined },
+      parts,
     );
+    throw new UsageError(issue.message, { issues: [issue] });
   }
   return tag;
 }

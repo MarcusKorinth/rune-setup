@@ -728,39 +728,44 @@ describe('opening a session', () => {
     },
   );
 
-  it('masks a declared override in a deferred invalid explicit locale diagnostic', async () => {
-    const secret = 'definitely_invalid';
-    const path = fixture(
-      [
-        'schemaVersion: 1',
-        'product:',
-        '  name: Example',
-        '  version: "1.0.0"',
-        'inputs:',
-        '  openingSecret:',
-        '    type: secret',
-        'steps: []',
-      ],
-      { 'invalid-values.yaml': '- invalid\n' },
-    );
+  // The second value is the one that escaping used to defeat: composing the message with
+  // JSON.stringify handed the masker a spelling the registry never held (§10).
+  it.each(['definitely_invalid', 'C:\\se\\cret-value', 'se\tcret-value'])(
+    'masks a declared override %j in a deferred invalid explicit locale diagnostic',
+    async (secret) => {
+      const path = fixture(
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Example',
+          '  version: "1.0.0"',
+          'inputs:',
+          '  openingSecret:',
+          '    type: secret',
+          'steps: []',
+        ],
+        { 'invalid-values.yaml': '- invalid\n' },
+      );
 
-    let thrown: unknown;
-    try {
-      await Session.open(path, {
-        locale: secret,
-        environment: {},
-        overrides: { openingSecret: secret },
-        values: [join(path, '..', 'invalid-values.yaml')],
-      });
-    } catch (error) {
-      thrown = error;
-    }
+      let thrown: unknown;
+      try {
+        await Session.open(path, {
+          locale: secret,
+          environment: {},
+          overrides: { openingSecret: secret },
+          values: [join(path, '..', 'invalid-values.yaml')],
+        });
+      } catch (error) {
+        thrown = error;
+      }
 
-    expect(thrown).toMatchObject({ code: 'RUNE-001' });
-    const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message).not.toContain(secret);
-    expect(message).toContain('invalid locale "***" from --locale');
-  });
+      expect(thrown).toMatchObject({ code: 'RUNE-001' });
+      const message = thrown instanceof Error ? thrown.message : String(thrown);
+      expect(message).not.toContain(secret);
+      expect(message).not.toContain(JSON.stringify(secret).slice(1, -1));
+      expect(message).toContain('invalid locale "***" from --locale');
+    },
+  );
 
   it('keeps selected-overlay precedence while preserving values document order', async () => {
     const path = fixture(
