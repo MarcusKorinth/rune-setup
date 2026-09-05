@@ -8,10 +8,17 @@ import type { ChromeKey, ExecutionPlan, RunEvent, RunResult, StringTable } from 
 
 import { humanStderr, sessionHumanStderr, sessionHumanStdout, type CliIo } from './io.js';
 
-/** Renders the immutable plan itself — the dry-run output (§10: requested output, stdout). */
+/**
+ * Renders the immutable plan itself — the dry-run output (§10: requested output, stdout).
+ *
+ * `logFileAnnouncement` is the log path as the operator spelled it (`--log-file`, else
+ * `execution.logFile`), which §10 makes the preview's spelling; it is `undefined` exactly
+ * when the plan has no effective log path.
+ */
 export function renderPlan(
   plan: ExecutionPlan,
   product: { readonly name: string; readonly version: string },
+  logFileAnnouncement: string | undefined,
   io: CliIo,
   strings: StringTable,
 ): void {
@@ -32,7 +39,7 @@ export function renderPlan(
     strings,
     strings.chrome('rune.plan.executionOptions', {
       failFast: String(plan.executionOptions.failFast),
-      logFile: quotedLogPath(plan.executionOptions.logFile),
+      logFile: quotedLogPath(logFileAnnouncement),
     }),
   );
   sessionHumanStdout(io, strings, strings.chrome('rune.plan.inputs'));
@@ -108,13 +115,13 @@ function safeJson(value: unknown): string {
 }
 
 /**
- * The effective log path is the one plan string the engine publishes unprojected (§10 keeps
- * a validated log path exact), so this sink's masks are the only ones that can hide it and
- * they must meet the registry's own spelling. Quote it instead of escaping it: `safeJson`
- * would rewrite a backslash or a quote and leave the whole secret in clear.
+ * The log path is the one plan string the engine publishes unprojected (§10 keeps a validated
+ * log path exact), so this sink's masks are the only ones that can hide it and they must meet
+ * the registry's own spelling — hence the operator's spelling, and quoting instead of
+ * escaping: `safeJson` would rewrite a backslash or a quote and leave the secret in clear.
  */
-function quotedLogPath(path: string | undefined): string {
-  return path === undefined ? 'none' : `"${path}"`;
+function quotedLogPath(announcement: string | undefined): string {
+  return announcement === undefined ? 'none' : `"${announcement}"`;
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */

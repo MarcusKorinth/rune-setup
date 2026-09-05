@@ -128,7 +128,15 @@ export async function runCommand(
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && resultOption !== '-') {
-      renderPlan(plan, session.manifest.product, io, strings);
+      // The plan carries the anchored log path; the preview names the spelling the operator
+      // supplied, because that is the one a secret registry can hold (§10).
+      renderPlan(
+        plan,
+        session.manifest.product,
+        flags.logFile ?? session.manifest.execution.logFile,
+        io,
+        strings,
+      );
     }
     if (resultDestination !== undefined) {
       deliveryStarted = true;

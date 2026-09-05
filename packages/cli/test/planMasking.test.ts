@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -100,5 +100,58 @@ describe('dry-run plan rendering and secrets', () => {
     expect(stdout).not.toContain(logPath);
     expect(stdout).not.toContain(escapedSpelling(logPath));
     expect([...io.out, ...io.err].join('\n')).not.toContain(logPath);
+  });
+
+  // The plan carries the anchored log path while the registry holds the spelling the operator
+  // typed, so a preview built from the anchored one leaks whenever anchoring rewrote anything.
+  it('masks a --log-file spelling that anchoring normalizes away', async () => {
+    const directory = directoryFixture();
+    // A "." segment is normalized away on every host, so this case is not a Windows quirk.
+    const spelled = `${directory}${sep}.${sep}secret-log-1234.log`;
+    const manifestPath = writeManifest(directory);
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        manifestPath,
+        '--non-interactive',
+        '--dry-run',
+        '--set',
+        `token=${spelled}`,
+        '--log-file',
+        spelled,
+      ],
+      io,
+    );
+
+    expect(code).toBe(0);
+    const stdout = io.out.join('\n');
+    expect(stdout).toContain('Execution options: failFast=true, logFile="***"');
+    expect(stdout).not.toContain(spelled);
+    expect(stdout).not.toContain(resolve(spelled));
+    expect([...io.out, ...io.err].join('\n')).not.toContain(spelled);
+  });
+
+  it('masks a manifest-relative execution.logFile that a secret input spells', async () => {
+    const directory = directoryFixture();
+    const spelled = 'logs/secret-log-1234.log';
+    const manifestPath = writeManifest(directory, [
+      'execution:',
+      `  logFile: ${JSON.stringify(spelled)}`,
+    ]);
+    const io = capture();
+
+    const code = await run(
+      ['run', manifestPath, '--non-interactive', '--dry-run', '--set', `token=${spelled}`],
+      io,
+    );
+
+    expect(code).toBe(0);
+    const stdout = io.out.join('\n');
+    expect(stdout).toContain('Execution options: failFast=true, logFile="***"');
+    expect(stdout).not.toContain(spelled);
+    expect(stdout).not.toContain(join(directory, 'logs', 'secret-log-1234.log'));
+    expect([...io.out, ...io.err].join('\n')).not.toContain(spelled);
   });
 });
