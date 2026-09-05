@@ -10,9 +10,13 @@ import { run, type CliIo } from '../src/cli.js';
  * §4.1: for a real run a non-stdout `--result` destination must differ from the effective
  * log-file destination, and each half is refused as soon as its anchored path is knowable.
  * The flag half is an argument-level fact, so it is refused before the session opens; the
- * manifest half is refused the moment `Session.open` publishes `effectiveLogFile`. Neither
- * may wait for planning — a run that fails while planning would otherwise deliver its failure
- * result onto the file the operator named as the log, destroying whatever it held.
+ * manifest half is refused inside `Session.open`, as soon as the manifest parses. Neither may
+ * wait for the rest of opening or for planning — a run that fails there would otherwise deliver
+ * its failure result onto the file the operator named as the log, destroying whatever it held.
+ *
+ * Each open-failure case below therefore runs twice: once against another destination, to pin
+ * that the invocation really does fail inside `open` and with which exit code, and once against
+ * the log itself, which must be the usage error instead.
  */
 
 interface Capture extends CliIo {
@@ -29,17 +33,34 @@ function capture(): Capture {
 const PRESERVED = 'PRE-EXISTING LOG';
 const COLLISION = '--result and the effective log file must use different paths for a real run';
 
+/** A second input whose declared options let a supplied value be refused while open resolves. */
+const SELECT_INPUT: readonly string[] = [
+  '  tool:',
+  '    type: select',
+  '    options: [git, docker]',
+];
+
+interface ManifestOptions {
+  readonly logFile?: string | undefined;
+  readonly extraStepKey?: string | undefined;
+  readonly extraInputs?: readonly string[] | undefined;
+}
+
 /** A manifest with one required input, so planning fails unless the value is supplied. */
 function fixture(directory: string, extraStepKey?: string): string {
-  return writeManifest(join(directory, 'installer.yaml'), undefined, extraStepKey);
+  return writeManifest(join(directory, 'installer.yaml'), { extraStepKey });
 }
 
 /** The same manifest, declaring its own log file the way an operator configures one. */
-function logFileFixture(directory: string, logFile: string): string {
-  return writeManifest(join(directory, 'installer.yaml'), logFile);
+function logFileFixture(
+  directory: string,
+  logFile: string,
+  extraInputs?: readonly string[],
+): string {
+  return writeManifest(join(directory, 'installer.yaml'), { logFile, extraInputs });
 }
 
-function writeManifest(manifest: string, logFile?: string, extraStepKey?: string): string {
+function writeManifest(manifest: string, options: ManifestOptions): string {
   writeFileSync(
     manifest,
     [
@@ -47,13 +68,14 @@ function writeManifest(manifest: string, logFile?: string, extraStepKey?: string
       'product:',
       '  name: Example',
       '  version: "1.0.0"',
-      ...(logFile === undefined ? [] : ['execution:', `  logFile: ${logFile}`]),
+      ...(options.logFile === undefined ? [] : ['execution:', `  logFile: ${options.logFile}`]),
       'inputs:',
       '  needed:',
       '    type: text',
+      ...(options.extraInputs ?? []),
       'steps:',
       '  - id: hello',
-      ...(extraStepKey === undefined ? [] : [`    ${extraStepKey}: 1`]),
+      ...(options.extraStepKey === undefined ? [] : [`    ${options.extraStepKey}: 1`]),
       '    run:',
       '      command: node',
       '      args: ["-e", "0"]',
@@ -172,6 +194,77 @@ describe("a --result destination colliding with the manifest's execution.logFile
 
     expect(code).toBe(2);
     expect(io.out).toEqual([]);
+    expect(io.err).toContain(COLLISION);
+    expect(readFileSync(shared, 'utf8')).toBe(PRESERVED);
+  });
+
+  it.each([
+    { name: 'a --set value the input type refuses', argv: () => ['--set', 'tool=podman'] },
+    { name: 'an unknown --set key', argv: () => ['--set', 'nosuch=1'] },
+    {
+      name: 'a missing --values file',
+      argv: (directory: string) => ['--values', join(directory, 'nosuch.yaml')],
+    },
+  ])('is a usage error when open fails on $name', async ({ argv }) => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-cli-open-collision-'));
+    const manifest = logFileFixture(directory, 'run.log', SELECT_INPUT);
+    const shared = join(directory, 'run.log');
+    const invocation = [
+      'run',
+      manifest,
+      '--non-interactive',
+      '--set',
+      'needed=x',
+      '--set',
+      'tool=git',
+      ...argv(directory),
+    ];
+    const elsewhere = capture();
+
+    // The failure is inside Session.open, so a check after open returned could never see it:
+    // before the fix each of these exited 4 and replaced the log with the failure result.
+    expect(
+      await run([...invocation, '--result', join(directory, 'elsewhere.json')], elsewhere),
+    ).toBe(4);
+
+    writeFileSync(shared, PRESERVED, 'utf8');
+    const io = capture();
+
+    expect(await run([...invocation, '--result', shared], io)).toBe(2);
+    expect(io.out).toEqual([]);
+    expect(io.err).toContain(COLLISION);
+    expect(readFileSync(shared, 'utf8')).toBe(PRESERVED);
+  });
+
+  it('is a usage error when a duplicate locale overlay stops open', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-cli-overlay-collision-'));
+    const manifest = logFileFixture(directory, 'run.log');
+    mkdirSync(join(directory, 'locales'));
+    // Two files claiming one locale: overlay names are normalized, so both claim `de-DE`
+    // (RUNE-104). Discovery runs inside open, after the manifest has parsed.
+    for (const name of ['de-DE.yaml', 'de_DE.yaml']) {
+      writeFileSync(join(directory, 'locales', name), 'steps.hello.title: Hallo\n', 'utf8');
+    }
+    const shared = join(directory, 'run.log');
+    const invocation = [
+      'run',
+      manifest,
+      '--non-interactive',
+      '--set',
+      'needed=x',
+      '--locale',
+      'de-DE',
+    ];
+    const elsewhere = capture();
+
+    expect(
+      await run([...invocation, '--result', join(directory, 'elsewhere.json')], elsewhere),
+    ).toBe(3);
+
+    writeFileSync(shared, PRESERVED, 'utf8');
+    const io = capture();
+
+    expect(await run([...invocation, '--result', shared], io)).toBe(2);
     expect(io.err).toContain(COLLISION);
     expect(readFileSync(shared, 'utf8')).toBe(PRESERVED);
   });

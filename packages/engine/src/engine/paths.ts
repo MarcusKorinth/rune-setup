@@ -1,4 +1,4 @@
-import { posix, resolve as resolvePath, sep, win32 } from 'node:path';
+import { normalize, posix, resolve as resolvePath, sep, toNamespacedPath, win32 } from 'node:path';
 
 import type { Platform } from './context.js';
 
@@ -20,6 +20,26 @@ export function isWindowsRootedPath(value: string): boolean {
 /** Resolves an already-classified host-relative value from a fixed base directory. */
 export function resolveManifestRelativePathFrom(value: string, basePath: string): string {
   return resolvePath(basePath, `.${sep}${value}`);
+}
+
+/**
+ * True when two anchored absolute paths name the same sink on this host.
+ *
+ * §4.1 compares a `--result` destination against the effective log file case-insensitively on
+ * Windows and case-sensitively on Linux. The engine owns both sinks, so it owns the comparison:
+ * a frontend that reimplemented it would let one spelling of the same file through.
+ */
+export function sameSinkPath(left: string, right: string): boolean {
+  if (process.platform === 'win32') {
+    return windowsSinkKey(left) === windowsSinkKey(right);
+  }
+  return normalize(left) === normalize(right);
+}
+
+function windowsSinkKey(path: string): string {
+  return toNamespacedPath(normalize(path))
+    .replace(/^\\\\\.\\([A-Za-z]:\\)/u, String.raw`\\?\$1`)
+    .toLowerCase();
 }
 
 /**

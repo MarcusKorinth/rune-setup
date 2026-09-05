@@ -106,9 +106,10 @@ destination after both have been anchored to absolute paths. An exact collision 
 (exit 2). One rule governs when: each half is refused as soon as its anchored path is knowable,
 and never later. The `--log-file` spelling is an argument-level fact, so it is refused at
 invocation, before the session is opened; the manifest's own `execution.logFile` is anchored by
-`Session.open`, so it is refused the moment open returns and publishes `effectiveLogFile`
-(§9.1) — before planning, and therefore before any failure of it. No run that fails while
-opening or planning can deliver its result onto the path the operator named as the log, and both
+`Session.open` as soon as the manifest parses, so the host hands `open` the destination it will
+deliver to (`resultDestination`, §9.1) and the engine refuses that half right there — before the
+locale overlay, the values files, input resolution, or planning can fail. No run that fails after
+its manifest parses can deliver its result onto the path the operator named as the log, and both
 halves are refused before execution or either sink is opened. A manifest that never parses
 configures no log file at all, so that invocation has no effective log destination to collide
 with. Comparison is case-insensitive on Windows and
@@ -387,6 +388,8 @@ export class Session {
     locale?: string;                       // --locale (§6.3)
     platform?: Platform;                   // foreign-platform preview — --dry-run only
     logFile?: string;                      // --log-file; overrides execution.logFile (§10)
+    resultDestination?: string;            // where a real run's --result file goes; open refuses
+                                           // a collision with the effective log file (§4.1)
     environment?: Readonly<Record<string, string | undefined>>; // defaults to process.env
     systemLocale?: string;                 // host locale; defaults to Intl (injectable for hosts/tests)
   }): Promise<Session>;
@@ -427,10 +430,13 @@ registry and is not projected over the Electron bridge.
 `effectiveLogFile` is the frozen pair the session logs through: the anchored `path` its sink
 opens, beside the `announcement` its supplier wrote — the spelling every sink names (§10). It is
 `undefined` when neither `--log-file` nor `execution.logFile` is configured, and it is readable
-the moment `open()` returns, which is what lets a host refuse §4.1's `--result` collision before
-it plans. Anchoring stays engine-owned: a manifest-relative `execution.logFile` resolves against
-the manifest's directory, so a host that re-derived it would resolve against its own working
-directory instead (invariant 13). It is a facade field like `manifest`, `mode`, `platform`, and
+the moment `open()` returns, which is what lets a host name the log in a plan preview without
+re-deriving that precedence. Anchoring stays engine-owned: a manifest-relative
+`execution.logFile` resolves against the manifest's directory, so a host that re-derived it would
+resolve against its own working directory instead (invariant 13) — which is also why §4.1's
+`--result` collision is refused by `open` itself, from the `resultDestination` the host passes,
+at the point inside `open` where the anchored path first exists. It is a facade field like
+`manifest`, `mode`, `platform`, and
 `preview`: §9.2's bridge projects facade *methods* and run events, this adds neither, and
 invariant 11 forbids only the reverse — behavior reachable on the bridge that the facade lacks.
 The bridge therefore needs no entry for it.

@@ -3,12 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, parse, resolve, toNamespacedPath } from 'node:path';
 
-import { resultJsonSchema } from '@rune/engine';
+import { resultJsonSchema, sameSinkPath } from '@rune/engine';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { run, type CliIo } from '../src/cli.js';
-import { samePath } from '../src/runCmd.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -1642,7 +1641,7 @@ describe('rune run', () => {
     'treats ordinary and namespaced UNC sink paths as identical without filesystem access',
     () => {
       expect(
-        samePath(
+        sameSinkPath(
           String.raw`\\server\share\out\run.json`,
           String.raw`\\?\UNC\server\share\out\run.json`,
         ),
@@ -1659,7 +1658,7 @@ describe('rune run', () => {
       ] as const;
 
       for (const [devicePath, namespacedPath] of aliases) {
-        expect(samePath(devicePath, namespacedPath)).toBe(false);
+        expect(sameSinkPath(devicePath, namespacedPath)).toBe(false);
       }
     },
   );
@@ -1683,7 +1682,7 @@ describe('rune run', () => {
       ] as const;
 
       for (const [name, devicePath, namespacedPath] of aliases) {
-        expect(samePath(devicePath, namespacedPath), name).toBe(false);
+        expect(sameSinkPath(devicePath, namespacedPath), name).toBe(false);
       }
     },
   );

@@ -6,7 +6,7 @@
  * invocation uses the non-interactive path regardless of TTY state or flag presence.
  */
 
-import { normalize, resolve, toNamespacedPath } from 'node:path';
+import { resolve } from 'node:path';
 
 import {
   CancelledError,
@@ -15,7 +15,9 @@ import {
   exitCodeFor,
   InternalError,
   PlatformError,
+  RESULT_LOG_COLLISION_MESSAGE,
   RuneError,
+  sameSinkPath,
   serializeResult,
   Session,
   UsageError,
@@ -85,20 +87,25 @@ export async function runCommand(
     if ((flags.values ?? []).includes('')) {
       throw new UsageError('--values needs a non-empty path');
     }
+    // A real run that names a file for its result is the only invocation §4.1's collision rule
+    // governs: a dry run never opens the log, and `--result -` names no file.
+    const deliveredPath =
+      flags.dryRun !== true && resultDestination !== undefined && resultDestination.path !== '-'
+        ? resultDestination.path
+        : undefined;
     // The flag spelling of the collision is an argument-level fact, so refuse it before the
-    // session exists: a run that fails during open would otherwise deliver its failure result
-    // onto the path the operator designated as the log (§4.1). Session.open anchors this flag
-    // against the same cwd, and nothing awaits in between. The manifest's own execution.logFile
-    // needs the engine's anchoring, so that half is refused the moment open publishes it.
+    // session exists: a manifest that never parses configures no log file, and that invocation
+    // would otherwise deliver its failure result onto the path the operator designated as the
+    // log (§4.1). Session.open anchors this flag against the same cwd, and nothing awaits in
+    // between. The manifest's own execution.logFile needs the engine's anchoring, so the engine
+    // refuses that half itself, from the destination handed to open below.
     if (
-      flags.dryRun !== true &&
-      resultDestination !== undefined &&
-      resultDestination.path !== '-' &&
+      deliveredPath !== undefined &&
       flags.logFile !== undefined &&
       flags.logFile !== '' &&
-      samePath(resultDestination.path, resolve(flags.logFile))
+      sameSinkPath(deliveredPath, resolve(flags.logFile))
     ) {
-      throw new UsageError(COLLISION_MESSAGE);
+      throw new UsageError(RESULT_LOG_COLLISION_MESSAGE);
     }
 
     session = await Session.open(manifestPath, {
@@ -108,19 +115,8 @@ export async function runCommand(
       locale: flags.locale,
       logFile: flags.logFile,
       ...(platform === undefined ? {} : { platform }),
+      ...(deliveredPath === undefined ? {} : { resultDestination: deliveredPath }),
     });
-    // Open anchored the effective log file, so the manifest half of the rule is knowable
-    // here — before planning, whose failure would otherwise deliver the failure result onto
-    // that very file (§4.1). The flag half is checked twice, which costs one comparison.
-    if (
-      flags.dryRun !== true &&
-      resultDestination !== undefined &&
-      resultDestination.path !== '-' &&
-      session.effectiveLogFile !== undefined &&
-      samePath(resultDestination.path, session.effectiveLogFile.path)
-    ) {
-      throw new UsageError(COLLISION_MESSAGE);
-    }
     strings = session.getStrings();
 
     plan = session.plan();
@@ -211,24 +207,6 @@ export async function runCommand(
     }
     throw error;
   }
-}
-
-/** Both halves of the §4.1 collision rule report the same misconfiguration. */
-const COLLISION_MESSAGE =
-  '--result and the effective log file must use different paths for a real run';
-
-/** @internal Compare absolute sink paths under the host's path-spelling rules. */
-export function samePath(left: string, right: string): boolean {
-  if (process.platform === 'win32') {
-    return windowsPathKey(left) === windowsPathKey(right);
-  }
-  return normalize(left) === normalize(right);
-}
-
-function windowsPathKey(path: string): string {
-  return toNamespacedPath(normalize(path))
-    .replace(/^\\\\\.\\([A-Za-z]:\\)/u, String.raw`\\?\$1`)
-    .toLowerCase();
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */

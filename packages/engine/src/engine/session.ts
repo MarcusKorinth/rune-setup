@@ -15,6 +15,7 @@ import {
   InternalError,
   projectRuneError,
   RuneError,
+  UsageError,
   type RuneIssue,
 } from '../errors.js';
 import { environmentName, secretArgumentWarnings } from '../manifest/v1/rules.js';
@@ -55,7 +56,7 @@ import {
   type ValuesDocument,
 } from './inputs.js';
 import { buildPlan, type ExecutionPlan } from './plan.js';
-import { resolveManifestRelativePathFrom } from './paths.js';
+import { resolveManifestRelativePathFrom, sameSinkPath } from './paths.js';
 import { SecretRegistry, type SecretMasker } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
@@ -86,6 +87,13 @@ export interface SessionOptions {
   readonly platform?: Platform | undefined;
   /** `--log-file`; overrides the manifest's `execution.logFile` (§10). */
   readonly logFile?: string | undefined;
+  /**
+   * Where this run's result file will be written (§4.1). `open` refuses an exact collision with
+   * the effective log file the moment it anchors one, so no failure of the rest of opening or of
+   * planning can deliver a result onto the operator's log. A host passes it for a real run only:
+   * a dry run never opens the log, and `--result -` names no file.
+   */
+  readonly resultDestination?: string | undefined;
   /** Defaults to this process's environment. */
   readonly environment?: Readonly<Record<string, string | undefined>> | undefined;
   /** What the operating system reports; defaults to `Intl`. Injected so hosts and tests own it. */
@@ -256,6 +264,18 @@ export class Session {
       });
       throw projected;
     }
+    // The manifest's own execution.logFile is anchored here, the first moment §4.1's manifest
+    // half is knowable. Refusing the collision now — before overlays, values files, input
+    // resolution, or planning can fail — is what keeps a failing run from delivering its result
+    // onto the file the operator named as the log, whatever it is that fails.
+    const logFile = effectiveLogFile(flagLogFile, manifest, manifestDir);
+    if (
+      options.resultDestination !== undefined &&
+      logFile !== undefined &&
+      sameSinkPath(resolvePath(invocationCwd, options.resultDestination), logFile.path)
+    ) {
+      throw new UsageError(RESULT_LOG_COLLISION_MESSAGE);
+    }
     const secrets = new SecretRegistry();
     let strings: StringTable | undefined;
     let resolution: Resolution | undefined;
@@ -332,7 +352,7 @@ export class Session {
         // they can render and replace them before planning (§5).
         resolution,
         inputSnapshot,
-        logFile: effectiveLogFile(flagLogFile, manifest, manifestDir),
+        logFile,
         runner,
       });
     } catch (error) {
@@ -673,6 +693,14 @@ function projectOpeningError(error: unknown, secrets: SecretRegistry): RuneError
       : new InternalError('an unexpected error escaped the run pipeline', { cause: error });
   return projectRuneError(runeError, secrets);
 }
+
+/**
+ * What §4.1's collision reads, wherever it is refused. One sentence for both halves: the engine
+ * refuses the manifest half inside `open`, and a host refuses the argument-level `--log-file`
+ * half before opening at all, so the operator must not meet two spellings of one rule.
+ */
+export const RESULT_LOG_COLLISION_MESSAGE =
+  '--result and the effective log file must use different paths for a real run';
 
 /** The anchored log path plus the spelling its supplier wrote, which sinks name (§10). */
 export interface EffectiveLogFile {

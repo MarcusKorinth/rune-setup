@@ -62,7 +62,9 @@ export type {
   ResolvedCommand,
 } from './engine/plan.js';
 
-export { Session } from './engine/session.js';
+export { sameSinkPath } from './engine/paths.js';
+
+export { RESULT_LOG_COLLISION_MESSAGE, Session } from './engine/session.js';
 export type {
   EffectiveLogFile,
   InputStateChanged,
