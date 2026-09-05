@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -686,6 +686,65 @@ describe('writeResult', () => {
 
       expectOperationalResultError(error, 'prepare the directory for', destination);
       expect(existsSync(destination)).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // A host that normalizes the destination itself keeps the spelling its caller supplied, so
+  // the diagnostic names the bytes a secret registry can hold (docs/architecture.md §10).
+  it('names the announced spelling in a RUNE-407 message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const blocker = join(directory, 'blocker');
+    const destination = join(blocker, 'result.json');
+    const announcement = `${blocker}${sep}.${sep}result.json`;
+
+    try {
+      writeFileSync(blocker, 'occupied', 'utf8');
+
+      const error = await rejectionOf(
+        writeResult(result('announced-failure'), destination, { announcement }),
+      );
+
+      expectOperationalResultError(error, 'prepare the directory for', announcement);
+      expect((error as ExecutionError).message).not.toContain(`"${destination}"`);
+      expect(existsSync(destination)).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers to the path an announcement never names', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destination = join(directory, 'result.json');
+    const expected = serializeResult(result('announced-delivery'));
+
+    try {
+      await writeResult(result('announced-delivery'), destination, {
+        announcement: join(directory, 'announced.json'),
+      });
+
+      expect(readFileSync(destination, 'utf8')).toBe(expected);
+      expect(existsSync(join(directory, 'announced.json'))).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('names the path when the options carry no announcement', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const blocker = join(directory, 'blocker');
+    const destination = join(blocker, 'result.json');
+
+    try {
+      writeFileSync(blocker, 'occupied', 'utf8');
+
+      const error = await rejectionOf(writeResult(result('default-announcement'), destination, {}));
+
+      expectOperationalResultError(error, 'prepare the directory for', destination);
       expect(temporaryFiles(directory)).toEqual([]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
