@@ -513,13 +513,22 @@ describe('multiselect', () => {
     expect(String(from('multiselect', '["git",', options))).toContain('not valid JSON');
   });
 
-  it('names every entry that is not an option value', () => {
+  it('names the supplied text once, not the pieces it was split into', () => {
+    // §10: the split entries are spellings RUNE derived, so naming them would print a value
+    // past masks that hold only what the supplier wrote. A native array is named per entry.
     expect(from('multiselect', 'podman,nix', options)).toBe(
+      '"podman,nix" contains values that are not option values ("git", "docker", "Visual Studio, 2022")',
+    );
+    const native = handler('multiselect').fromNative(
+      ['podman', 'nix'],
+      spec('multiselect', options),
+    );
+    expect(native.ok ? undefined : native.message).toBe(
       '"podman", "nix" are not option values ("git", "docker", "Visual Studio, 2022")',
     );
   });
 
-  it('keeps unknown entries and declared option values in their written order', () => {
+  it('keeps declared option values in their written order', () => {
     const result = from('multiselect', 'missing-last,stable,missing-first', {
       options: [
         { value: 'first', label: 'First option' },
@@ -529,7 +538,7 @@ describe('multiselect', () => {
     });
 
     expect(result).toBe(
-      '"missing-last", "missing-first" are not option values ("first", "stable", "last")',
+      '"missing-last,stable,missing-first" contains values that are not option values ("first", "stable", "last")',
     );
   });
 

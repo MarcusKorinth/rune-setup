@@ -218,23 +218,39 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
     entries = value.split(',').map((entry) => entry.trim());
   }
 
-  return membership(entries, spec);
+  return membership(entries, spec, value);
 }
 
-/** The one sentence a value outside the options gets, wherever it was written. */
-function membership(entries: readonly string[], spec: InputSpec): Coercion {
+/**
+ * The one sentence a value outside the options gets, wherever it was written.
+ *
+ * `supplied` is the single text the entries were parsed out of, when there was one. The
+ * diagnostic then names that text instead of the entries: splitting and trimming are
+ * spellings RUNE derived, and a registry holds what its supplier wrote, so naming the pieces
+ * would print a declared secret piece by piece past masks that cannot match any of them
+ * (§10). A native array arrives already in pieces, and each of those its caller did write.
+ */
+function membership(entries: readonly string[], spec: InputSpec, supplied?: string): Coercion {
   const values = optionValues(spec);
   const known = new Set(values);
   const unknown = entries.filter((entry) => !known.has(entry));
   if (unknown.length === 0) {
     return ok(Object.freeze([...entries]));
   }
-  const named = listOptionValues(unknown);
+  const options: readonly DiagnosticPart[] = [' (', ...listOptionValues(values), ')'];
+  if (supplied === undefined) {
+    return fail(
+      ...listOptionValues(unknown),
+      unknown.length === 1 ? ' is not one of the option values' : ' are not option values',
+      ...options,
+    );
+  }
   return fail(
-    ...named,
-    ` ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (`,
-    ...listOptionValues(values),
-    ')',
+    quotedDiagnostic(supplied),
+    entries.length === 1
+      ? ' is not one of the option values'
+      : ' contains values that are not option values',
+    ...options,
   );
 }
 

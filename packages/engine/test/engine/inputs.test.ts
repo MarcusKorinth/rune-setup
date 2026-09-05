@@ -837,6 +837,42 @@ describe('values a type refuses', () => {
     ]);
   });
 
+  it('masks a declared secret in a membership diagnostic, whichever type saw it', () => {
+    // The registry holds the whole supplied value, never the pieces RUNE splits it into, so
+    // a diagnostic naming those pieces printed the secret past every mask (§10). select and
+    // multiselect are fed the identical text and must agree.
+    const withSecret = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+      '  tool:',
+      '    type: select',
+      '    options: [git, docker]',
+    );
+
+    for (const value of ['alphaonly,betaonly', '["alphaonly","betaonly"]']) {
+      const messages = problems(withSecret, {
+        overrides: new Map([
+          ['token', value],
+          ['tools', value],
+          ['tool', value],
+        ]),
+      });
+
+      expect(messages.join('\n')).not.toContain('alphaonly');
+      expect(messages.join('\n')).not.toContain('betaonly');
+      expect(messages).toContain(
+        'tools (from --set tools=…): "***" contains values that are not option values ("git", "docker")',
+      );
+      expect(messages).toContain(
+        'tool (from --set tool=…): "***" is not one of the option values ("git", "docker")',
+      );
+    }
+  });
+
   it('names the environment variable it read', () => {
     expect(problems(manifest, {}, { RUNE_INPUT_PORT: 'x' })[0]).toBe(
       'port (from the environment variable RUNE_INPUT_PORT): "x" does not match [0-9]{2,5}',
