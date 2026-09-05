@@ -26,9 +26,10 @@ export interface BootstrapOptions {
   readonly control?: CliControl;
   /**
    * Publishes an exit code decided after this call resolved: a stdout sink can report its loss
-   * once the run has already returned its own code, and the caller has taken it.
+   * once the run has already returned its own code, and the caller has taken it. Required, so
+   * a host cannot drop the hook and silently turn a lost sink back into a false success.
    */
-  readonly setExitCode?: (code: number) => void;
+  readonly setExitCode: (code: number) => void;
 }
 
 /**
@@ -44,12 +45,12 @@ export interface BootstrapOptions {
 export async function bootstrap(
   argv: readonly string[],
   streams: BootstrapStreams,
-  options: BootstrapOptions = {},
+  options: BootstrapOptions,
 ): Promise<number> {
   const stderr = guardStream(streams.stderr);
   const stdout = guardStream(streams.stdout, () => {
     stderr.writeLine('could not write the requested machine output to stdout');
-    options.setExitCode?.(INTERNAL_EXIT_CODE);
+    options.setExitCode(INTERNAL_EXIT_CODE);
   });
   const code = await run(
     argv,
