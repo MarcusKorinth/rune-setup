@@ -85,6 +85,22 @@ export async function runCommand(
     if ((flags.values ?? []).includes('')) {
       throw new UsageError('--values needs a non-empty path');
     }
+    // The flag spelling of the collision is an argument-level fact, so refuse it before the
+    // session exists: a run that fails during open or planning would otherwise deliver its
+    // failure result onto the path the operator designated as the log (§4.1). Session.open
+    // anchors this flag against the same cwd, and nothing awaits in between. The manifest's
+    // own execution.logFile is only knowable once the engine has anchored it, so that half
+    // stays below, after planning.
+    if (
+      flags.dryRun !== true &&
+      resultDestination !== undefined &&
+      resultDestination.path !== '-' &&
+      flags.logFile !== undefined &&
+      flags.logFile !== '' &&
+      samePath(resultDestination.path, resolve(flags.logFile))
+    ) {
+      throw new UsageError(COLLISION_MESSAGE);
+    }
 
     session = await Session.open(manifestPath, {
       mode: 'non-interactive',
@@ -104,9 +120,7 @@ export async function runCommand(
       plan.executionOptions.logFile !== undefined &&
       samePath(resultDestination.path, plan.executionOptions.logFile)
     ) {
-      throw new UsageError(
-        '--result and the effective log file must use different paths for a real run',
-      );
+      throw new UsageError(COLLISION_MESSAGE);
     }
     if (flags.dryRun === true && control.cancel?.isCancelled === true) {
       throw new CancelledError();
@@ -195,6 +209,10 @@ export async function runCommand(
     throw error;
   }
 }
+
+/** Both halves of the §4.1 collision rule report the same misconfiguration. */
+const COLLISION_MESSAGE =
+  '--result and the effective log file must use different paths for a real run';
 
 /** @internal Compare absolute sink paths under the host's path-spelling rules. */
 export function samePath(left: string, right: string): boolean {
