@@ -18,7 +18,9 @@
  * `JSON.stringify(` — in a template substitution, in a `+` concatenation, hoisted into a local,
  * or passed straight to a helper — and any call to one of the four named escapers
  * (`escapeDiagnosticText`, `quoteDiagnosticText`, `escapeTerminalText`, `safeJson`) outside its
- * own definition. It cannot catch: an escape spread over several lines; a value escaped behind a
+ * own definition, and a member name inside an import statement — but only there, so an escaper
+ * passed as a bare argument on its own line is still caught. It cannot catch: an escape spread
+ * over several lines; a value escaped behind a
  * *newly written* helper, since only the four names above are known; manual `"${value}"` quoting
  * inside a template (interpolate.ts and the manifest presenter quote machine identities that way
  * on dozens of lines, which would make the list noise rather than documentation); and a value
@@ -58,8 +60,11 @@ const PRESENTATION_ESCAPER =
 /** An escaper's own definition line, which is the escaper rather than a use of one. */
 const ESCAPER_DEFINITION = /^(?:export )?function \w+\(/u;
 
-/** An import — whole, or one member of a multi-line one: naming an escaper is not using it. */
-const IMPORTED_NAME = /^(?:import\b.*|\w+,?)$/u;
+/** The start of an import statement: naming an escaper there is not using it. */
+const IMPORT_START = /^import\b/u;
+
+/** What closes a multi-line import, so its members are skipped and no following line is. */
+const IMPORT_END = /\bfrom\b|^\}/u;
 
 interface Site {
   readonly file: string;
@@ -241,14 +246,16 @@ function sourceFiles(directory: string): readonly string[] {
 /** Every line of one file that escapes a value where a masker has not run yet. */
 function escapingSites(file: string, text: string): readonly Site[] {
   const sites: Site[] = [];
+  let insideImport = false;
   text.split(/\r?\n/u).forEach((code, index) => {
     const trimmed = code.trim();
-    if (
-      trimmed.startsWith('*') ||
-      trimmed.startsWith('//') ||
-      ESCAPER_DEFINITION.test(trimmed) ||
-      IMPORTED_NAME.test(trimmed)
-    ) {
+    // The member-name skip belongs to import blocks alone. Outside one, a line that is just
+    // `escapeTerminalText,` is an argument to a call and escapes for real.
+    if (insideImport || IMPORT_START.test(trimmed)) {
+      insideImport = !IMPORT_END.test(trimmed);
+      return;
+    }
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || ESCAPER_DEFINITION.test(trimmed)) {
       return;
     }
     if (JSON_STRINGIFY.test(trimmed) || PRESENTATION_ESCAPER.test(trimmed)) {
@@ -304,6 +311,19 @@ describe('diagnostic composition', () => {
     ].join('\n');
 
     expect(escapingSites('scratch.ts', composed)).toEqual([]);
+  });
+
+  it('catches an escaper passed as a bare argument on its own line', () => {
+    // This reads identically to one member of a multi-line import, and it escapes every
+    // element before any mask can see it, so the skip must not reach it.
+    const spread = `import { escapeTerminalText } from './io.js';
+const rendered = lines.map(
+  escapeTerminalText,
+);`;
+
+    expect(escapingSites('scratch.ts', spread).map((site) => site.code)).toEqual([
+      'escapeTerminalText,',
+    ]);
   });
 
   it('keeps every allowed entry pinned to a line that still exists', () => {
