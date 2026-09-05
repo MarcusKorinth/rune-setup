@@ -424,6 +424,61 @@ describe('rune run', () => {
     expect(io.err.join('\n')).not.toContain(derivedSecret);
   });
 
+  it('masks a derived secret in the result when later planning fails', async () => {
+    const relativeSecret = 'private/../setup.cmd';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      'steps:',
+      '  - id: derive',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+      '  - id: fail',
+      '    run:',
+      '      command: "${mirror}"',
+    ]);
+    const derivedSecret = resolve(path, '..', relativeSecret);
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--platform',
+          'windows',
+          '--result',
+          '-',
+          '--set',
+          `workingDirectory=${relativeSecret}`,
+          '--set',
+          `mirror=${derivedSecret}`,
+        ],
+        io,
+      ),
+    ).toBe(1);
+    expect(io.out).toHaveLength(1);
+    expect(JSON.parse(io.out[0] ?? '')).toMatchObject({
+      status: 'failed',
+      error: { code: 'RUNE-405' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+      ],
+    });
+    expect([...io.out, ...io.err].join('\n')).not.toContain(derivedSecret);
+  });
+
   it('keeps control-containing result JSON machine-readable', async () => {
     const controlled = 'value\u001b\u0085\u2028\u2029';
     const path = fixture([

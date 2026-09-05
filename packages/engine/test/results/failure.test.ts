@@ -1084,6 +1084,10 @@ describe('createFailureResult', () => {
       'product:',
       '  name: Example',
       '  version: "1.0.0"',
+      'inputs:',
+      '  channel:',
+      '    type: text',
+      '    default: stable',
       'steps:',
       '  - id: runnable',
       '    run:',
@@ -1099,6 +1103,9 @@ describe('createFailureResult', () => {
       plan,
     });
     expect(externalResult).toMatchObject({ status: 'internal_error', exitCode: 70 });
+    expect(externalResult.inputs).toMatchObject([
+      { id: 'channel', value: 'stable', source: 'default' },
+    ]);
     expect(externalResult.steps).toMatchObject([{ id: 'runnable', state: 'NOT_RUN' }]);
   });
 

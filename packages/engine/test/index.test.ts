@@ -54,6 +54,7 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'parseValuesFileAsync',
   'secretArgumentWarnings',
   'snapshotHostBuiltIns',
+  'planningFailureContextFor',
 ] as const;
 
 type StringTableIsExported = StringTable extends object ? true : false;

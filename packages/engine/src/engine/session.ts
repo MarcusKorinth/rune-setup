@@ -55,7 +55,12 @@ import {
   type Resolution,
   type ValuesDocument,
 } from './inputs.js';
-import { buildPlan, executionContextFor, type ExecutionPlan } from './plan.js';
+import {
+  buildPlan,
+  executionContextFor,
+  planningFailureContextFor,
+  type ExecutionPlan,
+} from './plan.js';
 import { resolveManifestRelativePathFrom, sameSinkPath } from './paths.js';
 import { registryFromSecretMasker, SecretRegistry, type SecretMasker } from './secrets.js';
 
@@ -616,7 +621,8 @@ export class Session {
       registerFailureResultSession(this, planSecrets, plan);
       return plan;
     } catch (error) {
-      throw this.#projectError(error);
+      const planningError = planningFailureContextFor(error) === undefined ? undefined : error;
+      throw this.#projectError(error, undefined, planningError);
     }
   }
 
@@ -624,13 +630,18 @@ export class Session {
     return this.#plan === undefined ? this.#secrets : executionContextFor(this.#plan).secrets;
   }
 
-  #projectError(error: unknown, candidateSecrets?: SecretRegistry): unknown {
+  #projectError(
+    error: unknown,
+    candidateSecrets?: SecretRegistry,
+    planningError?: unknown,
+  ): unknown {
     if (!(error instanceof RuneError)) {
       return error;
     }
+    const planningFailure = planningFailureContextFor(planningError);
     const activeSecrets = this.#sinkSecrets();
     let errorToProject = error;
-    let secrets: SecretMasker = candidateSecrets ?? activeSecrets;
+    let secrets: SecretMasker = planningFailure?.secrets ?? candidateSecrets ?? activeSecrets;
     if (candidateSecrets !== undefined && this.#plan !== undefined) {
       try {
         secrets = registryFromSecretMasker(activeSecrets).combinedWith(candidateSecrets);
@@ -646,7 +657,7 @@ export class Session {
       }
     }
     const projected = projectRuneError(errorToProject, secrets);
-    registerFailureResultError(projected, this);
+    registerFailureResultError(projected, this, planningFailure === undefined ? undefined : error);
     return projected;
   }
 

@@ -11,6 +11,7 @@ import {
   InputError,
   InternalError,
   ResolutionError,
+  RuneError,
   type RuneIssue,
 } from '../errors.js';
 import {
@@ -138,7 +139,14 @@ export interface PlanExecutionContext {
   readonly secrets: SecretMasker;
 }
 
+/** Attempt-local masking context. Deliberately not re-exported from the package entry point. */
+export interface PlanningFailureContext {
+  readonly secrets: SecretMasker;
+  readonly incompleteSecretRegistration: boolean;
+}
+
 const executionContexts = new WeakMap<ExecutionPlan, PlanExecutionContext>();
+const planningFailureContexts = new WeakMap<RuneError, PlanningFailureContext>();
 
 /** Returns the context belonging to this exact plan instance, or fails closed. */
 export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
@@ -147,6 +155,11 @@ export function executionContextFor(plan: ExecutionPlan): PlanExecutionContext {
     throw new InternalError('the execution plan was not created by buildPlan');
   }
   return executionContext;
+}
+
+/** Returns masking provenance bound to this exact failed buildPlan error instance. */
+export function planningFailureContextFor(error: unknown): PlanningFailureContext | undefined {
+  return error instanceof RuneError ? planningFailureContexts.get(error) : undefined;
 }
 
 /** Builds the frozen plan. The manifest was validated, so surprises here are RUNE's bugs. */
@@ -174,58 +187,74 @@ export function buildPlan(options: PlanOptions): ExecutionPlan {
   rejectIncompleteResolution(resolved);
   const planSecrets = registryFromSecretMasker(resolved.secrets);
 
-  const interpolatedSteps = manifest.steps.map((step): PlannedStep => {
-    const title = options.strings?.stepTitle(step.id) ?? step.title ?? step.id;
+  try {
+    const interpolatedSteps = manifest.steps.map((step): PlannedStep => {
+      const title = options.strings?.stepTitle(step.id) ?? step.title ?? step.id;
 
-    const command = commandFor(step.run, trustedContext);
-    if (command === undefined) {
+      const command = commandFor(step.run, trustedContext);
+      if (command === undefined) {
+        return {
+          id: step.id,
+          title,
+          state: 'SKIPPED',
+          skipReason: 'no run block for platform',
+        };
+      }
+
+      if (step.when !== undefined && !holds(step.when, step.id, resolved, trustedContext)) {
+        return {
+          id: step.id,
+          title,
+          state: 'SKIPPED',
+          skipReason: `condition false: ${step.when}`,
+        };
+      }
+
       return {
         id: step.id,
         title,
-        state: 'SKIPPED',
-        skipReason: 'no run block for platform',
+        state: 'PENDING',
+        command: resolveCommand(command, step.id, resolved, trustedContext, planSecrets),
       };
+    });
+    // Secret path anchoring above can add derived values to the plan-local registry. Only now
+    // is the complete immutable masking view known. Use it both for public plan fields and to
+    // make any byte-colliding execution values opaque without growing the registry again.
+    const secrets = planSecrets.snapshot();
+    const resolvedInputs = resolved.inputs.map((state) => snapshotInput(state, secrets));
+    const steps = interpolatedSteps.map((step) => protectStep(step, secrets));
+
+    const plan: ExecutionPlan = deepFreeze({
+      planSchemaVersion: PLAN_SCHEMA_VERSION,
+      manifestPath: manifestDescriptor.path,
+      manifestSha256: manifestDescriptor.sha256,
+      platform: trustedContext.platform,
+      locale: locale ?? null,
+      preview: trustedContext.preview,
+      resolvedInputs,
+      executionOptions: {
+        failFast: manifest.execution.failFast,
+        logFile: options.logFile ?? manifest.execution.logFile,
+      },
+      steps,
+    });
+    executionContexts.set(plan, snapshotExecutionContext(manifest, manifestDescriptor, secrets));
+    return plan;
+  } catch (error) {
+    if (error instanceof RuneError) {
+      // A later step can fail after earlier secret transformations were registered. Keep that
+      // exact attempt's immutable view private to the thrown error; failed plans publish no
+      // Session state. RUNE-202 here means a transformation could not be registered completely.
+      planningFailureContexts.set(
+        error,
+        Object.freeze({
+          secrets: planSecrets.snapshot(),
+          incompleteSecretRegistration: error instanceof InputError && error.code === 'RUNE-202',
+        }),
+      );
     }
-
-    if (step.when !== undefined && !holds(step.when, step.id, resolved, trustedContext)) {
-      return {
-        id: step.id,
-        title,
-        state: 'SKIPPED',
-        skipReason: `condition false: ${step.when}`,
-      };
-    }
-
-    return {
-      id: step.id,
-      title,
-      state: 'PENDING',
-      command: resolveCommand(command, step.id, resolved, trustedContext, planSecrets),
-    };
-  });
-  // Secret path anchoring above can add derived values to the plan-local registry. Only now
-  // is the complete immutable masking view known. Use it both for public plan fields and to
-  // make any byte-colliding execution values opaque without growing the registry again.
-  const secrets = planSecrets.snapshot();
-  const resolvedInputs = resolved.inputs.map((state) => snapshotInput(state, secrets));
-  const steps = interpolatedSteps.map((step) => protectStep(step, secrets));
-
-  const plan: ExecutionPlan = deepFreeze({
-    planSchemaVersion: PLAN_SCHEMA_VERSION,
-    manifestPath: manifestDescriptor.path,
-    manifestSha256: manifestDescriptor.sha256,
-    platform: trustedContext.platform,
-    locale: locale ?? null,
-    preview: trustedContext.preview,
-    resolvedInputs,
-    executionOptions: {
-      failFast: manifest.execution.failFast,
-      logFile: options.logFile ?? manifest.execution.logFile,
-    },
-    steps,
-  });
-  executionContexts.set(plan, snapshotExecutionContext(manifest, manifestDescriptor, secrets));
-  return plan;
+    throw error;
+  }
 }
 
 /** The built-ins used for planning must belong to the exact manifest being planned. */

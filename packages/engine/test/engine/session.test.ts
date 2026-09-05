@@ -22,6 +22,7 @@ import {
   revealSecretString,
 } from '../../src/engine/secrets.js';
 import {
+  CancelledError,
   ExecutionError,
   formatIssues,
   formatRuneError,
@@ -1398,7 +1399,208 @@ describe('answering inputs', () => {
   });
 
   it('publishes no plan-masked input snapshot when planning fails', async () => {
-    const relativeSecret = 'private/../secret-target';
+    const relativeSecret = 'private/../setup.cmd';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      '  unrelated:',
+      '    type: text',
+      '    default: before',
+      '  enabled:',
+      '    type: boolean',
+      '    default: true',
+      'steps:',
+      '  - id: derive',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+      '  - id: fail',
+      '    run:',
+      '      command: "${mirror}"',
+    ]);
+    const derivedSecret = resolve(dirname(path), relativeSecret);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+      overrides: { workingDirectory: relativeSecret, mirror: derivedSecret },
+      platform: 'windows',
+    });
+    const inputs = session.allInputs();
+    const pending = session.pendingInputs();
+    const strings = session.getStrings();
+
+    let planningError: ExecutionError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionError);
+      planningError = error as ExecutionError;
+    }
+    expect(planningError).toMatchObject({ code: 'RUNE-405' });
+    expect(planningError?.message).toContain('***');
+    expect(planningError?.message).not.toContain(derivedSecret);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(session.allInputs().find((input) => input.id === 'mirror')?.value).toBe(derivedSecret);
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
+
+    const failure = executor.createFailureResult({
+      error: planningError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(failure).toMatchObject({
+      status: 'failed',
+      error: { code: 'RUNE-405' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+        { id: 'unrelated', value: 'before', secret: false },
+        { id: 'enabled', value: true, secret: false },
+      ],
+    });
+    expect(JSON.stringify(failure)).not.toContain(derivedSecret);
+
+    const cancelledFailure = executor.createFailureResult({
+      error: new CancelledError(),
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(cancelledFailure).toMatchObject({
+      status: 'cancelled',
+      error: { code: 'RUNE-601' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+        { id: 'unrelated', value: '***', secret: false },
+        { id: 'enabled', value: true, secret: false },
+      ],
+    });
+    expect(JSON.stringify(cancelledFailure)).not.toContain(derivedSecret);
+
+    let rejectedError: InputError | undefined;
+    try {
+      session.setValue('unknown', 'rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      rejectedError = error as InputError;
+    }
+    const rejectedFailure = executor.createFailureResult({
+      error: rejectedError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(rejectedFailure).toMatchObject({
+      status: 'input_error',
+      error: { code: 'RUNE-203' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+        { id: 'unrelated', value: '***', secret: false },
+        { id: 'enabled', value: true, secret: false },
+      ],
+    });
+    expect(JSON.stringify(rejectedFailure)).not.toContain(derivedSecret);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+
+    const foreignFailure = executor.createFailureResult({
+      error: new ExecutionError('RUNE-405', planningError!.message),
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(foreignFailure).toMatchObject({
+      status: 'internal_error',
+      error: { code: 'RUNE-500' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+        { id: 'unrelated', value: '***', secret: false },
+        { id: 'enabled', value: true, secret: false },
+      ],
+    });
+    expect(JSON.stringify(foreignFailure)).not.toContain(derivedSecret);
+
+    expect(session.setValue('unrelated', 'after')).toEqual([]);
+    const staleFailure = executor.createFailureResult({
+      error: planningError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(staleFailure).toMatchObject({
+      status: 'internal_error',
+      error: { code: 'RUNE-500' },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+        { id: 'unrelated', value: '***', secret: false },
+        { id: 'enabled', value: true, secret: false },
+      ],
+    });
+    expect(JSON.stringify(staleFailure)).not.toContain(derivedSecret);
+    expect(() => session.plan()).toThrow(/needs a shell/);
+    expect(session.allInputs()).not.toBe(inputs);
+    expect(session.pendingInputs()).not.toBe(pending);
+  });
+
+  it('preserves ordinary strings before any failed planning attempt', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  channel:',
+      '    type: text',
+      '    default: stable',
+      '  enabled:',
+      '    type: boolean',
+      '    default: true',
+      'steps: []',
+    ]);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+    });
+
+    let rejectedError: InputError | undefined;
+    try {
+      session.setValue('unknown', 'rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      rejectedError = error as InputError;
+    }
+    const failure = executor.createFailureResult({
+      error: rejectedError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+
+    expect(failure).toMatchObject({
+      status: 'input_error',
+      error: { code: 'RUNE-203' },
+      inputs: [
+        { id: 'channel', value: 'stable', source: 'default', secret: false },
+        { id: 'enabled', value: true, source: 'default', secret: false },
+      ],
+    });
+  });
+
+  it('fails closed when a plan cannot register a derived secret spelling', async () => {
+    const relativeSecret = `private/../${'a'.repeat(132_000)}`;
     const path = fixture([
       'schemaVersion: 1',
       'product:',
@@ -1414,27 +1616,51 @@ describe('answering inputs', () => {
       '    run:',
       '      command: node',
       '      cwd: "${workingDirectory}"',
-      '  - id: fail',
-      '    run:',
-      '      command: setup.cmd',
     ]);
     const derivedSecret = resolve(dirname(path), relativeSecret);
     const session = await Session.open(path, {
       environment: {},
       mode: 'interactive',
       overrides: { workingDirectory: relativeSecret, mirror: derivedSecret },
-      platform: 'windows',
     });
     const inputs = session.allInputs();
     const pending = session.pendingInputs();
+    const strings = session.getStrings();
 
-    expect(() => session.plan()).toThrow(/needs a shell/);
+    let planningError: InputError | undefined;
+    try {
+      session.plan();
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      planningError = error as InputError;
+    }
+    expect(planningError).toMatchObject({
+      code: 'RUNE-202',
+      message: 'the total size of secret input values exceeds the masking safety limit',
+    });
     expect(session.allInputs()).toBe(inputs);
     expect(session.pendingInputs()).toBe(pending);
     expect(session.allInputs().find((input) => input.id === 'mirror')?.value).toBe(derivedSecret);
-    expect(() => session.plan()).toThrow(/needs a shell/);
-    expect(session.allInputs()).toBe(inputs);
-    expect(session.pendingInputs()).toBe(pending);
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
+
+    const failure = executor.createFailureResult({
+      error: planningError!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(failure).toMatchObject({
+      status: 'input_error',
+      error: {
+        code: 'RUNE-202',
+        message: 'the total size of secret input values exceeds the masking safety limit',
+      },
+      inputs: [
+        { id: 'workingDirectory', value: null, secret: true },
+        { id: 'mirror', value: '***', secret: false },
+      ],
+    });
+    expect(JSON.stringify(failure)).not.toContain(derivedSecret);
   });
 
   it('preserves failure provenance when a plan and rejected candidate exceed masking capacity', async () => {

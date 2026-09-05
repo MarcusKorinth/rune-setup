@@ -26,6 +26,7 @@ import { manifestDescriptorFor, type Manifest } from '../manifest/index.js';
 import { RUNE_VERSION } from '../version.js';
 import {
   executionContextFor,
+  planningFailureContextFor,
   type ExecutionPlan,
   type PlanExecutionContext,
   type PlanInput,
@@ -102,6 +103,7 @@ interface FailureResultSessionContext {
 }
 
 const sessionFailureContexts = new WeakMap<FailureResultSession, FailureResultSessionContext>();
+const failedPlanningSessionContexts = new WeakSet<FailureResultSessionContext>();
 
 type FailureProjectionKind =
   | 'config_error'
@@ -123,6 +125,8 @@ interface RegisteredSessionFailureError {
   readonly projection: FailureErrorProjection;
   readonly sessionContext?: FailureResultSessionContext;
   readonly openSecrets?: SecretMasker;
+  readonly planningSecrets?: SecretMasker;
+  readonly failClosedInputValues?: boolean;
 }
 
 interface PreManifestFailureContext {
@@ -153,16 +157,34 @@ export function registerFailureResultSession(
 }
 
 /** Package-internal binding for a safe RuneError projection leaving an opened Session. */
-export function registerFailureResultError(error: RuneError, session: FailureResultSession): void {
+export function registerFailureResultError(
+  error: RuneError,
+  session: FailureResultSession,
+  planningError?: RuneError,
+): void {
   const sessionContext = sessionFailureContexts.get(session);
   if (sessionContext === undefined) {
     throw new InternalError('a failure error requires an authentic opened Session');
+  }
+  const planningFailure =
+    planningError === undefined ? undefined : planningFailureContextFor(planningError);
+  if (planningError !== undefined && planningFailure === undefined) {
+    throw new InternalError('a planning failure error requires authentic buildPlan provenance');
+  }
+  if (planningFailure !== undefined) {
+    failedPlanningSessionContexts.add(sessionContext);
   }
   registeredFailureErrors.set(error, {
     kind: 'session',
     session,
     sessionContext,
     projection: snapshotSessionFailureError(error),
+    ...(planningFailure === undefined
+      ? {}
+      : {
+          planningSecrets: planningFailure.secrets,
+          failClosedInputValues: planningFailure.incompleteSecretRegistration,
+        }),
   });
 }
 
@@ -689,7 +711,11 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
   }
 
   const executionContext = plan === undefined ? undefined : executionContextFor(plan);
-  const secrets = executionContext?.secrets ?? sessionSecrets ?? IDENTITY_MASKER;
+  const planningSecrets =
+    registeredErrorIsCurrent && registeredSessionError !== undefined
+      ? registeredSessionError.planningSecrets
+      : undefined;
+  const secrets = executionContext?.secrets ?? planningSecrets ?? sessionSecrets ?? IDENTITY_MASKER;
   const projection =
     registeredPreManifestError !== undefined
       ? registeredPreManifestError.projection
@@ -700,6 +726,13 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
           : registeredSessionError === undefined && error instanceof CancelledError
             ? CANONICAL_CANCELLED_PROJECTION
             : GENERIC_INTERNAL_PROJECTION;
+  const failClosedInputValues =
+    executionContext === undefined &&
+    ((registeredErrorIsCurrent && registeredSessionError?.failClosedInputValues === true) ||
+      (projection === GENERIC_INTERNAL_PROJECTION && sessionContext?.plan === undefined) ||
+      (sessionContext !== undefined &&
+        failedPlanningSessionContexts.has(sessionContext) &&
+        planningSecrets === undefined));
   const outcome = failureOutcome(projection, dryRun);
   if (
     session === undefined &&
@@ -724,6 +757,7 @@ export function createFailureResult(options: FailureResultOptions): RunResult {
     executionContext,
     session,
     secrets,
+    failClosedInputValues,
   );
   const steps = failureSteps(plan, dryRun, secrets);
   const now = new Date();
@@ -789,6 +823,7 @@ function failureSource(
   executionContext: PlanExecutionContext | undefined,
   session: FailureResultSession | undefined,
   secrets: SecretMasker,
+  failClosedInputValues: boolean,
 ): FailureSource {
   if (plan !== undefined && executionContext !== undefined) {
     return {
@@ -812,7 +847,7 @@ function failureSource(
       inputs: session
         .allInputs()
         .filter((input) => input.value !== undefined)
-        .map((input) => sessionResultInput(input, secrets)),
+        .map((input) => sessionResultInput(input, secrets, failClosedInputValues)),
     };
   }
   return {
@@ -841,7 +876,11 @@ function failureSteps(
   );
 }
 
-function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInput {
+function sessionResultInput(
+  state: InputState,
+  secrets: SecretMasker,
+  failClosedInputValues: boolean,
+): ResultInput {
   if (state.value === undefined) {
     throw new InternalError(`input "${state.id}" has no value in a failure result`);
   }
@@ -851,14 +890,22 @@ function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInp
     if (state.secret) {
       return { ...common, value: null, secret: true };
     }
-    return { ...common, value: maskInputValue(state.value, secrets), secret: false };
+    return {
+      ...common,
+      value: maskSessionInputValue(state.value, secrets, failClosedInputValues),
+      secret: false,
+    };
   }
   if (state.ignored === undefined) {
     const common = { id: state.id, source: null, enabled: false as const };
     if (state.secret) {
       return { ...common, value: null, secret: true };
     }
-    return { ...common, value: maskInputValue(state.value, secrets), secret: false };
+    return {
+      ...common,
+      value: maskSessionInputValue(state.value, secrets, failClosedInputValues),
+      secret: false,
+    };
   }
   if (state.ignored === 'default') {
     throw new InternalError('invalid disabled input provenance');
@@ -872,7 +919,22 @@ function sessionResultInput(state: InputState, secrets: SecretMasker): ResultInp
   if (state.secret) {
     return { ...common, value: null, secret: true };
   }
-  return { ...common, value: maskInputValue(state.value, secrets), secret: false };
+  return {
+    ...common,
+    value: maskSessionInputValue(state.value, secrets, failClosedInputValues),
+    secret: false,
+  };
+}
+
+function maskSessionInputValue(
+  value: string | boolean | readonly string[],
+  secrets: SecretMasker,
+  failClosed: boolean,
+): string | boolean | readonly string[] {
+  if (!failClosed || typeof value === 'boolean') {
+    return maskInputValue(value, secrets);
+  }
+  return typeof value === 'string' ? MASK : value.map(() => MASK);
 }
 
 function failureOutcome(projection: FailureErrorProjection, dryRun: boolean): RunOutcome {
