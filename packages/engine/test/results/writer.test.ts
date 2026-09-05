@@ -687,6 +687,11 @@ describe('writeResult', () => {
       expectOperationalResultError(error, 'prepare the directory for', destination);
       expect(existsSync(destination)).toBe(false);
       expect(temporaryFiles(directory)).toEqual([]);
+      // Options that carry no announcement name the path, exactly as omitting them does.
+      const withEmptyOptions = await rejectionOf(
+        writeResult(result('blocked-parent'), destination, {}),
+      );
+      expect((withEmptyOptions as ExecutionError).message).toBe((error as ExecutionError).message);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -728,23 +733,6 @@ describe('writeResult', () => {
 
       expect(readFileSync(destination, 'utf8')).toBe(expected);
       expect(existsSync(join(directory, 'announced.json'))).toBe(false);
-      expect(temporaryFiles(directory)).toEqual([]);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it('names the path when the options carry no announcement', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
-    const blocker = join(directory, 'blocker');
-    const destination = join(blocker, 'result.json');
-
-    try {
-      writeFileSync(blocker, 'occupied', 'utf8');
-
-      const error = await rejectionOf(writeResult(result('default-announcement'), destination, {}));
-
-      expectOperationalResultError(error, 'prepare the directory for', destination);
       expect(temporaryFiles(directory)).toEqual([]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
