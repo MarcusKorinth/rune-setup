@@ -191,14 +191,20 @@ export async function runCommand(
           ...(session === undefined ? {} : { session }),
           ...(plan === undefined ? {} : { plan }),
         });
-      // An open failure may have registered secret candidates without returning the session's
-      // masking StringTable. In that case the projected diagnostic above is the only safe human
-      // output; still deliver the machine result, but do not compose additional fallback lines.
+      // Only a completed plan carries the full derived-secret masker. Before then the projected
+      // diagnostic above is the only safe human output from an opened Session; still deliver the
+      // machine result, but do not compose locale, warning, or path-announcement fallback lines.
       const renderFallback =
-        session !== undefined || (result.status === 'config_error' && result.product === null);
+        plan !== undefined || (result.status === 'config_error' && result.product === null);
       if (resultDestination !== undefined) {
         deliveryStarted = true;
-        await deliverResult(result, resultDestination, io, strings, renderFallback);
+        await deliverResult(
+          result,
+          resultDestination,
+          io,
+          renderFallback ? strings : undefined,
+          renderFallback,
+        );
       }
       if (renderFallback) {
         renderOutcome(result, session?.warnings() ?? [], io, strings);

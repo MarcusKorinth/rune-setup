@@ -424,7 +424,7 @@ describe('rune run', () => {
     expect(io.err.join('\n')).not.toContain(derivedSecret);
   });
 
-  it('masks a derived secret in the result when later planning fails', async () => {
+  it('masks a derived secret in the result and suppresses unsafe terminal fallback', async () => {
     const relativeSecret = 'private/../setup.cmd';
     const path = fixture([
       'schemaVersion: 1',
@@ -446,6 +446,7 @@ describe('rune run', () => {
       '      command: "${mirror}"',
     ]);
     const derivedSecret = resolve(path, '..', relativeSecret);
+    writeLocaleOverlay(path, [`rune.result.failed: ${JSON.stringify(derivedSecret)}`]);
     const io = capture();
 
     expect(
@@ -457,6 +458,8 @@ describe('rune run', () => {
           '--non-interactive',
           '--platform',
           'windows',
+          '--locale',
+          'de',
           '--result',
           '-',
           '--set',
@@ -2161,7 +2164,7 @@ describe('result files for failed outcomes', () => {
     expect(io.out[0]).not.toContain('Execution plan');
   });
 
-  it('preserves post-open context and renders session warnings once on plan failure', async () => {
+  it('preserves post-open context and suppresses fallback after plan failure', async () => {
     const secret = 'failure-path-secret';
     const path = fixture([
       'schemaVersion: 1',
@@ -2226,8 +2229,110 @@ describe('result files for failed outcomes', () => {
     });
     expect(JSON.stringify(written)).not.toContain(secret);
     const warnings = io.err.filter((line) => line.includes('ignoredInput was set'));
-    expect(warnings).toHaveLength(1);
+    expect(warnings).toHaveLength(0);
+    expect(io.err.join('\n')).not.toContain('result written to');
+    expect(io.err.join('\n')).not.toContain('resolution_error:');
     expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
+  });
+
+  it('suppresses the result path announcement after failed planning', async () => {
+    const relativeSecret = 'private/../failed-plan-result.json';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      'steps:',
+      '  - id: derive',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+      '  - id: fail',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const resultPath = resolve(path, '..', relativeSecret);
+    writeLocaleOverlay(path, [`rune.result.failed: ${JSON.stringify(resultPath)}`]);
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--platform',
+          'windows',
+          '--locale',
+          'de',
+          '--result',
+          resultPath,
+          '--set',
+          `workingDirectory=${relativeSecret}`,
+        ],
+        io,
+      ),
+    ).toBe(1);
+
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'failed',
+      error: { code: 'RUNE-405' },
+    });
+    expect(io.err.join('\n')).not.toContain(resultPath);
+    expect(io.err.join('\n')).not.toContain('result written to');
+  });
+
+  it('uses a path-free delivery failure after failed planning', async () => {
+    const relativeSecret = 'private/../failed-plan-result-dir';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      'steps:',
+      '  - id: derive',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+      '  - id: fail',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const resultPath = resolve(path, '..', relativeSecret);
+    mkdirSync(resultPath);
+    writeLocaleOverlay(path, [`rune.result.failed: ${JSON.stringify(resultPath)}`]);
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--dry-run',
+          '--non-interactive',
+          '--platform',
+          'windows',
+          '--locale',
+          'de',
+          '--result',
+          resultPath,
+          '--set',
+          `workingDirectory=${relativeSecret}`,
+        ],
+        io,
+      ),
+    ).toBe(1);
+
+    expect(io.err).toContain('could not write the result file');
+    expect(io.err.join('\n')).not.toContain(resultPath);
+    expect(io.err.join('\n')).not.toContain('result written to');
   });
 
   it('preserves the completed plan when log opening fails', async () => {
@@ -2241,6 +2346,9 @@ describe('result files for failed outcomes', () => {
       '  enabled:',
       '    type: boolean',
       '    default: false',
+      '  ignoredInput:',
+      '    type: text',
+      '    when: "${enabled}"',
       '  token:',
       '    type: secret',
       '  mirror:',
@@ -2257,6 +2365,7 @@ describe('result files for failed outcomes', () => {
     ]);
     const directory = join(path, '..');
     const resultPath = join(directory, 'planned-failure.json');
+    writeLocaleOverlay(path, ['rune.result.failed: completed plan failure']);
     const io = capture();
 
     const code = await run(
@@ -2264,6 +2373,10 @@ describe('result files for failed outcomes', () => {
         'run',
         path,
         '--non-interactive',
+        '--locale',
+        'de',
+        '--set',
+        'ignoredInput=discarded',
         '--set',
         `token=${marker}`,
         '--set',
@@ -2293,6 +2406,8 @@ describe('result files for failed outcomes', () => {
     });
     expect(JSON.stringify(written)).not.toContain(marker);
     expect(io.err.join('\n')).not.toContain(marker);
+    expect(io.err).toContain('completed plan failure');
+    expect(io.err.filter((line) => line.includes('ignoredInput was set'))).toHaveLength(1);
     expect(io.err.join('\n')).not.toContain('warning: nothing was executed');
   });
 
