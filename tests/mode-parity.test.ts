@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +5,6 @@ import { PassThrough } from 'node:stream';
 
 import {
   environmentName,
-  MASK,
   Session,
   type EngineObserver,
   type ExecutionPlan,
@@ -28,6 +26,7 @@ const SECRET = 'parityToken';
 const SECRET_VALUE = 'mode-parity-secret-value';
 const LOCALE = 'de-DE';
 const COMMAND_SCRIPT = "process.stdout.write(process.argv.slice(1).join('|') + '\\n')";
+const MASK = '***';
 
 type LegName = 'non-interactive' | 'interactive' | 'gui';
 
@@ -40,7 +39,6 @@ interface ScriptedInteraction extends Interaction {
   transcript(): string;
   remainingAnswers(): number;
   dispose(): void;
-  readonly forcedExitCodes: number[];
 }
 
 interface SuccessfulSetValue {
@@ -55,10 +53,6 @@ interface LegCapture {
   readonly successfulSetValues: SuccessfulSetValue[];
 }
 
-interface RestorableSpy {
-  mockRestore(): void;
-}
-
 function captureIo(): Capture {
   const out: string[] = [];
   const err: string[] = [];
@@ -70,11 +64,9 @@ function scripted(answers: readonly string[], isTTY = true): ScriptedInteraction
   const input = new PassThrough();
   const queue = [...answers];
   const written: string[] = [];
-  const forcedExitCodes: number[] = [];
   return {
     input,
     isTTY,
-    signalSource: new EventEmitter(),
     write: (text) => {
       written.push(text);
       if (text.endsWith(': ')) {
@@ -86,11 +78,9 @@ function scripted(answers: readonly string[], isTTY = true): ScriptedInteraction
         });
       }
     },
-    forceExit: (code) => forcedExitCodes.push(code),
     transcript: () => written.join(''),
     remainingAnswers: () => queue.length,
     dispose: () => input.destroy(),
-    forcedExitCodes,
   };
 }
 
@@ -193,7 +183,6 @@ function installSessionCapture(): {
   restore(): void;
 } {
   const captures = new Map<LegName, LegCapture>();
-  const instanceSpies: RestorableSpy[] = [];
   let activeLeg: LegName | undefined;
   const realOpen: typeof Session.open = Session.open.bind(Session);
   const openSpy = vi
@@ -211,7 +200,7 @@ function installSessionCapture(): {
         captures.set(activeLeg, captured);
 
         const realSetValue = session.setValue.bind(session);
-        const setValueSpy = vi.spyOn(session, 'setValue').mockImplementation((inputId, raw) => {
+        const setValue = (inputId: string, raw: unknown) => {
           const returned = realSetValue(inputId, raw);
           const accepted = session.allInputs().find((input) => input.id === inputId)?.value;
           captured.successfulSetValues.push({
@@ -220,18 +209,29 @@ function installSessionCapture(): {
             returned: returned.map((change) => ({ ...change })),
           });
           return returned;
-        });
+        };
 
         const realExecute = session.execute.bind(session);
-        const executeSpy = vi.spyOn(session, 'execute').mockImplementation((observer, cancel) => {
+        const execute: Session['execute'] = (observer, cancel) => {
           const forwardingObserver: EngineObserver = (event) => {
             captured.events.push(event);
             observer?.(event);
           };
           return realExecute(forwardingObserver, cancel);
+        };
+        const facade = new Proxy(session, {
+          get: (target, property) => {
+            if (property === 'setValue') {
+              return setValue;
+            }
+            if (property === 'execute') {
+              return execute;
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
         });
-        instanceSpies.push(setValueSpy, executeSpy);
-        return session;
+        return facade;
       },
     );
 
@@ -249,9 +249,6 @@ function installSessionCapture(): {
       }
     },
     restore: () => {
-      for (const spy of [...instanceSpies].reverse()) {
-        spy.mockRestore();
-      }
       openSpy.mockRestore();
     },
   };
@@ -286,7 +283,21 @@ function jsonValue(value: unknown): unknown {
 }
 
 function jsonText(value: unknown): string {
-  return JSON.stringify(value);
+  return JSON.stringify(canonicalJson(value));
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalJson);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, member]) => [key, canonicalJson(member)]),
+    );
+  }
+  return value;
 }
 
 /** Normalize exactly the documented cross-mode/run-time nondeterminism, and nothing else. */
@@ -303,8 +314,17 @@ function normalizedResult(result: RunResult): unknown {
   });
 }
 
+function normalizedPlan(plan: ExecutionPlan): unknown {
+  return jsonValue({
+    ...plan,
+    resolvedInputs: plan.resolvedInputs.map((input) => ({ ...input, source: '<source>' })),
+  });
+}
+
 function normalizedEvent(event: RunEvent): unknown {
   switch (event.kind) {
+    case 'runStarted':
+      return { kind: event.kind, plan: normalizedPlan(event.plan) };
     case 'stepFinished':
       return jsonValue({ ...event, durationMs: 0 });
     case 'runFinished':
@@ -427,8 +447,6 @@ it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-id
     expect([nonInteractiveCode, interactiveCode, guiClient.result.exitCode]).toEqual([0, 0, 0]);
     expect(nonInteractiveInteraction.remainingAnswers()).toBe(0);
     expect(interactiveInteraction.remainingAnswers()).toBe(0);
-    expect(nonInteractiveInteraction.forcedExitCodes).toEqual([]);
-    expect(interactiveInteraction.forcedExitCodes).toEqual([]);
 
     const nonInteractive = legCapture(sessionCapture.captures, 'non-interactive');
     const interactive = legCapture(sessionCapture.captures, 'interactive');
@@ -444,8 +462,17 @@ it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-id
 
     // These are the plans carried by the actual executions, not extra comparison sessions.
     const plans = captures.map(runStartedPlan);
-    expect(plans.slice(1).map(jsonText)).toEqual([jsonText(plans[0]), jsonText(plans[0])]);
-    expect(jsonText(guiClient.summaryPlan)).toBe(jsonText(plans[0]));
+    const basePlan = plans[0];
+    if (basePlan === undefined) {
+      throw new Error('the parity suite captured no execution plan');
+    }
+    expect(plans.slice(1).map((plan) => jsonText(normalizedPlan(plan)))).toEqual([
+      jsonText(normalizedPlan(basePlan)),
+      jsonText(normalizedPlan(basePlan)),
+    ]);
+    expect(jsonText(normalizedPlan(guiClient.summaryPlan))).toBe(
+      jsonText(normalizedPlan(basePlan)),
+    );
 
     const normalizedEventStreams = captures.map((captured) =>
       jsonText(captured.events.map(normalizedEvent)),
@@ -581,10 +608,7 @@ it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-id
     if (selectState?.spec.type !== 'select') {
       throw new Error('the fixture select input was not exposed as a select');
     }
-    expect(selectState.spec.options).toEqual([
-      { value: 'fast', label: 'Fast lane' },
-      { value: 'safe', label: 'Safe lane' },
-    ]);
+    expect(selectState.spec.options).toEqual(['fast', 'safe']);
 
     const runnable = plans[0]?.steps[0];
     if (runnable?.state !== 'PENDING') {
@@ -596,7 +620,7 @@ it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-id
       COMMAND_SCRIPT,
       'D-42',
       'fast',
-      null,
+      MASK,
     ]);
     expect(results.map((result) => result.steps[0]?.command)).toEqual([
       [process.execPath, '-e', COMMAND_SCRIPT, 'D-42', 'fast', MASK],

@@ -11,11 +11,11 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE's **v0.1 core (Milestones 0–2)** is implemented: the engine,
-validation/schema and non-interactive execution, the interactive CLI, the `Session` facade,
-and the mode-parity contract suite. [docs/roadmap.md](docs/roadmap.md) tracks the remaining
-MVP scope and what comes after. The Milestone 3 GUI shell and its `rune gui install` /
-`rune run --gui` commands are planned, not currently implemented.
+RUNE's **v0.1 core (Milestones 0–2)** is implemented: the engine, validation and schema
+commands, non-interactive execution, the interactive CLI, the `Session` facade, and the
+mode-parity contract suite. The Electron GUI, `gui install`, and packaging remain planned
+in the [roadmap](docs/roadmap.md); the binding contract is documented in
+[docs/architecture.md](docs/architecture.md).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
@@ -25,7 +25,7 @@ users of a packaged installer need nothing installed.
 
 One configuration, three operating modes with identical execution semantics:
 
-1. a graphical installation wizard
+1. a graphical installation wizard (planned)
 2. an interactive command line installer
 3. a fully non-interactive run for CI/CD pipelines
 
@@ -77,14 +77,20 @@ steps:
         args: [scripts/install-database.sh, "${databasePort}"]
 ```
 
+Text `pattern` values are manifest-authored ECMAScript regular expressions. Values checked
+against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
+quantifiers such as `(a+)+`.
+
 The same manifest, three ways (the graphical mode is planned for Milestone 3):
 
 ```bash
+# Guided on a TTY; non-interactive fallback when stdin is not a TTY
 rune run installer.yaml
 ```
 
 ```bash
-rune run installer.yaml --gui
+# Planned with Milestone 3:
+# rune run installer.yaml --gui
 ```
 
 ```bash
@@ -93,21 +99,22 @@ rune run installer.yaml --non-interactive --values pipeline-values.yaml --result
 
 ## The planned graphical wizard (Milestone 3)
 
-The planned wizard is a bundled, self-contained, Electron-based app. It will need nothing
-installed on the target machine, run without admin rights, and look identical on every
-platform because it ships its own rendering engine. Its main process will host the RUNE
-engine in-process; its window will be a pure renderer that reaches the engine only through
-an IPC bridge — all planning, validation and execution will happen in the engine, exactly
-as in the two CLI modes.
+The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
+on the target machine, runs without admin rights, and looks identical on every platform
+because it ships its own rendering engine. Its main process hosts the RUNE engine
+in-process; its window is a pure renderer that reaches the engine only through an IPC
+bridge — all planning, validation and execution happen in the engine, exactly as in the
+two CLI modes.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — planned `rune gui install` will fetch the prebuilt shell for your OS
-  into a per-user cache; `rune package` (roadmap milestone 4) will bundle shell, engine and
-  manifest into one portable end-user artifact that needs nothing installed
+- **Author tooling** — planned Milestone 3 work includes `rune gui install`, which will
+  fetch the prebuilt shell for your OS into a per-user cache; `rune package` (roadmap
+  milestone 4) will bundle shell, engine and manifest into one portable end-user artifact
+  that needs nothing installed
 
 ## Design principles
 

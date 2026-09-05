@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   INPUT_TYPES,
   InternalError,
+  optionValue,
   parseManifestText,
-  resolveStrings,
+  type ChromeKey,
   type InputState,
   type InputType,
+  type StringTable,
 } from '@rune/engine';
 
 import { CliPromptRegistry, cliPromptPresenters, type CliPromptPresenter } from '../src/prompt.js';
@@ -43,22 +45,51 @@ const MANIFEST = parseManifestText(
   'prompt-registry.yaml',
 );
 
-const STRINGS = resolveStrings({ manifest: MANIFEST });
+const CHROME: Partial<Record<ChromeKey, string>> = {
+  'rune.prompt.value': 'Enter a value for {title}',
+  'rune.prompt.selectOne': 'enter the value of one option',
+  'rune.prompt.selectMany': 'enter option values, separated by commas',
+  'rune.prompt.boolean': 'enter true or false',
+};
+const STRINGS = {
+  locale: undefined,
+  overlayLocale: undefined,
+  entries: {},
+  chrome: (key: ChromeKey, values: Readonly<Record<string, string | number>> = {}) => {
+    const template = CHROME[key] ?? key;
+    return template.replace(/\{([A-Za-z]+)\}/gu, (match, name: string) =>
+      Object.hasOwn(values, name) ? String(values[name]) : match,
+    );
+  },
+  inputTitle: (id: string) => id,
+  inputDescription: (id: string) => (id === 'plain' ? 'Plain description' : undefined),
+  patternHint: () => undefined,
+  optionLabel: (inputId: string, value: string) =>
+    inputId === 'channel' && value === 'prod' ? 'Production' : value,
+  stepTitle: (id: string) => id,
+  productDescription: () => undefined,
+  windowTitle: () => undefined,
+} satisfies StringTable;
 
 function state(id: keyof typeof MANIFEST.inputs): InputState {
   const spec = MANIFEST.inputs[id];
   if (spec === undefined) {
     throw new Error(`the test manifest has no input named "${id}"`);
   }
+  const viewSpec =
+    spec.type === 'select' || spec.type === 'multiselect'
+      ? { type: spec.type, required: spec.required, options: spec.options.map(optionValue) }
+      : { type: spec.type, required: spec.required };
   return {
     id,
-    spec,
+    spec: viewSpec,
+    secret: spec.type === 'secret',
     enabled: true,
     value: undefined,
     source: undefined,
-    invalid: undefined,
+    rejection: undefined,
     ignored: undefined,
-  };
+  } as InputState;
 }
 
 describe('the CLI prompt presenter registry', () => {

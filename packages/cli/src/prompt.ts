@@ -9,24 +9,21 @@ import { Writable } from 'node:stream';
 
 import {
   CancelledError,
+  formatRuneError,
+  formatSessionTerminalLine,
   InputError,
   InternalError,
-  MASK,
-  normalizeSummaryChoice,
-  SUMMARY_ACTIONS,
 } from '@rune/engine';
-import type { InputState, InputType, ResultInput, Session, StringTable } from '@rune/engine';
+import type { CancelToken, InputState, InputType, Session, StringTable } from '@rune/engine';
 
-import type { CliIo } from './io.js';
+import { sessionHumanStderr, type CliIo } from './io.js';
 import { renderPlan } from './render.js';
 
-export type CancelSignal = 'SIGINT' | 'SIGTERM' | 'SIGBREAK';
-
-/** Process-signal subset used while a session executes; injectable to keep tests isolated. */
-export interface SignalSource {
-  on(signal: CancelSignal, listener: () => void): void;
-  removeListener(signal: CancelSignal, listener: () => void): void;
-}
+const MASK = '***';
+const SUMMARY_ACTIONS = Object.freeze({
+  proceed: Object.freeze({ alias: 'proceed', tokenKey: 'rune.summary.proceedToken' as const }),
+  cancel: Object.freeze({ alias: 'cancel', tokenKey: 'rune.summary.cancelToken' as const }),
+});
 
 /** Where the prompter reads and writes — injected, so tests can script a whole session. */
 export interface Interaction {
@@ -34,10 +31,6 @@ export interface Interaction {
   readonly isTTY: boolean;
   /** Raw prompt text, no implied newline — stderr in the real process. */
   write(text: string): void;
-  /** The documented second-Ctrl+C force quit (§9.3); `process.exit` in the real process. */
-  forceExit(code: number): void;
-  /** Defaults to the host process; tests inject a private signal source. */
-  readonly signalSource?: SignalSource | undefined;
 }
 
 /** Everything the readline layer needs to render and ask one input question. */
@@ -117,32 +110,57 @@ class MutedOutput extends Writable {
 export class Prompter {
   readonly #interaction: Interaction;
   readonly #inputEndedMessage: string;
+  readonly #cancel: CancelToken | undefined;
   readonly #output: MutedOutput;
   #rl: Interface | undefined;
   #reject: ((error: Error) => void) | undefined;
+  #disposeCancel: (() => void) | undefined;
   #inputEnded = false;
 
-  constructor(interaction: Interaction, inputEndedMessage: string) {
+  constructor(interaction: Interaction, inputEndedMessage: string, cancel?: CancelToken) {
     this.#interaction = interaction;
     this.#inputEndedMessage = inputEndedMessage;
+    this.#cancel = cancel;
     this.#output = new MutedOutput(interaction.write);
   }
 
   /** Asks one question; `muted` suppresses the echo while a secret is typed. */
   ask(question: string, muted = false): Promise<string> {
+    if (this.#cancel?.isCancelled === true) {
+      return Promise.reject(new CancelledError());
+    }
     if (this.#inputEnded) {
       return Promise.reject(new CancelledError(this.#inputEndedMessage));
     }
     const rl = this.#interface();
     const promise = new Promise<string>((resolve, reject) => {
-      this.#reject = reject;
-      rl.question(question, (answer) => {
+      let settled = false;
+      const settle = (): boolean => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
         this.#output.muted = false;
         this.#reject = undefined;
-        if (muted) {
-          this.#interaction.write('\n');
+        this.#disposeCancel?.();
+        this.#disposeCancel = undefined;
+        return true;
+      };
+      this.#reject = (error) => {
+        if (settle()) {
+          reject(error);
         }
-        resolve(answer);
+      };
+      rl.question(question, (answer) => {
+        if (settle()) {
+          if (muted) {
+            this.#interaction.write('\n');
+          }
+          resolve(answer);
+        }
+      });
+      this.#disposeCancel = this.#cancel?.onCancel(() => {
+        this.#reject?.(new CancelledError());
       });
     });
     // The question text is already written; only the typed characters stay dark.
@@ -158,6 +176,8 @@ export class Prompter {
   close(): void {
     this.#rl?.close();
     this.#rl = undefined;
+    this.#disposeCancel?.();
+    this.#disposeCancel = undefined;
   }
 
   #interface(): Interface {
@@ -205,7 +225,7 @@ function optionPresentation(state: InputState, strings: StringTable): CliPromptP
     );
   }
   const lines = spec.options.map((option) => {
-    const value = typeof option === 'string' ? option : option.value;
+    const value = option;
     return `  - ${strings.optionLabel(state.id, value)} (${value})`;
   });
   lines.push(
@@ -254,25 +274,23 @@ export async function summaryLoop(
   session: Session,
   prompter: Prompter,
   io: CliIo,
+  spelled: { readonly manifestPath: string; readonly logFile: string | undefined },
 ): Promise<'proceed' | 'cancel'> {
   const strings = session.getStrings();
   // The summary is a prompt, not requested machine output — everything goes to stderr.
   const stderrOnly: CliIo = { stdout: io.stderr, stderr: io.stderr };
 
   for (;;) {
-    io.stderr('');
-    io.stderr(strings.chrome('rune.summary.heading'));
-    const described = session.describe();
-    renderPlan(described, strings, stderrOnly);
-    const projectedInputs = new Map(described.inputs.map((input) => [input.id, input]));
+    sessionHumanStderr(io, strings, '');
+    sessionHumanStderr(io, strings, strings.chrome('rune.summary.heading'));
+    const plan = session.plan();
+    renderPlan(plan, session.manifest.product, spelled, stderrOnly, strings);
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
-      const projected = projectedInputs.get(state.id);
-      if (projected === undefined) {
-        throw new InternalError(`the result projection omitted input "${state.id}"`);
-      }
-      io.stderr(
-        `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(projected, strings)}`,
+      sessionHumanStderr(
+        io,
+        strings,
+        `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(state, strings)}`,
       );
     });
 
@@ -281,9 +299,12 @@ export async function summaryLoop(
     for (;;) {
       const choice = normalizeSummaryChoice(
         await prompter.ask(
-          `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
-            `${strings.chrome('rune.summary.change')} <n> / ` +
-            `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
+          formatSessionTerminalLine(
+            strings,
+            `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
+              `${strings.chrome('rune.summary.change')} <n> / ` +
+              `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
+          ),
         ),
       );
       if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
@@ -295,7 +316,9 @@ export async function summaryLoop(
       const index = /^\d+$/.test(choice) ? Number(choice) : Number.NaN;
       const chosen = Number.isSafeInteger(index) && index > 0 ? editable[index - 1] : undefined;
       if (chosen === undefined) {
-        io.stderr(
+        sessionHumanStderr(
+          io,
+          strings,
           strings.chrome('rune.summary.invalidChoice', {
             choice,
             proceed: proceedToken,
@@ -319,13 +342,16 @@ async function askUntilAccepted(
 ): Promise<void> {
   const presentation = cliPromptPresenters.get(state.spec.type).present(state, strings);
   for (const line of presentation.lines) {
-    prompter.say(line);
+    prompter.say(formatSessionTerminalLine(strings, line));
   }
-  if (state.invalid !== undefined) {
-    prompter.say(state.invalid.issue.message);
+  if (state.rejection !== undefined) {
+    prompter.say(formatSessionTerminalLine(strings, state.rejection.issue.message));
   }
   for (;;) {
-    const raw = await prompter.ask(presentation.question, presentation.muted);
+    const raw = await prompter.ask(
+      formatSessionTerminalLine(strings, presentation.question),
+      presentation.muted,
+    );
     try {
       session.setValue(state.id, raw);
       return;
@@ -333,20 +359,24 @@ async function askUntilAccepted(
       if (!(error instanceof InputError)) {
         throw error;
       }
-      prompter.say(error.message);
+      prompter.say(formatSessionTerminalLine(strings, formatRuneError(error)));
     }
   }
 }
 
-function displayValue(projected: ResultInput, strings: StringTable): string {
-  if (projected.secret) {
+function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
+}
+
+function displayValue(state: InputState, strings: StringTable): string {
+  if (state.secret) {
     return MASK;
   }
-  const value = projected.value;
+  const value = state.value;
   if (Array.isArray(value)) {
     return value.join(', ');
   }
-  if (value === null) {
+  if (value === undefined) {
     return strings.chrome('rune.summary.notSet');
   }
   return String(value);

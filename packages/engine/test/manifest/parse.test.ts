@@ -1,7 +1,17 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { formatIssues, type ManifestError } from '../../src/errors.js';
-import { parseManifestText, SUPPORTED_SCHEMA_VERSIONS } from '../../src/manifest/index.js';
+import { formatIssues, ManifestError } from '../../src/errors.js';
+import {
+  manifestDescriptorFor,
+  parseManifest,
+  parseManifestAsync,
+  parseManifestText,
+  SUPPORTED_SCHEMA_VERSIONS,
+} from '../../src/manifest/index.js';
 import { isCommandSpec, optionLabel, optionValue } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
@@ -37,6 +47,52 @@ describe('parseManifestText', () => {
       timeoutSeconds: null,
       successExitCodes: [0],
     });
+  });
+
+  it('accepts the largest timeout representable by the runner timer', () => {
+    const manifest = parse(
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    run:',
+        '      command: pwsh',
+        '      timeoutSeconds: 2147483',
+        '',
+      ].join('\n'),
+    );
+
+    const step = manifest.steps[0];
+    expect(step && isCommandSpec(step.run) && step.run.timeoutSeconds).toBe(2_147_483);
+  });
+
+  it('rejects a timeout that would overflow the runner timer with a located schema issue', () => {
+    let thrown: unknown;
+    try {
+      parse(
+        [
+          ...HEAD,
+          'steps:',
+          '  - id: install',
+          '    run:',
+          '      command: pwsh',
+          '      timeoutSeconds: 2147484',
+          '',
+        ].join('\n'),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    const error = thrown as ManifestError;
+    expect(error.code).toBe('RUNE-103');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-103',
+        message: 'steps[0].run.timeoutSeconds must be at most 2147483',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 9, column: 7 }),
+      }),
+    ]);
   });
 
   it('accepts both run forms: one command, or a mapping of platforms', () => {
@@ -138,6 +194,101 @@ describe('parseManifestText', () => {
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.product)).toBe(true);
     expect(Object.isFrozen(manifest.steps)).toBe(true);
+  });
+
+  it('binds a relative manifest directory to the parse-time working directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'rune-relative-manifest-dir-'));
+    const callerA = join(root, 'caller-a');
+    const callerB = join(root, 'caller-b');
+    const manifestDir = join(callerA, 'manifest-root');
+    const previousCwd = process.cwd();
+    mkdirSync(join(manifestDir, 'assets'), { recursive: true });
+    mkdirSync(callerB);
+    writeFileSync(join(manifestDir, 'assets', 'logo.png'), '', 'utf8');
+
+    try {
+      process.chdir(callerA);
+      const manifest = parseManifestText(
+        [...HEAD, 'gui:', '  logo: assets/logo.png', 'steps: []', ''].join('\n'),
+        'installer.yaml',
+        { checkAssetFiles: true, manifestDir: 'manifest-root' },
+      );
+
+      process.chdir(callerB);
+
+      expect(manifestDescriptorFor(manifest).manifestDir).toBe(resolve(manifestDir));
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'win32').each(['/manifest-root', '\\manifest-root'])(
+    'binds the Windows root-relative manifest directory %s at parse time',
+    (manifestDir) => {
+      const previousCwd = process.cwd();
+      const expectedManifestDir = resolve(manifestDir);
+      const manifest = parseManifestText(MINIMAL, 'installer.yaml', { manifestDir });
+
+      try {
+        process.chdir(tmpdir());
+
+        expect(manifestDescriptorFor(manifest).manifestDir).toBe(expectedManifestDir);
+      } finally {
+        process.chdir(previousCwd);
+      }
+    },
+  );
+});
+
+describe('parseManifestAsync', () => {
+  it('shares successful model and descriptor semantics with parseManifest', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-async-manifest-'));
+    const file = join(directory, 'installer.yaml');
+    writeFileSync(file, MINIMAL, 'utf8');
+
+    const synchronous = parseManifest(file);
+    const asynchronous = await parseManifestAsync(file);
+
+    expect(asynchronous).toEqual(synchronous);
+    expect(manifestDescriptorFor(asynchronous)).toEqual(manifestDescriptorFor(synchronous));
+  });
+
+  it('keeps aggregated semantic and GUI-asset issue ordering identical', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-async-manifest-'));
+    const file = join(directory, 'installer.yaml');
+    writeFileSync(
+      file,
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    when: "${missing}"',
+        '    run:',
+        '      command: node',
+        'gui:',
+        '  logo: assets/missing.png',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    let synchronous: ManifestError | undefined;
+    try {
+      parseManifest(file, { checkAssetFiles: true });
+    } catch (error) {
+      synchronous = error as ManifestError;
+    }
+    let asynchronous: ManifestError | undefined;
+    try {
+      await parseManifestAsync(file, { checkAssetFiles: true });
+    } catch (error) {
+      asynchronous = error as ManifestError;
+    }
+
+    expect(synchronous).toBeInstanceOf(ManifestError);
+    expect(asynchronous).toBeInstanceOf(ManifestError);
+    expect(asynchronous?.issues).toEqual(synchronous?.issues);
+    expect(asynchronous?.message).toBe(synchronous?.message);
   });
 });
 

@@ -5,6 +5,8 @@ import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
 
+import { CancelToken } from '@rune/engine';
+
 import { run } from '../src/cli.js';
 import type { CliIo } from '../src/io.js';
 import { Prompter, type Interaction } from '../src/prompt.js';
@@ -43,7 +45,6 @@ function scripted(answers: readonly string[]): Interaction & { transcript: () =>
         });
       }
     },
-    forceExit: () => undefined,
     transcript: () => written.join(''),
   };
 }
@@ -71,7 +72,6 @@ function scriptedThenEof(answers: readonly string[]): Interaction & { transcript
         });
       }
     },
-    forceExit: () => undefined,
     transcript: () => written.join(''),
   };
 }
@@ -99,7 +99,6 @@ function scriptedThenCtrlC(answers: readonly string[]): Interaction & { transcri
         });
       }
     },
-    forceExit: () => undefined,
     transcript: () => written.join(''),
   };
 }
@@ -220,6 +219,35 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(io.err.join('\n')).not.toContain('internal error');
   });
 
+  it('cancels an active prompt through the executable host token', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const cancel = new CancelToken();
+    const input = new PassThrough();
+    const written: string[] = [];
+    const interaction: Interaction = {
+      input,
+      isTTY: true,
+      write: (text) => {
+        written.push(text);
+        if (text.endsWith(': ')) {
+          setImmediate(() => cancel.cancel());
+        }
+      },
+    };
+
+    const code = await run(['run', path, '--result', '-'], io, { cancel }, interaction);
+
+    expect(code).toBe(6);
+    expect(written.join('')).toContain('Enter a value for greeting: ');
+    expect(JSON.parse(io.out.join('\n'))).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'interactive',
+    });
+    input.destroy();
+  });
+
   it.each([
     { label: 'EOF with --result', interaction: scriptedThenEof, result: true },
     { label: 'EOF without --result', interaction: scriptedThenEof, result: false },
@@ -327,7 +355,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     ).toHaveLength(2);
     const diagnostics = io.err.join('\n');
     expect(diagnostics.match(/Review your configuration/g)).toHaveLength(1);
-    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(1);
+    expect(diagnostics.match(/^Execution plan v1 /gm)).toHaveLength(1);
 
     const result = JSON.parse(io.out.join('\n')) as {
       status: string;
@@ -444,7 +472,8 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
       '"Production release" is not one of the option values ("prod", "dev")',
     );
     expect(transcript).toContain(
-      '"Source control", "Container runtime" are not option values ("git", "docker")',
+      '"Source control, Container runtime" contains values that are not option values ' +
+        '("git", "docker")',
     );
     expect(transcript.match(/Enter a value for releaseChannel: /g)).toHaveLength(2);
     expect(transcript.match(/Enter a value for components: /g)).toHaveLength(2);
@@ -561,6 +590,108 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(io.err.join('\n')).not.toContain(secret);
   });
 
+  it('masks a later-declared secret in an invalid seed diagnostic prompt', async () => {
+    const secret = 'seed-diagnostic-secret';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      '    patternHint: lower-case letters only',
+      '  token:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = scripted(['good']);
+
+    const code = await run(
+      [
+        'run',
+        path,
+        '--dry-run',
+        '--set',
+        `name=prefix-${secret}-suffix`,
+        '--set',
+        `token=${secret}`,
+      ],
+      io,
+      interaction,
+    );
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).toContain('"prefix-***-suffix": lower-case letters only');
+    expect(interaction.transcript()).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+    expect(io.out.join('\n')).not.toContain(secret);
+  });
+
+  it('masks a registered secret in a rejected layer-5 retry diagnostic', async () => {
+    const secret = 'retry-diagnostic-secret';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      '    patternHint: lower-case letters only',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = scripted([`prefix-${secret}-suffix`, 'good']);
+
+    const code = await run(['run', path, '--dry-run', '--set', `token=${secret}`], io, interaction);
+
+    expect(code).toBe(0);
+    expect(interaction.transcript()).toContain(
+      'name (from the answer): "prefix-***-suffix": lower-case letters only',
+    );
+    // Readline echoes a deliberately typed non-secret answer once; the diagnostic does not.
+    expect(interaction.transcript().split(secret)).toHaveLength(2);
+    expect(io.err.join('\n')).not.toContain(secret);
+    expect(io.out.join('\n')).not.toContain(secret);
+  });
+
+  it('masks a later-declared secret in a non-interactive input error', async () => {
+    const secret = 'noninteractive-diagnostic-secret';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  name:',
+      '    type: text',
+      '    pattern: "[a-z]+"',
+      '  token:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const io = capture();
+    const interaction = { ...scripted([]), isTTY: false };
+
+    const code = await run(
+      ['run', path, '--set', `name=prefix-${secret}-suffix`, '--set', `token=${secret}`],
+      io,
+      interaction,
+    );
+
+    expect(code).toBe(4);
+    expect(io.err.join('\n')).toContain('"prefix-***-suffix" does not match [a-z]+');
+    expect(interaction.transcript()).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+    expect(io.out.join('\n')).not.toContain(secret);
+  });
+
   it('prompts to correct an explicitly invalid optional seed', async () => {
     const path = fixture([
       'schemaVersion: 1',
@@ -627,7 +758,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     const diagnostics = io.err.join('\n');
     const summaries = diagnostics.split('Review your configuration').slice(1);
     expect(summaries).toHaveLength(2);
-    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(2);
+    expect(diagnostics.match(/^Execution plan v1 /gm)).toHaveLength(2);
     expect(summaries[0]?.match(/^ {2}1\) greeting = hello$/m)).not.toBeNull();
     expect(summaries[1]?.match(/^ {2}1\) greeting = bye$/m)).not.toBeNull();
 
@@ -670,7 +801,7 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(diagnostics).toContain('"1 2" is not');
     expect(diagnostics).toContain('bye');
     expect(diagnostics.match(/Review your configuration/g)).toHaveLength(2);
-    expect(diagnostics.match(/^Plan for /gm)).toHaveLength(2);
+    expect(diagnostics.match(/^Execution plan v1 /gm)).toHaveLength(2);
   });
 
   it('accepts a controller edit before correcting the dependent invalid seed', async () => {
@@ -973,9 +1104,9 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
         'rune.summary.change: AENDERN',
         'rune.summary.cancel: ABBRECHEN',
         'rune.summary.cancelToken: abbrechen',
-        'rune.plan.heading: PLAN::{product}::{version}::{path}::{platform}{preview}',
+        'rune.plan.heading: PLAN::{productName}::{productVersion}::{manifestPath}::{platform}',
         'rune.plan.step: SCHRITT::{number}::{title}',
-        'rune.plan.command: BEFEHL::{command}',
+        'rune.plan.argv: BEFEHL::{value}',
         'rune.run.cancelledAtSummary: ZUSAMMENFASSUNG_ABGEBROCHEN',
         'rune.result.written: GESCHRIEBEN::{path}',
         '',
@@ -992,13 +1123,13 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(diagnostics).toContain('PRUEFUNG');
     expect(diagnostics).toContain('PLAN::Example::1.0.0');
     expect(diagnostics).toContain('SCHRITT::1. ::hello');
-    expect(diagnostics).toContain('BEFEHL::node -e');
+    expect(diagnostics).toContain('BEFEHL::["node","-e"');
     expect(diagnostics).toContain('ZUSAMMENFASSUNG_ABGEBROCHEN');
     expect(diagnostics).toContain(`GESCHRIEBEN::${resultPath}`);
     expect(interaction.transcript()).toContain(
       'WEITER (weiter) / AENDERN <n> / ABBRECHEN (abbrechen)',
     );
-    expect(diagnostics).not.toContain('Plan for');
+    expect(diagnostics).not.toContain('Execution plan v1');
     expect(diagnostics).not.toContain('cancelled at the summary');
     expect(diagnostics).not.toContain('result written to');
   });
