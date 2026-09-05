@@ -601,7 +601,7 @@ export class Session {
       if (this.#plan !== undefined) {
         return this.#plan;
       }
-      this.#plan = buildPlan({
+      const plan = buildPlan({
         manifest: this.manifest,
         resolution: this.#resolution,
         context: this.#context,
@@ -609,8 +609,12 @@ export class Session {
         logFile: this.effectiveLogFile?.path,
         strings: this.#strings,
       });
-      registerFailureResultSession(this, this.#sinkSecrets(), this.#plan);
-      return this.#plan;
+      const planSecrets = executionContextFor(plan).secrets;
+      const inputSnapshot = projectInputFacadeSnapshot(this.#resolution, planSecrets);
+      this.#plan = plan;
+      this.#inputSnapshot = inputSnapshot;
+      registerFailureResultSession(this, planSecrets, plan);
+      return plan;
     } catch (error) {
       throw this.#projectError(error);
     }

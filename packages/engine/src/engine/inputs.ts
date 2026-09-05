@@ -290,10 +290,15 @@ export interface InputFacadeSnapshot {
 
 /**
  * Projects canonical resolution state into the field-specific, structured-clone-safe facade
- * contract. Machine identities remain exact; only sink text and ordinary values are masked.
+ * contract. Machine identities remain exact; only sink text and ordinary values are masked. A
+ * successful plan supplies its authenticated complete masker when it publishes the next snapshot.
  */
-export function projectInputFacadeSnapshot(resolution: Resolution): InputFacadeSnapshot {
-  const secrets = resolutionSnapshotFor(resolution).secrets;
+export function projectInputFacadeSnapshot(
+  resolution: Resolution,
+  masker?: SecretMasker,
+): InputFacadeSnapshot {
+  const resolutionSecrets = resolutionSnapshotFor(resolution).secrets;
+  const secrets = masker ?? resolutionSecrets;
   const all = Object.freeze(
     resolution.inputs.map((state) => projectInputStateForFacade(state, secrets)),
   );

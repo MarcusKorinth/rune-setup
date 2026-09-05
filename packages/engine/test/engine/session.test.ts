@@ -1039,8 +1039,8 @@ describe('answering inputs', () => {
     'rejects inherited input id %s without changing the session',
     async (id) => {
       const session = await Session.open(fixture([...BASE, '      args: []']), { environment: {} });
-      const inputs = session.allInputs();
       const plan = session.plan();
+      const inputs = session.allInputs();
 
       let rejection: unknown;
       try {
@@ -1104,8 +1104,8 @@ describe('answering inputs', () => {
       ]),
       { environment: {}, overrides: { token: secret } },
     );
-    const inputs = session.allInputs();
     const plan = session.plan();
+    const inputs = session.allInputs();
 
     let rejection: unknown;
     try {
@@ -1238,9 +1238,9 @@ describe('answering inputs', () => {
     ]);
     const session = await Session.open(path, { environment: {}, mode: 'interactive' });
     session.setValue('token', activeSecret);
+    const plan = session.plan();
     const inputs = session.allInputs();
     const pending = session.pendingInputs();
-    const plan = session.plan();
 
     let rejection: InputError | undefined;
     try {
@@ -1287,7 +1287,9 @@ describe('answering inputs', () => {
       'inputs:',
       '  workingDirectory:',
       '    type: secret',
-      '  mirror:',
+      '  originalMirror:',
+      '    type: text',
+      '  replacementMirror:',
       '    type: text',
       '  choice:',
       '    type: select',
@@ -1304,13 +1306,36 @@ describe('answering inputs', () => {
     const session = await Session.open(path, {
       environment: {},
       mode: 'interactive',
-      overrides: { workingDirectory: relativeSecret, mirror: derivedSecret },
+      overrides: {
+        workingDirectory: relativeSecret,
+        originalMirror: derivedSecret,
+        replacementMirror: replacementDerived,
+      },
     });
     const strings = session.getStrings();
-    const inputs = session.allInputs();
-    const pending = session.pendingInputs();
+    const resolutionInputs = session.allInputs();
+    const resolutionPending = session.pendingInputs();
+    expect(resolutionInputs.find((input) => input.id === 'originalMirror')?.value).toBe(
+      derivedSecret,
+    );
+    expect(Object.isFrozen(resolutionInputs)).toBe(true);
+    expect(resolutionInputs.every(Object.isFrozen)).toBe(true);
 
     const plan = session.plan();
+    const plannedInputs = session.allInputs();
+    const plannedPending = session.pendingInputs();
+    expect(plannedInputs).not.toBe(resolutionInputs);
+    expect(plannedPending).not.toBe(resolutionPending);
+    expect(plannedInputs.find((input) => input.id === 'originalMirror')?.value).toBe('***');
+    expect(plannedInputs.find((input) => input.id === 'replacementMirror')?.value).toBe(
+      replacementDerived,
+    );
+    expect(resolutionInputs.find((input) => input.id === 'originalMirror')?.value).toBe(
+      derivedSecret,
+    );
+    expect(session.plan()).toBe(plan);
+    expect(session.allInputs()).toBe(plannedInputs);
+    expect(session.pendingInputs()).toBe(plannedPending);
     expect(strings.chrome('rune.warning', { message: derivedSecret })).toBe('warning: ***');
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe('***');
 
@@ -1324,8 +1349,8 @@ describe('answering inputs', () => {
     expect(rejection).toBeDefined();
     expect(rejection?.message).toContain('***');
     expect(rejection?.message).not.toContain(derivedSecret);
-    expect(session.allInputs()).toBe(inputs);
-    expect(session.pendingInputs()).toBe(pending);
+    expect(session.allInputs()).toBe(plannedInputs);
+    expect(session.pendingInputs()).toBe(plannedPending);
     expect(session.plan()).toBe(plan);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe('***');
 
@@ -1336,17 +1361,80 @@ describe('answering inputs', () => {
       session,
     });
     expect(failure.error?.message).toContain('***');
-    expect(failure.inputs.find((input) => input.id === 'mirror')?.value).toBe('***');
+    expect(failure.inputs.find((input) => input.id === 'originalMirror')?.value).toBe('***');
     expect(JSON.stringify(failure)).not.toContain(derivedSecret);
 
     expect(session.setValue('workingDirectory', replacement)).toEqual([]);
-    expect(session.allInputs()).not.toBe(inputs);
+    const replacementResolutionInputs = session.allInputs();
+    const replacementResolutionPending = session.pendingInputs();
+    expect(replacementResolutionInputs).not.toBe(plannedInputs);
+    expect(replacementResolutionPending).not.toBe(plannedPending);
+    expect(replacementResolutionInputs.find((input) => input.id === 'originalMirror')?.value).toBe(
+      derivedSecret,
+    );
+    expect(
+      replacementResolutionInputs.find((input) => input.id === 'replacementMirror')?.value,
+    ).toBe(replacementDerived);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
     expect(formatSessionTerminalLine(strings, replacementDerived)).toBe(replacementDerived);
 
-    expect(session.plan()).not.toBe(plan);
+    const replacementPlan = session.plan();
+    expect(replacementPlan).not.toBe(plan);
+    const replacementPlannedInputs = session.allInputs();
+    const replacementPlannedPending = session.pendingInputs();
+    expect(replacementPlannedInputs).not.toBe(replacementResolutionInputs);
+    expect(replacementPlannedPending).not.toBe(replacementResolutionPending);
+    expect(replacementPlannedInputs.find((input) => input.id === 'originalMirror')?.value).toBe(
+      derivedSecret,
+    );
+    expect(replacementPlannedInputs.find((input) => input.id === 'replacementMirror')?.value).toBe(
+      '***',
+    );
+    expect(session.plan()).toBe(replacementPlan);
+    expect(session.allInputs()).toBe(replacementPlannedInputs);
+    expect(session.pendingInputs()).toBe(replacementPlannedPending);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
     expect(formatSessionTerminalLine(strings, replacementDerived)).toBe('***');
+  });
+
+  it('publishes no plan-masked input snapshot when planning fails', async () => {
+    const relativeSecret = 'private/../secret-target';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      'steps:',
+      '  - id: derive',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+      '  - id: fail',
+      '    run:',
+      '      command: setup.cmd',
+    ]);
+    const derivedSecret = resolve(dirname(path), relativeSecret);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+      overrides: { workingDirectory: relativeSecret, mirror: derivedSecret },
+      platform: 'windows',
+    });
+    const inputs = session.allInputs();
+    const pending = session.pendingInputs();
+
+    expect(() => session.plan()).toThrow(/needs a shell/);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(session.allInputs().find((input) => input.id === 'mirror')?.value).toBe(derivedSecret);
+    expect(() => session.plan()).toThrow(/needs a shell/);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
   });
 
   it('preserves failure provenance when a plan and rejected candidate exceed masking capacity', async () => {
@@ -1377,8 +1465,8 @@ describe('answering inputs', () => {
       mode: 'interactive',
       overrides: { workingDirectory: relativeSecret },
     });
-    const inputs = session.allInputs();
     const plan = session.plan();
+    const inputs = session.allInputs();
 
     let rejection: InputError | undefined;
     try {
@@ -1429,9 +1517,9 @@ describe('answering inputs', () => {
       'steps: []',
     ]);
     const session = await Session.open(path, { environment: {}, mode: 'gui' });
+    const plan = session.plan();
     const inputs = session.allInputs();
     const pending = session.pendingInputs();
-    const plan = session.plan();
 
     let rejection: ResolutionError | undefined;
     try {
@@ -1766,8 +1854,8 @@ describe('answering inputs', () => {
       { environment: {}, overrides: { choice: marker } },
     );
     session.setValue('token', marker);
-    const inputs = session.allInputs();
     const plan = session.plan();
+    const inputs = session.allInputs();
 
     let rejection: unknown;
     try {
@@ -2363,11 +2451,11 @@ describe('planning and executing', () => {
         },
       },
     );
-    const inputs = session.allInputs();
     const warnings = session.warnings();
     expect(warnings).toHaveLength(1);
     expect(JSON.stringify(warnings)).not.toContain('token');
     const plan = session.plan();
+    const inputs = session.allInputs();
 
     const active = session.execute();
     await started;
