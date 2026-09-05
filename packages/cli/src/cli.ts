@@ -52,14 +52,25 @@ export async function run(
   io: CliIo = processIo,
   control: CliControl = {},
 ): Promise<number> {
+  // Which stream commander last wrote to. It is the discriminator §10 actually cares about —
+  // a page on stdout was requested, a message on stderr was not — and unlike commander's own
+  // exit code it depends on this invocation alone (`Command.help()` derives that code from the
+  // ambient `process.exitCode`, so the `help` verb would inherit whatever the host had set).
+  let commanderStream: 'out' | 'err' | undefined;
   const program = new Command('rune');
   program
     .description('One manifest. Guided or automated.')
     .version(`rune ${RUNE_CLI_VERSION} (engine ${RUNE_VERSION})`, '--version')
     .exitOverride()
     .configureOutput({
-      writeOut: (text) => io.stdout(projectCommanderLayout(text)),
-      writeErr: (text) => io.stderr(projectCommanderLayout(text)),
+      writeOut: (text) => {
+        commanderStream = 'out';
+        io.stdout(projectCommanderLayout(text));
+      },
+      writeErr: (text) => {
+        commanderStream = 'err';
+        io.stderr(projectCommanderLayout(text));
+      },
       outputError: (text, write) => write(escapeTerminalText(withoutFinalLf(text))),
     });
 
@@ -101,7 +112,7 @@ export async function run(
     await program.parseAsync([...argv], { from: 'user' });
     return 0;
   } catch (error) {
-    return report(error, io);
+    return report(error, io, commanderStream);
   }
 }
 
@@ -109,7 +120,7 @@ export async function run(
  * One exit-code decision (§10): a carried code passes through, a parser error is CLI misuse
  * (2), and every other throwable — a RuneError or not — is mapped by the engine's exitCodeFor.
  */
-function report(error: unknown, io: CliIo): number {
+function report(error: unknown, io: CliIo, commanderStream?: 'out' | 'err'): number {
   if (error instanceof ExitWithCode) {
     return error.code;
   }
@@ -118,11 +129,13 @@ function report(error: unknown, io: CliIo): number {
     return exitCodeFor(error);
   }
   if (error instanceof CommanderError) {
-    // commander already printed through configureOutput, and it distinguishes the two outcomes
-    // by `exitCode`, not by `code`: `--version`, `--help` and the `help` verb carry 0, while
-    // every parser error and the bare invocation — both of which print to stderr — carry 1.
-    // Keying on the code alone would report requested help, delivered on stdout, as CLI misuse.
-    return error.exitCode === 0 ? 0 : 2;
+    // commander already printed through configureOutput, and the stream it chose is the verdict:
+    // a help or version page on stdout is requested output (exit 0), while every parser error
+    // and the bare invocation explain themselves on stderr (exit 2, §10). Commander's own
+    // `code` cannot tell the `help` verb from a bare invocation — it throws `commander.help` for
+    // both — and its `exitCode` is derived from the ambient `process.exitCode` for that verb, so
+    // neither is a property of this invocation. A CommanderError that printed nothing is misuse.
+    return commanderStream === 'out' ? 0 : 2;
   }
   // Unknown throwables may contain resolved input or process data. The run driver keeps the
   // cause internally when it can; this last-resort sink must never echo it verbatim.

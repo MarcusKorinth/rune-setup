@@ -1764,6 +1764,27 @@ describe('help and misuse', () => {
     expect(io.out).toHaveLength(1);
     expect(io.out[0]?.startsWith(usage)).toBe(true);
   });
+
+  it('keeps the help and misuse codes under a non-zero ambient exit code', async () => {
+    const help = capture();
+    const bare = capture();
+    const original = process.exitCode;
+    // `Command.help()` derives its own exit code from this global, so a host that already set
+    // one — main.ts assigns it, and so does any embedder — must not change what RUNE reports.
+    process.exitCode = 3;
+
+    try {
+      expect(await run(['help'], help)).toBe(0);
+      expect(await run([], bare)).toBe(2);
+    } finally {
+      process.exitCode = original;
+    }
+
+    expect(help.err).toEqual([]);
+    expect(help.out).toHaveLength(1);
+    expect(bare.out).toEqual([]);
+    expect(bare.err).toHaveLength(1);
+  });
 });
 
 describe('result files for failed outcomes', () => {
