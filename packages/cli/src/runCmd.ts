@@ -86,11 +86,10 @@ export async function runCommand(
       throw new UsageError('--values needs a non-empty path');
     }
     // The flag spelling of the collision is an argument-level fact, so refuse it before the
-    // session exists: a run that fails during open or planning would otherwise deliver its
-    // failure result onto the path the operator designated as the log (§4.1). Session.open
-    // anchors this flag against the same cwd, and nothing awaits in between. The manifest's
-    // own execution.logFile is only knowable once the engine has anchored it, so that half
-    // stays below, after planning.
+    // session exists: a run that fails during open would otherwise deliver its failure result
+    // onto the path the operator designated as the log (§4.1). Session.open anchors this flag
+    // against the same cwd, and nothing awaits in between. The manifest's own execution.logFile
+    // needs the engine's anchoring, so that half is refused the moment open publishes it.
     if (
       flags.dryRun !== true &&
       resultDestination !== undefined &&
@@ -110,18 +109,21 @@ export async function runCommand(
       logFile: flags.logFile,
       ...(platform === undefined ? {} : { platform }),
     });
-    strings = session.getStrings();
-
-    plan = session.plan();
+    // Open anchored the effective log file, so the manifest half of the rule is knowable
+    // here — before planning, whose failure would otherwise deliver the failure result onto
+    // that very file (§4.1). The flag half is checked twice, which costs one comparison.
     if (
       flags.dryRun !== true &&
       resultDestination !== undefined &&
       resultDestination.path !== '-' &&
-      plan.executionOptions.logFile !== undefined &&
-      samePath(resultDestination.path, plan.executionOptions.logFile)
+      session.effectiveLogFile !== undefined &&
+      samePath(resultDestination.path, session.effectiveLogFile.path)
     ) {
       throw new UsageError(COLLISION_MESSAGE);
     }
+    strings = session.getStrings();
+
+    plan = session.plan();
     if (flags.dryRun === true && control.cancel?.isCancelled === true) {
       throw new CancelledError();
     }
@@ -144,13 +146,14 @@ export async function runCommand(
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && resultOption !== '-') {
       // The plan carries anchored paths; the preview names the spellings the operator
-      // supplied, because those are the ones a secret registry can hold (§10).
+      // supplied, because those are the ones a secret registry can hold (§10). The session
+      // publishes that spelling beside the anchored one, so the precedence is read, not redone.
       renderPlan(
         plan,
         session.manifest.product,
         {
           manifestPath,
-          logFile: flags.logFile ?? session.manifest.execution.logFile,
+          logFile: session.effectiveLogFile?.announcement,
         },
         io,
         strings,

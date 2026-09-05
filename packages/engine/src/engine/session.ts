@@ -118,6 +118,13 @@ export class Session {
   readonly platform: Platform;
   readonly preview: boolean;
   /**
+   * What this session will log to: `--log-file`, else the manifest's `execution.logFile`,
+   * anchored at open — `undefined` when neither is configured. Published here because a host
+   * must enforce §4.1's `--result` collision rule before it plans, and only the engine may
+   * anchor a manifest-relative path (invariant 13).
+   */
+  readonly effectiveLogFile: EffectiveLogFile | undefined;
+  /**
    * The manifest as the caller spelled it. RUNE anchors that spelling to reach the file, but
    * a located diagnostic names this one: the anchored form is a spelling no secret registry
    * ever held, and the plan and the result carry it as machine identity instead (§10).
@@ -131,7 +138,6 @@ export class Session {
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
   readonly #answers = new Map<string, unknown>();
-  readonly #logFile: EffectiveLogFile | undefined;
   readonly #runner: Runner | undefined;
   readonly #manifestWarnings: readonly string[];
   #resolution: Resolution;
@@ -179,7 +185,7 @@ export class Session {
       fields.resolution.warnings,
     );
     this.#inputSnapshot = fields.inputSnapshot;
-    this.#logFile = fields.logFile;
+    this.effectiveLogFile = fields.logFile;
     this.#runner = fields.runner;
     this.#plan = undefined;
     registerFailureResultSession(this, fields.secrets.snapshot());
@@ -215,7 +221,10 @@ export class Session {
     const flagLogFile =
       logFileFlag === undefined
         ? undefined
-        : { path: resolvePath(invocationCwd, logFileFlag), announcement: logFileFlag };
+        : Object.freeze({
+            path: resolvePath(invocationCwd, logFileFlag),
+            announcement: logFileFlag,
+          });
 
     let locale: string | undefined;
     let localeSelectionError: unknown;
@@ -460,7 +469,7 @@ export class Session {
         logFile === undefined
           ? undefined
           : await createLogFileSink(logFile, (text) => this.#secrets.mask(text), {
-              announcement: this.#logFile?.announcement ?? logFile,
+              announcement: this.effectiveLogFile?.announcement ?? logFile,
             });
       const observers: EngineObserver = (event) => {
         notifyObserver(log?.observer, event);
@@ -568,7 +577,7 @@ export class Session {
         resolution: this.#resolution,
         context: this.#context,
         locale: this.#strings.locale,
-        logFile: this.#logFile?.path,
+        logFile: this.effectiveLogFile?.path,
         strings: this.#strings,
       });
       registerFailureResultSession(this, this.#secrets.snapshot(), this.#plan);
@@ -666,7 +675,7 @@ function projectOpeningError(error: unknown, secrets: SecretRegistry): RuneError
 }
 
 /** The anchored log path plus the spelling its supplier wrote, which sinks name (§10). */
-interface EffectiveLogFile {
+export interface EffectiveLogFile {
   readonly path: string;
   readonly announcement: string;
 }
@@ -684,10 +693,10 @@ function effectiveLogFile(
   if (configured === undefined) {
     return undefined;
   }
-  return {
+  return Object.freeze({
     path: isAbsolute(configured)
       ? resolvePath(manifestDir, configured)
       : resolveManifestRelativePathFrom(configured, manifestDir),
     announcement: configured,
-  };
+  });
 }

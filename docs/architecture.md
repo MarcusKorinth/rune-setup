@@ -103,10 +103,15 @@ Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in 
 
 For a real run, a non-stdout `--result` destination must differ from the effective log-file
 destination after both have been anchored to absolute paths. An exact collision is a usage error
-(exit 2). A collision between the two flags is rejected at invocation, before the session is opened, so a run that fails while opening or planning cannot deliver its result onto the
-path the operator named as the log; a collision with the manifest's own `execution.logFile` is
-rejected after planning exposes the anchored path. Both are refused before execution or either
-sink is opened. Comparison is case-insensitive on Windows and
+(exit 2). One rule governs when: each half is refused as soon as its anchored path is knowable,
+and never later. The `--log-file` spelling is an argument-level fact, so it is refused at
+invocation, before the session is opened; the manifest's own `execution.logFile` is anchored by
+`Session.open`, so it is refused the moment open returns and publishes `effectiveLogFile`
+(§9.1) — before planning, and therefore before any failure of it. No run that fails while
+opening or planning can deliver its result onto the path the operator named as the log, and both
+halves are refused before execution or either sink is opened. A manifest that never parses
+configures no log file at all, so that invocation has no effective log destination to collide
+with. Comparison is case-insensitive on Windows and
 case-sensitive on Linux. Dry-run may write its result to the configured log path because it never
 opens the log, and `--result -` remains valid.
 
@@ -389,6 +394,9 @@ export class Session {
   readonly mode: 'gui' | 'interactive' | 'non-interactive';
   readonly platform: Platform;                    // selected target platform
   readonly preview: boolean;                      // true for a foreign-platform session
+  readonly effectiveLogFile: { readonly path: string; readonly announcement: string } | undefined;
+                                                  // anchored --log-file, else execution.logFile,
+                                                  // beside the spelling its supplier wrote (§10)
   pendingInputs(): readonly InputState[];         // unresolved AND enabled, declaration order
   allInputs(): readonly InputState[];             // plain, sink-safe input views (defined below)
   warnings(): readonly string[];                  // §4.3/§5/§10 warnings a frontend says out loud
@@ -415,6 +423,17 @@ generic masking capability. It accepts only the exact frozen sink table returned
 binding retains a live masking closure, so a table obtained before a successful `setValue()` uses
 the replacement secret registry on its next call. The helper exposes neither that closure nor the
 registry and is not projected over the Electron bridge.
+
+`effectiveLogFile` is the frozen pair the session logs through: the anchored `path` its sink
+opens, beside the `announcement` its supplier wrote — the spelling every sink names (§10). It is
+`undefined` when neither `--log-file` nor `execution.logFile` is configured, and it is readable
+the moment `open()` returns, which is what lets a host refuse §4.1's `--result` collision before
+it plans. Anchoring stays engine-owned: a manifest-relative `execution.logFile` resolves against
+the manifest's directory, so a host that re-derived it would resolve against its own working
+directory instead (invariant 13). It is a facade field like `manifest`, `mode`, `platform`, and
+`preview`: §9.2's bridge projects facade *methods* and run events, this adds neither, and
+invariant 11 forbids only the reverse — behavior reachable on the bridge that the facade lacks.
+The bridge therefore needs no entry for it.
 
 `getThemeConfig()` returns a fresh, shallow-frozen plain-data snapshot on every call, including a
 fresh frozen `{}` when `gui` is absent. Its localized `windowTitle` is masked at this GUI sink
