@@ -71,6 +71,32 @@ describe('log-file sink failures', () => {
     });
   });
 
+  it('names a fixed reason for an errno-bearing write and never the raw OS message', async () => {
+    const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    // The raw text a Node system error carries: an OS-dependent phrase plus a path fragment
+    // RUNE never composed. §10 keeps it internal on the cause, out of the message.
+    const cause = Object.assign(new Error(`ENOSPC: no space left on device, write '${path}'`), {
+      code: 'ENOSPC',
+      syscall: 'write',
+    });
+    mockedFs.streamFactory = (target) =>
+      openedWritable(target, {
+        write(_chunk, _encoding, callback) {
+          callback(cause);
+        },
+      });
+    const sink = await createLogFileSink(path);
+
+    sink.observer({ kind: 'stepOutput', stepId: 'install', stream: 'stderr', line: 'failed' });
+
+    await expect(sink.close()).rejects.toMatchObject({
+      code: 'RUNE-406',
+      name: 'ExecutionError',
+      message: `could not write to log file "${path}": no space is left on the device (ENOSPC)`,
+      cause,
+    });
+  });
+
   it('settles with a controlled error when finalizing the stream fails', async () => {
     const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     mockedFs.streamFactory = (target) =>

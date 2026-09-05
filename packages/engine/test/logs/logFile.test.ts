@@ -14,12 +14,23 @@ describe('log-file sink', () => {
     const path = join(parentFile, 'run.log');
     writeFileSync(parentFile, 'occupied', 'utf8');
 
-    await expect(createLogFileSink(path)).rejects.toMatchObject({
+    const failure = await createLogFileSink(path).then(
+      () => undefined,
+      (error: unknown) => error as Error & { readonly cause: Error },
+    );
+
+    expect(failure).toMatchObject({
       code: 'RUNE-406',
       name: 'ExecutionError',
-      message: expect.stringContaining('prepare the directory'),
       cause: expect.any(Error),
     });
+    // §10: the destination plus a fixed reason derived from the errno code. The errno itself
+    // differs by platform (EEXIST on Windows, ENOTDIR elsewhere), the shape does not.
+    expect(failure!.message).toMatch(
+      /^could not prepare the directory for log file ".+": .+ \(E[A-Z0-9]+\)$/u,
+    );
+    expect(failure!.message).toContain(`"${path}"`);
+    expect(failure!.message).not.toContain(failure!.cause.message);
   });
 
   it('flushes buffered events before close settles', async () => {

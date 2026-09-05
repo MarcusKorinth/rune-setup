@@ -12,7 +12,7 @@ import { finished } from 'node:stream/promises';
 
 import { escapeDiagnosticText } from '../diagnostics.js';
 import type { EngineObserver, RunEvent } from '../engine/events.js';
-import { ExecutionError, messageOf } from '../errors.js';
+import { ExecutionError, filesystemFailureReason } from '../errors.js';
 
 export interface LogFileSink {
   readonly observer: EngineObserver;
@@ -81,7 +81,12 @@ export async function createLogFileSink(
     throw failure;
   }
   if (target.isDirectory()) {
-    rememberFailure('open', new Error('the path is a directory'));
+    // Nothing threw here, so carry the errno the reason helper maps: the sink names the same
+    // fixed phrase the OS would have produced instead of the value-free fallback.
+    rememberFailure(
+      'open',
+      Object.assign(new Error('the path is a directory'), { code: 'EISDIR' }),
+    );
     stream.destroy();
     throw failure;
   }
@@ -156,7 +161,7 @@ function logError(
 ): ExecutionError {
   return new ExecutionError(
     'RUNE-406',
-    `could not ${action} log file "${path}": ${messageOf(cause)}`,
+    `could not ${action} log file "${path}": ${filesystemFailureReason(cause)}`,
     {
       cause,
     },
