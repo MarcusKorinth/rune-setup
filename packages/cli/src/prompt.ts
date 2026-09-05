@@ -118,16 +118,23 @@ export class Prompter {
   readonly #interaction: Interaction;
   readonly #inputEndedMessage: string;
   readonly #cancel: CancelToken | undefined;
+  readonly #onInterrupt: (() => void) | undefined;
   readonly #output: MutedOutput;
   #rl: Interface | undefined;
   #reject: ((error: Error) => void) | undefined;
   #disposeCancel: (() => void) | undefined;
   #inputEnded = false;
 
-  constructor(interaction: Interaction, inputEndedMessage: string, cancel?: CancelToken) {
+  constructor(
+    interaction: Interaction,
+    inputEndedMessage: string,
+    cancel?: CancelToken,
+    onInterrupt?: () => void,
+  ) {
     this.#interaction = interaction;
     this.#inputEndedMessage = inputEndedMessage;
     this.#cancel = cancel;
+    this.#onInterrupt = onInterrupt;
     this.#output = new MutedOutput(interaction.write);
   }
 
@@ -198,6 +205,11 @@ export class Prompter {
       // Ctrl+C during a prompt, and a script that ran out of answers, both mean: stop.
       this.#rl.on('SIGINT', () => {
         this.#output.muted = false;
+        if (this.#onInterrupt === undefined) {
+          this.#cancel?.cancel();
+        } else {
+          this.#onInterrupt();
+        }
         this.#reject?.(new CancelledError());
       });
       this.#rl.on('close', () => {

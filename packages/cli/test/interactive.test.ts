@@ -3,13 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '@rune/engine';
 
 import { run } from '../src/cli.js';
 import type { CliIo } from '../src/io.js';
 import { Prompter, type Interaction } from '../src/prompt.js';
+import { createSignalController } from '../src/signals.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -153,6 +154,76 @@ const FINAL_RESOLUTION_WARNING_MANIFEST = [
 const INTERACTIVE_TEST_TIMEOUT_MS = 20_000;
 
 describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => {
+  it.each(['readline-first', 'process-first'] as const)(
+    'shares the signal controller across a %s interrupt sequence',
+    async (order) => {
+      const input = new PassThrough();
+      const interaction: Interaction = { input, isTTY: true, write: () => undefined };
+      const cancel = new CancelToken();
+      const forceExit = vi.fn<(code: number) => void>();
+      const signals = createSignalController(cancel, forceExit);
+      const prompter = new Prompter(interaction, 'test input ended', cancel, signals.handle);
+
+      try {
+        const answer = prompter.ask('Value: ');
+        if (order === 'readline-first') {
+          input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+        } else {
+          signals.handle();
+        }
+        await expect(answer).rejects.toMatchObject({ code: 'RUNE-601' });
+        expect(cancel.isCancelled).toBe(true);
+
+        if (order === 'readline-first') {
+          signals.handle();
+        } else {
+          input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+        }
+        signals.handle();
+        expect(forceExit).toHaveBeenCalledTimes(1);
+        expect(forceExit).toHaveBeenCalledWith(6);
+      } finally {
+        prompter.close();
+      }
+    },
+  );
+
+  it('keeps the local Ctrl+C fallback for a prompter without host control', async () => {
+    const input = new PassThrough();
+    const prompter = new Prompter(
+      { input, isTTY: true, write: () => undefined },
+      'test input ended',
+    );
+
+    try {
+      const answer = prompter.ask('Value: ');
+      input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+      await expect(answer).rejects.toMatchObject({ code: 'RUNE-601' });
+    } finally {
+      prompter.close();
+    }
+  });
+
+  it('settles an interrupted prompt when a callback has no cancel token', async () => {
+    const input = new PassThrough();
+    const onInterrupt = vi.fn<() => void>();
+    const prompter = new Prompter(
+      { input, isTTY: true, write: () => undefined },
+      'test input ended',
+      undefined,
+      onInterrupt,
+    );
+
+    try {
+      const answer = prompter.ask('Value: ');
+      input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+      await expect(answer).rejects.toMatchObject({ code: 'RUNE-601' });
+      expect(onInterrupt).toHaveBeenCalledTimes(1);
+    } finally {
+      prompter.close();
+    }
+  });
+
   it('keeps EOF terminal after an accepted answer', async () => {
     const interaction = scriptedThenEof(['first']);
     const prompter = new Prompter(interaction, 'test input ended');
@@ -245,6 +316,62 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
       exitCode: 6,
       mode: 'interactive',
     });
+    input.destroy();
+  });
+
+  it('routes readline Ctrl+C through host cancellation without exposing a partial secret', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const cancel = new CancelToken();
+    const forceExit = vi.fn<(code: number) => void>();
+    const signals = createSignalController(cancel, forceExit);
+    const input = new PassThrough();
+    const written: string[] = [];
+    const partialSecret = 'partial-secret-marker';
+    let promptCount = 0;
+    const interaction: Interaction = {
+      input,
+      isTTY: true,
+      write: (text) => {
+        written.push(text);
+        if (!text.endsWith(': ')) {
+          return;
+        }
+        promptCount += 1;
+        setImmediate(() => {
+          if (promptCount === 1) {
+            input.write('hello\n');
+          } else {
+            input.write(partialSecret);
+            input.emit('keypress', String.fromCharCode(3), { ctrl: true, name: 'c' });
+          }
+        });
+      },
+    };
+
+    const code = await run(
+      ['run', path, '--result', '-'],
+      io,
+      { cancel, onInterrupt: signals.handle },
+      interaction,
+    );
+
+    expect(code).toBe(6);
+    expect(cancel.isCancelled).toBe(true);
+    expect(JSON.parse(io.out.join('\n'))).toMatchObject({
+      resultSchemaVersion: 2,
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'interactive',
+    });
+    expect(written.join('')).not.toContain(partialSecret);
+    expect(io.out.join('\n')).not.toContain(partialSecret);
+    expect(io.err.join('\n')).not.toContain(partialSecret);
+
+    signals.handle();
+    signals.handle();
+    expect(forceExit).toHaveBeenCalledTimes(1);
+    expect(forceExit).toHaveBeenCalledWith(6);
     input.destroy();
   });
 

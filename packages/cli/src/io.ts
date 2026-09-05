@@ -22,6 +22,7 @@ export interface CliIo {
 /** Optional process control supplied by the executable host. */
 export interface CliControl {
   readonly cancel?: CancelToken;
+  readonly onInterrupt?: () => void;
 }
 
 /** Mirrors the engine log sink's visible control escaping for one composed human line. */

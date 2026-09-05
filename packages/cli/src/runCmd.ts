@@ -136,6 +136,7 @@ export async function runCommand(
         interaction,
         formatSessionTerminalLine(strings, strings.chrome('rune.prompt.inputEnded')),
         control.cancel,
+        control.onInterrupt,
       );
       await promptForInputs(session, prompter);
     }
