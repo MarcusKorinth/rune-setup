@@ -181,6 +181,45 @@ describe.sequential('asynchronous Session I/O', () => {
     expect(session.plan().executionOptions.logFile).toBe(invocationLog);
   });
 
+  it('uses the invocation result destination for manifest log collision checks', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rune-session-result-destination-snapshot-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const logPath = join(directory, 'logs', 'run.log');
+    const resultPath = join(directory, 'result.json');
+    await writeFile(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs: {}',
+        'execution:',
+        '  logFile: logs/run.log',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const collidingThenDistinct: { resultDestination?: string } = { resultDestination: logPath };
+    const collidingOpening = Session.open(manifestPath, collidingThenDistinct);
+    collidingThenDistinct.resultDestination = resultPath;
+    await expect(collidingOpening).rejects.toThrow(
+      '--result and the effective log file must use different paths for a real run',
+    );
+
+    const distinctThenColliding: { resultDestination?: string } = { resultDestination: resultPath };
+    const distinctOpening = Session.open(manifestPath, distinctThenColliding);
+    distinctThenColliding.resultDestination = logPath;
+    await expect(distinctOpening).resolves.toBeInstanceOf(Session);
+
+    const absentThenColliding: { resultDestination?: string } = {};
+    const absentOpening = Session.open(manifestPath, absentThenColliding);
+    absentThenColliding.resultDestination = logPath;
+    await expect(absentOpening).resolves.toBeInstanceOf(Session);
+  });
+
   it('snapshots host built-ins before the first asynchronous boundary', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rune-session-host-snapshot-'));
     const manifestPath = join(directory, 'installer.yaml');

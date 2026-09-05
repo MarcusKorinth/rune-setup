@@ -224,6 +224,7 @@ export class Session {
     }));
     const overrides = new Map(Object.entries(options.overrides ?? {}));
     const logFileFlag = options.logFile;
+    const resultDestination = options.resultDestination;
     // Anchoring is for the filesystem only: the sink and the preview name `logFileFlag`,
     // the spelling the operator wrote and the only one a secret registry can hold (§10).
     const flagLogFile =
@@ -270,9 +271,9 @@ export class Session {
     // onto the file the operator named as the log, whatever it is that fails.
     const logFile = effectiveLogFile(flagLogFile, manifest, manifestDir);
     if (
-      options.resultDestination !== undefined &&
+      resultDestination !== undefined &&
       logFile !== undefined &&
-      sameSinkPath(resolvePath(invocationCwd, options.resultDestination), logFile.path)
+      sameSinkPath(resolvePath(invocationCwd, resultDestination), logFile.path)
     ) {
       throw new UsageError(RESULT_LOG_COLLISION_MESSAGE);
     }
