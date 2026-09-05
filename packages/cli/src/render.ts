@@ -119,6 +119,11 @@ function safeJson(value: unknown): string {
  * log path exact), so this sink's masks are the only ones that can hide it and they must meet
  * the registry's own spelling — hence the operator's spelling, and quoting instead of
  * escaping: `safeJson` would rewrite a backslash or a quote and leave the secret in clear.
+ *
+ * The quotes are therefore decorative. A path holding a quote or a comma can make this line
+ * look as if it carried a second `failFast`/`logFile` pair — accepted, because masking
+ * outranks unambiguity here and the line's control characters stay visibly escaped, so a
+ * forged field cannot become a forged line.
  */
 function quotedLogPath(announcement: string | undefined): string {
   return announcement === undefined ? 'none' : `"${announcement}"`;
