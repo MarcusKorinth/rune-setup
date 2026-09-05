@@ -36,7 +36,13 @@ export function schemaCommand(
   io.stdout(text);
 }
 
-function errnoCode(cause: unknown): string | undefined {
+/**
+ * @internal Exported so the shape guard can be pinned directly; not part of the CLI's API.
+ *
+ * Mirrors the engine's own errno guard rather than importing it: the engine keeps that helper
+ * package-internal, and `--output` is a CLI-owned usage error, not an operational sink failure.
+ */
+export function errnoCode(cause: unknown): string | undefined {
   if (!(cause instanceof Error) || !('code' in cause) || typeof cause.code !== 'string') {
     return undefined;
   }

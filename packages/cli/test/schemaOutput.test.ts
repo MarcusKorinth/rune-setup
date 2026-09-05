@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { run, type CliIo } from '../src/cli.js';
+import { errnoCode } from '../src/schemaCmd.js';
 
 interface Capture extends CliIo {
   readonly out: string[];
@@ -39,5 +40,43 @@ describe('rune schema --output', () => {
     expect(io.out).toEqual([]);
     expect(io.err).toEqual([`cannot write --output "${output}" (EISDIR)`]);
     expect(existsSync(join(output, 'schema.json'))).toBe(false);
+  });
+});
+
+/**
+ * The errno code the usage message appends is a fixed token, never the raw OS message
+ * (docs/architecture.md §10). Only EISDIR is reachable through the filesystem above, so the
+ * shape guard and its fallback are pinned directly.
+ */
+describe('errno codes in the --output usage error', () => {
+  function systemError(code: unknown): Error {
+    return Object.assign(new Error("EACCES: permission denied, open '/home/someone/.ssh/id_rsa'"), {
+      code,
+    });
+  }
+
+  it.each(['EACCES', 'EISDIR', 'ENOSPC', 'ENAMETOOLONG', 'E2BIG'])(
+    'keeps the errno-shaped code %s',
+    (code) => {
+      expect(errnoCode(systemError(code))).toBe(code);
+    },
+  );
+
+  it.each([
+    ['a lowercase code', 'eacces'],
+    ['a digit-first code', '2EACCES'],
+    ['an underscored Node code', 'ERR_INVALID_ARG_TYPE'],
+    ['a code carrying a path', 'EACCES /home/someone/.ssh/id_rsa'],
+    ['a non-string code', 404],
+    ['an object code', { toString: () => 'EACCES' }],
+  ])('drops %s', (_name, code) => {
+    expect(errnoCode(systemError(code))).toBeUndefined();
+  });
+
+  it('drops a cause that is not an error and one that carries no code', () => {
+    expect(errnoCode(new Error('no code at all'))).toBeUndefined();
+    expect(errnoCode({ code: 'EACCES' })).toBeUndefined();
+    expect(errnoCode('EACCES')).toBeUndefined();
+    expect(errnoCode(undefined)).toBeUndefined();
   });
 });
