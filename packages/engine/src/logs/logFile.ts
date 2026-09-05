@@ -20,28 +20,41 @@ export interface LogFileSink {
   close(): Promise<void>;
 }
 
+/** How a RUNE-406 diagnostic names the destination (docs/architecture.md §10). */
+export interface LogFileSinkOptions {
+  /**
+   * The spelling the diagnostic names instead of `path`. A host that anchors or otherwise
+   * normalizes the log path itself writes to the anchored path but reports the spelling its
+   * supplier wrote, so the diagnostic names the same bytes a secret registry can hold.
+   * Defaults to `path`.
+   */
+  readonly announcement?: string | undefined;
+}
+
 /** Opens the log before returning, so execution cannot start until the sink is usable. */
 export async function createLogFileSink(
   path: string,
   mask: (text: string) => string = (text) => text,
+  options: LogFileSinkOptions = {},
 ): Promise<LogFileSink> {
+  const named = options.announcement ?? path;
   try {
     await mkdir(dirname(path), { recursive: true });
   } catch (cause) {
-    throw logError('prepare the directory for', path, cause);
+    throw logError('prepare the directory for', named, cause);
   }
 
   let stream: WriteStream;
   try {
     stream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
   } catch (cause) {
-    throw logError('open', path, cause);
+    throw logError('open', named, cause);
   }
 
   let phase: 'opening' | 'writing' | 'closing' = 'opening';
   let failure: ExecutionError | undefined;
   const rememberFailure = (action: 'open' | 'write to' | 'close', cause: unknown): void => {
-    failure ??= logError(action, path, cause);
+    failure ??= logError(action, named, cause);
   };
   // This listener is deliberately permanent: every asynchronous stream failure must have
   // an owner, including one emitted while end() is flushing buffered writes.

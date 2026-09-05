@@ -18,7 +18,7 @@ import {
   type RuneIssue,
 } from '../errors.js';
 import { environmentName, secretArgumentWarnings } from '../manifest/v1/rules.js';
-import { manifestDescriptorFor, parseManifestAsync, type Manifest } from '../manifest/index.js';
+import { parseManifestAsync, type Manifest } from '../manifest/index.js';
 import { startOfFile } from '../manifest/source.js';
 import { discoverSelectedOverlayAsync, selectLocale } from '../i18n/locale.js';
 import { loadOverlayAsync, type LocaleOverlay } from '../i18n/overlay.js';
@@ -117,7 +117,12 @@ export class Session {
   readonly mode: RunMode;
   readonly platform: Platform;
   readonly preview: boolean;
-  readonly #manifestPath: string;
+  /**
+   * The manifest as the caller spelled it. RUNE anchors that spelling to reach the file, but
+   * a located diagnostic names this one: the anchored form is a spelling no secret registry
+   * ever held, and the plan and the result carry it as machine identity instead (§10).
+   */
+  readonly #manifestAnnouncement: string;
   readonly #context: RuntimeContext;
   readonly #environment: Environment;
   #secrets: SecretRegistry;
@@ -126,7 +131,7 @@ export class Session {
   readonly #values: readonly ValuesDocument[];
   readonly #overrides: ReadonlyMap<string, string>;
   readonly #answers = new Map<string, unknown>();
-  readonly #logFile: string | undefined;
+  readonly #logFile: EffectiveLogFile | undefined;
   readonly #runner: Runner | undefined;
   readonly #manifestWarnings: readonly string[];
   #resolution: Resolution;
@@ -137,7 +142,7 @@ export class Session {
 
   private constructor(fields: {
     manifest: Manifest;
-    manifestPath: string;
+    manifestAnnouncement: string;
     mode: RunMode;
     context: RuntimeContext;
     environment: Environment;
@@ -147,11 +152,11 @@ export class Session {
     overrides: ReadonlyMap<string, string>;
     resolution: Resolution;
     inputSnapshot: InputFacadeSnapshot;
-    logFile: string | undefined;
+    logFile: EffectiveLogFile | undefined;
     runner: Runner | undefined;
   }) {
     this.manifest = fields.manifest;
-    this.#manifestPath = fields.manifestPath;
+    this.#manifestAnnouncement = fields.manifestAnnouncement;
     this.mode = fields.mode;
     this.platform = fields.context.platform;
     this.preview = fields.context.preview;
@@ -205,8 +210,12 @@ export class Session {
     }));
     const overrides = new Map(Object.entries(options.overrides ?? {}));
     const logFileFlag = options.logFile;
+    // Anchoring is for the filesystem only: the sink and the preview name `logFileFlag`,
+    // the spelling the operator wrote and the only one a secret registry can hold (§10).
     const flagLogFile =
-      logFileFlag === undefined ? undefined : resolvePath(invocationCwd, logFileFlag);
+      logFileFlag === undefined
+        ? undefined
+        : { path: resolvePath(invocationCwd, logFileFlag), announcement: logFileFlag };
 
     let locale: string | undefined;
     let localeSelectionError: unknown;
@@ -238,7 +247,6 @@ export class Session {
       });
       throw projected;
     }
-    const descriptor = manifestDescriptorFor(manifest);
     const secrets = new SecretRegistry();
     let strings: StringTable | undefined;
     let resolution: Resolution | undefined;
@@ -297,13 +305,13 @@ export class Session {
         },
         secrets,
         undefined,
-        mode === 'non-interactive' ? (id) => missingInputIssue(descriptor.path, id) : undefined,
+        mode === 'non-interactive' ? (id) => missingInputIssue(manifestPath, id) : undefined,
       );
       inputSnapshot = projectInputFacadeSnapshot(resolution);
 
       return new Session({
         manifest,
-        manifestPath: descriptor.path,
+        manifestAnnouncement: manifestPath,
         mode,
         context,
         environment,
@@ -451,7 +459,9 @@ export class Session {
       log =
         logFile === undefined
           ? undefined
-          : await createLogFileSink(logFile, (text) => this.#secrets.mask(text));
+          : await createLogFileSink(logFile, (text) => this.#secrets.mask(text), {
+              announcement: this.#logFile?.announcement ?? logFile,
+            });
       const observers: EngineObserver = (event) => {
         notifyObserver(log?.observer, event);
         if (event.kind === 'runFinished') {
@@ -547,7 +557,7 @@ export class Session {
       if (missing.length > 0 || problems.length > 0) {
         throw InputError.fromIssues(problems.length > 0 ? 'RUNE-202' : 'RUNE-201', [
           ...problems,
-          ...missing.map((id) => missingInputIssue(this.#manifestPath, id)),
+          ...missing.map((id) => missingInputIssue(this.#manifestAnnouncement, id)),
         ]);
       }
       if (this.#plan !== undefined) {
@@ -558,7 +568,7 @@ export class Session {
         resolution: this.#resolution,
         context: this.#context,
         locale: this.#strings.locale,
-        logFile: this.#logFile,
+        logFile: this.#logFile?.path,
         strings: this.#strings,
       });
       registerFailureResultSession(this, this.#secrets.snapshot(), this.#plan);
@@ -615,12 +625,13 @@ function combineWarnings(
   return Object.freeze([...manifestWarnings, ...resolutionWarnings]);
 }
 
-function missingInputIssue(manifestPath: string, id: string): RuneIssue {
+/** The location names the manifest as its caller spelled it: the maskable spelling (§10). */
+function missingInputIssue(manifestAnnouncement: string, id: string): RuneIssue {
   const sources = `--set ${id}=... | ${environmentName(id)} | values-file key '${id}'`;
   return {
     code: 'RUNE-201',
     message: `input "${id}" is required and has no value — supply it with ${sources}`,
-    location: startOfFile(manifestPath),
+    location: startOfFile(manifestAnnouncement),
   };
 }
 
@@ -654,20 +665,29 @@ function projectOpeningError(error: unknown, secrets: SecretRegistry): RuneError
   return projectRuneError(runeError, secrets);
 }
 
+/** The anchored log path plus the spelling its supplier wrote, which sinks name (§10). */
+interface EffectiveLogFile {
+  readonly path: string;
+  readonly announcement: string;
+}
+
 /** The snapshotted `--log-file` beats `execution.logFile`; manifest paths anchor to its directory. */
 function effectiveLogFile(
-  absoluteFlag: string | undefined,
+  flag: EffectiveLogFile | undefined,
   manifest: Manifest,
   manifestDir: string,
-): string | undefined {
-  if (absoluteFlag !== undefined) {
-    return absoluteFlag;
+): EffectiveLogFile | undefined {
+  if (flag !== undefined) {
+    return flag;
   }
   const configured = manifest.execution.logFile;
   if (configured === undefined) {
     return undefined;
   }
-  return isAbsolute(configured)
-    ? resolvePath(manifestDir, configured)
-    : resolveManifestRelativePathFrom(configured, manifestDir);
+  return {
+    path: isAbsolute(configured)
+      ? resolvePath(manifestDir, configured)
+      : resolveManifestRelativePathFrom(configured, manifestDir),
+    announcement: configured,
+  };
 }

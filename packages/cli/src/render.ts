@@ -11,14 +11,16 @@ import { humanStderr, sessionHumanStderr, sessionHumanStdout, type CliIo } from 
 /**
  * Renders the immutable plan itself — the dry-run output (§10: requested output, stdout).
  *
- * `logFileAnnouncement` is the log path as the operator spelled it (`--log-file`, else
- * `execution.logFile`), which §10 makes the preview's spelling; it is `undefined` exactly
- * when the plan has no effective log path.
+ * `spelled` carries the two paths as the operator wrote them: the manifest argument, and the
+ * log path (`--log-file`, else `execution.logFile`), whose entry is `undefined` exactly when
+ * the plan has no effective log path. §10 makes those the preview's spellings — the plan's own
+ * fields carry RUNE-anchored spellings, which this sink's masks would meet without ever
+ * having held them.
  */
 export function renderPlan(
   plan: ExecutionPlan,
   product: { readonly name: string; readonly version: string },
-  logFileAnnouncement: string | undefined,
+  spelled: { readonly manifestPath: string; readonly logFile: string | undefined },
   io: CliIo,
   strings: StringTable,
 ): void {
@@ -29,7 +31,7 @@ export function renderPlan(
       planVersion: plan.planSchemaVersion,
       productName: product.name,
       productVersion: product.version,
-      manifestPath: plan.manifestPath,
+      manifestPath: spelled.manifestPath,
       manifestSha: plan.manifestSha256,
       platform: plan.platform,
     }),
@@ -39,7 +41,7 @@ export function renderPlan(
     strings,
     strings.chrome('rune.plan.executionOptions', {
       failFast: String(plan.executionOptions.failFast),
-      logFile: quotedLogPath(logFileAnnouncement),
+      logFile: quotedLogPath(spelled.logFile),
     }),
   );
   sessionHumanStdout(io, strings, strings.chrome('rune.plan.inputs'));
@@ -115,10 +117,10 @@ function safeJson(value: unknown): string {
 }
 
 /**
- * The log path is the one plan string the engine publishes unprojected (§10 keeps a validated
- * log path exact), so this sink's masks are the only ones that can hide it and they must meet
- * the registry's own spelling — hence the operator's spelling, and quoting instead of
- * escaping: `safeJson` would rewrite a backslash or a quote and leave the secret in clear.
+ * The plan publishes its log path unprojected (§10 keeps a validated log path exact), so this
+ * sink's masks are the only ones that can hide it and they must meet the registry's own
+ * spelling — hence the operator's spelling, and quoting instead of escaping: `safeJson` would
+ * rewrite a backslash or a quote and leave the secret in clear.
  *
  * The quotes are therefore decorative. A path holding a quote or a comma can make this line
  * look as if it carried a second `failFast`/`logFile` pair — accepted, because masking

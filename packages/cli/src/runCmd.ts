@@ -51,8 +51,9 @@ export async function runCommand(
   io: CliIo,
   control: CliControl = {},
 ): Promise<void> {
-  // Session.open anchors relative manifest paths to the invocation cwd. Preserve that
-  // identity for an early open failure, before any async work can change the cwd.
+  // Session.open anchors relative manifest paths to the invocation cwd, against the same cwd
+  // this reads: nothing awaits in between. Preserve that identity for an early open failure,
+  // while the session itself keeps the operator's spelling for the lines that name it (§10).
   const absoluteManifestPath = resolve(manifestPath);
   // The engine resolves result paths when it writes them. Anchor relative destinations
   // before any async work or observer callbacks can change the process working directory.
@@ -85,7 +86,7 @@ export async function runCommand(
       throw new UsageError('--values needs a non-empty path');
     }
 
-    session = await Session.open(absoluteManifestPath, {
+    session = await Session.open(manifestPath, {
       mode: 'non-interactive',
       values: flags.values ?? [],
       overrides: parseOverrides(flags.set ?? []),
@@ -128,12 +129,15 @@ export async function runCommand(
 
     // With `--result -` the JSON owns stdout; the human plan would contaminate it (§10).
     if (flags.dryRun === true && resultOption !== '-') {
-      // The plan carries the anchored log path; the preview names the spelling the operator
-      // supplied, because that is the one a secret registry can hold (§10).
+      // The plan carries anchored paths; the preview names the spellings the operator
+      // supplied, because those are the ones a secret registry can hold (§10).
       renderPlan(
         plan,
         session.manifest.product,
-        flags.logFile ?? session.manifest.execution.logFile,
+        {
+          manifestPath,
+          logFile: flags.logFile ?? session.manifest.execution.logFile,
+        },
         io,
         strings,
       );
