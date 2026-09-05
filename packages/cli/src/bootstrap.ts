@@ -22,8 +22,11 @@ export interface BootstrapStreams {
 }
 
 export interface BootstrapOptions {
-  /** Process control the executable host owns (cancellation). */
-  readonly control?: CliControl;
+  /**
+   * Process control the executable host owns (cancellation). Required, so a host cannot drop
+   * the token and silently turn its first `Ctrl+C` into a run that finishes regardless.
+   */
+  readonly control: CliControl;
   /**
    * Publishes an exit code decided after this call resolved: a stdout sink can report its loss
    * once the run has already returned its own code, and the caller has taken it. Required, so
@@ -55,7 +58,7 @@ export async function bootstrap(
   const code = await run(
     argv,
     { stdout: stdout.writeLine, stderr: stderr.writeLine },
-    options.control ?? {},
+    options.control,
   );
   return stdout.failure() === undefined ? code : INTERNAL_EXIT_CODE;
 }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 
-import { resultJsonSchema, type RunResult } from '@rune/engine';
+import { CancelToken, resultJsonSchema, type RunResult } from '@rune/engine';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -96,7 +96,7 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
         stdout: immediatelyFailingSink(systemError('ENOSPC', 'no space left on device')),
         stderr: stderr.stream,
       },
-      { setExitCode },
+      { setExitCode, control: {} },
     );
 
     expect(code).toBe(70);
@@ -117,7 +117,7 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
         stdout: failingSink(systemError('ENOSPC', 'no space left on device')),
         stderr: stderr.stream,
       },
-      { setExitCode },
+      { setExitCode, control: {} },
     );
     await settled();
 
@@ -134,7 +134,7 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
     const code = await bootstrap(
       ['schema'],
       { stdout: failingSink(systemError('EPIPE', 'broken pipe')), stderr: stderr.stream },
-      { setExitCode },
+      { setExitCode, control: {} },
     );
     await settled();
 
@@ -202,7 +202,7 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
     const code = await bootstrap(
       ['--no-such-flag'],
       { stdout: stdout.stream, stderr: failingSink(systemError('ENOSPC', 'no space left')) },
-      { setExitCode },
+      { setExitCode, control: {} },
     );
     await settled();
 
@@ -219,7 +219,7 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
     const code = await bootstrap(
       ['schema'],
       { stdout: stdout.stream, stderr: stderr.stream },
-      { setExitCode },
+      { setExitCode, control: {} },
     );
     await settled();
 
@@ -228,5 +228,27 @@ describe('CLI bootstrap: guarded process streams and the effective exit code', (
     expect(stdout.text().endsWith('\n')).toBe(true);
     expect(stderr.text()).toBe('');
     expect(setExitCode).not.toHaveBeenCalled();
+  });
+
+  it("forwards the host's cancel token to the run", async () => {
+    const { manifestPath, resultPath } = dryRunFixture();
+    const cancel = new CancelToken();
+    cancel.cancel();
+    const stdout = capturingSink();
+    const stderr = capturingSink();
+    const setExitCode = vi.fn();
+
+    // The token the executable host owns is the only way a `Ctrl+C` reaches the run: without
+    // it this argv would plan, print and exit 0 (§7).
+    const code = await bootstrap(
+      ['run', manifestPath, '--non-interactive', '--dry-run', '--result', resultPath],
+      { stdout: stdout.stream, stderr: stderr.stream },
+      { setExitCode, control: { cancel } },
+    );
+    await settled();
+
+    expect(code).toBe(6);
+    expect(stdout.text()).toBe('');
+    expect(deliveredResult(resultPath)).toMatchObject({ status: 'cancelled', exitCode: 6 });
   });
 });
