@@ -10,6 +10,11 @@
  * run touches — stdout, stderr, the log file and the result file — for the supplied spelling,
  * the resolved spelling and both of their JSON-escaped forms. Adding a path-bearing output
  * means adding one entry to `SCENARIOS`, not a new test.
+ *
+ * §10 exempts exactly one field: the structured `manifest.path` of a plan or a result keeps
+ * RUNE's resolved spelling, because it is machine identity. A scenario names that spelling in
+ * `exact`, which the helper asserts is really written and then removes from the file before
+ * scanning the rest — an allow-list, so the exemption cannot widen unnoticed.
  */
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -50,6 +55,8 @@ interface Run {
   readonly exitCode: number;
   /** Files this run may write; their contents are sinks too. */
   readonly files?: readonly string[];
+  /** Spellings §10 keeps exact in a written file, asserted present and then excluded. */
+  readonly exact?: readonly string[];
 }
 
 interface Scenario {
@@ -192,26 +199,51 @@ const SCENARIOS: readonly Scenario[] = [
     },
   },
   {
-    // §10: the plan heading names the manifest as the operator spelled it on the command line.
+    // §10: the plan heading names the manifest as the operator spelled it on the command line,
+    // while the plan delivered beside it keeps `manifest.path` resolved — the one exempt field.
     name: 'the dry-run plan heading',
     build: (directory, spell) => {
       const secret = spell(writeManifest(directory));
+      const resultFile = join(directory, 'out', 'plan-1234.json');
       return {
-        argv: ['run', secret, '--non-interactive', '--dry-run', '--set', `token=${secret}`],
+        argv: [
+          'run',
+          secret,
+          '--non-interactive',
+          '--dry-run',
+          '--set',
+          `token=${secret}`,
+          '--result',
+          resultFile,
+        ],
         secret,
         exitCode: 0,
+        files: [resultFile],
+        exact: [jsonEscaped(resolve(secret))],
       };
     },
   },
   {
-    // §10: a located diagnostic points at the file as its supplier spelled it.
+    // §10: a located diagnostic points at the file as its supplier spelled it — in the same
+    // result document whose exempt `manifest.path` names that one file resolved.
     name: 'the RUNE-201 missing-input location',
     build: (directory, spell) => {
       const secret = spell(writeManifest(directory, ['  other:', '    type: text']));
+      const resultFile = join(directory, 'out', 'failure-1234.json');
       return {
-        argv: ['run', secret, '--non-interactive', '--set', `token=${secret}`],
+        argv: [
+          'run',
+          secret,
+          '--non-interactive',
+          '--set',
+          `token=${secret}`,
+          '--result',
+          resultFile,
+        ],
         secret,
         exitCode: 4,
+        files: [resultFile],
+        exact: [jsonEscaped(resolve(secret))],
       };
     },
   },
@@ -239,11 +271,18 @@ const SCENARIOS: readonly Scenario[] = [
   },
 ];
 
+/** How a path reads inside a JSON string — the result file, or a JSON-rendered plan value. */
+function jsonEscaped(text: string): string {
+  return JSON.stringify(text).slice(1, -1);
+}
+
+/** Stands in for a spelling §10 keeps exact, so the surrounding content stays scannable. */
+const EXEMPT = '<exact by contract>';
+
 /** Every spelling of the secret that would disclose it if it reached a sink. */
 function disclosingSpellings(secret: string): readonly string[] {
-  const escape = (text: string): string => JSON.stringify(text).slice(1, -1);
   const anchored = resolve(secret);
-  return [...new Set([secret, anchored, escape(secret), escape(anchored)])];
+  return [...new Set([secret, anchored, jsonEscaped(secret), jsonEscaped(anchored)])];
 }
 
 async function expectNoSpellingInAnySink(scenario: Scenario, spell: Spelling): Promise<void> {
@@ -259,7 +298,16 @@ async function expectNoSpellingInAnySink(scenario: Scenario, spell: Spelling): P
   );
   // A file this run was supposed to write proves the sink was exercised, not skipped.
   expect(written.every((content) => content !== '')).toBe(true);
-  const sinks = [...io.out, ...io.err, ...written].join('\n');
+  const exact = subject.exact ?? [];
+  for (const spelling of exact) {
+    // An exemption nothing writes would silently widen the allow-list instead of naming it.
+    expect(written.join('\n')).toContain(spelling);
+  }
+  // Only the file is allowed to carry them: stdout and stderr stay under the full guard.
+  const guarded = written.map((content) =>
+    exact.reduce((rest, spelling) => rest.replaceAll(spelling, EXEMPT), content),
+  );
+  const sinks = [...io.out, ...io.err, ...guarded].join('\n');
   for (const spelling of disclosingSpellings(subject.secret)) {
     expect(sinks).not.toContain(spelling);
   }
