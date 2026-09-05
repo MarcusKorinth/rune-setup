@@ -74,10 +74,10 @@ function resultError(action: ResultFileAction, path: string, cause: unknown): Ex
 /** How a RUNE-407 diagnostic names the destination (docs/architecture.md §10). */
 export interface WriteResultOptions {
   /**
-   * The spelling the diagnostic names instead of `path`. A host that anchors a relative
-   * destination itself writes to the anchored path but reports the operator's own spelling,
-   * so the failure line names the same bytes its success line names — the bytes a secret
-   * registry can hold. Defaults to `path`.
+   * The spelling the diagnostic names instead of `path`. A host that anchors or otherwise
+   * normalizes the destination itself writes to the anchored path but reports the operator's
+   * own spelling, so the failure line names the same bytes its success line names — the bytes
+   * a secret registry can hold. Defaults to `path`.
    */
   readonly announcement?: string | undefined;
 }
