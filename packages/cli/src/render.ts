@@ -32,7 +32,7 @@ export function renderPlan(
     strings,
     strings.chrome('rune.plan.executionOptions', {
       failFast: String(plan.executionOptions.failFast),
-      logFile: safeJson(plan.executionOptions.logFile),
+      logFile: quotedLogPath(plan.executionOptions.logFile),
     }),
   );
   sessionHumanStdout(io, strings, strings.chrome('rune.plan.inputs'));
@@ -105,6 +105,16 @@ export function renderPlan(
 /** The engine's opaque values stringify as `***`; quoting keeps argv boundaries visible. */
 function safeJson(value: unknown): string {
   return JSON.stringify(value) ?? 'none';
+}
+
+/**
+ * The effective log path is the one plan string the engine publishes unprojected (§10 keeps
+ * a validated log path exact), so this sink's masks are the only ones that can hide it and
+ * they must meet the registry's own spelling. Quote it instead of escaping it: `safeJson`
+ * would rewrite a backslash or a quote and leave the whole secret in clear.
+ */
+function quotedLogPath(path: string | undefined): string {
+  return path === undefined ? 'none' : `"${path}"`;
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */
