@@ -105,7 +105,10 @@ export async function run(
   }
 }
 
-/** One exit-code decision (§10): RuneError → exitCodeFor; parser errors → 2; rest → 70. */
+/**
+ * One exit-code decision (§10): a carried code passes through, a parser error is CLI misuse
+ * (2), and every other throwable — a RuneError or not — is mapped by the engine's exitCodeFor.
+ */
 function report(error: unknown, io: CliIo): number {
   if (error instanceof ExitWithCode) {
     return error.code;
@@ -123,7 +126,7 @@ function report(error: unknown, io: CliIo): number {
   // Unknown throwables may contain resolved input or process data. The run driver keeps the
   // cause internally when it can; this last-resort sink must never echo it verbatim.
   io.stderr('internal error: an unexpected error occurred');
-  return 70;
+  return exitCodeFor(error);
 }
 
 function collect(value: string, previous: readonly string[]): string[] {
