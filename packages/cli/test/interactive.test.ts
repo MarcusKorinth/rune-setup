@@ -365,6 +365,27 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(result.steps.map((step) => step.state)).toEqual(['SUCCEEDED']);
   });
 
+  it('masks a mixed-case secret repeated as an invalid summary action', async () => {
+    const path = fixture(MANIFEST);
+    const io = capture();
+    const secret = 'CaseSensitiveMarker';
+    const interaction = scripted(['hello', secret, secret, 'c']);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(6);
+    const diagnostics = io.err.join('\n');
+    const result = io.out.join('\n');
+    const transcript = interaction.transcript();
+    expect(transcript.split(secret)).toHaveLength(2);
+    expect(diagnostics).toContain('"***" is not p, c, or the number of a value');
+    expect(diagnostics).not.toContain(secret);
+    expect(diagnostics).not.toContain(secret.toLowerCase());
+    expect(result).not.toContain(secret);
+    expect(result).not.toContain(secret.toLowerCase());
+    expect(transcript).not.toContain(secret.toLowerCase());
+  });
+
   it('re-prompts on a pattern mismatch, showing the hint', async () => {
     const path = fixture([
       'schemaVersion: 1',

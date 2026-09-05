@@ -306,16 +306,15 @@ export async function summaryLoop(
     const proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
     const cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
     for (;;) {
-      const choice = normalizeSummaryChoice(
-        await prompter.ask(
-          formatSessionTerminalLine(
-            strings,
-            `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
-              `${strings.chrome('rune.summary.change')} <n> / ` +
-              `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
-          ),
+      const rawChoice = await prompter.ask(
+        formatSessionTerminalLine(
+          strings,
+          `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
+            `${strings.chrome('rune.summary.change')} <n> / ` +
+            `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
         ),
       );
+      const choice = normalizeSummaryChoice(rawChoice);
       if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
         return 'proceed';
       }
@@ -329,7 +328,7 @@ export async function summaryLoop(
           io,
           strings,
           strings.chrome('rune.summary.invalidChoice', {
-            choice,
+            choice: rawChoice,
             proceed: proceedToken,
             cancel: cancelToken,
           }),
