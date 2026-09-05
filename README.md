@@ -11,11 +11,10 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE's engine core and non-interactive pipeline are implemented, including the `Session`
-facade, logs and results, manifest validation and schema generation, non-interactive runs,
-and dry-run planning. Interactive prompting and the edit loop, the Electron GUI and
-`gui install`, and packaging are planned in the later milestones described by the
-[roadmap](docs/roadmap.md); the architectural contract is documented in
+RUNE's **v0.1 core (Milestones 0–2)** is implemented: the engine, validation and schema
+commands, non-interactive execution, the interactive CLI, the `Session` facade, and the
+mode-parity contract suite. The Electron GUI, `gui install`, and packaging remain planned
+in the [roadmap](docs/roadmap.md); the binding contract is documented in
 [docs/architecture.md](docs/architecture.md).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
@@ -24,11 +23,10 @@ users of a packaged installer need nothing installed.
 
 ## The idea
 
-One configuration, three operating modes with identical execution semantics (the
-non-interactive mode is available today; interactive CLI and GUI modes are planned):
+One configuration, three operating modes with identical execution semantics:
 
 1. a graphical installation wizard (planned)
-2. an interactive command line installer (planned)
+2. an interactive command line installer
 3. a fully non-interactive run for CI/CD pipelines
 
 ```yaml
@@ -83,12 +81,11 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways. Both current CLI forms run non-interactively;
-interactive prompting and the GUI command are planned:
+The same manifest, three ways (the graphical mode is planned for Milestone 3):
 
 ```bash
-# Available today: the default non-interactive fallback
-rune run installer.yaml --values pipeline-values.yaml --result result.json
+# Guided on a TTY; non-interactive fallback when stdin is not a TTY
+rune run installer.yaml
 ```
 
 ```bash
@@ -97,11 +94,10 @@ rune run installer.yaml --values pipeline-values.yaml --result result.json
 ```
 
 ```bash
-# Available today: explicit non-interactive mode
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 
-## The graphical wizard (planned)
+## The planned graphical wizard (Milestone 3)
 
 The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
 on the target machine, runs without admin rights, and looks identical on every platform

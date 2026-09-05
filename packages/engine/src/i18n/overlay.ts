@@ -15,7 +15,7 @@ import {
   type LoadedDocument,
 } from '../manifest/loader.js';
 import { manifestDescriptorFor } from '../manifest/provenance.js';
-import { startOfFile } from '../manifest/source.js';
+import { startOfFile, type SourceMap } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG } from './catalog.js';
 
@@ -99,10 +99,119 @@ function fromDocument(
     entries.set(key, text);
   }
 
+  issues.push(...summaryTokenIssues(entries, sourceMap, file));
+
   if (issues.length > 0) {
     throw ManifestError.fromIssues('RUNE-104', orderIssues(issues));
   }
   return createOverlay(locale, file, Object.fromEntries(entries), manifest);
+}
+
+const SUMMARY_TOKENS = Object.freeze({
+  proceed: Object.freeze({
+    alias: 'proceed',
+    key: 'rune.summary.proceedToken' as const,
+    fallback: CHROME_CATALOG['rune.summary.proceedToken'],
+    oppositeAlias: 'cancel',
+  }),
+  cancel: Object.freeze({
+    alias: 'cancel',
+    key: 'rune.summary.cancelToken' as const,
+    fallback: CHROME_CATALOG['rune.summary.cancelToken'],
+    oppositeAlias: 'proceed',
+  }),
+});
+
+function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
+}
+
+function summaryTokenIssues(
+  entries: ReadonlyMap<string, string>,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue[] {
+  const proceed = {
+    ...SUMMARY_TOKENS.proceed,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_TOKENS.proceed.key) ?? SUMMARY_TOKENS.proceed.fallback,
+    ),
+  };
+  const cancel = {
+    ...SUMMARY_TOKENS.cancel,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_TOKENS.cancel.key) ?? SUMMARY_TOKENS.cancel.fallback,
+    ),
+  };
+  const issues: RuneIssue[] = [];
+  const proceedProblem = summaryTokenProblem(proceed.key, proceed.value, proceed.oppositeAlias);
+  const cancelProblem = summaryTokenProblem(cancel.key, cancel.value, cancel.oppositeAlias);
+
+  for (const [token, message] of [
+    [proceed, proceedProblem],
+    [cancel, cancelProblem],
+  ] as const) {
+    if (entries.has(token.key) && message !== undefined) {
+      issues.push(summaryTokenIssue(token.key, message, sourceMap, file));
+    }
+  }
+
+  if (
+    proceedProblem === undefined &&
+    cancelProblem === undefined &&
+    proceed.value === cancel.value
+  ) {
+    let key: typeof proceed.key | typeof cancel.key = proceed.key;
+    for (const candidate of entries.keys()) {
+      if (candidate === proceed.key || candidate === cancel.key) {
+        key = candidate;
+      }
+    }
+    const other = key === proceed.key ? cancel.key : proceed.key;
+    issues.push(
+      summaryTokenIssue(
+        key,
+        `${key} must differ from ${other} after trimming and case normalization`,
+        sourceMap,
+        file,
+      ),
+    );
+  }
+
+  return issues;
+}
+
+function summaryTokenProblem(
+  key: string,
+  token: string,
+  oppositeAlias: string,
+): string | undefined {
+  if (/[\r\n]/u.test(token)) {
+    return `${key} must be a single line`;
+  }
+  if (token.length === 0) {
+    return `${key} must not be empty or whitespace`;
+  }
+  if (/^[0-9]+$/u.test(token)) {
+    return `${key} must not be numeric because a number selects a value to change`;
+  }
+  if (token === oppositeAlias) {
+    return `${key} must not be "${oppositeAlias}" because it is the fixed alias for the ${oppositeAlias} action`;
+  }
+  return undefined;
+}
+
+function summaryTokenIssue(
+  key: string,
+  message: string,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue {
+  return {
+    code: 'RUNE-104',
+    message,
+    location: sourceMap.best([key]) ?? startOfFile(file),
+  };
 }
 
 function createOverlay(

@@ -1821,13 +1821,13 @@ describe('rune run', () => {
 });
 
 describe('help and misuse', () => {
-  it('describes run as non-interactive', async () => {
+  it('describes run as guided or automated', async () => {
     const help = capture();
 
     expect(await run(['run', '--help'], help)).toBe(0);
     expect(help.err).toEqual([]);
     expect(help.out).toHaveLength(1);
-    expect(help.out[0]).toContain('run a manifest non-interactively');
+    expect(help.out[0]).toContain('run a manifest — guided or automated');
   });
 
   it('exits 0 for requested help and 2 for a bare invocation', async () => {

@@ -189,6 +189,8 @@ export interface ResolveInputsOptions {
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
   readonly answers?: ReadonlyMap<string, unknown>;
+  /** Resolves the selected locale's pattern hint for Session-owned diagnostics. */
+  readonly resolvePatternHint?: ((id: string) => string | undefined) | undefined;
   /**
    * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
    * runs and the process exits. A frontend that can ask again takes `collect`, which records
@@ -496,7 +498,15 @@ function resolveInputsStaged(
         // Validate it before discarding it so Session.setValue never accepts a value that
         // would become invalid merely by enabling the input later.
         if (supplied?.source === 'answer') {
-          const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
+          const coerced = coerce(
+            supplied,
+            spec,
+            id,
+            context,
+            inputIndex,
+            redactor,
+            options.resolvePatternHint,
+          );
           if (!coerced.ok) {
             const issue = withIssueDiagnosticParts(
               { code: 'RUNE-202', message: coerced.message, location: supplied.location },
@@ -550,7 +560,15 @@ function resolveInputsStaged(
         warnIfUnreliablyMasked(id, suppliedSecrets.get(id), warnings);
       }
 
-      const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
+      const coerced = coerce(
+        supplied,
+        spec,
+        id,
+        context,
+        inputIndex,
+        redactor,
+        options.resolvePatternHint,
+      );
       if (!coerced.ok) {
         const issue = withIssueDiagnosticParts(
           { code: 'RUNE-202', message: coerced.message, location: supplied.location },
@@ -1057,6 +1075,7 @@ function coerce(
   context: RuntimeContext,
   inputIndex: InputReferenceIndex,
   secrets: SecretRegistry,
+  resolvePatternHint: ((id: string) => string | undefined) | undefined,
 ): CoercionOutcome {
   const handler = inputTypes.get(spec.type);
   let raw = supplied.raw;
@@ -1068,8 +1087,14 @@ function coerce(
     raw = renderDefault(raw, id, context, inputIndex);
   }
 
+  const effectiveSpec: InputSpec =
+    spec.type === 'text' && resolvePatternHint !== undefined
+      ? { ...spec, patternHint: resolvePatternHint(id) }
+      : spec;
   const result =
-    typeof raw === 'string' ? handler.fromString(raw, spec) : handler.fromNative(raw, spec);
+    typeof raw === 'string'
+      ? handler.fromString(raw, effectiveSpec)
+      : handler.fromNative(raw, effectiveSpec);
 
   // The type names the value and says what is wrong with it; resolution adds which input it
   // belongs to and where the value came from, which is what a reader needs to go and fix it.

@@ -93,11 +93,9 @@ rune package installer.yaml              # milestone 4: self-contained end-user 
 rune --version
 ```
 
-The current CLI implements `validate`, `schema`, and the non-interactive and dry-run forms
-of `run`. Until Milestone 2 adds prompting and the edit loop, every current `rune run`
-invocation uses the non-interactive path regardless of TTY state or whether
-`--non-interactive` is supplied. `--gui`, `gui install`, and `package` remain planned at
-their roadmap milestones.
+The current CLI implements `validate`, `schema`, and both the interactive and
+non-interactive forms of `run`, including dry-run. `--gui`, `gui install`, and `package`
+remain planned at their roadmap milestones.
 
 Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
@@ -493,7 +491,7 @@ The IPC bridge is how the GUI shell's renderer drives the engine. The engine run
 ### 9.3 Per-frontend behavior
 
 - **Non-interactive driver** (`cli`): no prompts ever; missing required *enabled* inputs → exit 4 listing every missing input with its accepted sources; disabled inputs are not required and a value supplied for one is warned about and ignored (§5); `pattern` mismatches and malformed `--set` JSON arrays are input errors (exit 4) before any step runs; plan → execute → result file. This is the parity anchor.
-- **Interactive CLI**: Node `readline` prompts (stdlib — no prompt library) with a muted-echo helper for `secret` inputs, for `pendingInputs()` only — enabled, still-missing inputs in declaration order; select/multiselect prompts display option **labels** and accept option **values**; a `pattern` mismatch re-prompts showing `patternHint`; disabled inputs are skipped. Then the summary: the plan rendered with the same renderer dry-run uses, followed by the **edit loop** `Proceed / Change value <n> / Cancel` — any enabled input, seeded or answered, can be changed (an ordinary layer-5 `setValue`); a change that enables further missing inputs prompts for them before re-rendering the summary. `Proceed` awaits `execute()` on the same event loop; first `Ctrl+C` → CancelToken; second force-exits. Chrome strings come from `getStrings()` (§6.3).
+- **Interactive CLI**: Node `readline` prompts (stdlib — no prompt library) with a muted-echo helper for `secret` inputs, for `pendingInputs()` only — enabled, still-missing inputs in declaration order; select/multiselect prompts display option **labels** and accept option **values**; a `pattern` mismatch re-prompts showing `patternHint`; disabled inputs are skipped. Then the summary: the plan rendered with the same renderer dry-run uses, followed by the **edit loop** `Proceed / Change value <n> / Cancel` — any enabled input, seeded or answered, can be changed (an ordinary layer-5 `setValue`); a change that enables further missing inputs prompts for them before re-rendering the summary. `Proceed` awaits `execute()` on the same event loop; first `Ctrl+C` → CancelToken; second force-exits. Chrome strings come from `getStrings()` (§6.3); if masking projects the localized proceed and cancel tokens to the same text, the summary uses `p` and `c` for its menu, action matching, and invalid-choice diagnostic.
 - **GUI** (Electron shell, §9.4): pages generated from the engine's view of the manifest — Welcome, auto-chunked input pages, Summary (renders the bridge projection of the same `ExecutionPlan`, secrets masked — §9.2), Progress, Result. The renderer renders `rune.allInputs()` with fields pre-filled from layers 1–4; disabled inputs are **greyed out** (visible, not editable) and flip live on the `InputStateChanged` list resolved by `rune.setValue`; select/multiselect fields display labels and submit values; a `text` field whose `rune.setValue` rejects on `pattern` is marked red with `patternHint` and `Next` stays disabled until valid — no abort, no renderer-side regex. Engine validation via `setValue` is the only authority; widgets are UX sugar. Cancel → `rune.cancel` → `Session.cancel()` → CancelToken.
 
 Every frontend asserts at session open that it can render every input type the manifest uses (the renderer from the `inputTypes` resolved by `rune.open()`), and fails fast with a named error — no silent fallback.
@@ -702,13 +700,13 @@ packages/
 │       ├── cli.ts                 # commander wiring, CLI execution and error-to-exit-code mapping
 │       ├── io.ts                  # I/O and process-control seams
 │       ├── main.ts                # executable entry point and the single process.exit site
-│       ├── runCmd.ts              # non-interactive execution and dry-run orchestration
+│       ├── runCmd.ts              # interactive/non-interactive execution and dry-run orchestration
 │       ├── schemaCmd.ts           # `rune schema [--output] [--result]` from the zod schemas
 │       ├── signals.ts             # cooperative first signal, forced cancellation on the second
 │       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, silent only for a consumer that went away
 │       ├── validateCmd.ts         # validation and environment-variable audit report
 │       ├── guiCmd.ts              # planned `gui install` + --gui launch/exit-code forwarding
-│       ├── prompt.ts              # planned readline prompts and summary edit loop
+│       ├── prompt.ts              # readline prompts and summary edit loop
 │       └── render.ts              # shared plan/progress/result rendering (also dry-run)
 └── gui-shell/                     # Electron GUI shell — separate prebuilt artifact; never inside the CLI npm package
     ├── package.json               # electron, electron-builder (shell lane only)

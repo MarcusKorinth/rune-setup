@@ -59,6 +59,11 @@ export async function bootstrap(
     argv,
     { stdout: stdout.writeLine, stderr: stderr.writeLine },
     options.control,
+    {
+      input: process.stdin,
+      isTTY: process.stdin.isTTY === true,
+      write: stderr.write,
+    },
   );
   return stdout.failure() === undefined ? code : INTERNAL_EXIT_CODE;
 }

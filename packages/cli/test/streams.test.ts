@@ -37,6 +37,17 @@ function collector(): { readonly stream: PassThrough; readonly received: string[
 const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('guarded process streams', () => {
+  it('writes raw prompt fragments without adding a line break', async () => {
+    const { stream, received } = collector();
+    const guard = guardStream(stream);
+
+    guard.write('Prompt: ');
+    guard.writeLine('answer');
+    await settled();
+
+    expect(received.join('')).toBe('Prompt: answer\n');
+  });
+
   it('owns EPIPE, remembers the broken stream, and drops later writes', async () => {
     const { stream, attempts } = brokenPipe();
     const guard = guardStream(stream);

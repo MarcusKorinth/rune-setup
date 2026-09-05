@@ -15,7 +15,7 @@ try {
     process.argv.slice(2),
     { stdout: process.stdout, stderr: process.stderr },
     {
-      control: { cancel },
+      control: { cancel, onInterrupt: signals.handle },
       setExitCode: (code) => {
         process.exitCode = code;
       },

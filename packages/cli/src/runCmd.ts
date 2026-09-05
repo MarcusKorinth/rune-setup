@@ -1,9 +1,8 @@
 /**
  * `rune run` (docs/architecture.md §4.1, §9.3, §10).
  *
- * `rune run` uses the non-interactive driver — the parity anchor — and supports `--dry-run`. The
- * interactive prompter arrives with the next milestone slice; until then every `rune run`
- * invocation uses the non-interactive path regardless of TTY state or flag presence.
+ * Interactive and non-interactive runs share the same Session pipeline. A TTY selects the
+ * guided prompt/summary flow unless `--non-interactive` is present.
  */
 
 import { resolve } from 'node:path';
@@ -13,6 +12,7 @@ import {
   createFailureResult,
   ExecutionError,
   exitCodeFor,
+  formatSessionTerminalLine,
   InternalError,
   PlatformError,
   RESULT_LOG_COLLISION_MESSAGE,
@@ -23,7 +23,7 @@ import {
   UsageError,
   writeResult,
 } from '@rune/engine';
-import type { ExecutionPlan, RunResult, StringTable } from '@rune/engine';
+import type { ExecutionPlan, RunMode, RunResult, StringTable } from '@rune/engine';
 
 import { parseOverrides, parsePlatform } from './args.js';
 import {
@@ -35,6 +35,13 @@ import {
   type CliIo,
 } from './io.js';
 import { progressObserver, renderOutcome, renderPlan } from './render.js';
+import {
+  cliPromptPresenters,
+  Prompter,
+  promptForInputs,
+  summaryLoop,
+  type Interaction,
+} from './prompt.js';
 
 export interface RunFlags {
   readonly nonInteractive?: boolean | undefined;
@@ -51,7 +58,8 @@ export async function runCommand(
   manifestPath: string,
   flags: RunFlags,
   io: CliIo,
-  control: CliControl = {},
+  control: CliControl,
+  interaction: Interaction,
 ): Promise<void> {
   // Session.open anchors relative manifest paths to the invocation cwd, against the same cwd
   // this reads: nothing awaits in between. Preserve that identity for an early open failure,
@@ -67,10 +75,13 @@ export async function runCommand(
           path: resultOption === '-' ? '-' : resolve(resultOption),
           announcement: resultOption,
         };
+  const interactive = flags.nonInteractive !== true && interaction.isTTY;
+  const mode: RunMode = interactive ? 'interactive' : 'non-interactive';
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let strings: StringTable | undefined;
   let plan: ExecutionPlan | undefined;
+  let prompter: Prompter | undefined;
   let executionFailureResult: RunResult | undefined;
   let deliveryStarted = false;
   try {
@@ -109,7 +120,7 @@ export async function runCommand(
     }
 
     session = await Session.open(manifestPath, {
-      mode: 'non-interactive',
+      mode,
       values: flags.values ?? [],
       overrides: parseOverrides(flags.set ?? []),
       locale: flags.locale,
@@ -119,7 +130,41 @@ export async function runCommand(
     });
     strings = session.getStrings();
 
+    if (interactive) {
+      cliPromptPresenters.assertPresentable(session.allInputs());
+      prompter = new Prompter(
+        interaction,
+        formatSessionTerminalLine(strings, strings.chrome('rune.prompt.inputEnded')),
+        control.cancel,
+        control.onInterrupt,
+      );
+      await promptForInputs(session, prompter);
+    }
+
     plan = session.plan();
+    if (
+      prompter !== undefined &&
+      flags.dryRun !== true &&
+      (await summaryLoop(
+        session,
+        prompter,
+        io,
+        {
+          manifestPath,
+          logFile: session.effectiveLogFile?.announcement,
+        },
+        (currentPlan) => {
+          plan = currentPlan;
+        },
+      )) === 'cancel'
+    ) {
+      throw new CancelledError(
+        formatSessionTerminalLine(strings, strings.chrome('rune.run.cancelledAtSummary')),
+      );
+    }
+    // Nothing after this point reads answers. Release stdin before execution starts.
+    prompter?.close();
+    prompter = undefined;
     if (flags.dryRun === true && control.cancel?.isCancelled === true) {
       throw new CancelledError();
     }
@@ -186,7 +231,7 @@ export async function runCommand(
           error: failure,
           manifestPath: absoluteManifestPath,
           dryRun: flags.dryRun === true,
-          mode: 'non-interactive',
+          mode,
           ...(platform === undefined ? {} : { platform }),
           ...(session === undefined ? {} : { session }),
           ...(plan === undefined ? {} : { plan }),
@@ -212,6 +257,8 @@ export async function runCommand(
       throw new ExitWithCode(result.exitCode);
     }
     throw error;
+  } finally {
+    prompter?.close();
   }
 }
 

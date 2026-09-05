@@ -13,6 +13,8 @@
 import type { Writable } from 'node:stream';
 
 export interface GuardedStream {
+  /** Writes raw text; used by readline prompts that keep the answer on the same line. */
+  readonly write: (text: string) => void;
   /** Writes one line; a silent no-op once the stream is broken or destroyed. */
   readonly writeLine: (line: string) => void;
   /** Whether a stream error or its destruction has ended RUNE's output on this stream. */
@@ -48,21 +50,23 @@ export function guardStream(stream: Writable, onFailure?: (error: Error) => void
   // Permanent on purpose: an asynchronous EPIPE can arrive after the last write returned.
   stream.on('error', markBroken);
   const isBroken = (): boolean => broken || stream.destroyed || stream.writableEnded;
+  const write = (text: string): void => {
+    if (isBroken()) {
+      return;
+    }
+    try {
+      stream.write(text, (error) => {
+        if (error !== null && error !== undefined) {
+          markBroken(error);
+        }
+      });
+    } catch (error) {
+      markBroken(error);
+    }
+  };
   return {
-    writeLine: (line) => {
-      if (isBroken()) {
-        return;
-      }
-      try {
-        stream.write(`${line}\n`, (error) => {
-          if (error !== null && error !== undefined) {
-            markBroken(error);
-          }
-        });
-      } catch (error) {
-        markBroken(error);
-      }
-    },
+    write,
+    writeLine: (line) => write(`${line}\n`),
     isBroken,
     failure: () => failure,
   };

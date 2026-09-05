@@ -1,9 +1,9 @@
 # Roadmap
 
-Current state: **Milestones 0 and 1 are complete**, including the non-interactive CLI
-driver. The first Milestone 2 slice, the `Session` facade, is also available.
-[architecture.md](architecture.md) is the binding architectural contract. Interactive CLI
-prompting/editing and GUI installation are not implemented yet.
+Current state: **Milestones 0–2 / v0.1 core are complete**. The engine, CLI, `Session`
+facade, interactive prompting/editing, and mode-parity contract suite are implemented.
+[architecture.md](architecture.md) is the binding architectural contract; Milestone 3 GUI
+functionality remains planned.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
@@ -40,9 +40,8 @@ The complete pipeline behind `rune validate`, `rune schema` and
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
 - five-layer value resolution with provenance (layers 1–4 delivered here:
-  `defaults < values files < env < --set`; layer 5 for interactive answers is exposed
-  through `Session.setValue` in the delivered first Milestone 2 slice; interactive CLI
-  and GUI clients remain planned for Milestones 2 and 3)
+  `defaults < values files < env < --set`; layer 5 interactive answers use
+  `Session.setValue`; the GUI client remains planned for Milestone 3)
 - conditional inputs (`when:` on inputs, same typed grammar as steps, acyclicity rule,
   disabled ⇒ empty value, ignored supplied values with warning + provenance)
 - `${...}` interpolation and the typed `when:` condition language; `--platform`
@@ -64,19 +63,16 @@ The complete pipeline behind `rune validate`, `rune schema` and
 Exit criterion: a CI pipeline can run a fixture manifest end to end on Windows and
 Linux with correct exit codes, result file and masked logs.
 
-## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0)
+## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0, complete)
 
-The first slice is delivered: the frozen `Session` facade is available. Its non-interactive
-client and cancellation wiring shipped with Milestone 1. Interactive prompting and the
-remaining frontend-contract work below are still planned.
+The interactive CLI, frozen `Session` facade, and cross-client contract suite are delivered.
 
 - prompts for still-missing, enabled inputs (Node `readline`, muted-echo helper for
   secrets — no prompt library), re-prompt on validation/pattern error; option labels
   displayed, values accepted
 - plan summary with **edit loop** (`Proceed / Change value <n> / Cancel`), progress
   rendering off the event stream; localized chrome via `getStrings()`
-- cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits; delivered with
-  the non-interactive driver)
+- cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits)
 - **`Session` facade frozen as the frontend contract**: the facade methods
   (`open/pendingInputs/allInputs/warnings/setValue/plan/describe/execute/cancel/getStrings/getThemeConfig`)
   plus `EngineObserver` events and the observer delivery contract — the surface every

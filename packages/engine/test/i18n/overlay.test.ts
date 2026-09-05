@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ManifestError } from '../../src/errors.js';
+import { formatIssues, ManifestError } from '../../src/errors.js';
 import { CHROME_CATALOG } from '../../src/i18n/catalog.js';
 import { loadOverlayText, localizableKeys } from '../../src/i18n/overlay.js';
 import { parseManifestText } from '../../src/manifest/index.js';
@@ -89,6 +89,8 @@ describe('loading an overlay', () => {
         'steps.install.title: Installieren',
         'inputs.environment.options.production.label: Produktivumgebung',
         'rune.button.next: Weiter',
+        'rune.summary.proceedToken: weiter',
+        'rune.summary.cancelToken: abbrechen',
         '',
       ].join('\n'),
       'locales/de.yaml',
@@ -103,8 +105,67 @@ describe('loading an overlay', () => {
     expect(overlay.entries['gui.windowTitle']).toBe('Beispiel-Setup');
     expect(overlay.entries['steps.install.title']).toBe('Installieren');
     expect(overlay.entries['rune.button.next']).toBe('Weiter');
+    expect(overlay.entries['rune.summary.proceedToken']).toBe('weiter');
     expect(Object.isFrozen(overlay)).toBe(true);
     expect(Object.isFrozen(overlay.entries)).toBe(true);
+  });
+
+  it('rejects equal effective summary tokens at the conflicting key', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: weiter',
+      'rune.summary.cancelToken: weiter',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:2:1: rune.summary.cancelToken must differ from ' +
+        'rune.summary.proceedToken after trimming and case normalization',
+    );
+  });
+
+  it('rejects empty, multiline, and numeric summary tokens', () => {
+    const error = overlayError(['rune.summary.proceedToken: ""', 'rune.summary.cancelToken: "02"']);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must not be empty or whitespace\n' +
+        'locales/de.yaml:2:1: rune.summary.cancelToken must not be numeric because a number ' +
+        'selects a value to change',
+    );
+    expect(formatIssues(overlayError(['rune.summary.proceedToken: "weiter\\njetzt"']).issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must be a single line',
+    );
+  });
+
+  it('rejects tokens that shadow the fixed alias of the opposite action', () => {
+    const error = overlayError([
+      'rune.summary.proceedToken: " CANCEL "',
+      'rune.summary.cancelToken: Proceed',
+    ]);
+
+    expect(formatIssues(error.issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must not be "cancel" because it is the ' +
+        'fixed alias for the cancel action\n' +
+        'locales/de.yaml:2:1: rune.summary.cancelToken must not be "proceed" because it is the ' +
+        'fixed alias for the proceed action',
+    );
+  });
+
+  it('compares a partial summary-token override with the English default', () => {
+    expect(formatIssues(overlayError(['rune.summary.proceedToken: c']).issues)).toBe(
+      'locales/de.yaml:1:1: rune.summary.proceedToken must differ from ' +
+        'rune.summary.cancelToken after trimming and case normalization',
+    );
+  });
+
+  it('accepts the fixed alias for the same summary action', () => {
+    const overlay = loadOverlayText(
+      'rune.summary.proceedToken: proceed\nrune.summary.cancelToken: cancel\n',
+      'locales/de.yaml',
+      'de',
+      MANIFEST,
+    );
+
+    expect(overlay.entries['rune.summary.proceedToken']).toBe('proceed');
+    expect(overlay.entries['rune.summary.cancelToken']).toBe('cancel');
   });
 
   it('keeps the chrome authority and overlay snapshot immutable at runtime', () => {
@@ -267,3 +328,13 @@ describe('loading an overlay', () => {
     });
   });
 });
+
+function overlayError(lines: readonly string[]): ManifestError {
+  try {
+    loadOverlayText([...lines, ''].join('\n'), 'locales/de.yaml', 'de', MANIFEST);
+  } catch (error) {
+    expect(error).toBeInstanceOf(ManifestError);
+    return error as ManifestError;
+  }
+  throw new Error('expected the overlay to be rejected');
+}

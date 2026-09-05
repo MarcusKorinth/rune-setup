@@ -17,6 +17,7 @@ import {
   type CliControl,
   type CliIo,
 } from './io.js';
+import type { Interaction } from './prompt.js';
 import { runCommand, type RunFlags } from './runCmd.js';
 import { schemaCommand } from './schemaCmd.js';
 import { validateCommand } from './validateCmd.js';
@@ -46,12 +47,26 @@ const processIo: CliIo = {
   },
 };
 
+const processInteraction: Interaction = {
+  input: process.stdin,
+  isTTY: process.stdin.isTTY === true,
+  write: (text) => {
+    process.stderr.write(text);
+  },
+};
+
 /** Runs the CLI for one argv; returns the process exit code (§10 table). */
 export async function run(
   argv: readonly string[],
   io: CliIo = processIo,
-  control: CliControl = {},
+  controlOrInteraction: CliControl | Interaction = {},
+  suppliedInteraction?: Interaction,
 ): Promise<number> {
+  // The third-argument Interaction form is kept for the scripted frontend contract tests;
+  // executable hosts pass process control there and may inject their guarded prompt stream fourth.
+  const legacyInteraction = isInteraction(controlOrInteraction) ? controlOrInteraction : undefined;
+  const control: CliControl = isInteraction(controlOrInteraction) ? {} : controlOrInteraction;
+  const interaction = suppliedInteraction ?? legacyInteraction ?? processInteraction;
   // Which stream commander last wrote to. It is the discriminator §10 actually cares about —
   // a page on stdout was requested, a message on stderr was not — and unlike commander's own
   // exit code it depends on this invocation alone (`Command.help()` derives that code from the
@@ -94,7 +109,7 @@ export async function run(
 
   program
     .command('run')
-    .description('run a manifest non-interactively')
+    .description('run a manifest — guided or automated')
     .argument('<manifest>', 'path to the manifest file')
     .option('--non-interactive', 'never prompt; missing required inputs fail')
     .option('--dry-run', 'render the plan and execute nothing')
@@ -105,7 +120,7 @@ export async function run(
     .option('--locale <tag>', 'display locale')
     .option('--platform <platform>', 'preview a foreign platform (dry-run only)')
     .action(async (manifest: string, flags: RunFlags) => {
-      await runCommand(manifest, flags, io, control);
+      await runCommand(manifest, flags, io, control, interaction);
     });
 
   try {
@@ -114,6 +129,10 @@ export async function run(
   } catch (error) {
     return report(error, io, commanderStream);
   }
+}
+
+function isInteraction(value: CliControl | Interaction): value is Interaction {
+  return 'input' in value && 'isTTY' in value && 'write' in value;
 }
 
 /**
