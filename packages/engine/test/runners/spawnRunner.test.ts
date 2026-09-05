@@ -1934,7 +1934,7 @@ describe('SpawnRunner', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'confirms cancellation of a direct child that had already ended when the helper fails',
+    'confirms cancellation of a direct child that had already ended, without the helper',
     async () => {
       const fixture = createFailingTaskkillFixture();
       const recorder = recordSpawnedProcesses();
