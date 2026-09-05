@@ -1,9 +1,9 @@
 # Roadmap
 
-Current state: **Milestone 1 (engine core and non-interactive execution) in progress**.
-[architecture.md](architecture.md) is the binding architectural contract; the engine's
-manifest, input and secret handling, planner, process runner, executor, events and result
-surfaces are implemented, while the Session facade, CLI commands and GUI shell remain planned.
+Current state: **Milestones 0 and 1 are complete**, including the non-interactive CLI
+driver. The first Milestone 2 slice, the `Session` facade, is also available.
+[architecture.md](architecture.md) is the binding architectural contract. Interactive CLI
+prompting/editing and GUI installation are not implemented yet.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
@@ -26,22 +26,23 @@ committed core milestone beyond the MVP.
 - [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
   (no Electron in core jobs)
 
-## Milestone 1 — engine core and non-interactive execution (→ 0.1.0)
+## Milestone 1 — engine core and non-interactive execution (→ 0.1.0, complete)
 
 The complete pipeline behind `rune validate`, `rune schema` and
 `rune run --non-interactive` — the `@rune/engine` library plus the `rune` CLI binary:
 
-- manifest loader (`yaml` core schema, `uniqueKeys` disabled, single-pass located
-  duplicate-key detection, SourceMap from node ranges) and zod v1 schema (`.strict()`
-  objects, discriminated unions) with located, understandable error messages
+- manifest loader (`yaml` core schema, a source-order-stable duplicate-key walk with
+  `uniqueKeys: false`, SourceMap from node ranges) and zod v1 schema (`.strict()` objects,
+  discriminated unions) with located, understandable error messages
 - `rune schema [--output] [--result]` — manifest and result-file JSON Schema generated
   from the zod schemas via built-in `z.toJSONSchema()` (editor autocompletion, no drift)
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
-- five-layer value resolution with provenance (layers 1–4 here:
-  `defaults < values files < env < --set`; layer 5 = interactive answers lands with
-  Milestones 2 and 3)
+- five-layer value resolution with provenance (layers 1–4 delivered here:
+  `defaults < values files < env < --set`; layer 5 for interactive answers is exposed
+  through `Session.setValue` in the delivered first Milestone 2 slice; interactive CLI
+  and GUI clients remain planned for Milestones 2 and 3)
 - conditional inputs (`when:` on inputs, same typed grammar as steps, acyclicity rule,
   disabled ⇒ empty value, ignored supplied values with warning + provenance)
 - `${...}` interpolation and the typed `when:` condition language; `--platform`
@@ -65,14 +66,19 @@ Linux with correct exit codes, result file and masked logs.
 
 ## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0)
 
+The first slice is delivered: the frozen `Session` facade is available. Its non-interactive
+client and cancellation wiring shipped with Milestone 1. Interactive prompting and the
+remaining frontend-contract work below are still planned.
+
 - prompts for still-missing, enabled inputs (Node `readline`, muted-echo helper for
   secrets — no prompt library), re-prompt on validation/pattern error; option labels
   displayed, values accepted
 - plan summary with **edit loop** (`Proceed / Change value <n> / Cancel`), progress
   rendering off the event stream; localized chrome via `getStrings()`
-- cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits)
-- **`Session` facade frozen as the frontend contract**: the async facade
-  (`open/pendingInputs/allInputs/setValue/plan/execute/cancel/getStrings/getThemeConfig`)
+- cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits; delivered with
+  the non-interactive driver)
+- **`Session` facade frozen as the frontend contract**: the facade methods
+  (`open/pendingInputs/allInputs/warnings/setValue/plan/describe/execute/cancel/getStrings/getThemeConfig`)
   plus `EngineObserver` events and the observer delivery contract — the surface every
   frontend, including the Electron main process in M3, drives 1:1
 - **in-process parity client**: a scripted client of the `Session` facade making

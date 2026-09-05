@@ -152,6 +152,7 @@ const resultErrorSchema = <Code extends string>(code: z.ZodType<Code>) =>
   });
 
 const planResultErrorSchema = resultErrorSchema(z.enum(['RUNE-401', 'RUNE-404', 'RUNE-405']));
+const logResultErrorSchema = resultErrorSchema(z.literal('RUNE-406'));
 const manifestResultErrorSchema = resultErrorSchema(
   z.enum(['RUNE-101', 'RUNE-102', 'RUNE-103', 'RUNE-104']),
 );
@@ -161,7 +162,7 @@ const resolutionResultErrorSchema = resultErrorSchema(
 );
 
 /**
- * Shape source for `resultSchemaVersion: 1`. It is deliberately separate from the readonly
+ * Shape source for `resultSchemaVersion: 2`. It is deliberately separate from the readonly
  * facade types in model.ts: readonly has no JSON representation. The compile-time checks below
  * pin the two structural views in both directions.
  */
@@ -200,7 +201,7 @@ const potentiallyUnvalidatedResultShape = {
   manifest: potentiallyUnvalidatedResultManifestSchema,
 };
 
-const resultV1ShapeSchema = z.union([
+const resultV2ShapeSchema = z.union([
   z.strictObject({
     ...validatedResultShape,
     status: z.literal('succeeded'),
@@ -228,6 +229,13 @@ const resultV1ShapeSchema = z.union([
     exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
     dryRun: z.boolean(),
     error: planResultErrorSchema,
+  }),
+  z.strictObject({
+    ...validatedResultShape,
+    status: z.literal('failed'),
+    exitCode: z.literal(EXIT_CODE_BY_STATUS.failed),
+    dryRun: z.literal(false),
+    error: logResultErrorSchema,
   }),
   z.strictObject({
     ...validatedResultShape,
@@ -266,7 +274,7 @@ const resultV1ShapeSchema = z.union([
   }),
 ]);
 
-export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) => {
+export const resultV2Schema = resultV2ShapeSchema.superRefine((result, context) => {
   if (result.crossPlatformPreview && !result.dryRun) {
     context.addIssue({
       code: 'custom',
@@ -429,7 +437,7 @@ export const resultV1Schema = resultV1ShapeSchema.superRefine((result, context) 
           message: 'runtime failed results require a FAILED step and dryRun false',
         });
       }
-    } else if (result.steps.length !== 0) {
+    } else if (result.error.code !== 'RUNE-406' && result.steps.length !== 0) {
       context.addIssue({
         code: 'custom',
         path: ['steps'],
@@ -449,13 +457,13 @@ type Mutable<T> = T extends readonly (infer Item)[]
     : T;
 type Assert<Condition extends true> = Condition;
 type _SchemaMatchesModel = Assert<
-  z.output<typeof resultV1Schema> extends Mutable<RunResult> ? true : false
+  z.output<typeof resultV2Schema> extends Mutable<RunResult> ? true : false
 >;
 type _ModelMatchesSchema = Assert<
-  Mutable<RunResult> extends z.output<typeof resultV1Schema> ? true : false
+  Mutable<RunResult> extends z.output<typeof resultV2Schema> ? true : false
 >;
 
 /** The JSON Schema emitted by `rune schema --result`. */
 export function resultJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(resultV1Schema, { io: 'output' }) as Record<string, unknown>;
+  return z.toJSONSchema(resultV2Schema, { io: 'output' }) as Record<string, unknown>;
 }

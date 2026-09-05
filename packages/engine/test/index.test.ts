@@ -1,8 +1,33 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import * as engine from '../src/index.js';
-import { PlatformError } from '../src/index.js';
-import type { ChromeKey, ResultError, RunMode, StringTable } from '../src/index.js';
+import { formatSessionTerminalLine, PlatformError } from '../src/index.js';
+import type {
+  ChromeKey,
+  EngineObserver,
+  ExecutionPlan,
+  FailureResultOptions,
+  FailureResultSession,
+  InputState,
+  InputViewSpec,
+  Platform,
+  ResultError,
+  RunEvent,
+  RunFinished,
+  RunMode,
+  RunResult,
+  RunStarted,
+  SessionOptions,
+  StepFinished,
+  StepOutput,
+  StepStarted,
+  StringTable,
+  ValueSource,
+} from '../src/index.js';
 
 const INTERNAL_RUNTIME_EXPORTS = [
   'EXIT_CODE_BY_STATUS',
@@ -10,20 +35,32 @@ const INTERNAL_RUNTIME_EXPORTS = [
   'formatChrome',
   'discoverOverlays',
   'discoverSelectedOverlay',
+  'discoverSelectedOverlayAsync',
   'LOCALES_DIRECTORY',
   'matchOverlay',
   'normalizeLocaleTag',
   'selectLocale',
   'loadOverlay',
+  'loadOverlayAsync',
   'loadOverlayText',
   'localizableKeys',
   'overlayManifestFor',
   'resolveStrings',
   'stringTableContextFor',
+  'createLogFileSink',
+  'checkSemanticsAsync',
+  'loadYamlFileAsync',
+  'parseManifestAsync',
+  'parseValuesFileAsync',
+  'secretArgumentWarnings',
+  'snapshotHostBuiltIns',
+  'planningFailureContextFor',
 ] as const;
 
 type StringTableIsExported = StringTable extends object ? true : false;
 const stringTableTypeIsExported: StringTableIsExported = true;
+type SessionOptionsExcludesRunner = 'runner' extends keyof SessionOptions ? false : true;
+const sessionOptionsExcludesRunner: SessionOptionsExcludesRunner = true;
 type ChromeParameter = Parameters<StringTable['chrome']>[0];
 type ChromeParameterIsPublicKey = [ChromeParameter, ChromeKey] extends [ChromeKey, ChromeParameter]
   ? true
@@ -55,8 +92,16 @@ const compileTimeReadonlyAccessorContract = (strings: StringTable): void => {
 import type { Resolution as ForbiddenResolution } from '../src/index.js';
 // @ts-expect-error input resolver options are not package-root API
 import type { ResolveInputsOptions as ForbiddenResolveInputsOptions } from '../src/index.js';
+// @ts-expect-error canonical input state is not package-root API
+import type { ResolvedInputState as ForbiddenResolvedInputState } from '../src/index.js';
+// @ts-expect-error input facade snapshot internals are not package-root API
+import type { InputFacadeSnapshot as ForbiddenInputFacadeSnapshot } from '../src/index.js';
 // @ts-expect-error opaque secret capabilities are not package-root API
 import type { SecretString as ForbiddenSecretString } from '../src/index.js';
+// @ts-expect-error secret masking capabilities are not package-root API
+import type { SecretMasker as ForbiddenSecretMasker } from '../src/index.js';
+// @ts-expect-error secret registries are not package-root API
+import type { SecretRegistry as ForbiddenSecretRegistry } from '../src/index.js';
 // @ts-expect-error low-level planning options are not package-root API
 import type { PlanOptions as ForbiddenPlanOptions } from '../src/index.js';
 // @ts-expect-error low-level execution options are not package-root API
@@ -69,22 +114,127 @@ import type { SpawnOutcome as ForbiddenSpawnOutcome } from '../src/index.js';
 import type { SpawnRequest as ForbiddenSpawnRequest } from '../src/index.js';
 // @ts-expect-error runner start-failure reasons are not package-root API
 import type { StartFailureReason as ForbiddenStartFailureReason } from '../src/index.js';
+// @ts-expect-error host built-in snapshots are not package-root API
+import type { HostBuiltInSnapshot as ForbiddenHostBuiltInSnapshot } from '../src/index.js';
 
 type ForbiddenRootTypes = readonly [
   ForbiddenResolution,
   ForbiddenResolveInputsOptions,
+  ForbiddenResolvedInputState,
+  ForbiddenInputFacadeSnapshot,
   ForbiddenSecretString,
+  ForbiddenSecretMasker,
+  ForbiddenSecretRegistry,
   ForbiddenPlanOptions,
   ForbiddenExecuteOptions,
   ForbiddenRunner,
   ForbiddenSpawnOutcome,
   ForbiddenSpawnRequest,
   ForbiddenStartFailureReason,
+  ForbiddenHostBuiltInSnapshot,
 ];
 
 function assertNoLowLevelRootTypes(_types: ForbiddenRootTypes): void {}
 
 void assertNoLowLevelRootTypes;
+
+const compileTimeInputViewContract = (state: InputState, spec: InputViewSpec): void => {
+  if (state.secret) {
+    const value: null | undefined = state.value;
+    const type: 'secret' = state.spec.type;
+    void value;
+    void type;
+  } else {
+    const value: string | boolean | readonly string[] | undefined = state.value;
+    // @ts-expect-error a non-secret state cannot carry a secret spec.
+    const type: 'secret' = state.spec.type;
+    void value;
+    void type;
+  }
+  if (spec.type === 'select' || spec.type === 'multiselect') {
+    const options: readonly string[] = spec.options;
+    void options;
+  }
+  // @ts-expect-error display text is available through StringTable, not InputViewSpec.
+  void spec.title;
+  // @ts-expect-error defaults are canonical manifest data, not frontend state.
+  void spec.default;
+  // @ts-expect-error patterns are enforced by setValue and not exposed in the state spec.
+  void spec.pattern;
+};
+
+void compileTimeInputViewContract;
+
+const compileTimeSessionRunnerContract = (manifestPath: string): void => {
+  // @ts-expect-error runner injection is not part of public SessionOptions.
+  const options: SessionOptions = { runner: undefined };
+  // @ts-expect-error Session.open does not accept a public runner dependency.
+  void engine.Session.open(manifestPath, { runner: { run: async () => undefined } });
+  void options;
+};
+
+void compileTimeSessionRunnerContract;
+
+// A host names every type in the public Session and failure-result signatures from the root.
+const compileTimeHostTypeContract = (
+  platform: Platform,
+  session: FailureResultSession,
+  error: engine.RuneError,
+): RunResult => {
+  const options: SessionOptions = { platform, environment: {} };
+  const failure: FailureResultOptions = {
+    error,
+    manifestPath: 'installer.yaml',
+    dryRun: false,
+    mode: session.mode,
+    platform: session.platform,
+    session,
+  };
+  void options;
+  return engine.createFailureResult(failure);
+};
+
+void compileTimeHostTypeContract;
+
+// A host names every run-event member from the root, so a per-kind IPC channel (§9.2) or a
+// parity client cannot drift from the engine's union.
+const compileTimeEventMemberContract = (
+  onRunStarted: (event: RunStarted) => ExecutionPlan,
+  onStepStarted: (event: StepStarted) => number,
+  onStepOutput: (event: StepOutput) => string,
+  onStepFinished: (event: StepFinished) => number | undefined,
+  onRunFinished: (event: RunFinished) => RunResult,
+): EngineObserver => {
+  return (event: RunEvent): void => {
+    switch (event.kind) {
+      case 'runStarted':
+        void onRunStarted(event);
+        break;
+      case 'stepStarted':
+        void onStepStarted(event);
+        break;
+      case 'stepOutput':
+        void onStepOutput(event);
+        break;
+      case 'stepFinished':
+        void onStepFinished(event);
+        break;
+      case 'runFinished':
+        void onRunFinished(event);
+        break;
+    }
+  };
+};
+
+void compileTimeEventMemberContract;
+
+// A host names the provenance recorded on input state, plan inputs, and results from the root.
+const compileTimeProvenanceContract = (state: InputState): ValueSource => {
+  const answered: ValueSource = 'answer';
+  return state.source ?? state.ignored ?? answered;
+};
+
+void compileTimeProvenanceContract;
 
 const FORBIDDEN_RUNTIME_EXPORTS = [
   'buildPlan',
@@ -95,10 +245,11 @@ const FORBIDDEN_RUNTIME_EXPORTS = [
   'MAX_OUTPUT_LINE_BYTES',
   'OVERSIZED_OUTPUT_LINE_PLACEHOLDER',
   'spawnRunnerTestSeam',
+  'createSessionOptionsForTesting',
   'isLegalTransition',
   'isTerminal',
   'STEP_STATES',
-  'serializeResult',
+  'projectInputFacadeSnapshot',
 ] as const;
 
 const PUBLIC_RUN_MODES = [
@@ -114,6 +265,11 @@ const PUBLIC_RESULT_ERROR: ResultError<'RUNE-104'> = {
   message: 'invalid manifest semantics',
   location: { file: 'installer.yaml', line: 1, column: 1 },
 };
+const PUBLIC_LOG_RESULT_ERROR: ResultError<'RUNE-406'> = {
+  code: 'RUNE-406',
+  message: 'cannot finalize the operational log',
+  location: null,
+};
 // @ts-expect-error usage errors are never part of a configured-run result
 const FORBIDDEN_RESULT_ERROR: ResultError<'RUNE-001'> = {
   code: 'RUNE-001',
@@ -122,6 +278,7 @@ const FORBIDDEN_RESULT_ERROR: ResultError<'RUNE-001'> = {
 };
 
 void PUBLIC_RESULT_ERROR;
+void PUBLIC_LOG_RESULT_ERROR;
 void FORBIDDEN_RESULT_ERROR;
 
 describe('@rune/engine public API', () => {
@@ -149,6 +306,55 @@ describe('@rune/engine public API', () => {
     expect(engine.PLAN_SCHEMA_VERSION).toBe(1);
   });
 
+  it('exports the Session facade and engine-owned failure-result construction', () => {
+    expect(engine.Session).toBeTypeOf('function');
+    expect(engine.createFailureResult).toBeTypeOf('function');
+    expect(engine.formatSessionTerminalLine).toBe(formatSessionTerminalLine);
+    expect(sessionOptionsExcludesRunner).toBe(true);
+  });
+
+  it('keeps run-event members and value provenance as type-only exports', () => {
+    expect(compileTimeEventMemberContract).toBeTypeOf('function');
+    expect(compileTimeProvenanceContract).toBeTypeOf('function');
+    for (const name of [
+      'RunStarted',
+      'StepStarted',
+      'StepOutput',
+      'StepFinished',
+      'RunFinished',
+      'ValueSource',
+    ]) {
+      expect(engine).not.toHaveProperty(name);
+    }
+  });
+
+  it('exports the one result serializer both result sinks share', () => {
+    expect(engine.serializeResult).toBeTypeOf('function');
+    expect(engine.writeResult).toBeTypeOf('function');
+  });
+
+  it('exposes no symbol-based masking capability on Session', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-root-session-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const session = await engine.Session.open(manifestPath, { environment: {} });
+
+    expect(Object.getOwnPropertySymbols(engine.Session.prototype)).toEqual([]);
+    expect(Object.getOwnPropertySymbols(session)).toEqual([]);
+    expect(engine).not.toHaveProperty('MASK_FOR_SINK');
+  });
+
   it.each(FORBIDDEN_RUNTIME_EXPORTS)('does not expose low-level runtime export %s', (name) => {
     expect(Object.hasOwn(engine, name)).toBe(false);
   });
@@ -168,6 +374,7 @@ describe('@rune/engine public API', () => {
     expect(engine).not.toHaveProperty('VALUE_SOURCES');
     expect(engine).not.toHaveProperty('isSecretString');
     expect(engine).not.toHaveProperty('MASK');
+    expect(engine).not.toHaveProperty('mask');
     expect(engine).not.toHaveProperty('SecretRegistry');
     expect(engine).not.toHaveProperty('SecretString');
     expect(engine).not.toHaveProperty('inputTypes');

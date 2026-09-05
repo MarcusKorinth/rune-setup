@@ -208,6 +208,9 @@ export class SpawnRunner implements Runner {
           if (!childClosed) {
             await waitForCompletion(childClosePromise, CHILD_CLOSE_TIMEOUT_MS);
           }
+          if (!childClosed) {
+            releaseChildStdio(child);
+          }
           settle(terminationConfirmed ? cause : { kind: 'terminationFailed' });
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
@@ -290,7 +293,10 @@ async function terminateTree(
 
   let confirmed: boolean;
   if (process.platform === 'win32') {
-    confirmed = await runTaskkill(pid, parentEnv);
+    // A direct child that has already ended counts as absent, like ESRCH on POSIX (§8): the
+    // helper cannot find it, and descendants that outlive it are outside the tree guarantee.
+    // The check repeats after an unsuccessful helper because the child may end while it runs.
+    confirmed = hasEnded(child) || (await runTaskkill(pid, parentEnv)) || hasEnded(child);
   } else {
     confirmed = await terminateProcessGroup(pid);
   }
@@ -298,6 +304,11 @@ async function terminateTree(
     killDirectChild(child);
   }
   return confirmed;
+}
+
+/** Whether the runner has already observed the direct child's exit. */
+function hasEnded(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 /** Windows has no stdlib Job Objects; taskkill is the documented tree-kill mechanism. */
@@ -385,6 +396,19 @@ function killDirectChild(child: ChildProcess): void {
   } catch {
     // The unconfirmed result remains authoritative regardless of direct-child kill failure.
   }
+}
+
+/**
+ * After the bounded close wait, a descendant that inherited the child's stdio and survived tree
+ * termination may still hold the write ends. Releasing the runner's read ends and its handle on
+ * the child keeps such an orphan from holding the host event loop open (§8); the termination
+ * result itself is unaffected.
+ */
+function releaseChildStdio(child: ChildProcess): void {
+  // forwardLines keeps a permanent error listener on each stream, so destroy is safe here.
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.unref();
 }
 
 /** SIGTERM the group, give it the documented grace period, then confirm SIGKILL completion. */

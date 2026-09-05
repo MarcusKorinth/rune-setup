@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeContext, type RuntimeContext } from '../../src/engine/context.js';
 import {
   parseValuesFile,
+  projectInputFacadeSnapshot,
   resolveInputs,
   resolveInputsWithRegistry,
   resolutionSnapshotFor,
@@ -66,6 +67,19 @@ function hasRawDiagnosticControl(message: string): boolean {
       codePoint === 0x2029
     );
   });
+}
+
+/**
+ * Drops the frame list from a rendered error, keeping the header that carries its name and
+ * message. Frames name the checkout, not the error: a repository directory spelled like a
+ * fragment the leak assertions forbid — "path", say — would decide them for a reason no
+ * secret caused.
+ */
+function withoutStackFrames(rendered: string): string {
+  return rendered
+    .split('\n')
+    .filter((line) => !/^\s+at\s/u.test(line))
+    .join('\n');
 }
 
 function manifestOf(...lines: readonly string[]): ManifestV1 {
@@ -635,6 +649,7 @@ describe('conditional inputs', () => {
     '    type: text',
     '    when: "${installDatabase}"',
     '    default: "5432"',
+    '    pattern: "[0-9]{2,5}"',
   );
 
   it('resolves an input whose condition holds', () => {
@@ -673,6 +688,25 @@ describe('conditional inputs', () => {
       value: '',
       source: undefined,
       rejection: undefined,
+      ignored: 'set',
+    });
+    expect(resolution.warnings).toEqual([
+      'databasePort was set from --set, but its condition is false — the value is ignored',
+    ]);
+  });
+
+  it('continues to ignore an invalid --set value for a disabled input', () => {
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['installDatabase', 'false'],
+        ['databasePort', 'not-a-port'],
+      ]),
+    });
+
+    expect(resolution.byId.get('databasePort')).toMatchObject({
+      enabled: false,
+      value: '',
+      source: undefined,
       ignored: 'set',
     });
     expect(resolution.warnings).toEqual([
@@ -801,6 +835,42 @@ describe('values a type refuses', () => {
       'port (from --set port=…): "8O80" does not match [0-9]{2,5}',
       'tools (from --set tools=…): "podman" is not one of the option values ("git", "docker")',
     ]);
+  });
+
+  it('masks a declared secret in a membership diagnostic, whichever type saw it', () => {
+    // The registry holds the whole supplied value, never the pieces RUNE splits it into, so
+    // a diagnostic naming those pieces printed the secret past every mask (§10). select and
+    // multiselect are fed the identical text and must agree.
+    const withSecret = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  tools:',
+      '    type: multiselect',
+      '    options: [git, docker]',
+      '  tool:',
+      '    type: select',
+      '    options: [git, docker]',
+    );
+
+    for (const value of ['alphaonly,betaonly', '["alphaonly","betaonly"]']) {
+      const messages = problems(withSecret, {
+        overrides: new Map([
+          ['token', value],
+          ['tools', value],
+          ['tool', value],
+        ]),
+      });
+
+      expect(messages.join('\n')).not.toContain('alphaonly');
+      expect(messages.join('\n')).not.toContain('betaonly');
+      expect(messages).toContain(
+        'tools (from --set tools=…): "***" contains values that are not option values ("git", "docker")',
+      );
+      expect(messages).toContain(
+        'tool (from --set tool=…): "***" is not one of the option values ("git", "docker")',
+      );
+    }
   });
 
   it('names the environment variable it read', () => {
@@ -1021,6 +1091,37 @@ describe('keys that name no input', () => {
 
     expect(error.code).toBe('RUNE-203');
     expect(error.issues).toMatchObject([{ code: 'RUNE-203' }]);
+  });
+
+  it('keeps an unknown-only aggregate at RUNE-203 when missing issues are supplemental', () => {
+    const manifest = manifestOf(...SIMPLE);
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
+
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          overrides: new Map([['unknown', 'value']]),
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-203');
+    expect(error.issues.map((issue) => issue.code).sort()).toEqual(['RUNE-201', 'RUNE-203']);
+    expect(missingIssue).toHaveBeenCalledExactlyOnceWith('target');
   });
 
   it('keeps the values-file origin and location when collecting invalid values', () => {
@@ -1305,12 +1406,20 @@ describe('collected rejected values', () => {
         invalidValues: 'collect',
       });
       const state = resolution.byId.get('token');
+      const facade = projectInputFacadeSnapshot(resolution);
 
       expect(state).toMatchObject({
         value: undefined,
         source: undefined,
         rejection: { candidate: undefined, source: 'answer' },
       });
+      expect(facade.all[0]).toMatchObject({
+        secret: true,
+        value: undefined,
+        rejection: { candidate: undefined, source: 'answer' },
+      });
+      expect(facade.pending).toEqual([facade.all[0]]);
+      expect(facade.pending[0]).toBe(facade.all[0]);
       expect(rejectionFor(resolution, 'token').issue).toBe(resolution.problems[0]);
       expect(inspect(state)).not.toContain(sentinel);
       expect(JSON.stringify(state)).not.toContain(sentinel);
@@ -1398,10 +1507,10 @@ describe('secrets', () => {
       seen.add(current);
       surfaces.push(
         current.message,
-        current.stack ?? '',
+        withoutStackFrames(current.stack ?? ''),
         String(current),
         JSON.stringify(current) ?? '',
-        inspect(current),
+        withoutStackFrames(inspect(current)),
       );
       if (current instanceof InputError || current instanceof ResolutionError) {
         surfaces.push(...current.issues.map((issue) => issue.message));
@@ -2389,6 +2498,28 @@ describe('secrets', () => {
     expectExistingRegistryUnchanged(secrets);
   });
 
+  it.each([
+    ['Named', 'message', 'Named: message'],
+    ['Named', '', 'Named'],
+    ['', 'message', 'message'],
+    ['', '', ''],
+  ])(
+    'preserves native in-place header semantics for name=%j message=%j',
+    (name, message, header) => {
+      const cause = new ResolutionError('RUNE-301', message);
+      cause.name = name;
+      cause.stack = `${header}\n    at resolver`;
+
+      const error = resolveWithRecursiveCause(cause, 'unrelated-secret');
+
+      expect(error.cause).toBe(cause);
+      expect(cause.name).toBe(name);
+      expect(cause.message).toBe(message);
+      expect(String(cause)).toBe(header);
+      expect(cause.stack).toBe(`${header}\n    at resolver`);
+    },
+  );
+
   it('escapes injected stack headers recursively while retaining real frame separators', () => {
     const secret = 'pass\nword';
     const injectedMessage =
@@ -2495,7 +2626,8 @@ describe('secrets', () => {
   it('fully escapes a recursive stack whose header does not match', () => {
     const secret = 'F054-FALLBACK-STACK-SECRET';
     const cause = new ResolutionError('RUNE-301', 'cannot resolve fallback stack');
-    cause.stack = `custom stack ${secret}${DIAGNOSTIC_CONTROLS}\u007f\n    at forged (attack.js:1:1)`;
+    const rawStack = `custom stack ${secret}${DIAGNOSTIC_CONTROLS}\u007f\n    at forged (attack.js:1:1)`;
+    cause.stack = rawStack;
 
     const error = resolveWithRecursiveCause(cause, secret);
 
@@ -2506,9 +2638,11 @@ describe('secrets', () => {
     expect(exitCodeFor(cause)).toBe(5);
     expect(cause.stack).not.toContain(secret);
     expect(cause.stack).toContain('***');
-    expect(cause.stack!.split('\n')).toHaveLength(1);
-    expect(hasRawDiagnosticControl(cause.stack!)).toBe(false);
-    for (const visible of [...VISIBLE_DIAGNOSTIC_ESCAPES, '\\u007f']) {
+    expect(cause.stack!.split('\n')).toHaveLength(rawStack.split('\n').length);
+    expect(hasRawDiagnosticControl(cause.stack!.split('\n').join(''))).toBe(false);
+    for (const visible of [...VISIBLE_DIAGNOSTIC_ESCAPES, '\\u007f'].filter(
+      (escape) => escape !== '\\n',
+    )) {
       expect(cause.stack).toContain(visible);
     }
   });
@@ -2674,6 +2808,27 @@ describe('secrets', () => {
     expect(rejection.issue.message).not.toContain('\\n');
     expect(rejection.issue.message).not.toContain('\\u001b');
     expect(hasRawDiagnosticControl(rejection.issue.message)).toBe(false);
+  });
+
+  it('fails closed when rejection escaping creates a registered literal', () => {
+    const renderedSecret = String.raw`\u001b`;
+    const manifest = manifestOf(
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '  note:',
+      '    type: text',
+      '    pattern: "x+"',
+    );
+    const resolution = resolve(manifest, {
+      overrides: new Map([
+        ['token', renderedSecret],
+        ['note', '\u001b'],
+      ]),
+      invalidValues: 'collect',
+    });
+
+    expect(rejectionFor(resolution, 'note').issue.message).not.toContain(renderedSecret);
   });
 
   it('uses an overridden environment secret to redact thrown and collected diagnostics atomically', () => {
@@ -2896,6 +3051,7 @@ describe('secrets', () => {
       const resolution = resolve(disabledSecret, {
         overrides: new Map([['token', lower]]),
         answers: new Map([['token', higher]]) as unknown as ReadonlyMap<string, InputValue>,
+        invalidValues: 'collect',
         secrets,
       });
 
@@ -2905,7 +3061,9 @@ describe('secrets', () => {
         rejection: undefined,
         ignored: 'answer',
       });
-      expect(resolution.problems).toEqual([]);
+      expect(resolution.problems).toEqual([
+        expect.objectContaining({ code: 'RUNE-202', message: expect.stringContaining('answer') }),
+      ]);
       expect(secrets.mask(lower)).toBe('***');
       expect(secrets.size).toBe(1);
     },
@@ -3050,6 +3208,7 @@ describe('secrets', () => {
       ],
       overrides: new Map([['token', accessor]]) as unknown as ReadonlyMap<string, string>,
       answers: new Map([['token', proxied]]) as unknown as ReadonlyMap<string, InputValue>,
+      invalidValues: 'collect',
       secrets,
     });
 
@@ -3058,6 +3217,9 @@ describe('secrets', () => {
     expect(secrets.size).toBe(0);
     expect(resolution.warnings).toHaveLength(1);
     expect(resolution.warnings[0]).not.toContain('cannot be masked reliably');
+    expect(resolution.problems).toEqual([
+      expect.objectContaining({ code: 'RUNE-202', message: expect.stringContaining('answer') }),
+    ]);
     expect(resolution.byId.get('token')).toMatchObject({
       enabled: false,
       ignored: 'answer',
@@ -3243,10 +3405,10 @@ describe('values files', () => {
       seen.add(current);
       surfaces.push(
         current.message,
-        current.stack ?? '',
+        withoutStackFrames(current.stack ?? ''),
         String(current),
         JSON.stringify(current) ?? '',
-        inspect(current),
+        withoutStackFrames(inspect(current)),
       );
       if (current instanceof InputError) {
         surfaces.push(...current.issues.map((issue) => issue.message));
@@ -3726,6 +3888,59 @@ describe('values files', () => {
     },
   );
 
+  it('keeps deferred primary issue taxonomy and values order with supplemental missing issues', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  firstMissing:',
+      '    type: text',
+      '  badShape:',
+      '    type: text',
+      '    required: false',
+      '  known:',
+      '    type: boolean',
+      '    required: false',
+    );
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
+
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          values: [
+            valuesFromFile(
+              ['badShape:', '  nested: value', 'mistake: value', 'known: perhaps', ''].join('\n'),
+            ),
+          ],
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
+    expect(error.code).toBe('RUNE-202');
+    expect(
+      error.issues
+        .filter((issue) => issue.code !== 'RUNE-201')
+        .map((issue) => [issue.code, issue.location]),
+    ).toEqual([
+      ['RUNE-202', { file: 'v.yaml', line: 1, column: 1 }],
+      ['RUNE-203', { file: 'v.yaml', line: 3, column: 1 }],
+      ['RUNE-202', { file: 'v.yaml', line: 4, column: 1 }],
+    ]);
+    expect(missingIssue).toHaveBeenCalledExactlyOnceWith('firstMissing');
+  });
+
   it.each([undefined, 'collect'] as const)(
     'orders aggregate values-file issues by document before their source positions with invalidValues=%s',
     (invalidValues) => {
@@ -3780,6 +3995,8 @@ describe('values files', () => {
   it('keeps a deferred values problem ahead of a later input condition resolution error', () => {
     const manifest = manifestOf(
       'inputs:',
+      '  firstMissing:',
+      '    type: text',
       '  badShape:',
       '    type: text',
       '    required: false',
@@ -3788,10 +4005,30 @@ describe('values files', () => {
       '    required: false',
       '    when: \'${env.MISSING} == "enabled"\'',
     );
-    const error = inputError(manifest, {
-      values: [valuesFromFile(['badShape:', '  nested: value', ''].join('\n'))],
-    });
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+    let thrown: unknown;
 
+    try {
+      resolveInputsWithRegistry(
+        {
+          manifest,
+          context: contextFor(manifest),
+          values: [valuesFromFile(['badShape:', '  nested: value', ''].join('\n'))],
+        },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InputError);
+    const error = thrown as InputError;
     expect(error.code).toBe('RUNE-202');
     expect(error.issues).toEqual([
       {
@@ -3801,5 +4038,33 @@ describe('values files', () => {
         location: { file: 'v.yaml', line: 1, column: 1 },
       },
     ]);
+    expect(missingIssue).not.toHaveBeenCalled();
+  });
+
+  it('does not supplement partial missing state after default resolution aborts traversal', () => {
+    const manifest = manifestOf(
+      'inputs:',
+      '  firstMissing:',
+      '    type: text',
+      '  unresolvedDefault:',
+      '    type: text',
+      '    required: false',
+      '    default: "${env.MISSING}"',
+    );
+    const missingIssue = vi.fn((id: string) => ({
+      code: 'RUNE-201' as const,
+      message: `missing ${id}`,
+      location: undefined,
+    }));
+
+    expect(() =>
+      resolveInputsWithRegistry(
+        { manifest, context: contextFor(manifest) },
+        new SecretRegistry(),
+        undefined,
+        missingIssue,
+      ),
+    ).toThrow(ResolutionError);
+    expect(missingIssue).not.toHaveBeenCalled();
   });
 });

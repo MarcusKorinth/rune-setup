@@ -16,7 +16,7 @@ import {
   type ResolutionCode,
 } from '../errors.js';
 
-export const RESULT_SCHEMA_VERSION = 1;
+export const RESULT_SCHEMA_VERSION = 2;
 
 /** The frontend mode that drove a run (§10). */
 export const RUN_MODES = ['gui', 'interactive', 'non-interactive'] as const;
@@ -25,7 +25,7 @@ export type RunMode = (typeof RUN_MODES)[number];
 /**
  * Every status the result file can carry (§10). The executor produces the first four; the
  * error statuses are written by the session for failures around execution, so the schema
- * is complete from version 1 on.
+ * is complete for result schema version 2.
  */
 export const RUN_STATUSES = [
   'succeeded',
@@ -52,12 +52,14 @@ export const EXIT_CODE_BY_STATUS = {
 } as const satisfies Readonly<Record<RunStatus, number>>;
 
 type PlanResultErrorCode = 'RUNE-401' | 'RUNE-404' | 'RUNE-405';
+type LogResultErrorCode = 'RUNE-406';
 export type ResultErrorCode =
   | ManifestCode
   | InputCode
   | ResolutionCode
   | ConditionCode
   | PlanResultErrorCode
+  | LogResultErrorCode
   | 'RUNE-500'
   | 'RUNE-601';
 
@@ -68,7 +70,7 @@ export interface ResultError<Code extends ResultErrorCode = ResultErrorCode> {
   readonly location: Location | null;
 }
 
-/** The status/exit/dry-run combinations permitted by the version-1 result contract (§10). */
+/** The status/exit/dry-run combinations permitted by the version-2 result contract (§10). */
 export type RunOutcome =
   | {
       readonly status: 'succeeded';
@@ -93,6 +95,12 @@ export type RunOutcome =
       readonly exitCode: 1;
       readonly dryRun: boolean;
       readonly error: ResultError<PlanResultErrorCode>;
+    }
+  | {
+      readonly status: 'failed';
+      readonly exitCode: 1;
+      readonly dryRun: false;
+      readonly error: ResultError<LogResultErrorCode>;
     }
   | {
       readonly status: 'config_error';

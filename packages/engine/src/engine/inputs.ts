@@ -20,17 +20,23 @@ import {
   ManifestError,
   ResolutionError,
   RuneError,
+  projectErrorStackForSink,
+  projectIssuesForSink,
+  projectPublicHeader,
+  projectRuneErrorHeaderForSink,
+  projectRuneErrorLocationForSink,
   type RuneIssue,
+  withIssueDiagnosticParts,
   withValuesDocumentOrdinal,
 } from '../errors.js';
-import { escapeDiagnosticText, formatDiagnostic, quotedDiagnostic } from '../diagnostics.js';
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import type { InputValue } from '../inputs/base.js';
 import { inputTypes } from '../inputs/registry.js';
 import { nativeStringArraySnapshot } from '../inputs/snapshot.js';
-import { loadYamlFile } from '../manifest/loader.js';
+import { loadYamlFile, loadYamlFileAsync, type LoadedDocument } from '../manifest/loader.js';
 import { startOfFile, type Location, type SourceMap } from '../manifest/source.js';
 import { environmentName } from '../manifest/v1/rules.js';
-import type { InputSpec, ManifestV1 } from '../manifest/v1/schema.js';
+import { optionValue, type InputSpec, type ManifestV1 } from '../manifest/v1/schema.js';
 import { suggest } from '../suggest.js';
 import {
   evaluateCondition,
@@ -45,7 +51,12 @@ import {
   type RuntimeContext,
 } from './context.js';
 import { renderTemplate } from './interpolate.js';
-import { SecretRegistry, type SecretMasker } from './secrets.js';
+import {
+  isSecretString,
+  projectStructuredString,
+  SecretRegistry,
+  type SecretMasker,
+} from './secrets.js';
 
 /** Where a value came from. The order is the precedence order of §5, lowest first. */
 export const VALUE_SOURCES = ['default', 'values', 'environment', 'set', 'answer'] as const;
@@ -56,7 +67,7 @@ export interface InputRejection {
   /** The value a frontend may prefill; unsafe native values and secrets are never retained. */
   readonly candidate: string | boolean | readonly string[] | undefined;
   readonly source: ValueSource;
-  /** The exact issue also present in {@link Resolution.problems}. */
+  /** The rejection issue; the facade receives its own sink-safe frozen copy. */
   readonly issue: RuneIssue;
 }
 
@@ -78,7 +89,65 @@ const SOURCE_NAMES: Readonly<Record<ValueSource, string>> = {
 export const UNKNOWN_KEY_SUGGESTION_WORK_BUDGET = 250_000;
 const SUGGESTION_WORK_CAP = UNKNOWN_KEY_SUGGESTION_WORK_BUDGET + 1;
 
-export interface InputState {
+/** Minimal manifest shape exposed to frontends; display text comes from `getStrings()`. */
+export type InputViewSpec =
+  | {
+      readonly type: 'text';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'secret';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'boolean';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'file';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'directory';
+      readonly required: boolean;
+    }
+  | {
+      readonly type: 'select';
+      readonly required: boolean;
+      /** Machine values, never localized or secret-masked. */
+      readonly options: readonly string[];
+    }
+  | {
+      readonly type: 'multiselect';
+      readonly required: boolean;
+      /** Machine values, never localized or secret-masked. */
+      readonly options: readonly string[];
+    };
+
+interface InputStateBase {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly source: ValueSource | undefined;
+  readonly rejection: InputRejection | undefined;
+  readonly ignored: ValueSource | undefined;
+}
+
+/** Plain, sink-safe state returned by the Session facade. */
+export type InputState =
+  | (InputStateBase & {
+      readonly secret: true;
+      readonly spec: Extract<InputViewSpec, { readonly type: 'secret' }>;
+      /** Null means resolved; undefined means unanswered or rejected. */
+      readonly value: null | undefined;
+    })
+  | (InputStateBase & {
+      readonly secret: false;
+      readonly spec: Exclude<InputViewSpec, { readonly type: 'secret' }>;
+      readonly value: string | boolean | readonly string[] | undefined;
+    });
+
+/** Authentic resolution state retained inside the engine and never root-exported. */
+export interface ResolvedInputState {
   readonly id: string;
   readonly spec: InputSpec;
   /** False when the input's `when:` is false: not required, never prompted, empty (§5). */
@@ -119,7 +188,7 @@ export interface ResolveInputsOptions {
   /** `--set key=value`, already split. */
   readonly overrides?: ReadonlyMap<string, string>;
   /** What an interactive frontend has been told so far (layer 5). */
-  readonly answers?: ReadonlyMap<string, InputValue>;
+  readonly answers?: ReadonlyMap<string, unknown>;
   /**
    * What to do with a value the registry rejected. `throw` is what a pipeline needs: nothing
    * runs and the process exits. A frontend that can ask again takes `collect`, which records
@@ -130,8 +199,8 @@ export interface ResolveInputsOptions {
 }
 
 export interface Resolution {
-  readonly inputs: readonly InputState[];
-  readonly byId: ReadonlyMap<string, InputState>;
+  readonly inputs: readonly ResolvedInputState[];
+  readonly byId: ReadonlyMap<string, ResolvedInputState>;
   /**
    * Enabled required inputs still without an answer — what a frontend must ask for. A value
    * that resolves to nothing counts as no answer: an environment variable that was never set
@@ -149,8 +218,8 @@ export interface ResolutionSnapshot {
   readonly manifest: ManifestV1;
   readonly context: RuntimeContext;
   readonly inputIndex: InputReferenceIndex;
-  readonly inputs: readonly InputState[];
-  readonly byId: ReadonlyMap<string, InputState>;
+  readonly inputs: readonly ResolvedInputState[];
+  readonly byId: ReadonlyMap<string, ResolvedInputState>;
   readonly secrets: SecretMasker;
   readonly missing: readonly string[];
   readonly warnings: readonly string[];
@@ -213,6 +282,118 @@ export function resolutionSnapshotFor(resolution: Resolution): ResolutionSnapsho
   return snapshot;
 }
 
+/** The two cached arrays published by one successful Session resolution. */
+export interface InputFacadeSnapshot {
+  readonly all: readonly InputState[];
+  readonly pending: readonly InputState[];
+}
+
+/**
+ * Projects canonical resolution state into the field-specific, structured-clone-safe facade
+ * contract. Machine identities remain exact; only sink text and ordinary values are masked. A
+ * successful plan supplies its authenticated complete masker when it publishes the next snapshot.
+ */
+export function projectInputFacadeSnapshot(
+  resolution: Resolution,
+  masker?: SecretMasker,
+): InputFacadeSnapshot {
+  const resolutionSecrets = resolutionSnapshotFor(resolution).secrets;
+  const secrets = masker ?? resolutionSecrets;
+  const all = Object.freeze(
+    resolution.inputs.map((state) => projectInputStateForFacade(state, secrets)),
+  );
+  const missing = new Set(resolution.missing);
+  const pending = Object.freeze(
+    all.filter(
+      (state) => state.enabled && (missing.has(state.id) || state.rejection !== undefined),
+    ),
+  );
+  return Object.freeze({ all, pending });
+}
+
+function projectInputStateForFacade(state: ResolvedInputState, secrets: SecretMasker): InputState {
+  const common = {
+    id: state.id,
+    enabled: state.enabled,
+    source: state.source,
+    rejection: projectInputRejection(state.rejection, secrets),
+    ignored: state.ignored,
+  };
+
+  if (state.spec.type === 'secret') {
+    if (state.value !== undefined && !isSecretString(state.value)) {
+      throw new InternalError(`secret input "${state.id}" is not wrapped after resolution`);
+    }
+    const unanswered = state.source === undefined && state.ignored === undefined;
+    return Object.freeze({
+      ...common,
+      secret: true,
+      spec: Object.freeze({ type: 'secret', required: state.spec.required }),
+      value: unanswered || state.rejection !== undefined || stillNeeded(state) ? undefined : null,
+    });
+  }
+
+  if (isSecretString(state.value)) {
+    throw new InternalError(`non-secret input "${state.id}" resolved to a secret wrapper`);
+  }
+  return Object.freeze({
+    ...common,
+    secret: false,
+    spec: projectInputViewSpec(state.spec),
+    value: projectInputValue(state.value, secrets),
+  });
+}
+
+function projectInputViewSpec(
+  spec: Exclude<InputSpec, { readonly type: 'secret' }>,
+): Exclude<InputViewSpec, { readonly type: 'secret' }> {
+  if (spec.type === 'select' || spec.type === 'multiselect') {
+    return Object.freeze({
+      type: spec.type,
+      required: spec.required,
+      options: Object.freeze(spec.options.map(optionValue)),
+    });
+  }
+  return Object.freeze({ type: spec.type, required: spec.required });
+}
+
+function projectInputValue(
+  value: string | boolean | readonly string[] | undefined,
+  secrets: SecretMasker,
+): string | boolean | readonly string[] | undefined {
+  if (value === undefined || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return projectStructuredString(value, secrets);
+  }
+  return Object.freeze(value.map((entry) => projectStructuredString(entry, secrets)));
+}
+
+function projectInputRejection(
+  rejection: InputRejection | undefined,
+  secrets: SecretMasker,
+): InputRejection | undefined {
+  if (rejection === undefined) {
+    return undefined;
+  }
+  const candidate = projectInputValue(rejection.candidate, secrets);
+  const location =
+    rejection.issue.location === undefined
+      ? undefined
+      : Object.freeze({
+          file: formatDiagnostic([rejection.issue.location.file], secrets),
+          line: rejection.issue.location.line,
+          column: rejection.issue.location.column,
+        });
+  const issue = Object.freeze({
+    code: rejection.issue.code,
+    message: formatDiagnostic([rejection.issue.message], secrets),
+    location,
+  });
+  return Object.freeze({ candidate, source: rejection.source, issue });
+}
+
 /**
  * Merges the layers for every input of a manifest.
  *
@@ -224,14 +405,20 @@ export function resolveInputs(options: ResolveInputsOptions): Resolution {
   return resolveInputsWithRegistry(options, new SecretRegistry());
 }
 
-/** Internal resolver seam for a session that retains masking across re-resolution. */
+/**
+ * Internal resolver seam for a session that retains masking across re-resolution.
+ * `rejectAnswerId` keeps one in-flight interactive Session edit fatal while seeds are collected.
+ * `missingIssue` supplements a completed non-interactive failure with frontend-ready prompts.
+ */
 export function resolveInputsWithRegistry(
   options: ResolveInputsOptions,
   secrets: SecretRegistry,
+  rejectAnswerId?: string,
+  missingIssue?: (id: string) => RuneIssue,
 ): Resolution {
   const attempt: ResolutionAttempt = { stagedSecrets: new SecretRegistry() };
   try {
-    return resolveInputsStaged(options, secrets, attempt);
+    return resolveInputsStaged(options, secrets, attempt, rejectAnswerId, missingIssue);
   } catch (cause) {
     if (cause instanceof RuneError) {
       const redactor = attempt.redactor ?? secrets.combinedWith(attempt.stagedSecrets);
@@ -239,6 +426,22 @@ export function resolveInputsWithRegistry(
     }
     throw cause;
   }
+}
+
+/**
+ * Stages every safely readable layer-2–4 secret candidate needed while a Session is opening.
+ *
+ * Locale selection and overlay validation can fail before authoritative input resolution. This
+ * package-internal seam reuses the resolver's candidate discovery and registration rules so those
+ * earlier diagnostics have the same bounded, proxy-safe redactor. Resolution still recomputes the
+ * layers, owns precedence and provenance, and transactionally replaces this opening snapshot.
+ */
+export function stageOpeningSecretCandidates(
+  options: Pick<ResolveInputsOptions, 'manifest' | 'context' | 'values' | 'overrides'>,
+  secrets: SecretRegistry,
+): void {
+  const ids = Object.keys(options.manifest.inputs);
+  stageSuppliedSecrets(options, ids, indexValuesLayer(options.values), secrets);
 }
 
 interface ResolutionAttempt {
@@ -250,6 +453,8 @@ function resolveInputsStaged(
   options: ResolveInputsOptions,
   publishedSecrets: SecretRegistry,
   attempt: ResolutionAttempt,
+  rejectAnswerId: string | undefined,
+  missingIssue: ((id: string) => RuneIssue) | undefined,
 ): Resolution {
   const { manifest, context } = options;
   const { stagedSecrets } = attempt;
@@ -271,7 +476,7 @@ function resolveInputsStaged(
 
   checkUnknownKeys(options, inputIndex, valuesLayer.entries, issues, redactor);
 
-  const states = new Map<string, InputState>();
+  const states = new Map<string, ResolvedInputState>();
   const order: string[] = [];
 
   try {
@@ -287,6 +492,20 @@ function resolveInputsStaged(
         : highestLayer(id, spec, options, valuesLayer.byId);
 
       if (!enabled) {
+        // A direct frontend answer is still an attempted edit even while `when:` is false.
+        // Validate it before discarding it so Session.setValue never accepts a value that
+        // would become invalid merely by enabling the input later.
+        if (supplied?.source === 'answer') {
+          const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
+          if (!coerced.ok) {
+            const issue = withIssueDiagnosticParts(
+              { code: 'RUNE-202', message: coerced.message, location: supplied.location },
+              coerced.diagnosticParts,
+            );
+            rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
+            issues.push(issue);
+          }
+        }
         // A manifest default is not something anybody *supplied* for this run: it is what the
         // author wrote for the case where the input is used at all. Only a value from layers
         // 2–5 is worth a warning, and only that is recorded as discarded (§5, §10).
@@ -333,11 +552,11 @@ function resolveInputsStaged(
 
       const coerced = coerce(supplied, spec, id, context, inputIndex, redactor);
       if (!coerced.ok) {
-        const issue: RuneIssue = {
-          code: 'RUNE-202',
-          message: coerced.message,
-          location: supplied.location,
-        };
+        const issue = withIssueDiagnosticParts(
+          { code: 'RUNE-202', message: coerced.message, location: supplied.location },
+          coerced.diagnosticParts,
+        );
+        rejectEditedAnswer(id, supplied, issue, rejectAnswerId);
         issues.push(
           supplied.valuesDocumentOrdinal === undefined
             ? issue
@@ -377,15 +596,25 @@ function resolveInputsStaged(
     throw cause;
   }
 
+  const missing = Object.freeze(
+    order.filter((id) => {
+      const state = states.get(id);
+      return state !== undefined && stillNeeded(state);
+    }),
+  );
+
   const hasUnknownKey = issues.some((issue) => issue.code === 'RUNE-203');
   if (
     issues.length > 0 &&
     ((options.invalidValues ?? 'throw') === 'throw' || hasUnknownKey || hasDeferredValuesProblems)
   ) {
-    throwCollectedInputIssues(issues);
+    throwCollectedInputIssues(
+      issues,
+      missingIssue === undefined ? [] : missing.map((id) => missingIssue(id)),
+    );
   }
 
-  const frozenIssues = issues.map((issue) => freezeIssue(redactIssue(issue, redactor)));
+  const frozenIssues = projectIssuesForSink(issues, redactor).map(freezeIssue);
   const issueReplacements = new Map(issues.map((issue, index) => [issue, frozenIssues[index]!]));
   for (const [id, state] of states) {
     if (state.rejection === undefined) {
@@ -413,11 +642,8 @@ function resolveInputsStaged(
   );
   const canonicalById = new Map(inputs.map((state) => [state.id, state]));
   const publicById = Object.freeze(new ImmutableReadonlyMap(canonicalById));
-  const missing = Object.freeze(
-    inputs.filter((state) => stillNeeded(state)).map((state) => state.id),
-  );
   const frozenWarnings = Object.freeze(
-    warnings.map((warning) => escapeDiagnosticText(redactor.mask(warning))),
+    warnings.map((warning) => formatDiagnostic([warning], redactor)),
   );
   const problems = Object.freeze(frozenIssues);
   const secretMasker = stagedSecrets.snapshot();
@@ -446,7 +672,19 @@ function resolveInputsStaged(
   return resolution;
 }
 
-function snapshotInputState(state: InputState): InputState {
+/** Keeps an interactive Session.setValue transactional while seed rejections are collected. */
+function rejectEditedAnswer(
+  id: string,
+  supplied: SuppliedValue,
+  issue: RuneIssue,
+  rejectAnswerId: string | undefined,
+): void {
+  if (supplied.source === 'answer' && id === rejectAnswerId) {
+    throw InputError.fromIssues('RUNE-202', [issue]);
+  }
+}
+
+function snapshotInputState(state: ResolvedInputState): ResolvedInputState {
   const value = Array.isArray(state.value) ? Object.freeze([...state.value]) : state.value;
   const rejection =
     state.rejection === undefined
@@ -461,16 +699,24 @@ function snapshotInputState(state: InputState): InputState {
 }
 
 function freezeIssue(issue: RuneIssue): RuneIssue {
-  const location = issue.location === undefined ? undefined : Object.freeze({ ...issue.location });
-  return Object.freeze({ ...issue, location });
+  if (issue.location !== undefined) {
+    Object.freeze(issue.location);
+  }
+  return Object.freeze(issue);
 }
 
 /** Throws collected issues under their aggregate code, preserving the existing taxonomy. */
-function throwCollectedInputIssues(issues: readonly RuneIssue[]): never {
+function throwCollectedInputIssues(
+  issues: readonly RuneIssue[],
+  supplementalIssues: readonly RuneIssue[] = [],
+): never {
   // A batch of nothing but unknown keys is an unknown-key error; anything mixed is about
   // the values (§7).
   const onlyUnknownKeys = issues.every((issue) => issue.code === 'RUNE-203');
-  throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', issues);
+  throw InputError.fromIssues(onlyUnknownKeys ? 'RUNE-203' : 'RUNE-202', [
+    ...issues,
+    ...supplementalIssues,
+  ]);
 }
 
 interface StagedSecret {
@@ -560,28 +806,6 @@ function redactCandidate(
   return candidate;
 }
 
-function redactIssue(issue: RuneIssue, secrets: SecretRegistry): RuneIssue {
-  return {
-    ...issue,
-    message: escapeDiagnosticText(secrets.mask(issue.message)),
-    location: redactLocation(issue.location, secrets),
-  };
-}
-
-/** Redacts a source name without changing or retaining the caller-owned location object. */
-function redactLocation(
-  location: Location | undefined,
-  secrets: SecretRegistry,
-): Location | undefined {
-  return location === undefined
-    ? undefined
-    : {
-        file: secrets.mask(location.file),
-        line: location.line,
-        column: location.column,
-      };
-}
-
 /**
  * Sanitizes a deliberate resolver error in place, preserving its class, code, cause chain,
  * property descriptors, object identity, and exit-code identity. Reporting locations are
@@ -599,28 +823,34 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   seen.add(error);
 
   const rawMessage = error.message;
+  const rawName = error.name;
   const rawStack = error.stack;
   const messageWasFormattedFromIssues =
     error instanceof RuneError && rawMessage === formatIssues(error.issues);
   const redactedIssues =
-    error instanceof RuneError
-      ? error.issues.map((issue) => redactIssue(issue, secrets))
-      : undefined;
-  const maskedMessage = secrets.mask(rawMessage);
-  error.message =
+    error instanceof RuneError ? projectIssuesForSink(error.issues, secrets) : undefined;
+  const safeMessage =
     messageWasFormattedFromIssues && redactedIssues !== undefined
       ? formatIssues(redactedIssues)
-      : escapeDiagnosticText(maskedMessage);
+      : formatDiagnostic([rawMessage], secrets);
+  const header =
+    error instanceof RuneError
+      ? projectRuneErrorHeaderForSink(error, safeMessage, secrets)
+      : projectPublicHeader(rawName, rawMessage, safeMessage, secrets);
+  const safeLocation =
+    error instanceof RuneError
+      ? projectRuneErrorLocationForSink(error, redactedIssues!, safeMessage, secrets)
+      : undefined;
+  error.name = header.name;
+  error.message = header.message;
   if (rawStack !== undefined) {
-    const maskedStack = secrets.mask(rawStack);
-    const maskedHeader = secrets.mask(`${error.name}: ${rawMessage}`);
-    error.stack = sanitizeMaskedStack(maskedStack, maskedHeader);
+    error.stack = projectErrorStackForSink(rawStack, rawName, rawMessage, header.text, secrets);
   }
 
   if (error instanceof RuneError) {
     Object.defineProperty(error, 'location', {
       ...Object.getOwnPropertyDescriptor(error, 'location'),
-      value: redactLocation(error.location, secrets),
+      value: safeLocation,
     });
     Object.defineProperty(error, 'issues', {
       ...Object.getOwnPropertyDescriptor(error, 'issues'),
@@ -633,27 +863,13 @@ function redactError(error: Error, secrets: SecretRegistry, seen: Set<Error>): v
   } else if (typeof error.cause === 'string') {
     Object.defineProperty(error, 'cause', {
       ...Object.getOwnPropertyDescriptor(error, 'cause'),
-      value: escapeDiagnosticText(secrets.mask(error.cause)),
+      value: formatDiagnostic([error.cause], secrets),
     });
   }
 }
 
-/** Escapes stack content while retaining only the formatter's LF frame separators. */
-function sanitizeMaskedStack(maskedStack: string, maskedHeader: string): string {
-  if (!maskedStack.startsWith(maskedHeader)) {
-    return escapeDiagnosticText(maskedStack);
-  }
-
-  const suffix = maskedStack.slice(maskedHeader.length);
-  const safeSuffix = suffix
-    .split('\n')
-    .map((frame) => escapeDiagnosticText(frame))
-    .join('\n');
-  return escapeDiagnosticText(maskedHeader) + safeSuffix;
-}
-
 /** Whether an input is enabled, required, and has nothing that counts as an answer. */
-function stillNeeded(state: InputState): boolean {
+function stillNeeded(state: ResolvedInputState): boolean {
   if (!state.enabled || !state.spec.required) {
     return false;
   }
@@ -696,15 +912,18 @@ function materializeValuesProblem(
   problem: DeferredValuesProblem,
   redactor: SecretRegistry,
 ): RuneIssue {
-  return 'kind' in problem
-    ? {
-        code: 'RUNE-202',
-        message: formatDiagnostic([quotedDiagnostic(problem.rawKey), ' ', problem.reason], (part) =>
-          redactor.mask(part),
-        ),
-        location: problem.location,
-      }
-    : { code: problem.code, message: problem.message, location: problem.location };
+  if (!('kind' in problem)) {
+    return { code: problem.code, message: problem.message, location: problem.location };
+  }
+  const parts = [quotedDiagnostic(problem.rawKey), ' ', problem.reason];
+  return withIssueDiagnosticParts(
+    {
+      code: 'RUNE-202',
+      message: formatDiagnostic(parts, redactor),
+      location: problem.location,
+    },
+    parts,
+  );
 }
 
 /**
@@ -827,6 +1046,7 @@ type CoercionOutcome =
   | {
       readonly ok: false;
       readonly message: string;
+      readonly diagnosticParts: readonly DiagnosticPart[];
       readonly candidate: InputRejection['candidate'];
     };
 
@@ -857,13 +1077,14 @@ function coerce(
     return result;
   }
 
-  const reason =
-    result.diagnosticParts === undefined
-      ? escapeDiagnosticText(secrets.mask(result.message))
-      : formatDiagnostic(result.diagnosticParts, (part) => secrets.mask(part));
+  const diagnosticParts: readonly DiagnosticPart[] = [
+    `${id} (from ${supplied.origin}): `,
+    ...(result.diagnosticParts ?? [result.message]),
+  ];
   return {
     ok: false,
-    message: escapeDiagnosticText(secrets.mask(`${id} (from ${supplied.origin}): ${reason}`)),
+    message: formatDiagnostic(diagnosticParts, secrets),
+    diagnosticParts,
     candidate: rejectedCandidate(raw, handler.secret),
   };
 }
@@ -915,7 +1136,7 @@ function isEnabled(
   id: string,
   inputIndex: InputReferenceIndex,
   visibleInputCount: number,
-  states: ReadonlyMap<string, InputState>,
+  states: ReadonlyMap<string, ResolvedInputState>,
   context: RuntimeContext,
 ): boolean {
   if (spec.when === undefined) {
@@ -947,7 +1168,7 @@ function lookup(
   reference: ConditionReference,
   inputIndex: InputReferenceIndex,
   visibleInputCount: number,
-  states: ReadonlyMap<string, InputState>,
+  states: ReadonlyMap<string, ResolvedInputState>,
   context: RuntimeContext,
 ): ConditionValue {
   const resolved = resolveReference(reference.segments, inputIndex, visibleInputCount);
@@ -1003,11 +1224,10 @@ function checkUnknownKeys(
       origin,
       ')',
     ];
-    const issue: RuneIssue = {
-      code: 'RUNE-203',
-      message: formatDiagnostic(parts, (part) => secrets.mask(part)),
-      location,
-    };
+    const issue = withIssueDiagnosticParts(
+      { code: 'RUNE-203', message: formatDiagnostic(parts, secrets), location },
+      parts,
+    );
     issues.push(
       documentOrdinal === undefined ? issue : withValuesDocumentOrdinal(issue, documentOrdinal),
     );
@@ -1058,7 +1278,7 @@ function saturatingProduct(left: number, right: number): number {
  * else is refused here, where the file and the line are still known.
  */
 export function parseValuesFile(path: string, file: string = path): ValuesDocument {
-  let document: ReturnType<typeof loadYamlFile>;
+  let document: LoadedDocument;
   try {
     document = loadYamlFile(file, path);
   } catch (cause) {
@@ -1071,6 +1291,31 @@ export function parseValuesFile(path: string, file: string = path): ValuesDocume
     }
     throw cause;
   }
+  return valuesFromDocument(document, file);
+}
+
+/** Session-only asynchronous values-file loader; shape/error handling stays shared. */
+export async function parseValuesFileAsync(
+  path: string,
+  file: string = path,
+): Promise<ValuesDocument> {
+  let document: LoadedDocument;
+  try {
+    document = await loadYamlFileAsync(file, path);
+  } catch (cause) {
+    if (cause instanceof ManifestError) {
+      return {
+        file,
+        values: new Map(),
+        problems: valuesFileLoadProblems(cause, file),
+      };
+    }
+    throw cause;
+  }
+  return valuesFromDocument(document, file);
+}
+
+function valuesFromDocument(document: LoadedDocument, file: string): ValuesDocument {
   const values = new Map<string, unknown>();
   const issues: DeferredValuesProblem[] = [];
 

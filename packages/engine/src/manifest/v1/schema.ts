@@ -129,7 +129,7 @@ export const productSchema = z.strictObject({
 
 export const executionSchema = z.strictObject({
   failFast: z.boolean().default(true),
-  logFile: z.string().optional(),
+  logFile: z.string().min(1).optional(),
 });
 
 /** Presentation-only; read by the GUI shell, ignored by the CLI modes (§9.4). */

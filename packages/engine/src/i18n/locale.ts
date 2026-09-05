@@ -6,9 +6,12 @@
  */
 
 import { lstatSync, readdirSync } from 'node:fs';
+import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ManifestError, UsageError, messageOf } from '../errors.js';
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
+import { environmentValue } from '../environment.js';
+import { ManifestError, UsageError, messageOf, withIssueDiagnosticParts } from '../errors.js';
 
 /** Where a manifest's overlays live, relative to the manifest's directory. */
 export const LOCALES_DIRECTORY = 'locales';
@@ -46,9 +49,19 @@ function normalizeExplicitLocale(
 
   const tag = normalizeLocaleTag(value);
   if (tag === undefined) {
-    throw new UsageError(
-      `invalid locale ${JSON.stringify(raw)} from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
+    // The value is a runtime string a session may hold as a secret, so it travels as a raw
+    // quoted part: quoting it here would hand every masker an escaped spelling the registry
+    // never held, and the mask would miss it (§10, "Path spellings").
+    const parts: readonly DiagnosticPart[] = [
+      'invalid locale ',
+      quotedDiagnostic(raw),
+      ` from ${source}; expected a Unicode locale identifier supported by Node Intl such as "de-DE", or C/POSIX for the built-in defaults`,
+    ];
+    const issue = withIssueDiagnosticParts(
+      { code: 'RUNE-001', message: formatDiagnostic(parts), location: undefined },
+      parts,
     );
+    throw new UsageError(issue.message, { issues: [issue] });
   }
   return tag;
 }
@@ -74,7 +87,7 @@ export function selectLocale(options: LocaleSelectionOptions): string | undefine
     // defaults, never for whatever the next source would have said.
     return normalizeExplicitLocale(options.flag, '--locale');
   }
-  const environmentLocale = options.environment['RUNE_LOCALE'];
+  const environmentLocale = environmentValue(options.environment, 'RUNE_LOCALE');
   if (environmentLocale !== undefined && environmentLocale !== '') {
     return normalizeExplicitLocale(environmentLocale, 'RUNE_LOCALE');
   }
@@ -117,6 +130,36 @@ function scanOverlayFiles(manifestDir: string): readonly OverlayFile[] {
     });
   }
 
+  return overlayFiles(directory, names);
+}
+
+async function scanOverlayFilesAsync(manifestDir: string): Promise<readonly OverlayFile[]> {
+  const directory = join(manifestDir, LOCALES_DIRECTORY);
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (cause) {
+    if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      try {
+        await lstat(directory);
+      } catch (lstatCause) {
+        if (
+          lstatCause instanceof Error &&
+          (lstatCause as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
+          return [];
+        }
+      }
+    }
+    throw new ManifestError('RUNE-101', `${directory} cannot be read: ${messageOf(cause)}`, {
+      cause,
+    });
+  }
+
+  return overlayFiles(directory, names);
+}
+
+function overlayFiles(directory: string, names: readonly string[]): readonly OverlayFile[] {
   return names
     .filter((name) => /\.yaml$/i.test(name))
     .sort()
@@ -164,7 +207,21 @@ export function discoverSelectedOverlay(
   manifestDir: string,
   selectedLocale: string,
 ): DiscoveredOverlay | undefined {
-  const files = scanOverlayFiles(manifestDir);
+  return selectDiscoveredOverlay(scanOverlayFiles(manifestDir), selectedLocale);
+}
+
+/** Session-only selected-overlay discovery using asynchronous filesystem I/O. */
+export async function discoverSelectedOverlayAsync(
+  manifestDir: string,
+  selectedLocale: string,
+): Promise<DiscoveredOverlay | undefined> {
+  return selectDiscoveredOverlay(await scanOverlayFilesAsync(manifestDir), selectedLocale);
+}
+
+function selectDiscoveredOverlay(
+  files: readonly OverlayFile[],
+  selectedLocale: string,
+): DiscoveredOverlay | undefined {
   const selected = normalizeOverlayLocaleClaim(selectedLocale);
   if (selected === undefined) {
     return undefined;

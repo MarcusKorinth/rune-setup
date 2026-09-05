@@ -4,9 +4,11 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { formatIssues, type ManifestError } from '../../src/errors.js';
+import { formatIssues, ManifestError } from '../../src/errors.js';
 import {
   manifestDescriptorFor,
+  parseManifest,
+  parseManifestAsync,
   parseManifestText,
   SUPPORTED_SCHEMA_VERSIONS,
 } from '../../src/manifest/index.js';
@@ -237,6 +239,57 @@ describe('parseManifestText', () => {
       }
     },
   );
+});
+
+describe('parseManifestAsync', () => {
+  it('shares successful model and descriptor semantics with parseManifest', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-async-manifest-'));
+    const file = join(directory, 'installer.yaml');
+    writeFileSync(file, MINIMAL, 'utf8');
+
+    const synchronous = parseManifest(file);
+    const asynchronous = await parseManifestAsync(file);
+
+    expect(asynchronous).toEqual(synchronous);
+    expect(manifestDescriptorFor(asynchronous)).toEqual(manifestDescriptorFor(synchronous));
+  });
+
+  it('keeps aggregated semantic and GUI-asset issue ordering identical', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-async-manifest-'));
+    const file = join(directory, 'installer.yaml');
+    writeFileSync(
+      file,
+      [
+        ...HEAD,
+        'steps:',
+        '  - id: install',
+        '    when: "${missing}"',
+        '    run:',
+        '      command: node',
+        'gui:',
+        '  logo: assets/missing.png',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    let synchronous: ManifestError | undefined;
+    try {
+      parseManifest(file, { checkAssetFiles: true });
+    } catch (error) {
+      synchronous = error as ManifestError;
+    }
+    let asynchronous: ManifestError | undefined;
+    try {
+      await parseManifestAsync(file, { checkAssetFiles: true });
+    } catch (error) {
+      asynchronous = error as ManifestError;
+    }
+
+    expect(synchronous).toBeInstanceOf(ManifestError);
+    expect(asynchronous).toBeInstanceOf(ManifestError);
+    expect(asynchronous?.issues).toEqual(synchronous?.issues);
+    expect(asynchronous?.message).toBe(synchronous?.message);
+  });
 });
 
 describe('schemaVersion dispatch', () => {

@@ -8,7 +8,9 @@
  */
 
 import { InternalError } from '../errors.js';
-import { manifestDescriptorFor } from '../manifest/index.js';
+import { escapeDiagnosticText } from '../diagnostics.js';
+import { projectStructuredString, type SecretMasker } from '../engine/secrets.js';
+import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
 import { matchOverlay } from './locale.js';
@@ -46,6 +48,8 @@ export interface StringTableContext {
 }
 
 const stringTableContexts = new WeakMap<StringTable, StringTableContext>();
+/** Live terminal maskers belong only to exact tables returned by Session.getStrings(). */
+const sessionTerminalMaskers = new WeakMap<StringTable, SecretMasker>();
 
 /** Internal fail-closed lookup: structural table copies have no resolution provenance. */
 export function stringTableContextFor(table: StringTable): StringTableContext {
@@ -54,6 +58,55 @@ export function stringTableContextFor(table: StringTable): StringTableContext {
     throw new InternalError('the string table was not created by resolveStrings');
   }
   return context;
+}
+
+/**
+ * Projects a resolved table through a sink masker without losing its manifest provenance.
+ * The masker is invoked on every access so a long-lived frontend table follows successful
+ * session edits that replace the active secret snapshot.
+ */
+export function projectStringsForSink(source: StringTable, secrets: SecretMasker): StringTable {
+  const context = stringTableContextFor(source);
+  const project = (text: string): string => projectStructuredString(text, secrets);
+  const maskedOptional = (text: string | undefined): string | undefined =>
+    text === undefined ? undefined : project(text);
+  const table: StringTable = {
+    locale: source.locale,
+    overlayLocale: source.overlayLocale,
+    get entries() {
+      return Object.freeze(
+        Object.fromEntries(
+          Object.entries(source.entries).map(([key, text]) => [key, project(text)]),
+        ),
+      );
+    },
+    chrome: (key, values) => project(source.chrome(key, values)),
+    inputTitle: (id) => project(source.inputTitle(id)),
+    inputDescription: (id) => maskedOptional(source.inputDescription(id)),
+    patternHint: (id) => maskedOptional(source.patternHint(id)),
+    optionLabel: (inputId, value) => project(source.optionLabel(inputId, value)),
+    stepTitle: (id) => project(source.stepTitle(id)),
+    productDescription: () => maskedOptional(source.productDescription()),
+    windowTitle: () => maskedOptional(source.windowTitle()),
+  };
+  const frozenTable = Object.freeze(table);
+  stringTableContexts.set(frozenTable, context);
+  sessionTerminalMaskers.set(frozenTable, secrets);
+  return frozenTable;
+}
+
+/**
+ * Projects one fully composed human line for a terminal using an authentic session table.
+ * The second mask catches registered literals created by visible control-character escaping.
+ */
+export function formatSessionTerminalLine(strings: StringTable, line: string): string {
+  const secrets = sessionTerminalMaskers.get(strings);
+  if (secrets === undefined) {
+    throw new InternalError(
+      'terminal rendering requires the exact StringTable returned by Session.getStrings',
+    );
+  }
+  return secrets.mask(escapeDiagnosticText(secrets.mask(line)));
 }
 
 /** Builds the one string table of a session. */

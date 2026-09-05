@@ -14,12 +14,53 @@ import {
   MASK,
   MAX_SECRET_REGISTRY_CODE_UNITS,
   MIN_MASKABLE_LENGTH,
+  projectStructuredString,
   resolveSecretPathFrom,
   secretLength,
   secretMatches,
   SecretRegistry,
   secretValuesEqual,
 } from '../../src/engine/secrets.js';
+
+describe('structured string projection', () => {
+  it.each([
+    ['direct match', 'raw-secret', 'raw-secret'],
+    ['quote escape', String.raw`\"\"`, '""'],
+    ['lone surrogate escape', String.raw`\ud800`, '\ud800'],
+    ['repeated backslash escape', String.raw`\\\\\\\\`, String.raw`\\\\`],
+    ['control escape', String.raw`\u001b`, '\u001b'],
+  ] as const)('fails closed for a %s', (_name, secret, value) => {
+    const registry = new SecretRegistry();
+    expect(registry.register(secret)).toBe(true);
+
+    const projected = projectStructuredString(value, registry);
+
+    expect(projected).toBe(MASK);
+    expect(projected).not.toContain(secret);
+    expect(JSON.stringify(projected).slice(1, -1)).not.toContain(secret);
+  });
+
+  it('preserves safe text and the stable mask', () => {
+    const registry = new SecretRegistry();
+    registry.register(String.raw`\"\"`);
+
+    expect(projectStructuredString('ordinary text', registry)).toBe('ordinary text');
+    expect(projectStructuredString(MASK, registry)).toBe(MASK);
+  });
+
+  it('projects ten thousand values without retaining per-value state', () => {
+    const registry = new SecretRegistry();
+    registry.register(String.raw`\u001b`);
+
+    const projected = Array.from({ length: 10_000 }, (_, index) =>
+      projectStructuredString(index % 2 === 0 ? '\u001b' : `safe-${index}`, registry),
+    );
+
+    expect(projected).toHaveLength(10_000);
+    expect(projected[0]).toBe(MASK);
+    expect(projected[9_999]).toBe('safe-9999');
+  });
+});
 
 describe('SecretString', () => {
   const secret = createSecretString('hunter2');
@@ -153,6 +194,24 @@ describe('SecretRegistry', () => {
     expect(snapshot).not.toHaveProperty('register');
     expect(snapshot.mask('first-secret/later-secret')).toBe('***/later-secret');
     expect(registry.mask('first-secret/later-secret')).toBe('***/***');
+  });
+
+  it('caches a fallback marker per registry version and immutable snapshot', () => {
+    const registry = new SecretRegistry();
+    const first = String.fromCodePoint(0x10000);
+    const second = String.fromCodePoint(0x10001);
+    const [secondHigh, secondLow] = [second.charAt(0), second.charAt(1)];
+
+    expect(registry.safeFallbackMarker()).toBe(first);
+    const initialSnapshot = registry.snapshot();
+    registry.register(first.repeat(4));
+    expect(registry.safeFallbackMarker()).toBe(second);
+    registry.register(`${secondLow}\\n${secondHigh}`);
+    const laterSnapshot = registry.snapshot();
+
+    expect(initialSnapshot.safeFallbackMarker()).toBe(first);
+    expect(laterSnapshot.safeFallbackMarker()).toBe(String.fromCodePoint(0x10002));
+    expect(registry.safeFallbackMarker()).toBe(String.fromCodePoint(0x10002));
   });
 
   it('removes a registered secret from text, wherever it appears', () => {
@@ -351,6 +410,66 @@ describe('SecretRegistry', () => {
     // Masking four spaces would black out the indentation of every line a child prints.
     expect(registry.register('    ')).toBe(false);
     expect(registry.mask('    indented output')).toBe('    indented output');
+  });
+
+  it('masks a whitespace-padded secret in both its raw and its trimmed spelling', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register(' abcd ')).toBe(true);
+    // The raw spelling is what a sink sees when the child prints the value unchanged...
+    expect(registry.mask('x abcd y')).toBe(`x${MASK}y`);
+    // ...and the trimmed spelling is what it sees after `.trim()`, `xargs`, or an HTTP client.
+    expect(registry.mask('abcd')).toBe(MASK);
+    expect(registry.mask('T=abcd')).toBe(`T=${MASK}`);
+    // Both spellings are distinct registry parts; registering either again adds nothing.
+    expect(registry.size).toBe(2);
+    expect(registry.register('abcd')).toBe(true);
+    expect(registry.size).toBe(2);
+  });
+
+  it('masks the trimmed spelling of a tab-padded secret', () => {
+    const registry = new SecretRegistry();
+
+    expect(registry.register('\tsecret-with-tab\t')).toBe(true);
+    expect(registry.mask('value: secret-with-tab')).toBe(`value: ${MASK}`);
+    expect(registry.mask('\tsecret-with-tab\t')).toBe(MASK);
+  });
+
+  it('masks the trimmed spelling of every padded line of a multiline secret', () => {
+    const registry = new SecretRegistry();
+    const secret = '  first-long  \n  second-long  ';
+
+    expect(registry.register(secret)).toBe(true);
+    expect(registry.mask('first-long')).toBe(MASK);
+    expect(registry.mask('second-long')).toBe(MASK);
+    expect(registry.mask('  first-long  ')).toBe(MASK);
+    expect(registry.mask(secret)).toBe(MASK);
+  });
+
+  it('counts the trimmed spelling of a padded part against the snapshot budget', () => {
+    // ' yyyy ' costs six code units raw plus four trimmed: ten in total.
+    const overBudget = new SecretRegistry();
+    for (const pattern of nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS - 9, 'x')) {
+      overBudget.register(pattern);
+    }
+    const size = overBudget.size;
+    const error = capacityErrorFrom(() => overBudget.register(' yyyy '));
+
+    expect(error.code).toBe('RUNE-202');
+    expect(overBudget.size).toBe(size);
+    expect(overBudget.mask(' yyyy ')).toBe(' yyyy ');
+    expect(overBudget.mask('yyyy')).toBe('yyyy');
+
+    const exact = new SecretRegistry();
+    for (const pattern of nestedPatternsForBudget(MAX_SECRET_REGISTRY_CODE_UNITS - 10, 'x')) {
+      exact.register(pattern);
+    }
+    const exactSize = exact.size;
+
+    expect(exact.register(' yyyy ')).toBe(true);
+    expect(exact.size).toBe(exactSize + 2);
+    expect(exact.mask('yyyy')).toBe(MASK);
+    expect(capacityErrorFrom(() => exact.register('zzzz')).code).toBe('RUNE-202');
   });
 
   it('masks a secret that spans several lines line by line, which is all a sink ever sees', () => {

@@ -232,6 +232,17 @@ export interface RuntimeContextOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
 }
 
+/** Host-dependent built-ins captured for one asynchronous engine invocation. */
+export interface HostBuiltInSnapshot {
+  readonly home: string;
+  readonly temp: string;
+}
+
+/** Captures the host-dependent built-ins before an asynchronous invocation can yield. */
+export function snapshotHostBuiltIns(): HostBuiltInSnapshot {
+  return Object.freeze({ home: homedir(), temp: tmpdir() });
+}
+
 /**
  * The values behind the names of §6.1.
  *
@@ -261,7 +272,10 @@ export function runtimeContextFor(context: RuntimeContext): RuntimeContext {
   return trusted;
 }
 
-export function createRuntimeContext(options: RuntimeContextOptions): RuntimeContext {
+export function createRuntimeContext(
+  options: RuntimeContextOptions,
+  hostBuiltIns?: HostBuiltInSnapshot,
+): RuntimeContext {
   const windowsRoot = win32.parse(options.manifestDir).root;
   const hasUnboundWindowsRoot =
     process.platform === 'win32' && (windowsRoot === '\\' || windowsRoot === '/');
@@ -279,8 +293,8 @@ export function createRuntimeContext(options: RuntimeContextOptions): RuntimeCon
   const preview = platform !== host;
   const environment = options.environment ?? process.env;
   const environmentValues = snapshotEnvironment(environment, host === 'windows');
-  const home = preview ? `<home@${platform}>` : homedir();
-  const temp = preview ? `<temp@${platform}>` : tmpdir();
+  const home = preview ? `<home@${platform}>` : (hostBuiltIns?.home ?? homedir());
+  const temp = preview ? `<temp@${platform}>` : (hostBuiltIns?.temp ?? tmpdir());
 
   const environmentValue = (name: string): string | undefined =>
     environmentValues.get(host === 'windows' ? name.toLowerCase() : name);

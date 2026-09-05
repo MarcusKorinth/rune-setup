@@ -13,6 +13,7 @@ export {
   ExecutionError,
   exitCodeFor,
   formatIssues,
+  formatRuneError,
   InputError,
   InternalError,
   INTERNAL_EXIT_CODE,
@@ -42,10 +43,15 @@ export {
   SUPPORTED_SCHEMA_VERSIONS,
   validateManifest,
 } from './manifest/index.js';
-export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
+export type {
+  Manifest,
+  ParseManifestOptions,
+  ValidateManifestOptions,
+  ValidationReport,
+} from './manifest/index.js';
 
 export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
-export type { ValueType } from './engine/context.js';
+export type { Platform, ValueType } from './engine/context.js';
 
 export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {
@@ -56,8 +62,30 @@ export type {
   ResolvedCommand,
 } from './engine/plan.js';
 
+export { sameSinkPath } from './engine/paths.js';
+
+export { RESULT_LOG_COLLISION_MESSAGE, Session } from './engine/session.js';
+export type {
+  EffectiveLogFile,
+  InputStateChanged,
+  SessionOptions,
+  ThemeConfig,
+} from './engine/session.js';
+export type { InputRejection, InputState, InputViewSpec, ValueSource } from './engine/inputs.js';
+
+export { createFailureResult } from './engine/executor.js';
+export type { FailureResultOptions, FailureResultSession } from './engine/executor.js';
+
 export { CancelToken } from './engine/cancel.js';
-export type { EngineObserver, RunEvent } from './engine/events.js';
+export type {
+  EngineObserver,
+  RunEvent,
+  RunFinished,
+  RunStarted,
+  StepFinished,
+  StepOutput,
+  StepStarted,
+} from './engine/events.js';
 
 export type { StepState } from './engine/state.js';
 
@@ -74,9 +102,11 @@ export type {
   RunStatus,
 } from './results/model.js';
 export { resultJsonSchema } from './results/schema.js';
-export { writeResult } from './results/writer.js';
+export { serializeResult, writeResult } from './results/writer.js';
+export type { WriteResultOptions } from './results/writer.js';
 
 export type { StringTable } from './i18n/strings.js';
+export { formatSessionTerminalLine } from './i18n/strings.js';
 export type { ChromeKey } from './i18n/catalog.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';

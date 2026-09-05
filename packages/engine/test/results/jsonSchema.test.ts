@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { PLATFORMS } from '../../src/engine/context.js';
 import { VALUE_SOURCES } from '../../src/engine/inputs.js';
@@ -12,7 +13,7 @@ import {
   type ResultStep,
   type RunResult,
 } from '../../src/results/model.js';
-import { resultV1Schema } from '../../src/results/schema.js';
+import { resultV2Schema } from '../../src/results/schema.js';
 import { serializeResult } from '../../src/results/writer.js';
 
 const RESULT_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -211,7 +212,7 @@ interface SchemaNode {
 
 function result(overrides: Partial<RunResult> = {}): RunResult {
   return {
-    resultSchemaVersion: 1,
+    resultSchemaVersion: 2,
     id: RESULT_ID,
     status: 'succeeded',
     exitCode: 0,
@@ -383,16 +384,44 @@ function planFailure(dryRun: boolean, code: 'RUNE-401' | 'RUNE-404' | 'RUNE-405'
 }
 
 describe('resultJsonSchema', () => {
-  it('is the strict version-1 JSON Schema exported from the package root', () => {
+  it('round-trips every public result form through the generated JSON Schema', () => {
+    const validator = z.fromJSONSchema(
+      resultJsonSchema() as Parameters<typeof z.fromJSONSchema>[0],
+    );
+    const resultForms = [
+      result(),
+      resultForStatus('planned'),
+      resultForStatus('failed'),
+      planFailure(false, 'RUNE-401'),
+      zeroStepResult({
+        status: 'failed',
+        exitCode: 1,
+        dryRun: false,
+        error: { code: 'RUNE-406', message: 'log failed', location: null },
+      }),
+      resultForStatus('config_error'),
+      resultForStatus('input_error'),
+      resultForStatus('resolution_error'),
+      resultForStatus('cancelled'),
+      resultForStatus('internal_error'),
+    ];
+
+    for (const resultForm of resultForms) {
+      const serialized = JSON.parse(serializeResult(resultForm)) as unknown;
+      expect(validator.safeParse(serialized).success).toBe(true);
+    }
+  });
+
+  it('is the strict version-2 JSON Schema exported from the package root', () => {
     const schema = resultJsonSchema();
     const branches = schema['anyOf'] as readonly SchemaNode[];
 
     expect(schema['$schema']).toMatch(/json-schema\.org/);
-    expect(branches).toHaveLength(RUN_STATUSES.length + 1);
+    expect(branches).toHaveLength(RUN_STATUSES.length + 2);
     for (const branch of branches) {
       expect(branch.type).toBe('object');
       expect(branch.additionalProperties).toBe(false);
-      expect(branch.properties?.['resultSchemaVersion']).toMatchObject({ const: 1 });
+      expect(branch.properties?.['resultSchemaVersion']).toMatchObject({ const: 2 });
       expect(branch.properties?.['locale']?.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
       expect(branch.required).toEqual(
         expect.arrayContaining(['status', 'exitCode', 'dryRun', 'error', 'mode', 'locale']),
@@ -406,7 +435,7 @@ describe('resultJsonSchema', () => {
     ).toEqual({
       succeeded: 1,
       planned: 1,
-      failed: 2,
+      failed: 3,
       config_error: 1,
       input_error: 1,
       resolution_error: 1,
@@ -430,7 +459,10 @@ describe('resultJsonSchema', () => {
       (branch) => branch.properties?.['error']?.type === 'null',
     )!;
     const planFailed = branchesFor('failed').find(
-      (branch) => branch.properties?.['error']?.type === 'object',
+      (branch) => branch.properties?.['error']?.properties?.['code']?.enum !== undefined,
+    )!;
+    const logFailed = branchesFor('failed').find(
+      (branch) => branch.properties?.['error']?.properties?.['code']?.const === 'RUNE-406',
     )!;
     expect(runtimeFailed.properties).toMatchObject({
       exitCode: { const: 1 },
@@ -442,6 +474,10 @@ describe('resultJsonSchema', () => {
       'RUNE-404',
       'RUNE-405',
     ]);
+    expect(logFailed.properties).toMatchObject({
+      exitCode: { const: 1 },
+      dryRun: { const: false },
+    });
     expect(branchFor('config_error').properties?.['error']?.properties?.['code']?.enum).toEqual([
       'RUNE-101',
       'RUNE-102',
@@ -636,7 +672,7 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const variant of variants) {
-      expect(resultV1Schema.safeParse(variant).success).toBe(true);
+      expect(resultV2Schema.safeParse(variant).success).toBe(true);
     }
   });
 
@@ -649,7 +685,7 @@ describe('resultJsonSchema', () => {
       'CANCELLED',
       'NOT_RUN',
     ] as const) {
-      expect(resultV1Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
+      expect(resultV2Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
     }
   });
 
@@ -674,7 +710,7 @@ describe('resultJsonSchema', () => {
       const base = resultWithSingleStepState(state);
       for (const contradictoryFields of contradictions[state]) {
         expect(
-          resultV1Schema.safeParse({
+          resultV2Schema.safeParse({
             ...base,
             steps: [{ ...base.steps[0]!, ...contradictoryFields }],
           }).success,
@@ -686,7 +722,7 @@ describe('resultJsonSchema', () => {
   it('accepts the JSON shape written by the result writer', () => {
     const serialized = JSON.parse(serializeResult(result())) as unknown;
 
-    expect(resultV1Schema.safeParse(serialized).success).toBe(true);
+    expect(resultV2Schema.safeParse(serialized).success).toBe(true);
   });
 
   it('enforces the secret discriminator and value correlation', () => {
@@ -703,14 +739,14 @@ describe('resultJsonSchema', () => {
       { ...input, secret: false, value: true },
       { ...input, secret: false, value: ['one', 'two'] },
     ]) {
-      expect(resultV1Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
+      expect(resultV2Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
     }
 
     for (const invalid of [
       { ...input, secret: true, value: 'plaintext' },
       { ...input, secret: false, value: null },
     ]) {
-      expect(resultV1Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
+      expect(resultV2Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
     }
   });
 
@@ -729,7 +765,7 @@ describe('resultJsonSchema', () => {
         ignored: 'input disabled' as const,
       })),
     ]) {
-      expect(resultV1Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
+      expect(resultV2Schema.safeParse({ ...base, inputs: [valid] }).success).toBe(true);
     }
 
     for (const invalid of [
@@ -738,13 +774,13 @@ describe('resultJsonSchema', () => {
       { ...input, enabled: false, source: null, ignored: 'input disabled' },
       { ...input, enabled: false, source: 'default', ignored: 'input disabled' },
     ]) {
-      expect(resultV1Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
+      expect(resultV2Schema.safeParse({ ...base, inputs: [invalid] }).success).toBe(false);
     }
   });
 
   it('rejects duplicate input ids at the later id path', () => {
     const base = result();
-    const parsed = resultV1Schema.safeParse(
+    const parsed = resultV2Schema.safeParse(
       result({ inputs: [...base.inputs, { ...base.inputs[0]! }] }),
     );
 
@@ -758,7 +794,7 @@ describe('resultJsonSchema', () => {
 
   it('rejects duplicate step ids at the later id path', () => {
     const base = result();
-    const parsed = resultV1Schema.safeParse(
+    const parsed = resultV2Schema.safeParse(
       result({
         stepsTotal: 2,
         stepsExecuted: 2,
@@ -779,7 +815,7 @@ describe('resultJsonSchema', () => {
     const base = result();
 
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           inputs: [{ ...base.inputs[0]!, id: base.steps[0]!.id }, ...base.inputs.slice(1)],
         }),
@@ -789,18 +825,18 @@ describe('resultJsonSchema', () => {
 
   it('covers every public status, mode, platform, input source, and step state', () => {
     for (const status of RUN_STATUSES) {
-      expect(resultV1Schema.safeParse(resultForStatus(status)).success).toBe(true);
+      expect(resultV2Schema.safeParse(resultForStatus(status)).success).toBe(true);
     }
 
     for (const mode of RUN_MODES) {
-      expect(resultV1Schema.safeParse(result({ mode })).success).toBe(true);
+      expect(resultV2Schema.safeParse(result({ mode })).success).toBe(true);
     }
     for (const platform of PLATFORMS) {
-      expect(resultV1Schema.safeParse(result({ platform })).success).toBe(true);
+      expect(resultV2Schema.safeParse(result({ platform })).success).toBe(true);
     }
     for (const source of [...VALUE_SOURCES, null]) {
       expect(
-        resultV1Schema.safeParse(
+        resultV2Schema.safeParse(
           result({
             inputs: [{ id: 'input', value: '', source, secret: false, enabled: true }],
           }),
@@ -810,13 +846,13 @@ describe('resultJsonSchema', () => {
     for (const state of STEP_STATES) {
       if (state === 'RUNNING') {
         expect(
-          resultV1Schema.safeParse({
+          resultV2Schema.safeParse({
             ...result(),
             steps: [{ ...result().steps[0]!, state }],
           }).success,
         ).toBe(false);
       } else {
-        expect(resultV1Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
+        expect(resultV2Schema.safeParse(resultWithSingleStepState(state)).success).toBe(true);
       }
     }
   });
@@ -828,7 +864,7 @@ describe('resultJsonSchema', () => {
       for (const exitCode of exitCodes) {
         if (exitCode !== EXIT_CODE_BY_STATUS[status]) {
           expect(
-            resultV1Schema.safeParse({
+            resultV2Schema.safeParse({
               ...resultForStatus(status),
               exitCode,
             }).success,
@@ -840,18 +876,18 @@ describe('resultJsonSchema', () => {
     for (const status of RUN_STATUSES.filter(
       (candidate) => candidate !== 'succeeded' && candidate !== 'planned',
     )) {
-      expect(resultV1Schema.safeParse(resultForStatus(status)).success).toBe(true);
+      expect(resultV2Schema.safeParse(resultForStatus(status)).success).toBe(true);
     }
 
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...resultForStatus('failed'),
         dryRun: true,
       }).success,
     ).toBe(false);
 
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...result(),
         status: 'succeeded',
         exitCode: 0,
@@ -859,7 +895,7 @@ describe('resultJsonSchema', () => {
       }).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...result(),
         status: 'planned',
         exitCode: 0,
@@ -869,7 +905,7 @@ describe('resultJsonSchema', () => {
   });
 
   it('requires cross-platform previews to be dry runs', () => {
-    const contradictory = resultV1Schema.safeParse(
+    const contradictory = resultV2Schema.safeParse(
       result({ crossPlatformPreview: true, dryRun: false }),
     );
 
@@ -880,7 +916,7 @@ describe('resultJsonSchema', () => {
       );
     }
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           status: 'config_error',
           exitCode: EXIT_CODE_BY_STATUS.config_error,
@@ -896,7 +932,7 @@ describe('resultJsonSchema', () => {
       ).success,
     ).toBe(true);
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...resultWithSingleStepState('PENDING'),
         crossPlatformPreview: true,
       }).success,
@@ -916,7 +952,7 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const postValidationResult of postValidationResults) {
-      expect(resultV1Schema.safeParse(postValidationResult).success).toBe(true);
+      expect(resultV2Schema.safeParse(postValidationResult).success).toBe(true);
       for (const invalidMetadata of [
         { product: null },
         { manifest: { ...postValidationResult.manifest, sha256: null } },
@@ -926,7 +962,7 @@ describe('resultJsonSchema', () => {
         { manifest: { ...postValidationResult.manifest, schemaVersion: 1.5 } },
       ]) {
         expect(
-          resultV1Schema.safeParse({ ...postValidationResult, ...invalidMetadata }).success,
+          resultV2Schema.safeParse({ ...postValidationResult, ...invalidMetadata }).success,
         ).toBe(false);
       }
     }
@@ -940,9 +976,9 @@ describe('resultJsonSchema', () => {
         manifest: { path: 'installer.yaml', sha256: null, schemaVersion: null },
       } as const;
 
-      expect(resultV1Schema.safeParse(base).success).toBe(true);
+      expect(resultV2Schema.safeParse(base).success).toBe(true);
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...base,
           product: { name: 'Known product', version: '1.0.0' },
           manifest: { ...base.manifest, sha256: SHA256, schemaVersion: 1 },
@@ -955,13 +991,13 @@ describe('resultJsonSchema', () => {
     const { mode: _mode, ...withoutMode } = result();
     const { locale: _locale, ...withoutLocale } = result();
 
-    expect(resultV1Schema.safeParse(withoutMode).success).toBe(false);
-    expect(resultV1Schema.safeParse(withoutLocale).success).toBe(false);
-    expect(resultV1Schema.safeParse(result({ locale: null })).success).toBe(true);
-    expect(resultV1Schema.safeParse({ ...result(), locale: 42 }).success).toBe(false);
-    expect(resultV1Schema.safeParse({ ...result(), unknown: true }).success).toBe(false);
+    expect(resultV2Schema.safeParse(withoutMode).success).toBe(false);
+    expect(resultV2Schema.safeParse(withoutLocale).success).toBe(false);
+    expect(resultV2Schema.safeParse(result({ locale: null })).success).toBe(true);
+    expect(resultV2Schema.safeParse({ ...result(), locale: 42 }).success).toBe(false);
+    expect(resultV2Schema.safeParse({ ...result(), unknown: true }).success).toBe(false);
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           manifest: {
             ...result().manifest,
@@ -971,7 +1007,7 @@ describe('resultJsonSchema', () => {
       ).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           inputs: [
             { ...result().inputs[0]!, unknown: true } as unknown as RunResult['inputs'][number],
@@ -980,7 +1016,7 @@ describe('resultJsonSchema', () => {
       ).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           steps: [
             { ...result().steps[0]!, unknown: true } as unknown as RunResult['steps'][number],
@@ -989,7 +1025,7 @@ describe('resultJsonSchema', () => {
       ).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           steps: [
             {
@@ -1009,11 +1045,11 @@ describe('resultJsonSchema', () => {
   });
 
   it('enforces integers for counters and nonnegative durations and counters', () => {
-    expect(resultV1Schema.safeParse(result({ stepsTotal: 1.5 })).success).toBe(false);
-    expect(resultV1Schema.safeParse(result({ stepsExecuted: -1 })).success).toBe(false);
-    expect(resultV1Schema.safeParse(result({ durationMs: -1 })).success).toBe(false);
+    expect(resultV2Schema.safeParse(result({ stepsTotal: 1.5 })).success).toBe(false);
+    expect(resultV2Schema.safeParse(result({ stepsExecuted: -1 })).success).toBe(false);
+    expect(resultV2Schema.safeParse(result({ durationMs: -1 })).success).toBe(false);
     expect(
-      resultV1Schema.safeParse(result({ steps: [{ ...result().steps[0]!, durationMs: -1 }] }))
+      resultV2Schema.safeParse(result({ steps: [{ ...result().steps[0]!, durationMs: -1 }] }))
         .success,
     ).toBe(false);
   });
@@ -1030,14 +1066,14 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const mismatch of mismatches) {
-      expect(resultV1Schema.safeParse(result(mismatch)).success).toBe(false);
+      expect(resultV2Schema.safeParse(result(mismatch)).success).toBe(false);
     }
   });
 
   it('rejects contradictory nothingExecuted values and more than one cancelled step', () => {
-    expect(resultV1Schema.safeParse(result({ nothingExecuted: true })).success).toBe(false);
+    expect(resultV2Schema.safeParse(result({ nothingExecuted: true })).success).toBe(false);
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           stepsTotal: 0,
           stepsExecuted: 0,
@@ -1050,7 +1086,7 @@ describe('resultJsonSchema', () => {
 
     const cancelled = resultWithSingleStepState('CANCELLED').steps[0]!;
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           status: 'cancelled',
           exitCode: 6,
@@ -1068,10 +1104,10 @@ describe('resultJsonSchema', () => {
   it('correlates PENDING steps with planned results', () => {
     const pending = resultWithSingleStepState('PENDING');
     expect(
-      resultV1Schema.safeParse({ ...pending, status: 'succeeded', dryRun: false }).success,
+      resultV2Schema.safeParse({ ...pending, status: 'succeeded', dryRun: false }).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...result(),
         status: 'planned',
         dryRun: true,
@@ -1082,7 +1118,7 @@ describe('resultJsonSchema', () => {
   it('accepts only succeeded or skipped steps for succeeded results', () => {
     for (const state of ['FAILED', 'CANCELLED', 'NOT_RUN'] as const) {
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...resultWithSingleStepState(state),
           status: 'succeeded',
           exitCode: 0,
@@ -1092,7 +1128,7 @@ describe('resultJsonSchema', () => {
     }
 
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           stepsTotal: 0,
           stepsExecuted: 0,
@@ -1102,12 +1138,12 @@ describe('resultJsonSchema', () => {
         }),
       ).success,
     ).toBe(true);
-    expect(resultV1Schema.safeParse(resultWithSingleStepState('SKIPPED')).success).toBe(true);
+    expect(resultV2Schema.safeParse(resultWithSingleStepState('SKIPPED')).success).toBe(true);
   });
 
   it('requires a failed result to contain at least one failed step', () => {
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...result(),
         status: 'failed',
         exitCode: 1,
@@ -1118,13 +1154,13 @@ describe('resultJsonSchema', () => {
   it('accepts exactly the zero-step plan-time failed form for real and dry runs', () => {
     for (const dryRun of [false, true]) {
       for (const code of ['RUNE-401', 'RUNE-404', 'RUNE-405'] as const) {
-        expect(resultV1Schema.safeParse(planFailure(dryRun, code)).success).toBe(true);
+        expect(resultV2Schema.safeParse(planFailure(dryRun, code)).success).toBe(true);
       }
     }
 
     const partialPlan = resultWithSingleStepState('PENDING');
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...partialPlan,
         status: 'failed',
         exitCode: 1,
@@ -1132,11 +1168,45 @@ describe('resultJsonSchema', () => {
       }).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse({ ...planFailure(true, 'RUNE-404'), stepsExecuted: 1 }).success,
+      resultV2Schema.safeParse({ ...planFailure(true, 'RUNE-404'), stepsExecuted: 1 }).success,
     ).toBe(false);
     expect(
-      resultV1Schema.safeParse({ ...planFailure(false, 'RUNE-405'), nothingExecuted: false })
+      resultV2Schema.safeParse({ ...planFailure(false, 'RUNE-405'), nothingExecuted: false })
         .success,
+    ).toBe(false);
+  });
+
+  it('allows RUNE-406 to preserve live topology but rejects dry-run and pending forms', () => {
+    const logOutcome = {
+      status: 'failed' as const,
+      exitCode: 1 as const,
+      dryRun: false as const,
+      error: { code: 'RUNE-406' as const, message: 'log failed', location: null },
+    };
+    const variants = [
+      zeroStepResult(logOutcome),
+      result(logOutcome),
+      { ...resultWithSingleStepState('NOT_RUN'), ...logOutcome },
+      { ...resultWithSingleStepState('CANCELLED'), ...logOutcome },
+    ];
+
+    for (const variant of variants) {
+      const parsed = resultV2Schema.safeParse(variant);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        throw parsed.error;
+      }
+      expect(() => serializeResult(parsed.data as RunResult)).not.toThrow();
+    }
+
+    expect(resultV2Schema.safeParse({ ...zeroStepResult(logOutcome), dryRun: true }).success).toBe(
+      false,
+    );
+    expect(
+      resultV2Schema.safeParse({
+        ...resultWithSingleStepState('PENDING'),
+        ...logOutcome,
+      }).success,
     ).toBe(false);
   });
 
@@ -1144,7 +1214,7 @@ describe('resultJsonSchema', () => {
     for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
       const base = resultWithSingleStepState(state);
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...base,
           status: 'internal_error',
           exitCode: 70,
@@ -1175,14 +1245,14 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const variant of variants) {
-      expect(resultV1Schema.safeParse(variant).success).toBe(true);
+      expect(resultV2Schema.safeParse(variant).success).toBe(true);
     }
   });
 
   it('requires a strict status-specific top-level error with a 1-based location', () => {
     const valid = resultForStatus('config_error');
     const { error: _error, ...withoutError } = valid;
-    expect(resultV1Schema.safeParse(withoutError).success).toBe(false);
+    expect(resultV2Schema.safeParse(withoutError).success).toBe(false);
 
     for (const invalidError of [
       null,
@@ -1206,11 +1276,11 @@ describe('resultJsonSchema', () => {
       },
       { code: 'RUNE-103', message: 'extra', location: null, issues: [] },
     ]) {
-      expect(resultV1Schema.safeParse({ ...valid, error: invalidError }).success).toBe(false);
+      expect(resultV2Schema.safeParse({ ...valid, error: invalidError }).success).toBe(false);
     }
 
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...valid,
         error: {
           code: 'RUNE-104',
@@ -1221,7 +1291,7 @@ describe('resultJsonSchema', () => {
     ).toBe(true);
     for (const code of ['RUNE-402', 'RUNE-403', 'RUNE-500', 'RUNE-601'] as const) {
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...planFailure(true, 'RUNE-401'),
           error: { code, message: 'wrong plan error', location: null },
         }).success,
@@ -1234,7 +1304,7 @@ describe('resultJsonSchema', () => {
     const notRun = { ...resultWithSingleStepState('NOT_RUN').steps[0]!, id: 'not-run-step' };
 
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           status: 'cancelled',
           exitCode: 6,
@@ -1299,10 +1369,10 @@ describe('resultJsonSchema', () => {
       }),
     ];
 
-    expect(resultV1Schema.safeParse(invalid).success).toBe(false);
+    expect(resultV2Schema.safeParse(invalid).success).toBe(false);
     expect(() => serializeResult(invalid)).toThrow();
     for (const validResult of valid) {
-      expect(resultV1Schema.safeParse(validResult).success).toBe(true);
+      expect(resultV2Schema.safeParse(validResult).success).toBe(true);
     }
   });
 
@@ -1335,7 +1405,7 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const invalid of invalidResults) {
-      expect(resultV1Schema.safeParse(invalid).success).toBe(false);
+      expect(resultV2Schema.safeParse(invalid).success).toBe(false);
       expect(() => serializeResult(invalid)).toThrow();
     }
   });
@@ -1374,8 +1444,8 @@ describe('resultJsonSchema', () => {
       steps: [failed, { ...succeeded, id: 'succeeded-after-failed' }],
     });
 
-    expect(resultV1Schema.safeParse(barrierResult).success).toBe(true);
-    expect(resultV1Schema.safeParse(continuedAfterFailure).success).toBe(true);
+    expect(resultV2Schema.safeParse(barrierResult).success).toBe(true);
+    expect(resultV2Schema.safeParse(continuedAfterFailure).success).toBe(true);
   });
 
   it('accepts a failed result with failed and later cancelled steps', () => {
@@ -1386,7 +1456,7 @@ describe('resultJsonSchema', () => {
     };
 
     expect(
-      resultV1Schema.safeParse(
+      resultV2Schema.safeParse(
         result({
           status: 'failed',
           exitCode: 1,
@@ -1425,7 +1495,7 @@ describe('resultJsonSchema', () => {
     for (const status of ['config_error', 'input_error', 'resolution_error'] as const) {
       const statusResult = resultForStatus(status);
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...base,
           status,
           exitCode: EXIT_CODE_BY_STATUS[status],
@@ -1433,7 +1503,7 @@ describe('resultJsonSchema', () => {
         }).success,
       ).toBe(false);
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...pending,
           status,
           exitCode: EXIT_CODE_BY_STATUS[status],
@@ -1444,7 +1514,7 @@ describe('resultJsonSchema', () => {
 
     const internalError = resultForStatus('internal_error');
     expect(
-      resultV1Schema.safeParse({
+      resultV2Schema.safeParse({
         ...base,
         status: 'internal_error',
         exitCode: EXIT_CODE_BY_STATUS.internal_error,
@@ -1473,16 +1543,16 @@ describe('resultJsonSchema', () => {
     ];
 
     for (const contradiction of contradictions) {
-      expect(resultV1Schema.safeParse(contradiction).success).toBe(false);
+      expect(resultV2Schema.safeParse(contradiction).success).toBe(false);
     }
-    expect(resultV1Schema.safeParse(resultWithSingleStepState('FAILED')).success).toBe(true);
+    expect(resultV2Schema.safeParse(resultWithSingleStepState('FAILED')).success).toBe(true);
   });
 
   it('rejects outputTail on every non-failed state', () => {
     for (const state of ['PENDING', 'SKIPPED', 'SUCCEEDED', 'CANCELLED', 'NOT_RUN'] as const) {
       const base = resultWithSingleStepState(state);
       expect(
-        resultV1Schema.safeParse({
+        resultV2Schema.safeParse({
           ...base,
           steps: [{ ...base.steps[0]!, outputTail: [] }],
         }).success,

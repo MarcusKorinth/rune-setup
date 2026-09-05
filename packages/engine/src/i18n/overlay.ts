@@ -8,8 +8,13 @@
  */
 
 import { InternalError, ManifestError, orderIssues, type RuneIssue } from '../errors.js';
-import { manifestDescriptorFor } from '../manifest/index.js';
-import { loadYamlFile, loadYamlText, type LoadedDocument } from '../manifest/loader.js';
+import {
+  loadYamlFile,
+  loadYamlFileAsync,
+  loadYamlText,
+  type LoadedDocument,
+} from '../manifest/loader.js';
+import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { startOfFile } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG } from './catalog.js';
@@ -35,6 +40,15 @@ export function overlayManifestFor(overlay: LocaleOverlay): ManifestV1 {
 /** Reads and validates one overlay file against the manifest it accompanies. */
 export function loadOverlay(path: string, locale: string, manifest: ManifestV1): LocaleOverlay {
   return fromDocument(loadYamlFile(path), locale, manifest);
+}
+
+/** Session-only asynchronous overlay loader; validation is shared with the synchronous API. */
+export async function loadOverlayAsync(
+  path: string,
+  locale: string,
+  manifest: ManifestV1,
+): Promise<LocaleOverlay> {
+  return fromDocument(await loadYamlFileAsync(path), locale, manifest);
 }
 
 /** Same as {@link loadOverlay} for text already in memory — the test seam. */

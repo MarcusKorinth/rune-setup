@@ -11,7 +11,8 @@
  */
 
 import { statSync, type Stats } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 
 import {
   childrenOf,
@@ -31,6 +32,7 @@ import {
   type InputReferenceIndex,
 } from '../../engine/context.js';
 import { scanTemplate, type TemplateReference } from '../../engine/interpolate.js';
+import { resolveManifestRelativePathFrom } from '../../engine/paths.js';
 import { messageOf, orderIssues, type RuneIssue } from '../../errors.js';
 import {
   formatLocation,
@@ -40,7 +42,13 @@ import {
   type PathSegment,
   type SourceMap,
 } from '../source.js';
-import { isCommandSpec, optionValue, type InputSpec, type ManifestV1 } from './schema.js';
+import {
+  isCommandSpec,
+  optionValue,
+  type CommandSpec,
+  type InputSpec,
+  type ManifestV1,
+} from './schema.js';
 
 export interface SemanticContext {
   readonly file: string;
@@ -53,14 +61,51 @@ export interface SemanticContext {
 
 /** Collects every semantic problem of a manifest that already passed the schema. */
 export function checkSemantics(manifest: ManifestV1, ctx: SemanticContext): RuneIssue[] {
+  const issues = checkInMemorySemantics(manifest, ctx);
+  checkGuiAssets(manifest, ctx, issues);
+  return orderIssues(issues);
+}
+
+/** Session-only semantic pass whose optional GUI asset checks use asynchronous filesystem I/O. */
+export async function checkSemanticsAsync(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+): Promise<RuneIssue[]> {
+  const issues = checkInMemorySemantics(manifest, ctx);
+  await checkGuiAssetsAsync(manifest, ctx, issues);
+  return orderIssues(issues);
+}
+
+function checkInMemorySemantics(manifest: ManifestV1, ctx: SemanticContext): RuneIssue[] {
   const issues: RuneIssue[] = [];
   checkInputs(manifest, ctx, issues);
   checkSteps(manifest, ctx, issues);
+  checkExecution(manifest, ctx, issues);
   checkExpressions(manifest, ctx, issues);
-  checkGuiAssets(manifest, ctx, issues);
-  // The rules run in the order they are written; the author reads the document top to bottom,
-  // and the first problem's position is what the error as a whole points at.
-  return orderIssues(issues);
+  return issues;
+}
+
+/** A Windows drive letter followed by anything but a separator, such as `C:run.log`. */
+const WINDOWS_DRIVE_RELATIVE_PATH_PATTERN = /^[A-Za-z]:(?![\\/])/;
+
+/**
+ * A drive-relative log path cannot be anchored to the manifest directory: its meaning depends on
+ * per-drive process state, and anchoring it as a literal component addresses an NTFS alternate
+ * data stream on Windows. It is rejected like a drive-relative command (§8, §10).
+ */
+function checkExecution(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
+  const logFile = manifest.execution.logFile;
+  if (logFile === undefined || !WINDOWS_DRIVE_RELATIVE_PATH_PATTERN.test(logFile)) {
+    return;
+  }
+  const path: PathSegment[] = ['execution', 'logFile'];
+  issues.push(
+    issue(
+      `${formatPath(path)} "${logFile}" is drive-relative and cannot be anchored to \${manifestDir} — use an absolute or manifest-relative path`,
+      path,
+      ctx,
+    ),
+  );
 }
 
 function checkInputs(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
@@ -212,55 +257,117 @@ function checkSteps(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssu
 }
 
 function checkGuiAssets(manifest: ManifestV1, ctx: SemanticContext, issues: RuneIssue[]): void {
+  for (const asset of guiAssets(manifest, ctx, issues)) {
+    // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
+    // files, and a path that happens to be a directory would otherwise pass validation and
+    // fail only when the shell tries to load it.
+    let stats: Stats | undefined;
+    try {
+      stats = statSync(asset.absolute, { throwIfNoEntry: false });
+    } catch (cause) {
+      // `throwIfNoEntry` covers a missing entry and nothing else: a path with a NUL byte, a
+      // component that is not a directory, a directory RUNE may not read all still throw. A
+      // path an author wrote is their problem to fix, never an internal error (exit 70).
+      reportGuiAssetFailure(asset, cause, ctx, issues);
+      continue;
+    }
+    reportGuiAssetStats(asset, stats, ctx, issues);
+  }
+}
+
+async function checkGuiAssetsAsync(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): Promise<void> {
+  for (const asset of guiAssets(manifest, ctx, issues)) {
+    let stats: Stats | undefined;
+    try {
+      stats = await stat(asset.absolute);
+    } catch (cause) {
+      if (cause instanceof Error && (cause as NodeJS.ErrnoException).code === 'ENOENT') {
+        stats = undefined;
+      } else {
+        reportGuiAssetFailure(asset, cause, ctx, issues);
+        continue;
+      }
+    }
+    reportGuiAssetStats(asset, stats, ctx, issues);
+  }
+}
+
+interface GuiAsset {
+  readonly value: string;
+  readonly path: readonly PathSegment[];
+  readonly absolute: string;
+}
+
+function guiAssets(
+  manifest: ManifestV1,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): readonly GuiAsset[] {
   if (!ctx.checkAssetFiles || manifest.gui === undefined) {
-    return;
+    return [];
   }
 
+  const assets: GuiAsset[] = [];
   for (const key of ['logo', 'banner', 'theme'] as const) {
     const value = manifest.gui[key];
     if (value === undefined) {
       continue;
     }
     const path: PathSegment[] = ['gui', key];
-
     if (value.trim() === '') {
       issues.push(issue(`${formatPath(path)} is empty`, path, ctx));
       continue;
     }
+    assets.push({
+      value,
+      path,
+      absolute: isAbsolute(value) ? value : resolveManifestRelativePathFrom(value, ctx.manifestDir),
+    });
+  }
+  return assets;
+}
 
-    const absolute = isAbsolute(value) ? value : resolve(ctx.manifestDir, value);
-    // A stat rather than a bare existence probe: an icon, an image and a stylesheet are
-    // files, and a path that happens to be a directory would otherwise pass validation and
-    // fail only when the shell tries to load it.
-    let stats: Stats | undefined;
-    try {
-      stats = statSync(absolute, { throwIfNoEntry: false });
-    } catch (cause) {
-      // `throwIfNoEntry` covers a missing entry and nothing else: a path with a NUL byte, a
-      // component that is not a directory, a directory RUNE may not read all still throw. A
-      // path an author wrote is their problem to fix, never an internal error (exit 70).
-      issues.push(
-        issue(
-          `${formatPath(path)} points at "${value}", which cannot be read: ${messageOf(cause)}`,
-          path,
-          ctx,
-        ),
-      );
-      continue;
-    }
-    if (stats === undefined) {
-      issues.push(
-        issue(
-          `${formatPath(path)} points at "${value}", which does not exist (resolved against the manifest's directory)`,
-          path,
-          ctx,
-        ),
-      );
-    } else if (!stats.isFile()) {
-      issues.push(
-        issue(`${formatPath(path)} points at "${value}", which is not a file`, path, ctx),
-      );
-    }
+function reportGuiAssetFailure(
+  asset: GuiAsset,
+  cause: unknown,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): void {
+  issues.push(
+    issue(
+      `${formatPath(asset.path)} points at "${asset.value}", which cannot be read: ${messageOf(cause)}`,
+      asset.path,
+      ctx,
+    ),
+  );
+}
+
+function reportGuiAssetStats(
+  asset: GuiAsset,
+  stats: Stats | undefined,
+  ctx: SemanticContext,
+  issues: RuneIssue[],
+): void {
+  if (stats === undefined) {
+    issues.push(
+      issue(
+        `${formatPath(asset.path)} points at "${asset.value}", which does not exist (resolved against the manifest's directory)`,
+        asset.path,
+        ctx,
+      ),
+    );
+  } else if (!stats.isFile()) {
+    issues.push(
+      issue(
+        `${formatPath(asset.path)} points at "${asset.value}", which is not a file`,
+        asset.path,
+        ctx,
+      ),
+    );
   }
 }
 
@@ -279,6 +386,29 @@ interface InterpolatedField {
   readonly mayReferenceInputs: boolean;
 }
 
+interface CommandField {
+  readonly path: readonly PathSegment[];
+  readonly command: CommandSpec;
+}
+
+function* commandFields(manifest: ManifestV1): Generator<CommandField> {
+  for (const [index, step] of manifest.steps.entries()) {
+    const runPath: PathSegment[] = ['steps', index, 'run'];
+    const commands = isCommandSpec(step.run)
+      ? [{ path: runPath, command: step.run }]
+      : [
+          { path: [...runPath, 'windows'], command: step.run.windows },
+          { path: [...runPath, 'linux'], command: step.run.linux },
+        ];
+
+    for (const { path, command } of commands) {
+      if (command !== undefined) {
+        yield { path, command };
+      }
+    }
+  }
+}
+
 function* interpolatedFields(manifest: ManifestV1): Generator<InterpolatedField> {
   for (const [id, input] of Object.entries(manifest.inputs)) {
     // Only the free-text defaults are templates; a select default is one of its option
@@ -291,31 +421,65 @@ function* interpolatedFields(manifest: ManifestV1): Generator<InterpolatedField>
     }
   }
 
-  for (const [index, step] of manifest.steps.entries()) {
-    const runPath: PathSegment[] = ['steps', index, 'run'];
-    const commands = isCommandSpec(step.run)
-      ? [{ path: runPath, command: step.run }]
-      : [
-          { path: [...runPath, 'windows'], command: step.run.windows },
-          { path: [...runPath, 'linux'], command: step.run.linux },
-        ];
+  for (const { path, command } of commandFields(manifest)) {
+    yield { path: [...path, 'command'], text: command.command, mayReferenceInputs: true };
+    for (const [position, argument] of command.args.entries()) {
+      yield { path: [...path, 'args', position], text: argument, mayReferenceInputs: true };
+    }
+    if (command.cwd !== undefined) {
+      yield { path: [...path, 'cwd'], text: command.cwd, mayReferenceInputs: true };
+    }
+    for (const [name, value] of Object.entries(command.env)) {
+      yield { path: [...path, 'env', name], text: value, mayReferenceInputs: true };
+    }
+  }
+}
 
-    for (const { path, command } of commands) {
-      if (command === undefined) {
+/**
+ * Value-free warnings for declared secrets interpolated into argv (§4.3). This runs only after
+ * semantic validation, so every reference already resolves; scanning here classifies the exact
+ * argument templates without inspecting or resolving any input value.
+ */
+export function secretArgumentWarnings(manifest: ManifestV1): readonly string[] {
+  const inputIds = Object.keys(manifest.inputs);
+  const inputIndex = createInputReferenceIndex(inputIds);
+  const warnings: string[] = [];
+
+  for (const { path, command } of commandFields(manifest)) {
+    for (const [position, argument] of command.args.entries()) {
+      const argumentPath = [...path, 'args', position];
+      const scan = scanTemplate(argument);
+      if (!scan.ok) {
         continue;
       }
-      yield { path: [...path, 'command'], text: command.command, mayReferenceInputs: true };
-      for (const [position, argument] of command.args.entries()) {
-        yield { path: [...path, 'args', position], text: argument, mayReferenceInputs: true };
-      }
-      if (command.cwd !== undefined) {
-        yield { path: [...path, 'cwd'], text: command.cwd, mayReferenceInputs: true };
-      }
-      for (const [name, value] of Object.entries(command.env)) {
-        yield { path: [...path, 'env', name], text: value, mayReferenceInputs: true };
+      const warned = new Set<string>();
+      for (const part of scan.parts) {
+        if (part.kind !== 'reference') {
+          continue;
+        }
+        const resolved = resolveReference(
+          part.reference.segments,
+          inputIndex,
+          inputIds.length,
+          false,
+        );
+        if (
+          !resolved.ok ||
+          resolved.reference.kind !== 'input' ||
+          manifest.inputs[resolved.reference.id]?.type !== 'secret' ||
+          warned.has(resolved.reference.id)
+        ) {
+          continue;
+        }
+        warned.add(resolved.reference.id);
+        warnings.push(
+          `${formatPath(argumentPath)} interpolates secret input "${resolved.reference.id}" into argv, which may be visible in OS process listings — use env: instead`,
+        );
       }
     }
   }
+
+  return Object.freeze(warnings);
 }
 
 /** Every `when:` in the manifest: the steps', and the inputs' with what each may look at. */

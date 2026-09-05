@@ -11,22 +11,24 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is in **Milestone 1 (engine core) in progress**: the architectural contract is complete —
-see [docs/architecture.md](docs/architecture.md) — and the engine now implements manifests,
-input and secret handling, static planning, process running, sequential execution, events and
-versioned results. The Session facade, CLI commands and GUI shell remain on the roadmap.
-[docs/roadmap.md](docs/roadmap.md) tracks the MVP scope and what comes after.
+RUNE's engine core and non-interactive pipeline are implemented, including the `Session`
+facade, logs and results, manifest validation and schema generation, non-interactive runs,
+and dry-run planning. Interactive prompting and the edit loop, the Electron GUI and
+`gui install`, and packaging are planned in the later milestones described by the
+[roadmap](docs/roadmap.md); the architectural contract is documented in
+[docs/architecture.md](docs/architecture.md).
 
-Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS**; once
-published, install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`).
-End users of a packaged installer need nothing installed.
+Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
+install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
+users of a packaged installer need nothing installed.
 
 ## The idea
 
-One configuration, three operating modes with identical execution semantics:
+One configuration, three operating modes with identical execution semantics (the
+non-interactive mode is available today; interactive CLI and GUI modes are planned):
 
-1. a graphical installation wizard
-2. an interactive command line installer
+1. a graphical installation wizard (planned)
+2. an interactive command line installer (planned)
 3. a fully non-interactive run for CI/CD pipelines
 
 ```yaml
@@ -81,22 +83,25 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways (the graphical shell is fetched once with
-`rune gui install`):
+The same manifest, three ways. Both current CLI forms run non-interactively;
+interactive prompting and the GUI command are planned:
 
 ```bash
-rune run installer.yaml
+# Available today: the default non-interactive fallback
+rune run installer.yaml --values pipeline-values.yaml --result result.json
 ```
 
 ```bash
-rune run installer.yaml --gui
+# Planned with Milestone 3:
+# rune run installer.yaml --gui
 ```
 
 ```bash
+# Available today: explicit non-interactive mode
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 
-## The graphical wizard
+## The graphical wizard (planned)
 
 The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
 on the target machine, runs without admin rights, and looks identical on every platform
@@ -110,10 +115,10 @@ two CLI modes.
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — `rune gui install` fetches the prebuilt shell for your OS into a
-  per-user cache (no admin rights; run once before `rune run --gui`); `rune package`
-  (roadmap milestone 4) bundles shell, engine and manifest into one portable end-user
-  artifact that needs nothing installed
+- **Author tooling** — planned Milestone 3 work includes `rune gui install`, which will
+  fetch the prebuilt shell for your OS into a per-user cache; `rune package` (roadmap
+  milestone 4) will bundle shell, engine and manifest into one portable end-user artifact
+  that needs nothing installed
 
 ## Design principles
 

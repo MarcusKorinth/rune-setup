@@ -17,6 +17,7 @@ interface SchemaNode {
   readonly maximum?: number;
   readonly pattern?: string;
   readonly minItems?: number;
+  readonly minLength?: number;
   readonly items?: SchemaNode;
   readonly properties?: Readonly<Record<string, SchemaNode>>;
   readonly propertyNames?: SchemaNode;
@@ -70,6 +71,7 @@ describe('manifestJsonSchema', () => {
 
     const select = inputBranches.find((branch) => branch.properties?.['type']?.const === 'select');
     expect(select?.properties?.['options']?.minItems).toBe(1);
+    expect(properties['execution']?.properties?.['logFile']?.minLength).toBe(1);
   });
 
   it('publishes the maximum command timeout validation enforces', () => {

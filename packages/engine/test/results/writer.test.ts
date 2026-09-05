@@ -8,11 +8,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { InternalError } from '../../src/errors.js';
+import { ExecutionError, InternalError } from '../../src/errors.js';
 import type { RunResult } from '../../src/results/model.js';
 import { serializeResult, writeResult } from '../../src/results/writer.js';
 
@@ -22,7 +22,7 @@ const SHA256 = 'a'.repeat(64);
 
 function result(id: string): Extract<RunResult, { status: 'succeeded' }> {
   return {
-    resultSchemaVersion: 1,
+    resultSchemaVersion: 2,
     id: RESULT_ID,
     status: 'succeeded',
     exitCode: 0,
@@ -320,7 +320,7 @@ function expectGenericResultError(caught: unknown): void {
   const error = caught as InternalError;
   expect(error.code).toBe('RUNE-500');
   expect(error.message).toBe(
-    'the run result does not match resultSchemaVersion 1 — this is a bug in RUNE, please report it with the manifest that triggered it',
+    'the run result does not match resultSchemaVersion 2 — this is a bug in RUNE, please report it with the manifest that triggered it',
   );
   expect(
     `${error.name}\n${error.message}\n${String(error.cause)}\n${JSON.stringify(error.issues)}`,
@@ -435,7 +435,7 @@ describe('writeResult', () => {
 
     expect(serialized).not.toContain(SECRET_SENTINEL);
     expect(JSON.parse(serialized)).toMatchObject({
-      resultSchemaVersion: 1,
+      resultSchemaVersion: 2,
       id: RESULT_ID,
       product: { name: 'Writer test parsed-copy', version: '1.0.0' },
     });
@@ -656,4 +656,112 @@ describe('writeResult', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it('reports a destination that is a directory as RUNE-407 without the raw OS message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destination = join(directory, 'destination');
+
+    try {
+      mkdirSync(destination);
+
+      const error = await rejectionOf(writeResult(result('directory-destination'), destination));
+
+      expectOperationalResultError(error, 'finalize', destination);
+      expect(temporaryFiles(directory)).toEqual([]);
+      expect(readdirSync(destination)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a parent that is a regular file as RUNE-407 without the raw OS message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const blocker = join(directory, 'blocker');
+    const destination = join(blocker, 'result.json');
+
+    try {
+      writeFileSync(blocker, 'occupied', 'utf8');
+
+      const error = await rejectionOf(writeResult(result('blocked-parent'), destination));
+
+      expectOperationalResultError(error, 'prepare the directory for', destination);
+      expect(existsSync(destination)).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+      // Options that carry no announcement name the path, exactly as omitting them does.
+      const withEmptyOptions = await rejectionOf(
+        writeResult(result('blocked-parent'), destination, {}),
+      );
+      expect((withEmptyOptions as ExecutionError).message).toBe((error as ExecutionError).message);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // A host that normalizes the destination itself keeps the spelling its caller supplied, so
+  // the diagnostic names the bytes a secret registry can hold (docs/architecture.md §10).
+  it('names the announced spelling in a RUNE-407 message', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const blocker = join(directory, 'blocker');
+    const destination = join(blocker, 'result.json');
+    const announcement = `${blocker}${sep}.${sep}result.json`;
+
+    try {
+      writeFileSync(blocker, 'occupied', 'utf8');
+
+      const error = await rejectionOf(
+        writeResult(result('announced-failure'), destination, { announcement }),
+      );
+
+      expectOperationalResultError(error, 'prepare the directory for', announcement);
+      expect((error as ExecutionError).message).not.toContain(`"${destination}"`);
+      expect(existsSync(destination)).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers to the path an announcement never names', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-result-writer-'));
+    const destination = join(directory, 'result.json');
+    const expected = serializeResult(result('announced-delivery'));
+
+    try {
+      await writeResult(result('announced-delivery'), destination, {
+        announcement: join(directory, 'announced.json'),
+      });
+
+      expect(readFileSync(destination, 'utf8')).toBe(expected);
+      expect(existsSync(join(directory, 'announced.json'))).toBe(false);
+      expect(temporaryFiles(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the promise to reject');
+}
+
+/** RUNE-407 names the destination and a fixed errno-derived reason; the OS text stays internal. */
+function expectOperationalResultError(caught: unknown, action: string, destination: string): void {
+  expect(caught).toBeInstanceOf(ExecutionError);
+  const error = caught as ExecutionError;
+  expect(error.code).toBe('RUNE-407');
+  expect(error.cause).toBeInstanceOf(Error);
+  const cause = error.cause as NodeJS.ErrnoException;
+  expect(cause.code).toMatch(/^E[A-Z]+$/u);
+  expect(error.message).toMatch(
+    new RegExp(`^could not ${action} result file "[^"]+": [a-z ]+ [(]${cause.code}[)]$`, 'u'),
+  );
+  expect(error.message).toContain(`"${destination}"`);
+  expect(error.message).not.toContain(cause.message);
+  expect(error.message).not.toContain(`${cause.code}:`);
+  expect(error.message).not.toContain('.rune-result-');
+}
