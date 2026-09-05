@@ -18,6 +18,10 @@
  * `exemptFields`, and the helper asserts the field really holds the resolved spelling before
  * blanking it and scanning everything else. Keying on the field rather than on its bytes is
  * what makes it an allow-list: the same spelling leaking from any other field still fails.
+ *
+ * The scenarios are also the evidence behind invariant 6's closed list of clear-text
+ * crossings: every line it names — the located diagnostics, the two sink announcements, the
+ * result-written success line, and the plan preview's manifest and log paths — is one here.
  */
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
