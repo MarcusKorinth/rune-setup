@@ -610,10 +610,18 @@ Secret handling is belt-and-braces:
    step, command, and output-tail fields. An execution value hidden for this reason remains an
    authentic `SecretString`, so argv, cwd, and environment values reach the runner byte-exact.
    Projection is field-level, never a scan of complete JSON: input/step ids, option values,
-   environment keys, locale/platform/mode/status/source/state/code/stream enums, product identity,
-   validated manifest/asset/theme/log paths, hashes, run ids, timestamps, versions, fixed keys,
-   syntax, and `null` remain exact by contract. Error and location strings use the diagnostic
-   projection contract rather than this structured-field helper.
+   environment keys, the platform/mode/status/source/state/code/stream enums, the selected
+   locale, product identity, validated manifest/asset/theme/log paths, hashes, run ids,
+   timestamps, versions, fixed keys, syntax, and `null` remain exact by contract. The selected
+   locale is the one member of that list that is neither an enum nor authored in the manifest: it
+   is RUNE's canonicalization of the tag an operator supplied through `--locale` or `RUNE_LOCALE`
+   (`DE_de` → `de-DE`), kept exact because §6.3 makes it the machine identity of the locale that
+   resolved every string. A declared secret whose value is a valid locale tag therefore reaches
+   the `locale` field of a plan and a result unmasked — a spelling RUNE derived, when the supplied
+   one needed folding — while the invalid tag that the same value would be in any other run is
+   masked in its diagnostic. Invariant 6 names that field among its clear-text crossings. Error
+   and location strings use the diagnostic projection contract rather than this structured-field
+   helper.
 
 A registry snapshot is limited to **262,144 UTF-16 code units** (`2^18`) across its unique maskable parts, counting the complete value, the maskable content lines of a multiline secret, and the whitespace-trimmed spelling of every part that carries surrounding whitespace; registering the same part again consumes no additional budget. This is the smallest power-of-two limit above the 10,000-secret scale exercised by the masking suite (about 170,000 code units), while bounding the immutable matcher's trie to at most 262,145 nodes instead of allowing a values file to demand millions. Registration preflights every part before mutating the snapshot, and the transient active-plus-staged union used to redact resolution errors is subject to the same limit before it is copied or a matcher is built. Exceeding either limit fails closed as a generic RUNE-202 input error before execution; it publishes no partial registry and reports neither secret text nor candidate length.
 
@@ -763,7 +771,7 @@ All suites run under **vitest** unless stated otherwise; core CI runs them on Wi
 3. Interpolation of `command`/`args`/`cwd`/`env` and step-condition evaluation happen exactly once, at plan time; input conditions and input `default` interpolation (built-ins and `${env.*}` only, no input references) happen once in the resolution stage, before prompting, and are final when the input set is frozen for planning; resolved values are never re-scanned for `${...}`; the plan is fully static.
 4. Dry-run renders the identical plan object that execution consumes — no fake runner, no second interpolation pass.
 5. Only declared `boolean` inputs may stand bare in `when:`; conditions are strictly typed and fully checkable at `validate` time; an input's `when:` references only earlier-declared inputs.
-6. Secrets are wrapped at resolution, registered for masking before any step can launch, masked in every sink (console, log file, result file incl. output tails, plan previews, child output, main→renderer IPC payloads — the only clear-text crossings are the renderer→main `rune.setValue` call, which is never logged, and the two §10 names: the structured `manifest.path` of a plan or a result, exact by contract, and any line naming a supplied path spelling when the declared secret holds a derived one instead — a located diagnostic, the RUNE-406 and RUNE-407 announcements of the log and result sinks, the `result written to` success line, and the plan preview's manifest and log paths), and revealed only at spawn inside the runner.
+6. Secrets are wrapped at resolution, registered for masking before any step can launch, masked in every sink (console, log file, result file incl. output tails, plan previews, child output, main→renderer IPC payloads — the only clear-text crossings are the renderer→main `rune.setValue` call, which is never logged, and the three §10 names: the structured `manifest.path` of a plan or a result and the selected `locale` of either, both exact by contract, and any line naming a supplied path spelling when the declared secret holds a derived one instead — a located diagnostic, the RUNE-406 and RUNE-407 announcements of the log and result sinks, the `result written to` success line, and the plan preview's manifest and log paths), and revealed only at spawn inside the runner.
 7. Every value affecting execution passes through the one resolution chain with recorded provenance; all authoritative input validation — type coercion, option membership by `value`, `pattern` full-match, JSON-array parsing — lives in the engine's input-type registry; frontend checks (CLI re-prompts, GUI red fields) are presentation sugar that may only re-ask, never accept.
 8. RUNE never blocks a pipeline: no TTY ⇒ non-interactive behavior; missing inputs ⇒ exit 4 with the complete list and accepted sources; resolution is all-or-nothing before any side effect.
 9. Exit codes are fixed, cross-platform identical, free of `128+signal` arithmetic; for every configured run, the result file's `status` determines the exit code, and the exit code plus `dryRun` determine the `status`, exactly per §10's mapping table; the result file is written atomically on every configured-run outcome, while usage and unsupported-host errors write none and a failed result-file delivery (RUNE-407, exit 1) leaves none — there the exit code and the stderr diagnostic are the only signals. Requested stdout output lost to a stream error is the one case in which a written result file and the exit code disagree: the file keeps its own `status` and the process exits 70 (§10).
