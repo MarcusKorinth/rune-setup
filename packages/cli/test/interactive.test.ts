@@ -768,6 +768,166 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(result.inputs.find((input) => input.id === 'greeting')?.value).toBe('bye');
   });
 
+  it.each([
+    { label: 'explicit cancel', createInteraction: () => scripted(['1', 'true', 'c']) },
+    { label: 'EOF', createInteraction: () => scriptedThenEof(['1', 'true']) },
+    { label: 'Ctrl+C', createInteraction: () => scriptedThenCtrlC(['1', 'true']) },
+  ])('cancels with the latest completed edited plan on $label', async ({ createInteraction }) => {
+    const secret = 'edited-plan-secret-marker';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  installDatabase:',
+      '    type: boolean',
+      '    default: false',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: conditional',
+      '    when: "${installDatabase}"',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+      '      env:',
+      '        TOKEN: "${token}"',
+      '  - id: always',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "0"]',
+    ]);
+    const io = capture();
+    const interaction = createInteraction();
+
+    const code = await run(
+      ['run', path, '--set', `token=${secret}`, '--result', '-'],
+      io,
+      interaction,
+    );
+
+    expect(code).toBe(6);
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      stepsTotal: number;
+      stepsExecuted: number;
+      stepsSkipped: number;
+      stepsNotRun: number;
+      inputs: readonly { id: string; value: unknown }[];
+      steps: readonly { id: string; state: string }[];
+    };
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 2,
+    });
+    expect(result.inputs).toEqual([
+      expect.objectContaining({ id: 'installDatabase', value: true }),
+      expect.objectContaining({ id: 'token', value: null }),
+    ]);
+    expect(result.steps).toEqual([
+      expect.objectContaining({ id: 'conditional', state: 'NOT_RUN' }),
+      expect.objectContaining({ id: 'always', state: 'NOT_RUN' }),
+    ]);
+    expect(io.out.join('\n')).not.toContain(secret);
+    expect(io.err.join('\n')).not.toContain(secret);
+  });
+
+  it.each([
+    { label: 'EOF', createInteraction: () => scriptedThenEof(['1', 'true']) },
+    { label: 'Ctrl+C', createInteraction: () => scriptedThenCtrlC(['1', 'true']) },
+  ])(
+    'omits the invalidated plan when $label interrupts a newly enabled input',
+    async ({ createInteraction }) => {
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  configure:',
+        '    type: boolean',
+        '    default: false',
+        '  detail:',
+        '    type: text',
+        '    when: "${configure}"',
+        'steps:',
+        '  - id: pending',
+        '    run:',
+        '      command: node',
+        '      args: ["-e", "0"]',
+      ]);
+      const io = capture();
+      const interaction = createInteraction();
+
+      const code = await run(['run', path, '--result', '-'], io, interaction);
+
+      expect(code).toBe(6);
+      const result = JSON.parse(io.out.join('\n')) as {
+        status: string;
+        stepsTotal: number;
+        stepsExecuted: number;
+        stepsSkipped: number;
+        stepsNotRun: number;
+        steps: readonly unknown[];
+      };
+      expect(result).toMatchObject({
+        status: 'cancelled',
+        stepsTotal: 0,
+        stepsExecuted: 0,
+        stepsSkipped: 0,
+        stepsNotRun: 0,
+        steps: [],
+      });
+    },
+  );
+
+  it('omits the invalidated plan when planning fails after an edit', async () => {
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enable:',
+      '    type: boolean',
+      '    default: false',
+      'steps:',
+      '  - id: conditional',
+      '    when: "${enable}"',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "${env.RUNE_INTERACTIVE_MISSING}"]',
+    ]);
+    const io = capture();
+    const interaction = scripted(['1', 'true']);
+
+    const code = await run(['run', path, '--result', '-'], io, interaction);
+
+    expect(code).toBe(5);
+    const result = JSON.parse(io.out.join('\n')) as {
+      status: string;
+      exitCode: number;
+      stepsTotal: number;
+      stepsExecuted: number;
+      stepsSkipped: number;
+      stepsNotRun: number;
+      steps: readonly unknown[];
+    };
+    expect(result).toMatchObject({
+      status: 'resolution_error',
+      exitCode: 5,
+      stepsTotal: 0,
+      stepsExecuted: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      steps: [],
+    });
+  });
+
   it('rejects malformed summary indexes before accepting a valid index', async () => {
     const path = fixture(MANIFEST);
     const io = capture();

@@ -144,10 +144,18 @@ export async function runCommand(
     if (
       prompter !== undefined &&
       flags.dryRun !== true &&
-      (await summaryLoop(session, prompter, io, {
-        manifestPath,
-        logFile: session.effectiveLogFile?.announcement,
-      })) === 'cancel'
+      (await summaryLoop(
+        session,
+        prompter,
+        io,
+        {
+          manifestPath,
+          logFile: session.effectiveLogFile?.announcement,
+        },
+        (currentPlan) => {
+          plan = currentPlan;
+        },
+      )) === 'cancel'
     ) {
       throw new CancelledError(
         formatSessionTerminalLine(strings, strings.chrome('rune.run.cancelledAtSummary')),

@@ -14,7 +14,14 @@ import {
   InputError,
   InternalError,
 } from '@rune/engine';
-import type { CancelToken, InputState, InputType, Session, StringTable } from '@rune/engine';
+import type {
+  CancelToken,
+  ExecutionPlan,
+  InputState,
+  InputType,
+  Session,
+  StringTable,
+} from '@rune/engine';
 
 import { sessionHumanStderr, type CliIo } from './io.js';
 import { renderPlan } from './render.js';
@@ -275,6 +282,7 @@ export async function summaryLoop(
   prompter: Prompter,
   io: CliIo,
   spelled: { readonly manifestPath: string; readonly logFile: string | undefined },
+  publishPlan: (plan: ExecutionPlan | undefined) => void,
 ): Promise<'proceed' | 'cancel'> {
   const strings = session.getStrings();
   // The summary is a prompt, not requested machine output — everything goes to stderr.
@@ -284,6 +292,7 @@ export async function summaryLoop(
     sessionHumanStderr(io, strings, '');
     sessionHumanStderr(io, strings, strings.chrome('rune.summary.heading'));
     const plan = session.plan();
+    publishPlan(plan);
     renderPlan(plan, session.manifest.product, spelled, stderrOnly, strings);
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
@@ -328,6 +337,7 @@ export async function summaryLoop(
         continue;
       }
       await askUntilAccepted(session, chosen, strings, prompter);
+      publishPlan(undefined);
       await promptForInputs(session, prompter);
       break;
     }
