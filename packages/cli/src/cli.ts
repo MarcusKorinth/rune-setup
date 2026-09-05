@@ -118,10 +118,11 @@ function report(error: unknown, io: CliIo): number {
     return exitCodeFor(error);
   }
   if (error instanceof CommanderError) {
-    // commander already printed through configureOutput. `--version` and requested help
-    // ('commander.helpDisplayed') are clean exits; everything else — including
-    // 'commander.help', which commander throws for a bare invocation — is CLI misuse (§10).
-    return error.code === 'commander.version' || error.code === 'commander.helpDisplayed' ? 0 : 2;
+    // commander already printed through configureOutput, and it distinguishes the two outcomes
+    // by `exitCode`, not by `code`: `--version`, `--help` and the `help` verb carry 0, while
+    // every parser error and the bare invocation — both of which print to stderr — carry 1.
+    // Keying on the code alone would report requested help, delivered on stdout, as CLI misuse.
+    return error.exitCode === 0 ? 0 : 2;
   }
   // Unknown throwables may contain resolved input or process data. The run driver keeps the
   // cause internally when it can; this last-resort sink must never echo it verbatim.

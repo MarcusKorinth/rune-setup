@@ -1748,6 +1748,22 @@ describe('help and misuse', () => {
     expect(bare.err[0]).toMatch(/^Usage: rune/u);
     expect(bare.err[0]).toContain('\nCommands:');
   });
+
+  it.each([
+    ['the program', ['help'], 'Usage: rune '],
+    ['one command', ['help', 'run'], 'Usage: rune run '],
+  ])('exits 0 for help on %s requested through the verb', async (_name, argv, usage) => {
+    const io = capture();
+
+    expect(await run(argv, io)).toBe(0);
+
+    // The page is requested output, so it belongs on stdout with the clean code (§10).
+    // Commander carries that verdict in `exitCode`, not in the `commander.help` code the
+    // verb shares with the bare invocation above, which prints to stderr and exits 2.
+    expect(io.err).toEqual([]);
+    expect(io.out).toHaveLength(1);
+    expect(io.out[0]?.startsWith(usage)).toBe(true);
+  });
 });
 
 describe('result files for failed outcomes', () => {
