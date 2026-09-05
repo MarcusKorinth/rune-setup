@@ -700,7 +700,7 @@ packages/
 │       ├── cli.ts                 # commander wiring, CLI execution and error-to-exit-code mapping
 │       ├── io.ts                  # I/O and process-control seams
 │       ├── main.ts                # executable entry point and the single process.exit site
-│       ├── runCmd.ts              # non-interactive execution and dry-run orchestration
+│       ├── runCmd.ts              # interactive/non-interactive execution and dry-run orchestration
 │       ├── schemaCmd.ts           # `rune schema [--output] [--result]` from the zod schemas
 │       ├── signals.ts             # cooperative first signal, forced cancellation on the second
 │       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, silent only for a consumer that went away
