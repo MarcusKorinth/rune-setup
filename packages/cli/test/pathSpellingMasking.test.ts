@@ -14,9 +14,10 @@
  * means adding one entry to `SCENARIOS`, not a new test.
  *
  * §10 exempts exactly one field: the structured `manifest.path` of a plan or a result keeps
- * RUNE's resolved spelling, because it is machine identity. A scenario names that spelling in
- * `exact`, which the helper asserts is really written and then removes from the file before
- * scanning the rest — an allow-list, so the exemption cannot widen unnoticed.
+ * RUNE's resolved spelling, because it is machine identity. A scenario names that FIELD in
+ * `exemptFields`, and the helper asserts the field really holds the resolved spelling before
+ * blanking it and scanning everything else. Keying on the field rather than on its bytes is
+ * what makes it an allow-list: the same spelling leaking from any other field still fails.
  */
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -84,8 +85,8 @@ interface Run {
   readonly exitCode: number;
   /** Files this run may write; their contents are sinks too. */
   readonly files?: readonly string[];
-  /** Spellings §10 keeps exact in a written file, asserted present and then excluded. */
-  readonly exact?: readonly string[];
+  /** Dotted JSON fields §10 keeps exact, asserted to hold the resolved spelling, then blanked. */
+  readonly exemptFields?: readonly string[];
 }
 
 interface Scenario {
@@ -300,7 +301,7 @@ const SCENARIOS: readonly Scenario[] = [
         secret,
         exitCode: 0,
         files: [resultFile],
-        exact: [jsonEscaped(resolve(secret))],
+        exemptFields: ['manifest.path'],
       };
     },
   },
@@ -324,7 +325,7 @@ const SCENARIOS: readonly Scenario[] = [
         secret,
         exitCode: 4,
         files: [resultFile],
-        exact: [jsonEscaped(resolve(secret))],
+        exemptFields: ['manifest.path'],
       };
     },
   },
@@ -357,8 +358,25 @@ function jsonEscaped(text: string): string {
   return JSON.stringify(text).slice(1, -1);
 }
 
-/** Stands in for a spelling §10 keeps exact, so the surrounding content stays scannable. */
+/** Stands in for a field §10 keeps exact, so the surrounding content stays scannable. */
 const EXEMPT = '<exact by contract>';
+
+/** Reads a dotted field out of a parsed result document; undefined when the path is absent. */
+function fieldAt(document: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((node, key) => {
+    return typeof node === 'object' && node !== null
+      ? (node as Record<string, unknown>)[key]
+      : undefined;
+  }, document);
+}
+
+/** Blanks a dotted field in place, so every other field stays under the full guard. */
+function blankFieldAt(document: unknown, path: string): void {
+  const keys = path.split('.');
+  const last = keys.pop()!;
+  const parent = fieldAt(document, keys.join('.'));
+  (parent as Record<string, unknown>)[last] = EXEMPT;
+}
 
 /** How a terminal sink prints a path: RUNE escapes controls visibly and leaves the rest. */
 function controlEscaped(text: string): string {
@@ -389,15 +407,20 @@ async function expectNoSpellingInAnySink(scenario: Scenario, spell: Rewrite): Pr
   );
   // A file this run was supposed to write proves the sink was exercised, not skipped.
   expect(written.every((content) => content !== '')).toBe(true);
-  const exact = subject.exact ?? [];
-  for (const spelling of exact) {
-    // An exemption nothing writes would silently widen the allow-list instead of naming it.
-    expect(written.join('\n')).toContain(spelling);
-  }
-  // Only the file is allowed to carry them: stdout and stderr stay under the full guard.
-  const guarded = written.map((content) =>
-    exact.reduce((rest, spelling) => rest.replaceAll(spelling, EXEMPT), content),
-  );
+  const exemptFields = subject.exemptFields ?? [];
+  // Only a written file may carry an exempt field: stdout and stderr stay under the full guard.
+  const guarded = written.map((content) => {
+    if (exemptFields.length === 0) {
+      return content;
+    }
+    const document: unknown = JSON.parse(content);
+    for (const field of exemptFields) {
+      // An exemption the field does not actually hold would widen the allow-list silently.
+      expect(fieldAt(document, field)).toBe(resolve(subject.secret));
+      blankFieldAt(document, field);
+    }
+    return JSON.stringify(document);
+  });
   const sinks = [...io.out, ...io.err, ...guarded].join('\n');
   for (const spelling of disclosingSpellings(subject.secret)) {
     expect(sinks).not.toContain(spelling);
