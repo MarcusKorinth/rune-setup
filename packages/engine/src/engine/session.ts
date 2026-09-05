@@ -55,9 +55,9 @@ import {
   type Resolution,
   type ValuesDocument,
 } from './inputs.js';
-import { buildPlan, type ExecutionPlan } from './plan.js';
+import { buildPlan, executionContextFor, type ExecutionPlan } from './plan.js';
 import { resolveManifestRelativePathFrom, sameSinkPath } from './paths.js';
-import { SecretRegistry, type SecretMasker } from './secrets.js';
+import { registryFromSecretMasker, SecretRegistry, type SecretMasker } from './secrets.js';
 
 /** Produced by {@link Session.setValue} whenever a controlling value flips an input's `when:`. */
 export interface InputStateChanged {
@@ -179,9 +179,9 @@ export class Session {
     this.#secrets = fields.secrets;
     this.#strings = fields.strings;
     const liveSecrets: SecretMasker = {
-      mask: (text) => this.#secrets.mask(text),
-      maskFragments: (fragments) => this.#secrets.maskFragments(fragments),
-      safeFallbackMarker: () => this.#secrets.safeFallbackMarker(),
+      mask: (text) => this.#sinkSecrets().mask(text),
+      maskFragments: (fragments) => this.#sinkSecrets().maskFragments(fragments),
+      safeFallbackMarker: () => this.#sinkSecrets().safeFallbackMarker(),
     };
     this.#sinkStrings = projectStringsForSink(fields.strings, liveSecrets);
     this.#values = fields.values;
@@ -478,6 +478,7 @@ export class Session {
     }
 
     const plan = this.#executionPlan();
+    const planSecrets = executionContextFor(plan).secrets;
     if (plan.preview) {
       throw this.#projectError(
         new InternalError(
@@ -496,7 +497,7 @@ export class Session {
       log =
         logFile === undefined
           ? undefined
-          : await createLogFileSink(logFile, (text) => this.#secrets.mask(text), {
+          : await createLogFileSink(logFile, (text) => planSecrets.mask(text), {
               announcement: this.effectiveLogFile?.announcement ?? logFile,
             });
       const observers: EngineObserver = (event) => {
@@ -608,18 +609,39 @@ export class Session {
         logFile: this.effectiveLogFile?.path,
         strings: this.#strings,
       });
-      registerFailureResultSession(this, this.#secrets.snapshot(), this.#plan);
+      registerFailureResultSession(this, this.#sinkSecrets(), this.#plan);
       return this.#plan;
     } catch (error) {
       throw this.#projectError(error);
     }
   }
 
-  #projectError(error: unknown, secrets: SecretRegistry = this.#secrets): unknown {
+  #sinkSecrets(): SecretMasker {
+    return this.#plan === undefined ? this.#secrets : executionContextFor(this.#plan).secrets;
+  }
+
+  #projectError(error: unknown, candidateSecrets?: SecretRegistry): unknown {
     if (!(error instanceof RuneError)) {
       return error;
     }
-    const projected = projectRuneError(error, secrets);
+    const activeSecrets = this.#sinkSecrets();
+    let errorToProject = error;
+    let secrets: SecretMasker = candidateSecrets ?? activeSecrets;
+    if (candidateSecrets !== undefined && this.#plan !== undefined) {
+      try {
+        secrets = registryFromSecretMasker(activeSecrets).combinedWith(candidateSecrets);
+      } catch (maskerError) {
+        if (!(maskerError instanceof RuneError)) {
+          throw maskerError;
+        }
+        // The union can exceed the bounded registry even though the retained plan and staged
+        // resolution each fit alone. Its capacity error is value-free, so project and bind that
+        // error with the complete active-plan masker instead of retrying the original rejection.
+        errorToProject = maskerError;
+        secrets = activeSecrets;
+      }
+    }
+    const projected = projectRuneError(errorToProject, secrets);
     registerFailureResultError(projected, this);
     return projected;
   }

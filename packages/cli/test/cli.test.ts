@@ -383,6 +383,47 @@ describe('rune run', () => {
     expect(io.err.some(hasRawTerminalControl)).toBe(false);
   });
 
+  it('masks a normalized secret cwd in locale progress chrome', async () => {
+    const relativeSecret = 'private/../secret-target';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      'steps:',
+      '  - id: controlled',
+      '    run:',
+      '      command: node',
+      '      args: ["-e", "process.exit(0)"]',
+      '      cwd: "${workingDirectory}"',
+    ]);
+    const derivedSecret = resolve(path, '..', relativeSecret);
+    mkdirSync(derivedSecret);
+    writeLocaleOverlay(path, [`rune.progress.runStarted: ${JSON.stringify(derivedSecret)}`]);
+    const io = capture();
+
+    expect(
+      await run(
+        [
+          'run',
+          path,
+          '--non-interactive',
+          '--locale',
+          'de',
+          '--set',
+          `workingDirectory=${relativeSecret}`,
+        ],
+        io,
+      ),
+    ).toBe(0);
+
+    expect(io.err).toContain('***');
+    expect(io.err.join('\n')).not.toContain(derivedSecret);
+  });
+
   it('keeps control-containing result JSON machine-readable', async () => {
     const controlled = 'value\u001b\u0085\u2028\u2029';
     const path = fixture([

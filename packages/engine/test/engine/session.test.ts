@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -16,7 +16,11 @@ import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import * as executor from '../../src/engine/executor.js';
 import type { InputState } from '../../src/engine/inputs.js';
-import { isSecretString, revealSecretString } from '../../src/engine/secrets.js';
+import {
+  isSecretString,
+  MAX_SECRET_REGISTRY_CODE_UNITS,
+  revealSecretString,
+} from '../../src/engine/secrets.js';
 import {
   ExecutionError,
   formatIssues,
@@ -1270,6 +1274,140 @@ describe('answering inputs', () => {
     expect(JSON.stringify(failure.error)).not.toContain(activeSecret);
     expect(failure.inputs.find((input) => input.id === 'mirror')?.value).toBe('***');
     expect(failure.steps[0]?.command).toEqual(['node', '***', '***']);
+  });
+
+  it('keeps completed-plan secrets active at session sinks until a successful edit', async () => {
+    const relativeSecret = 'private/../secret-target';
+    const replacement = 'private/../replacement-target';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      '  mirror:',
+      '    type: text',
+      '  choice:',
+      '    type: select',
+      '    options: [accepted]',
+      '    required: false',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+    ]);
+    const derivedSecret = resolve(dirname(path), relativeSecret);
+    const replacementDerived = resolve(dirname(path), replacement);
+    const session = await Session.open(path, {
+      environment: {},
+      mode: 'interactive',
+      overrides: { workingDirectory: relativeSecret, mirror: derivedSecret },
+    });
+    const strings = session.getStrings();
+    const inputs = session.allInputs();
+    const pending = session.pendingInputs();
+
+    const plan = session.plan();
+    expect(strings.chrome('rune.warning', { message: derivedSecret })).toBe('warning: ***');
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe('***');
+
+    let rejection: InputError | undefined;
+    try {
+      session.setValue('choice', derivedSecret);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      rejection = error as InputError;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection?.message).toContain('***');
+    expect(rejection?.message).not.toContain(derivedSecret);
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(session.plan()).toBe(plan);
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe('***');
+
+    const failure = executor.createFailureResult({
+      error: rejection!,
+      manifestPath: path,
+      dryRun: true,
+      session,
+    });
+    expect(failure.error?.message).toContain('***');
+    expect(failure.inputs.find((input) => input.id === 'mirror')?.value).toBe('***');
+    expect(JSON.stringify(failure)).not.toContain(derivedSecret);
+
+    expect(session.setValue('workingDirectory', replacement)).toEqual([]);
+    expect(session.allInputs()).not.toBe(inputs);
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
+    expect(formatSessionTerminalLine(strings, replacementDerived)).toBe(replacementDerived);
+
+    expect(session.plan()).not.toBe(plan);
+    expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
+    expect(formatSessionTerminalLine(strings, replacementDerived)).toBe('***');
+  });
+
+  it('preserves failure provenance when a plan and rejected candidate exceed masking capacity', async () => {
+    const partLength = Math.floor(MAX_SECRET_REGISTRY_CODE_UNITS / 3) + 100;
+    const relativeSecret = `private/../${'a'.repeat(partLength)}`;
+    const candidateSecret = 'b'.repeat(partLength);
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      '  dependent:',
+      '    type: text',
+      '    required: false',
+      '    when: "${workingDirectory} == ${env.TRIGGER}"',
+      '    default: "${env.MISSING}"',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+      '      cwd: "${workingDirectory}"',
+    ]);
+    const session = await Session.open(path, {
+      environment: { TRIGGER: candidateSecret },
+      mode: 'interactive',
+      overrides: { workingDirectory: relativeSecret },
+    });
+    const inputs = session.allInputs();
+    const plan = session.plan();
+
+    let rejection: InputError | undefined;
+    try {
+      session.setValue('workingDirectory', candidateSecret);
+    } catch (error) {
+      expect(error).toBeInstanceOf(InputError);
+      rejection = error as InputError;
+    }
+
+    expect(rejection).toMatchObject({
+      code: 'RUNE-202',
+      message: 'the total size of secret input values exceeds the masking safety limit',
+    });
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.plan()).toBe(plan);
+
+    const failure = executor.createFailureResult({
+      error: rejection!,
+      manifestPath: path,
+      dryRun: false,
+      session,
+    });
+    expect(failure).toMatchObject({
+      status: 'input_error',
+      error: {
+        code: 'RUNE-202',
+        message: 'the total size of secret input values exceeds the masking safety limit',
+      },
+    });
   });
 
   it('retains a new secret only for a later resolution failure and its result', async () => {
