@@ -127,9 +127,9 @@ export class Session {
   readonly preview: boolean;
   /**
    * What this session will log to: `--log-file`, else the manifest's `execution.logFile`,
-   * anchored at open — `undefined` when neither is configured. Published here because a host
-   * must enforce §4.1's `--result` collision rule before it plans, and only the engine may
-   * anchor a manifest-relative path (invariant 13).
+   * anchored at open — `undefined` when neither is configured. Published so hosts can announce
+   * the log path in previews without re-deriving precedence or anchoring. Hosts pass their
+   * `resultDestination` to `open()`, which refuses an exact result/log collision.
    */
   readonly effectiveLogFile: EffectiveLogFile | undefined;
   /**
