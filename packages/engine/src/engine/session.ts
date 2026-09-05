@@ -411,13 +411,20 @@ export class Session {
     const previous = this.#answers.get(id);
     // Keep caller-owned arrays outside the engine authority. SecretString and scalar values
     // pass through unchanged; cloning a SecretString would either break it or expose it.
-    this.#answers.set(id, Array.isArray(raw) ? [...raw] : raw);
+    const answer = Array.isArray(raw) ? [...raw] : raw;
+    this.#answers.set(id, answer);
     const candidateSecrets = new SecretRegistry().combinedWith(this.#secrets);
     let after: Resolution;
     let afterInputSnapshot: InputFacadeSnapshot;
     let afterWarnings: readonly string[];
     let changes: readonly InputStateChanged[];
     try {
+      // Resolution stages this answer in its own registry, but a rejected edit never publishes
+      // that registry. Retain the candidate in this private transaction so the facade's final
+      // error projection cannot restore raw issue text with a weaker masker.
+      if (this.manifest.inputs[id]!.type === 'secret') {
+        candidateSecrets.registerCandidate(answer);
+      }
       after = this.#resolve(candidateSecrets, id);
       afterInputSnapshot = projectInputFacadeSnapshot(after);
       afterWarnings = combineWarnings(

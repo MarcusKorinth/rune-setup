@@ -24,6 +24,7 @@ import {
   InputError,
   InternalError,
   ManifestError,
+  ResolutionError,
   type RuneIssue,
 } from '../../src/errors.js';
 import {
@@ -1269,6 +1270,78 @@ describe('answering inputs', () => {
     expect(JSON.stringify(failure.error)).not.toContain(activeSecret);
     expect(failure.inputs.find((input) => input.id === 'mirror')?.value).toBe('***');
     expect(failure.steps[0]?.command).toEqual(['node', '***', '***']);
+  });
+
+  it('retains a new secret only for a later resolution failure and its result', async () => {
+    const secret = 'MISSING_ENV';
+    const path = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      '  dependent:',
+      '    type: text',
+      '    required: false',
+      `    when: "\${token} == '${secret}'"`,
+      `    default: "\${env.${secret}}"`,
+      'steps: []',
+    ]);
+    const session = await Session.open(path, { environment: {}, mode: 'gui' });
+    const inputs = session.allInputs();
+    const pending = session.pendingInputs();
+    const plan = session.plan();
+
+    let rejection: ResolutionError | undefined;
+    try {
+      session.setValue('token', secret);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ResolutionError);
+      rejection = error as ResolutionError;
+    }
+
+    expect(rejection).toBeDefined();
+    const diagnostics = [
+      rejection!.message,
+      String(rejection),
+      rejection!.stack ?? '',
+      formatRuneError(rejection!),
+      formatIssues(rejection!.issues),
+      JSON.stringify(rejection!.issues),
+    ];
+    let cause = rejection!.cause;
+    while (cause instanceof Error) {
+      diagnostics.push(cause.message, String(cause), cause.stack ?? '');
+      cause = cause.cause;
+    }
+    for (const diagnostic of diagnostics) {
+      expect(diagnostic).not.toContain(secret);
+    }
+    expect(rejection!.message).toContain('***');
+
+    expect(session.allInputs()).toBe(inputs);
+    expect(session.pendingInputs()).toBe(pending);
+    expect(session.plan()).toBe(plan);
+    expect(formatSessionTerminalLine(session.getStrings(), secret)).toBe(secret);
+
+    const failure = executor.createFailureResult({
+      error: rejection!,
+      manifestPath: path,
+      dryRun: false,
+      session,
+      plan,
+    });
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(failure.error?.message).toContain('***');
+
+    const replacement = 'replacement-secret';
+    expect(session.setValue('token', replacement)).toEqual([]);
+    expect(session.plan()).not.toBe(plan);
+    expect(formatSessionTerminalLine(session.getStrings(), replacement)).toBe('***');
+    expect(formatSessionTerminalLine(session.getStrings(), secret)).toBe(secret);
   });
 
   it('collects a seed rejection exposed by a valid controlling edit', async () => {
