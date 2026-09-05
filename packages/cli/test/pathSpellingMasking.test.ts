@@ -105,9 +105,17 @@ const MANIFEST = [
   '    type: secret',
 ];
 
-function writeManifest(directory: string, inputs: readonly string[] = []): string {
+/** `logFile` becomes `execution.logFile`, the supplier the CLI uses when no flag is given. */
+function writeManifest(
+  directory: string,
+  inputs: readonly string[] = [],
+  logFile?: string,
+): string {
   const path = join(directory, 'installer.yaml');
-  writeFileSync(path, [...MANIFEST, ...inputs, 'steps: []', ''].join('\n'), 'utf8');
+  // Single quotes: a backslash is literal in a single-quoted YAML scalar, an escape in a
+  // double-quoted one, so only this spelling reaches the engine as the operator wrote it.
+  const execution = logFile === undefined ? [] : ['execution:', `  logFile: '${logFile}'`];
+  writeFileSync(path, [...MANIFEST, ...inputs, 'steps: []', ...execution, ''].join('\n'), 'utf8');
   return path;
 }
 
@@ -161,6 +169,45 @@ const SCENARIOS: readonly Scenario[] = [
         ],
         secret,
         exitCode: 0,
+      };
+    },
+  },
+  {
+    // §10: `execution.logFile` is the other supplier of that path, and the CLI and the engine
+    // derive its precedence separately — so the preview and the diagnostic are pinned to the
+    // manifest's own spelling too, and a drift between the two derivations fails one of them.
+    name: 'the dry-run plan preview of a manifest log path',
+    build: (directory, spell) => {
+      const secret = spell(join(directory, 'logs', 'secret-log-1234.log'));
+      return {
+        argv: [
+          'run',
+          writeManifest(directory, [], secret),
+          '--non-interactive',
+          '--dry-run',
+          '--set',
+          `token=${secret}`,
+        ],
+        secret,
+        exitCode: 0,
+      };
+    },
+  },
+  {
+    // §10: the RUNE-406 diagnostic for that supplier names that same manifest spelling.
+    name: 'the RUNE-406 diagnostic for a manifest log path',
+    build: (directory, spell) => {
+      const secret = spell(blocked(directory, 'secret-log-1234.log'));
+      return {
+        argv: [
+          'run',
+          writeManifest(directory, [], secret),
+          '--non-interactive',
+          '--set',
+          `token=${secret}`,
+        ],
+        secret,
+        exitCode: 1,
       };
     },
   },
