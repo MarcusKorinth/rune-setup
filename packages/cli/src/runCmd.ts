@@ -212,7 +212,10 @@ async function deliverResult(
     return;
   }
   try {
-    await writeResult(result, destination.path);
+    // Write to the anchored path, but report the operator's spelling: `resolve` above may
+    // have normalized separators or segments away, and only the spelling they typed is the
+    // one a secret registry holds — the success line below names exactly that spelling.
+    await writeResult(result, destination.path, { announcement: destination.announcement });
   } catch (error) {
     if (!(error instanceof ExecutionError) || error.code !== 'RUNE-407') {
       throw error;

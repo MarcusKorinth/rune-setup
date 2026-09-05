@@ -71,17 +71,33 @@ function resultError(action: ResultFileAction, path: string, cause: unknown): Ex
   );
 }
 
+/** How a RUNE-407 diagnostic names the destination (docs/architecture.md §10). */
+export interface WriteResultOptions {
+  /**
+   * The spelling the diagnostic names instead of `path`. A host that anchors a relative
+   * destination itself writes to the anchored path but reports the operator's own spelling,
+   * so the failure line names the same bytes its success line names — the bytes a secret
+   * registry can hold. Defaults to `path`.
+   */
+  readonly announcement?: string | undefined;
+}
+
 /** Writes the result to `path`, creating the directory it lives in when needed. */
-export async function writeResult(result: RunResult, path: string): Promise<void> {
+export async function writeResult(
+  result: RunResult,
+  path: string,
+  options: WriteResultOptions = {},
+): Promise<void> {
   // Validate and serialize the schema-produced copy before touching the filesystem. Besides
   // failing closed, this prevents a mutable caller from changing the original after validation.
   const serialized = serializeResult(result);
+  const named = options.announcement ?? path;
   const destination = resolve(path);
   const directory = dirname(destination);
   try {
     await mkdir(directory, { recursive: true });
   } catch (cause) {
-    throw resultError('prepare the directory for', path, cause);
+    throw resultError('prepare the directory for', named, cause);
   }
 
   const temporary = join(directory, `.rune-result-${randomUUID()}.tmp`);
@@ -107,6 +123,6 @@ export async function writeResult(result: RunResult, path: string): Promise<void
     if (created) {
       await rm(temporary, { force: true }).catch(() => undefined);
     }
-    throw resultError(action, path, cause);
+    throw resultError(action, named, cause);
   }
 }

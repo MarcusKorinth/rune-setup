@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -111,6 +111,93 @@ describe('result-file delivery failures and secrets', () => {
     expect(ANY_DELIVERY_FAILURE.exec(diagnostic)?.[1]).toBe('***');
     expect(readdirSync(destination)).toEqual(['blocker.txt']);
   });
+
+  // The CLI anchors the destination before the run, so the spelling it writes to and the
+  // spelling the operator typed — the one the secret registry holds — differ whenever
+  // `resolve` normalizes. The diagnostic must still name the operator's spelling.
+  it('masks a destination secret whose spelling carries a redundant path segment', async () => {
+    const { manifestPath, destination } = fixture([
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  resultSecret:',
+      '    type: secret',
+      'steps: []',
+    ]);
+    const blocker = join(destination, 'blocker.txt');
+    writeFileSync(blocker, 'blocked', 'utf8');
+    // A "." segment is normalized away on every host, so this case does not depend on the
+    // platform's separator rules; a leading "./" would additionally depend on the cwd.
+    const spelled = `${blocker}${sep}.${sep}secret-value-1234.json`;
+    const io = capture();
+
+    const code = await run(
+      [
+        'run',
+        manifestPath,
+        '--non-interactive',
+        '--set',
+        `resultSecret=${spelled}`,
+        '--result',
+        spelled,
+      ],
+      io,
+    );
+
+    expect(code).toBe(1);
+    const humanOutput = [...io.out, ...io.err].join('\n');
+    expect(humanOutput).not.toContain(spelled);
+    expect(humanOutput).not.toContain(resolve(spelled));
+    const diagnostic = io.err.at(-1) ?? '';
+    expect(diagnostic).toMatch(ANY_DELIVERY_FAILURE);
+    expect(ANY_DELIVERY_FAILURE.exec(diagnostic)?.[1]).toBe('***');
+    expect(readdirSync(destination)).toEqual(['blocker.txt']);
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'masks a destination secret spelled with forward slashes',
+    async () => {
+      const { manifestPath, destination } = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  resultSecret:',
+        '    type: secret',
+        'steps: []',
+      ]);
+      const blocker = join(destination, 'blocker.txt');
+      writeFileSync(blocker, 'blocked', 'utf8');
+      // An ordinary Windows spelling that `resolve` rewrites to backslashes.
+      const spelled = join(blocker, 'secret-value-1234.json').replaceAll('\\', '/');
+      const io = capture();
+
+      const code = await run(
+        [
+          'run',
+          manifestPath,
+          '--non-interactive',
+          '--set',
+          `resultSecret=${spelled}`,
+          '--result',
+          spelled,
+        ],
+        io,
+      );
+
+      expect(code).toBe(1);
+      const humanOutput = [...io.out, ...io.err].join('\n');
+      expect(humanOutput).not.toContain(spelled);
+      expect(humanOutput).not.toContain(resolve(spelled));
+      const diagnostic = io.err.at(-1) ?? '';
+      expect(diagnostic).toMatch(ANY_DELIVERY_FAILURE);
+      expect(ANY_DELIVERY_FAILURE.exec(diagnostic)?.[1]).toBe('***');
+      expect(readdirSync(destination)).toEqual(['blocker.txt']);
+    },
+  );
 
   it('names nothing after a secret-bearing open failure without a StringTable', async () => {
     const { manifestPath, destination } = fixture([
