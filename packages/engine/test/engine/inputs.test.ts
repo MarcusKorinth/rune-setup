@@ -69,6 +69,19 @@ function hasRawDiagnosticControl(message: string): boolean {
   });
 }
 
+/**
+ * Drops the frame list from a rendered error, keeping the header that carries its name and
+ * message. Frames name the checkout, not the error: a repository directory spelled like a
+ * fragment the leak assertions forbid — "path", say — would decide them for a reason no
+ * secret caused.
+ */
+function withoutStackFrames(rendered: string): string {
+  return rendered
+    .split('\n')
+    .filter((line) => !/^\s+at\s/u.test(line))
+    .join('\n');
+}
+
 function manifestOf(...lines: readonly string[]): ManifestV1 {
   return parseManifestText([...HEAD, ...lines, 'steps: []', ''].join('\n'), 'installer.yaml');
 }
@@ -1458,10 +1471,10 @@ describe('secrets', () => {
       seen.add(current);
       surfaces.push(
         current.message,
-        current.stack ?? '',
+        withoutStackFrames(current.stack ?? ''),
         String(current),
         JSON.stringify(current) ?? '',
-        inspect(current),
+        withoutStackFrames(inspect(current)),
       );
       if (current instanceof InputError || current instanceof ResolutionError) {
         surfaces.push(...current.issues.map((issue) => issue.message));
@@ -3356,10 +3369,10 @@ describe('values files', () => {
       seen.add(current);
       surfaces.push(
         current.message,
-        current.stack ?? '',
+        withoutStackFrames(current.stack ?? ''),
         String(current),
         JSON.stringify(current) ?? '',
-        inspect(current),
+        withoutStackFrames(inspect(current)),
       );
       if (current instanceof InputError) {
         surfaces.push(...current.issues.map((issue) => issue.message));
