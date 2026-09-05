@@ -27,6 +27,7 @@ import { sessionHumanStderr, type CliIo } from './io.js';
 import { renderPlan } from './render.js';
 
 const MASK = '***';
+const SUMMARY_ACTION_FALLBACKS = Object.freeze({ proceed: 'p', cancel: 'c' });
 const SUMMARY_ACTIONS = Object.freeze({
   proceed: Object.freeze({ alias: 'proceed', tokenKey: 'rune.summary.proceedToken' as const }),
   cancel: Object.freeze({ alias: 'cancel', tokenKey: 'rune.summary.cancelToken' as const }),
@@ -315,8 +316,12 @@ export async function summaryLoop(
       );
     });
 
-    const proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
-    const cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
+    let proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
+    let cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
+    if (proceedToken === cancelToken) {
+      proceedToken = SUMMARY_ACTION_FALLBACKS.proceed;
+      cancelToken = SUMMARY_ACTION_FALLBACKS.cancel;
+    }
     for (;;) {
       const rawChoice = await prompter.ask(
         formatSessionTerminalLine(

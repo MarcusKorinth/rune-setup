@@ -1474,6 +1474,84 @@ describe('the interactive run', { timeout: INTERACTIVE_TEST_TIMEOUT_MS }, () => 
     expect(cancelCode).toBe(6);
   });
 
+  it.each([
+    { name: 'cancel', answers: ['c'], code: 6, status: 'cancelled', stepsExecuted: 0 },
+    { name: 'proceed', answers: ['p'], code: 0, status: 'succeeded', stepsExecuted: 1 },
+    {
+      name: 'reject the ambiguous projection',
+      answers: ['***', 'c'],
+      code: 6,
+      status: 'cancelled',
+      stepsExecuted: 0,
+    },
+  ])(
+    'uses distinct fallback actions when masked locale tokens collide: $name',
+    async (testCase) => {
+      const path = fixture([
+        'schemaVersion: 1',
+        'product:',
+        '  name: Example',
+        '  version: "1.0.0"',
+        'inputs:',
+        '  proceedSecret:',
+        '    type: secret',
+        '  cancelSecret:',
+        '    type: secret',
+        'steps:',
+        '  - id: succeeds',
+        '    run:',
+        '      command: node',
+        '      args: ["-e", "process.exit(0)"]',
+      ]);
+      const localesDirectory = join(path, '..', 'locales');
+      mkdirSync(localesDirectory);
+      writeFileSync(
+        join(localesDirectory, 'de.yaml'),
+        [
+          'rune.summary.proceedToken: weiter',
+          'rune.summary.cancelToken: abbrechen',
+          `rune.summary.invalidChoice: '"{choice}" ist nicht {proceed}, {cancel} oder die Nummer eines Werts'`,
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const io = capture();
+      const interaction = scripted(testCase.answers);
+
+      const code = await run(
+        [
+          'run',
+          path,
+          '--locale',
+          'de',
+          '--set',
+          'proceedSecret=weiter',
+          '--set',
+          'cancelSecret=abbrechen',
+          '--result',
+          '-',
+        ],
+        io,
+        interaction,
+      );
+
+      expect(code).toBe(testCase.code);
+      expect(interaction.transcript()).toContain('Proceed (p) / Change a value <n> / Cancel (c)');
+      const generatedSinks = [interaction.transcript(), ...io.out, ...io.err].join('\n');
+      expect(generatedSinks).not.toContain('weiter');
+      expect(generatedSinks).not.toContain('abbrechen');
+      const result = JSON.parse(io.out.join('\n')) as {
+        status: string;
+        stepsExecuted: number;
+      };
+      expect(result.status).toBe(testCase.status);
+      expect(result.stepsExecuted).toBe(testCase.stepsExecuted);
+      if (testCase.name === 'reject the ambiguous projection') {
+        expect(io.err.join('\n')).toContain('"***" ist nicht p, c');
+      }
+    },
+  );
+
   it('degrades to non-interactive without a TTY and records that mode', async () => {
     const path = fixture(MANIFEST);
     const io = capture();
