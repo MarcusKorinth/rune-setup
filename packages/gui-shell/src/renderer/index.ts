@@ -80,6 +80,8 @@ let renderVersion = 0;
 let pendingInputSubmissions = 0;
 /** Remembers a forward click whose blur-triggered validation is still in flight. */
 let forwardRequested = false;
+/** Keeps Summary navigation closed while Back refreshes plan-masked renderer state. */
+let summaryBackPending = false;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -188,11 +190,21 @@ async function navigate(direction: 1 | -1): Promise<void> {
       state.pageIndex = nextIndex;
     }
   } else if (state.page === 'summary') {
+    if (summaryBackPending) {
+      return;
+    }
     if (direction === -1) {
-      await refreshStringsAndWindowTitle();
-      await refreshInputs();
-      state.page = state.inputs.length > 0 ? 'inputs' : 'welcome';
-      state.pageIndex = Math.max(0, state.inputPages - 1);
+      summaryBackPending = true;
+      renderFooter();
+      try {
+        await refreshStringsAndWindowTitle();
+        await refreshInputs();
+        state.page = state.inputs.length > 0 ? 'inputs' : 'welcome';
+        state.pageIndex = Math.max(0, state.inputPages - 1);
+      } finally {
+        summaryBackPending = false;
+        renderFooter();
+      }
     } else {
       state.page = 'progress';
       render();
@@ -241,6 +253,7 @@ function render(): void {
 
 function renderFooter(): void {
   el.back.hidden = state.page === 'welcome' || state.page === 'progress' || state.page === 'result';
+  el.back.disabled = summaryBackPending;
   el.back.textContent = text('rune.button.back');
   el.cancel.textContent = text('rune.button.cancel');
   el.cancel.hidden = state.page === 'result';
@@ -250,7 +263,7 @@ function renderFooter(): void {
     el.next.disabled = false;
   } else if (state.page === 'summary') {
     el.next.textContent = text('rune.button.install');
-    el.next.disabled = state.planFailed;
+    el.next.disabled = state.planFailed || summaryBackPending;
   } else if (state.page === 'progress') {
     el.next.textContent = text('rune.button.install');
     el.next.disabled = true;
@@ -527,7 +540,7 @@ function messageOf(error: unknown): string {
 }
 
 function isCurrentSummary(version: number): boolean {
-  return state.page === 'summary' && renderVersion === version;
+  return state.page === 'summary' && renderVersion === version && !summaryBackPending;
 }
 
 async function renderSummary(version: number): Promise<void> {

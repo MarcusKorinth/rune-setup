@@ -85,6 +85,79 @@ test('refreshes plan-masked inputs before Back can render them', async () => {
   }
 });
 
+test('blocks Install while Back refreshes a ready Summary', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, fixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    await next.click();
+    await answerMaskingInputs(page);
+    await expect(next).toBeEnabled();
+    await next.click();
+
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
+    await expect(next).toHaveText('Install');
+    await expect(next).toBeEnabled();
+
+    const controlsImmediately = await page.evaluate(() => {
+      const capture = { runStarted: 0 };
+      (
+        window as unknown as {
+          summaryBackRaceCapture: { runStarted: number };
+        }
+      ).summaryBackRaceCapture = capture;
+      window.rune.onEvent((event) => {
+        if (event.kind === 'runStarted') {
+          capture.runStarted += 1;
+        }
+      });
+
+      const backButton = document.querySelector('#back');
+      const nextButton = document.querySelector('#next');
+      if (
+        !(backButton instanceof HTMLButtonElement) ||
+        !(nextButton instanceof HTMLButtonElement)
+      ) {
+        throw new Error('wizard navigation controls did not render');
+      }
+      backButton.click();
+      const controls = {
+        backDisabled: backButton.disabled,
+        installDisabled: nextButton.disabled,
+      };
+      nextButton.click();
+      return controls;
+    });
+
+    expect(controlsImmediately).toEqual({ backDisabled: true, installDisabled: true });
+    await expect(page.locator('.field[data-id="publicPath"] input')).toHaveValue('***');
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolveFrame) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()));
+        }),
+    );
+    expect(
+      await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              summaryBackRaceCapture: { runStarted: number };
+            }
+          ).summaryBackRaceCapture.runStarted,
+      ),
+    ).toBe(0);
+  } finally {
+    await application?.close();
+  }
+});
+
 test('refreshes masked inputs when Back overtakes a pending plan response', async () => {
   let application: ElectronApplication | undefined;
 
