@@ -121,13 +121,16 @@ export function closeWindowOnSigterm(window: Pick<BrowserWindow, 'close'>): () =
   return () => window.close();
 }
 
-export function windowOptions(theme: Pick<ThemeConfig, 'logo'>): BrowserWindowConstructorOptions {
+export function windowOptions(
+  theme: Pick<ThemeConfig, 'logo' | 'windowTitle'>,
+): BrowserWindowConstructorOptions {
   return {
     width: 900,
     height: 640,
     show: false,
     autoHideMenuBar: true,
     ...(theme.logo === undefined ? {} : { icon: theme.logo }),
+    ...(theme.windowTitle === undefined ? {} : { title: theme.windowTitle }),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -324,7 +327,7 @@ export async function windowedRun(
     target,
   ) => deliver(result, target, output),
 ): Promise<number> {
-  const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
+  const window = new BrowserWindow(windowOptions(windowTheme(session)));
   window.once('ready-to-show', () => window.show());
 
   let running = false;
@@ -559,7 +562,7 @@ export function registerBridge(
       },
     };
   });
-  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig()));
+  handle('rune:getThemeConfig', () => projectTheme(windowTheme(session)));
   handle('rune:warnings', () => projectWarnings(session.warnings(), session.getStrings()));
   handle('rune:cancel', () => {
     session.cancel();
@@ -638,10 +641,21 @@ function describeWindowedFatal(error: unknown, session: Session | undefined): st
 
 function showWindowedFatal(error: unknown, session: Session | undefined): void {
   try {
-    dialog.showErrorBox('RUNE setup failed', describeWindowedFatal(error, session));
+    dialog.showErrorBox(
+      session?.getStrings().chrome('rune.dialog.fatal.title') ?? 'RUNE',
+      describeWindowedFatal(error, session),
+    );
   } catch {
     // A failed native dialog must not replace the original error or its exit code.
   }
+}
+
+function windowTheme(session: Session): ThemeConfig {
+  const theme = session.getThemeConfig();
+  return {
+    ...theme,
+    windowTitle: theme.windowTitle ?? session.getStrings().chrome('rune.window.title'),
+  };
 }
 
 class StdoutDeliveryError extends Error {}

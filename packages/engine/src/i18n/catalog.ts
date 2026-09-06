@@ -7,6 +7,8 @@
  */
 
 export const CHROME_CATALOG = Object.freeze({
+  'rune.window.title': 'RUNE Setup',
+  'rune.dialog.fatal.title': 'RUNE setup failed',
   'rune.button.next': 'Next',
   'rune.button.back': 'Back',
   'rune.button.cancel': 'Cancel',

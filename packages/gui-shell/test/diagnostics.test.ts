@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -278,6 +278,13 @@ describe('the GUI shell stderr diagnostics', () => {
     vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new ExecutionError('RUNE-403', `cannot start ${secret}`),
     );
+    const localeDir = join(dirname(manifestPath), 'locales');
+    mkdirSync(localeDir);
+    writeFileSync(
+      join(localeDir, 'de.yaml'),
+      `rune.dialog.fatal.title: "RUNE Fehler ${secret}"\n`,
+      'utf8',
+    );
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
@@ -291,12 +298,12 @@ describe('the GUI shell stderr diagnostics', () => {
       }
     };
 
-    await main([manifestPath, '--set', `token=${secret}`]);
+    await main([manifestPath, '--locale', 'de', '--set', `token=${secret}`]);
 
     expect(app.exit).toHaveBeenCalledWith(1);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE Fehler ***',
       'RUNE-403 (exit 1): cannot start ***',
     );
     expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(secret);

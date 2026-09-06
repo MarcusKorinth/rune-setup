@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +29,7 @@ const electronHarness = vi.hoisted(() => ({
   loadError: undefined as Error | undefined,
   emitRendererGone: undefined as (() => void) | undefined,
   window: undefined as FakeWindow | undefined,
+  windowOptions: undefined as { readonly title?: string | undefined } | undefined,
   closed: false,
   closeAttempts: 0,
 }));
@@ -47,11 +48,12 @@ vi.mock('electron', () => {
     };
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
-    constructor() {
+    constructor(options: { readonly title?: string | undefined }) {
       if (electronHarness.constructionError !== undefined) {
         throw electronHarness.constructionError;
       }
       electronHarness.window = this;
+      electronHarness.windowOptions = options;
     }
 
     once(event: string, listener: (...args: unknown[]) => void): void {
@@ -161,6 +163,7 @@ beforeEach(() => {
   electronHarness.loadError = undefined;
   electronHarness.emitRendererGone = undefined;
   electronHarness.window = undefined;
+  electronHarness.windowOptions = undefined;
   electronHarness.closed = false;
   electronHarness.closeAttempts = 0;
 });
@@ -477,7 +480,7 @@ describe('the GUI shell main lifecycle', () => {
     );
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-500 (exit 70): The setup could not be started.',
     );
   });
@@ -497,7 +500,7 @@ describe('the GUI shell main lifecycle', () => {
     );
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-101 (exit 3): The setup could not be started.',
     );
   });
@@ -519,7 +522,7 @@ describe('the GUI shell main lifecycle', () => {
     expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(secret);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-101 (exit 3): The setup could not be started.',
     );
     expect(vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')).not.toContain(secret);
@@ -542,7 +545,7 @@ describe('the GUI shell main lifecycle', () => {
       manifest: { path: manifestPath, sha256: null, schemaVersion: null },
     });
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-101 (exit 3): The setup could not be started.',
     );
   });
@@ -660,7 +663,7 @@ describe('the GUI shell main lifecycle', () => {
     expect(diagnostic).not.toContain(resultPath);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-407 (exit 1): The setup could not be started.',
     );
   });
@@ -809,7 +812,7 @@ describe('the GUI shell main lifecycle', () => {
       if (showsDialog) {
         expect(dialog.showErrorBox).toHaveBeenCalledOnce();
         expect(dialog.showErrorBox).toHaveBeenCalledWith(
-          'RUNE setup failed',
+          'RUNE',
           'RUNE-500 (exit 70): The setup could not be started.',
         );
       } else {
@@ -873,7 +876,7 @@ describe('the GUI shell main lifecycle', () => {
     );
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE',
       'RUNE-407 (exit 1): The setup could not be started.',
     );
     const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
@@ -963,6 +966,78 @@ describe('the GUI shell native window', () => {
 
   it('omits the native window icon when no logo is configured', () => {
     expect(windowOptions({})).not.toHaveProperty('icon');
+  });
+
+  it('uses the localized default title for native and bridge themes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-localized-title-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Title fixture',
+        '  version: "1.0.0"',
+        'inputs: {}',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const localeDir = join(dir, 'locales');
+    mkdirSync(localeDir);
+    writeFileSync(join(localeDir, 'de.yaml'), 'rune.window.title: RUNE Einrichtung\n', 'utf8');
+    let bridgeTheme: unknown;
+    electronHarness.duringLoad = async () => {
+      const getTheme = electronHarness.handlers.get('rune:getThemeConfig');
+      if (getTheme === undefined) {
+        throw new Error('the theme handler was not registered');
+      }
+      bridgeTheme = await getTheme();
+      electronHarness.window?.close();
+    };
+
+    await main([manifestPath, '--locale', 'de']);
+
+    expect(electronHarness.windowOptions?.title).toBe('RUNE Einrichtung');
+    expect(bridgeTheme).toEqual({ windowTitle: 'RUNE Einrichtung' });
+  });
+
+  it('preserves an explicit empty custom title over the localized default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-empty-title-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Title fixture',
+        '  version: "1.0.0"',
+        'gui:',
+        '  windowTitle: ""',
+        'inputs: {}',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const localeDir = join(dir, 'locales');
+    mkdirSync(localeDir);
+    writeFileSync(join(localeDir, 'de.yaml'), 'rune.window.title: RUNE Einrichtung\n', 'utf8');
+    let bridgeTheme: unknown;
+    electronHarness.duringLoad = async () => {
+      const getTheme = electronHarness.handlers.get('rune:getThemeConfig');
+      if (getTheme === undefined) {
+        throw new Error('the theme handler was not registered');
+      }
+      bridgeTheme = await getTheme();
+      electronHarness.window?.close();
+    };
+
+    await main([manifestPath, '--locale', 'de']);
+
+    expect(electronHarness.windowOptions?.title).toBe('');
+    expect(bridgeTheme).toEqual({ windowTitle: '' });
   });
 });
 
