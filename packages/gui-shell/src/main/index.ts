@@ -322,14 +322,19 @@ export async function windowedRun(
   let rendererGone = false;
   let sigtermRequested = false;
   let closeFinalizing = false;
+  let deliveryOwned = false;
   let deliveryPending = false;
   let delivery: Promise<void> | undefined;
   const deliverOutcome = (result: RunResult): Promise<void> => {
     if (delivery === undefined) {
+      // Claim the terminal outcome before the delivery callback can run or throw.
+      deliveryOwned = true;
       deliveryPending = true;
-      delivery = deliverResult(result, invocation).finally(() => {
-        deliveryPending = false;
-      });
+      delivery = Promise.resolve()
+        .then(() => deliverResult(result, invocation))
+        .finally(() => {
+          deliveryPending = false;
+        });
     }
     return delivery;
   };
@@ -397,6 +402,11 @@ export async function windowedRun(
       return;
     }
     rendererGone = true;
+    if (deliveryOwned) {
+      // The claimed attempt decides the result and exit code; renderer loss only closes.
+      window.close();
+      return;
+    }
     const error = new InternalError('the renderer process exited unexpectedly');
     fatalCode = exitCodeFor(error);
     writeSessionDiagnostic(session, describeWindowedFatal(error, session), output);
@@ -412,7 +422,7 @@ export async function windowedRun(
   });
 
   window.on('close', (event) => {
-    if (deliveryPending) {
+    if (deliveryPending || (deliveryOwned && outcome === undefined && fatalCode === undefined)) {
       event.preventDefault();
       closeRequested = true;
       return;
