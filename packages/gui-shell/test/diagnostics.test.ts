@@ -350,12 +350,10 @@ describe('the GUI shell stderr diagnostics', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
-      const done = electronHarness.handlers.get('rune:done');
-      if (execute === undefined || done === undefined) {
-        throw new Error('the execute or done handler was not registered');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
       }
-      await execute();
-      await done();
+      await expect(execute()).rejects.toThrow('RUNE-407');
     };
 
     await main([

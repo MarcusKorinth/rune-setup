@@ -265,11 +265,12 @@ async function executeHeadless(
   return result.exitCode;
 }
 
-async function windowedRun(
+export async function windowedRun(
   session: Session,
   invocation: ShellInvocation,
   signals: SigtermSource,
   displayFatal: (error: unknown, session?: Session) => void,
+  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = deliver,
 ): Promise<number> {
   const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
   window.once('ready-to-show', () => window.show());
@@ -282,9 +283,15 @@ async function windowedRun(
   let rendererGone = false;
   let sigtermRequested = false;
   let closeFinalizing = false;
+  let deliveryPending = false;
   let delivery: Promise<void> | undefined;
   const deliverOutcome = (result: RunResult): Promise<void> => {
-    delivery ??= deliver(result, invocation);
+    if (delivery === undefined) {
+      deliveryPending = true;
+      delivery = deliverResult(result, invocation).finally(() => {
+        deliveryPending = false;
+      });
+    }
     return delivery;
   };
 
@@ -300,18 +307,19 @@ async function windowedRun(
         window.close();
         return;
       }
-      outcome = result;
-      if (closeRequested) {
-        // The shell finishes its own cancel (§9.4): the close that started it completes.
-        try {
-          await deliverOutcome(result);
-        } catch (error) {
-          outcome = undefined;
-          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
-          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
-          displayFatal(error, session);
+      try {
+        await deliverOutcome(result);
+        outcome = result;
+      } catch (error) {
+        writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+        fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+        displayFatal(error, session);
+        throw error;
+      } finally {
+        if (closeRequested || fatalCode !== undefined) {
+          // The shell finishes its own cancel (§9.4), or closes after a failed delivery.
+          window.close();
         }
-        window.close();
       }
     },
     onExecuteError: async (error, plan) => {
@@ -322,22 +330,15 @@ async function windowedRun(
         window.close();
         return;
       }
-      fatalCode = await failWith(error, invocation, session, undefined, plan);
+      fatalCode = await failWith(error, invocation, session, undefined, plan, deliverOutcome);
       displayFatal(error, session);
       window.close();
     },
-    onRendererDone: async () => {
-      renderedDone = true;
-      if (outcome !== undefined) {
-        try {
-          await deliverOutcome(outcome);
-        } catch (error) {
-          outcome = undefined;
-          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
-          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
-          displayFatal(error, session);
-        }
+    onRendererDone: () => {
+      if (outcome === undefined || deliveryPending) {
+        return;
       }
+      renderedDone = true;
       window.close();
     },
   });
@@ -362,6 +363,11 @@ async function windowedRun(
   });
 
   window.on('close', (event) => {
+    if (deliveryPending) {
+      event.preventDefault();
+      closeRequested = true;
+      return;
+    }
     if (running) {
       event.preventDefault();
       closeRequested = true;
@@ -468,11 +474,12 @@ export function registerBridge(
   });
   handle('rune:execute', async () => {
     let plan: ExecutionPlan | undefined;
+    let result: RunResult;
     try {
       plan = session.plan();
       hooks.onExecuteStart?.();
       const consoleObserver = shellProgressObserver(session);
-      const result = await session.execute((event: RunEvent) => {
+      result = await session.execute((event: RunEvent) => {
         // Keep the terminal sink independent of renderer delivery. The engine owns the
         // observer exception boundary, so neither sink can corrupt the run.
         try {
@@ -481,12 +488,14 @@ export function registerBridge(
           hooks.events.send(EVENT_CHANNEL, projectEvent(event));
         }
       });
-      await hooks.onExecuteEnd?.(result);
-      return projectResult(result);
     } catch (error) {
       await hooks.onExecuteError?.(error, plan);
       throw error;
     }
+    // Completion owns result delivery. Its rejection must bypass the engine-failure hook,
+    // because §10 permits exactly one attempt to deliver a configured result.
+    await hooks.onExecuteEnd?.(result);
+    return projectResult(result);
   });
   handle('rune:done', async () => {
     await hooks.onRendererDone?.();
@@ -578,6 +587,7 @@ async function failWith(
   session: Session,
   terminalResult?: RunResult,
   plan?: ExecutionPlan,
+  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = deliver,
 ): Promise<number> {
   const failure =
     error instanceof RuneError
@@ -595,7 +605,7 @@ async function failWith(
         session,
         ...(plan === undefined ? {} : { plan }),
       });
-    await deliver(result, invocation);
+    await deliverResult(result, invocation);
   } catch (deliveryError) {
     writeSessionDiagnostic(
       session,

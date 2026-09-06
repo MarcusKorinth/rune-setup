@@ -189,7 +189,7 @@ describe('the IPC bridge', () => {
     execute.mockRestore();
   });
 
-  it('reports a rejected execute completion through the same fatal boundary', async () => {
+  it('does not route a rejected execute completion through the engine failure hook', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const session = await Session.open(fixture(), {
       environment: {},
@@ -204,9 +204,8 @@ describe('the IPC bridge', () => {
       calls.push('end');
       throw deliveryError;
     });
-    const onExecuteError = vi.fn((error: unknown) => {
+    const onExecuteError = vi.fn(() => {
       calls.push('error');
-      expect(error).toBe(deliveryError);
     });
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     registerBridge(
@@ -225,8 +224,8 @@ describe('the IPC bridge', () => {
     expect(error.message).toBe('writeResult failed for ***');
     expect(onExecuteStart).toHaveBeenCalledTimes(1);
     expect(onExecuteEnd).toHaveBeenCalledTimes(1);
-    expect(onExecuteError).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(['start', 'end', 'error']);
+    expect(onExecuteError).not.toHaveBeenCalled();
+    expect(calls).toEqual(['start', 'end']);
     stderr.mockRestore();
   });
 

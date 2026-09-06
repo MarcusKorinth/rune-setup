@@ -11,21 +11,88 @@ import {
   Session,
   createFailureResult,
   resultJsonSchema,
+  writeResult,
   type RunResult,
 } from '@rune/engine';
 import { z } from 'zod';
 
-vi.mock('electron', () => ({
-  app: {
-    exit: vi.fn(),
-    getAppPath: vi.fn(() => 'C:\\rune-shell'),
-    isPackaged: false,
-    whenReady: vi.fn(),
-  },
-  BrowserWindow: class {},
-  dialog: { showErrorBox: vi.fn() },
-  ipcMain: { handle: vi.fn() },
+interface FakeWindow {
+  close(): void;
+}
+
+const electronHarness = vi.hoisted(() => ({
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  duringLoad: undefined as (() => void | Promise<void>) | undefined,
+  window: undefined as FakeWindow | undefined,
+  closed: false,
+  closeAttempts: 0,
 }));
+
+vi.mock('electron', () => {
+  class FakeBrowserWindow implements FakeWindow {
+    readonly webContents = {
+      send: vi.fn(),
+      on: vi.fn(),
+    };
+    readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+
+    constructor() {
+      electronHarness.window = this;
+    }
+
+    once(event: string, listener: (...args: unknown[]) => void): void {
+      this.on(event, listener);
+    }
+
+    on(event: string, listener: (...args: unknown[]) => void): void {
+      const listeners = this.#listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.#listeners.set(event, listeners);
+    }
+
+    show(): void {}
+
+    close(): void {
+      electronHarness.closeAttempts += 1;
+      let prevented = false;
+      this.#emit('close', {
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      if (!prevented && !electronHarness.closed) {
+        electronHarness.closed = true;
+        this.#emit('closed');
+      }
+    }
+
+    async loadFile(): Promise<void> {
+      await electronHarness.duringLoad?.();
+    }
+
+    #emit(event: string, ...args: unknown[]): void {
+      for (const listener of this.#listeners.get(event) ?? []) {
+        listener(...args);
+      }
+    }
+  }
+
+  return {
+    app: {
+      exit: vi.fn(),
+      getAppPath: vi.fn(() => 'C:\\rune-shell'),
+      isPackaged: false,
+      whenReady: vi.fn(),
+    },
+    BrowserWindow: FakeBrowserWindow,
+    dialog: { showErrorBox: vi.fn() },
+    ipcMain: {
+      handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
+        electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
+      }),
+    },
+  };
+});
 
 import { app, dialog } from 'electron';
 
@@ -34,6 +101,7 @@ import {
   headlessRun,
   main,
   withSigtermHandler,
+  windowedRun,
   windowOptions,
   type SigtermSource,
 } from '../src/main/index.js';
@@ -66,6 +134,14 @@ class FakeSigtermSource implements SigtermSource {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+beforeEach(() => {
+  electronHarness.handlers.clear();
+  electronHarness.duringLoad = undefined;
+  electronHarness.window = undefined;
+  electronHarness.closed = false;
+  electronHarness.closeAttempts = 0;
 });
 
 describe('the GUI shell SIGTERM lifecycle', () => {
@@ -619,6 +695,145 @@ describe('the GUI shell native window', () => {
   });
 });
 
+describe('windowed result delivery', () => {
+  it('keeps rune.execute pending until the configured result exists', async () => {
+    const { invocation, resultPath, session } = await windowedFixture();
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<void>();
+    const deliverResult = vi.fn(async (result: RunResult) => {
+      deliveryStarted.resolve();
+      await releaseDelivery.promise;
+      await writeResult(result, resultPath);
+    });
+    let executeSettled = false;
+    electronHarness.duringLoad = async () => {
+      const execute = bridgeHandler('rune:execute');
+      const done = bridgeHandler('rune:done');
+      const execution = Promise.resolve(execute()).then((result) => {
+        expect(existsSync(resultPath)).toBe(true);
+        executeSettled = true;
+        return result;
+      });
+
+      await deliveryStarted.promise;
+      expect(executeSettled).toBe(false);
+      expect(existsSync(resultPath)).toBe(false);
+
+      releaseDelivery.resolve();
+      await execution;
+      expect(existsSync(resultPath)).toBe(true);
+      await done();
+    };
+
+    await expect(
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+    ).resolves.toBe(0);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'succeeded',
+      exitCode: 0,
+      mode: 'gui',
+    });
+  });
+
+  it('defers a native close until the pending result write finishes', async () => {
+    const { invocation, resultPath, session } = await windowedFixture();
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<void>();
+    const deliverResult = vi.fn(async (result: RunResult) => {
+      deliveryStarted.resolve();
+      await releaseDelivery.promise;
+      await writeResult(result, resultPath);
+    });
+    electronHarness.duringLoad = async () => {
+      const execution = Promise.resolve(bridgeHandler('rune:execute')());
+      await deliveryStarted.promise;
+
+      electronHarness.window?.close();
+      expect(electronHarness.closed).toBe(false);
+      expect(existsSync(resultPath)).toBe(false);
+
+      releaseDelivery.resolve();
+      await execution;
+    };
+
+    await expect(
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+    ).resolves.toBe(0);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(electronHarness.closed).toBe(true);
+    expect(electronHarness.closeAttempts).toBe(2);
+    expect(existsSync(resultPath)).toBe(true);
+  });
+
+  it('reports a failed result write once without returning a successful result', async () => {
+    const { directory, invocation, session } = await windowedFixture();
+    const blockedParent = join(directory, 'blocked-parent');
+    const resultPath = join(blockedParent, 'result.json');
+    writeFileSync(blockedParent, 'not a directory', 'utf8');
+    const failedInvocation = { ...invocation, result: resultPath };
+    const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+    const displayFatal = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-407');
+    };
+
+    await expect(
+      windowedRun(session, failedInvocation, new FakeSigtermSource(), displayFatal, deliverResult),
+    ).resolves.toBe(1);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RUNE-407' }),
+      session,
+    );
+    expect(stderr.mock.calls.flat().join('')).toContain('blocked-parent');
+    expect(existsSync(resultPath)).toBe(false);
+  });
+
+  it('defers native close while writing an input-error result exactly once', async () => {
+    const { invocation, resultPath, session } = await windowedFixture([
+      'inputs:',
+      '  requiredValue:',
+      '    type: text',
+      '    required: true',
+    ]);
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<void>();
+    const deliverResult = vi.fn(async (result: RunResult) => {
+      deliveryStarted.resolve();
+      await releaseDelivery.promise;
+      await writeResult(result, resultPath);
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      const execution = Promise.resolve(bridgeHandler('rune:execute')());
+      await deliveryStarted.promise;
+
+      electronHarness.window?.close();
+      expect(electronHarness.closed).toBe(false);
+      expect(deliverResult).toHaveBeenCalledOnce();
+      expect(existsSync(resultPath)).toBe(false);
+
+      releaseDelivery.resolve();
+      await expect(execution).rejects.toThrow('RUNE-201');
+    };
+
+    await expect(
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+    ).resolves.toBe(4);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(electronHarness.closed).toBe(true);
+    expect(electronHarness.closeAttempts).toBe(2);
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'input_error',
+      exitCode: 4,
+      error: { code: 'RUNE-201' },
+    });
+  });
+});
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
@@ -638,4 +853,51 @@ function deliveredResult(path: string): RunResult {
   const result = JSON.parse(readFileSync(path, 'utf8')) as RunResult;
   expect(resultValidator.safeParse(result).success).toBe(true);
   return result;
+}
+
+function bridgeHandler(channel: string): (...args: unknown[]) => unknown {
+  const handler = electronHarness.handlers.get(channel);
+  if (handler === undefined) {
+    throw new Error(`${channel} was not registered`);
+  }
+  return handler;
+}
+
+async function windowedFixture(inputLines: readonly string[] = ['inputs: {}']): Promise<{
+  directory: string;
+  invocation: ShellInvocation;
+  resultPath: string;
+  session: Session;
+}> {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-windowed-delivery-'));
+  const manifestPath = join(directory, 'installer.yaml');
+  const resultPath = join(directory, 'result.json');
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Windowed delivery',
+      '  version: 1.0.0',
+      ...inputLines,
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+  return {
+    directory,
+    invocation: {
+      manifestPath,
+      values: [],
+      overrides: {},
+      locale: undefined,
+      result: resultPath,
+      logFile: undefined,
+      nonInteractive: false,
+    },
+    resultPath,
+    session,
+  };
 }
