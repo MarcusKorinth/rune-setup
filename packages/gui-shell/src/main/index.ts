@@ -20,9 +20,11 @@ import {
   CancelToken,
   CancelledError,
   InternalError,
+  PlatformError,
   RUNE_VERSION,
   RuneError,
   Session,
+  UsageError,
   createFailureResult,
   exitCodeFor,
   formatIssues,
@@ -128,6 +130,8 @@ export async function main(
   signals: SigtermSource = process,
 ): Promise<void> {
   let exitCode: number;
+  let invocation: ShellInvocation | undefined;
+  let openingSession = false;
   let windowed = false;
   let activeSession: Session | undefined;
   let fatalDisplayed = false;
@@ -139,28 +143,56 @@ export async function main(
     showWindowedFatal(error, session);
   };
   try {
-    const invocation = parseShellArgv(argv);
-    windowed = !invocation.nonInteractive;
+    const parsedInvocation = parseShellArgv(argv);
+    invocation = parsedInvocation;
+    windowed = !parsedInvocation.nonInteractive;
     const routedSignals = new LatchedSigtermSource();
     exitCode = await withSigtermHandler(
       () => routedSignals.request(),
       async () => {
         await app.whenReady();
-        const session = await openSession(invocation);
+        openingSession = true;
+        const session = await openSession(parsedInvocation);
+        openingSession = false;
         activeSession = session;
 
-        return invocation.nonInteractive
-          ? headlessRun(session, invocation, routedSignals)
-          : windowedRun(session, invocation, routedSignals, displayFatal);
+        return parsedInvocation.nonInteractive
+          ? headlessRun(session, parsedInvocation, routedSignals)
+          : windowedRun(session, parsedInvocation, routedSignals, displayFatal);
       },
       signals,
     );
   } catch (error) {
-    process.stderr.write(
-      `${windowed ? describeWindowedFatal(error, activeSession) : error instanceof Error ? error.message : String(error)}\n`,
-    );
-    displayFatal(error);
-    exitCode = exitCodeFor(error);
+    if (
+      openingSession &&
+      invocation !== undefined &&
+      error instanceof RuneError &&
+      !(error instanceof UsageError) &&
+      !(error instanceof PlatformError)
+    ) {
+      process.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
+      const deliveryError = await deliverOpenFailure(error, invocation);
+      if (deliveryError === undefined) {
+        displayFatal(error);
+        exitCode = exitCodeFor(error);
+      } else {
+        process.stderr.write(
+          `${deliveryError instanceof RuneError && deliveryError.code === 'RUNE-407' ? 'could not write the result file' : describeWindowedFatal(deliveryError, undefined)}\n`,
+        );
+        displayFatal(deliveryError);
+        exitCode = exitCodeFor(deliveryError);
+      }
+    } else {
+      const message =
+        windowed || openingSession
+          ? describeWindowedFatal(error, activeSession)
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      process.stderr.write(`${message}\n`);
+      displayFatal(error);
+      exitCode = exitCodeFor(error);
+    }
   }
   app.exit(exitCode);
 }
@@ -514,6 +546,24 @@ async function deliver(result: RunResult, invocation: ShellInvocation): Promise<
   }
   if (invocation.result !== undefined) {
     await writeResult(result, invocation.result);
+  }
+}
+
+async function deliverOpenFailure(
+  error: RuneError,
+  invocation: ShellInvocation,
+): Promise<unknown | undefined> {
+  try {
+    const result = createFailureResult({
+      error,
+      manifestPath: invocation.manifestPath,
+      dryRun: false,
+      mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
+    });
+    await deliver(result, invocation);
+    return undefined;
+  } catch (deliveryError) {
+    return deliveryError;
   }
 }
 

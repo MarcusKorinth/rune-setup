@@ -7,10 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CancelledError,
   ManifestError,
+  PlatformError,
   Session,
   createFailureResult,
+  resultJsonSchema,
   type RunResult,
 } from '@rune/engine';
+import { z } from 'zod';
 
 vi.mock('electron', () => ({
   app: {
@@ -283,14 +286,17 @@ describe('the GUI shell main lifecycle', () => {
   });
 
   it('maps invalid argv to usage without waiting for Electron readiness', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-usage-'));
+    const resultPath = join(dir, 'result.json');
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    await main(['--unknown']);
+    await main(['installer.yaml', '--result', resultPath, '--unknown']);
 
     expect(app.whenReady).not.toHaveBeenCalled();
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(2);
     expect(stderr).toHaveBeenCalledWith('unknown flag --unknown\n');
+    expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
@@ -308,13 +314,16 @@ describe('the GUI shell main lifecycle', () => {
   });
 
   it('maps an unhandled readiness failure to one internal exit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-shell-readiness-'));
+    const resultPath = join(dir, 'result.json');
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.mocked(app.whenReady).mockRejectedValue(new Error('Electron readiness failed'));
 
-    await main(['installer.yaml']);
+    await main(['installer.yaml', '--result', resultPath]);
 
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(70);
+    expect(existsSync(resultPath)).toBe(false);
     expect(stderr).toHaveBeenCalledWith('RUNE-500 (exit 70): The setup could not be started.\n');
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
@@ -360,6 +369,171 @@ describe('the GUI shell main lifecycle', () => {
       'RUNE-101 (exit 3): The setup could not be started.',
     );
     expect(vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')).not.toContain(secret);
+  });
+
+  it('writes an actual windowed manifest-open failure to the configured result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-windowed-open-failure-'));
+    const manifestPath = join(dir, 'missing-installer.yaml');
+    const resultPath = join(dir, 'result.json');
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(3);
+    expect(deliveredResult(resultPath)).toMatchObject({
+      status: 'config_error',
+      exitCode: 3,
+      mode: 'gui',
+      product: null,
+      manifest: { path: manifestPath, sha256: null, schemaVersion: null },
+    });
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-101 (exit 3): The setup could not be started.',
+    );
+  });
+
+  it('keeps authenticated metadata for an actual headless input-open failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-headless-input-failure-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const resultPath = join(dir, 'result.json');
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Input failure',
+        '  version: 1.0.0',
+        'inputs:',
+        '  token:',
+        '    type: secret',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--non-interactive', '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(4);
+    expect(deliveredResult(resultPath)).toMatchObject({
+      status: 'input_error',
+      exitCode: 4,
+      mode: 'non-interactive',
+      product: { name: 'Input failure', version: '1.0.0' },
+      manifest: { path: manifestPath, schemaVersion: 1 },
+      inputs: [],
+    });
+    expect(dialog.showErrorBox).not.toHaveBeenCalled();
+  });
+
+  it('writes an actual windowed values-open failure without exposing its candidate', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-windowed-values-failure-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const valuesPath = join(dir, 'values.yaml');
+    const resultPath = join(dir, 'result.json');
+    const candidate = 'unregistered-values-candidate';
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product:',
+        '  name: Values failure',
+        '  version: 1.0.0',
+        'inputs: {}',
+        'steps: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    writeFileSync(valuesPath, `${candidate}: value\n`, 'utf8');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--values', valuesPath, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(4);
+    expect(deliveredResult(resultPath)).toMatchObject({
+      status: 'input_error',
+      exitCode: 4,
+      mode: 'gui',
+      product: { name: 'Values failure', version: '1.0.0' },
+    });
+    expect(stderr.mock.calls.flat().join('')).not.toContain(candidate);
+    expect(vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')).not.toContain(candidate);
+  });
+
+  it('serializes a startup failure to stdout for a headless result stream', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-headless-open-stdout-'));
+    const manifestPath = join(dir, 'missing-installer.yaml');
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: unknown,
+      callback: () => void,
+    ) => {
+      callback();
+      return true;
+    }) as typeof process.stdout.write);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--non-interactive', '--result', '-']);
+
+    expect(app.exit).toHaveBeenCalledWith(3);
+    expect(stdout).toHaveBeenCalledOnce();
+    const result = JSON.parse(String(stdout.mock.calls[0]?.[0])) as RunResult;
+    expect(resultValidator.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({
+      status: 'config_error',
+      exitCode: 3,
+      mode: 'non-interactive',
+    });
+  });
+
+  it('lets one RUNE-407 delivery failure override the startup error without naming the path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-open-delivery-failure-'));
+    const manifestPath = join(dir, 'missing-installer.yaml');
+    const blockedDirectory = join(dir, 'blocked-parent');
+    const resultPath = join(blockedDirectory, 'result.json');
+    writeFileSync(blockedDirectory, 'occupied', 'utf8');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main([manifestPath, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(existsSync(resultPath)).toBe(false);
+    const diagnostic = stderr.mock.calls.flat().join('');
+    expect(diagnostic).toContain('RUNE-101 (exit 3): The setup could not be started.');
+    expect(diagnostic).toContain('could not write the result file');
+    expect(diagnostic).not.toContain(resultPath);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-407 (exit 1): The setup could not be started.',
+    );
+  });
+
+  it('does not write a configured result for an unsupported platform error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-platform-open-failure-'));
+    const resultPath = join(dir, 'result.json');
+    vi.spyOn(Session, 'open').mockRejectedValue(new PlatformError('unsupported host'));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main(['installer.yaml', '--non-interactive', '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(2);
+    expect(existsSync(resultPath)).toBe(false);
+  });
+
+  it('does not turn a hard Session.open crash into a configured result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-crashed-open-'));
+    const resultPath = join(dir, 'result.json');
+    vi.spyOn(Session, 'open').mockRejectedValue(new Error('Session.open crashed'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main(['installer.yaml', '--non-interactive', '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr).toHaveBeenCalledWith('RUNE-500 (exit 70): The setup could not be started.\n');
   });
 
   it('writes one serialized headless result to stdout for --result -', async () => {
@@ -454,4 +628,14 @@ function deferred<T>(): {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+const resultValidator = z.fromJSONSchema(
+  resultJsonSchema() as Parameters<typeof z.fromJSONSchema>[0],
+);
+
+function deliveredResult(path: string): RunResult {
+  const result = JSON.parse(readFileSync(path, 'utf8')) as RunResult;
+  expect(resultValidator.safeParse(result).success).toBe(true);
+  return result;
 }
