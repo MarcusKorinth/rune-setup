@@ -22,6 +22,7 @@ const requiredBooleanFixturePath = join(
   'required-boolean.yaml',
 );
 const invalidSeedFixturePath = join(packageDirectory, 'tests', 'fixtures', 'invalid-seed.yaml');
+const editRejectionFixturePath = join(packageDirectory, 'tests', 'fixtures', 'edit-rejection.yaml');
 const executionFixturePath = join(packageDirectory, 'tests', 'fixtures', 'execution.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
@@ -740,6 +741,57 @@ test('prefills an invalid seed and blocks Next until the engine accepts a correc
     await input.dispatchEvent('change');
     await expect(field).not.toHaveClass(/invalid/);
     await expect(input).toHaveValue('GOOD');
+    await expect(next).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('remasks a rejected public edit after the same-page secret is accepted', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, editRejectionFixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    const field = page.locator('.field[data-id="code"]');
+    const code = field.locator('input');
+    const token = page.locator('.field[data-id="token"] input');
+    const rawCandidate = 'later-secret-42';
+
+    await code.fill(rawCandidate);
+    await code.dispatchEvent('change');
+    await expect(field).toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveJSProperty(
+      'textContent',
+      `Use ${rawCandidate}\nsecond line`,
+    );
+    await expect(code).toHaveValue(rawCandidate);
+    await expect(code).toHaveAttribute('aria-invalid', 'true');
+    await expect(next).toBeDisabled();
+
+    await token.fill(rawCandidate);
+    await token.dispatchEvent('change');
+    await expect(field).toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveJSProperty('textContent', 'Use ***\nsecond line');
+    await expect(code).toHaveValue('***');
+    await expect(token).toHaveValue('');
+    await expect(code).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('body')).not.toContainText(rawCandidate);
+    await expect(next).toBeDisabled();
+
+    await code.fill('VALID');
+    await code.dispatchEvent('change');
+    await expect(field).not.toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveCount(0);
+    await expect(code).toHaveValue('VALID');
+    await expect(code).not.toHaveAttribute('aria-invalid');
     await expect(next).toBeEnabled();
   } finally {
     await application?.close();

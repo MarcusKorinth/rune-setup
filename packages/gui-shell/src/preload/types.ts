@@ -52,6 +52,13 @@ export interface BridgeInputRejection {
   readonly candidate?: string | boolean | readonly string[];
 }
 
+/** Human-only state for a value rejected through the live GUI edit path. */
+export interface BridgeInputEditRejection {
+  /** Retained only for public freeform string controls; never present for secrets. */
+  readonly candidate?: string;
+  readonly displayText: string;
+}
+
 export type BridgeInputType =
   'text' | 'secret' | 'boolean' | 'select' | 'multiselect' | 'file' | 'directory';
 
@@ -96,6 +103,8 @@ interface BridgeInputBase {
   readonly ignored?: BridgeValueSource;
   /** Present when a recoverable layers 1–4 value failed engine validation. */
   readonly rejection?: BridgeInputRejection;
+  /** Present when the latest layer-5 edit was rejected by the engine. */
+  readonly editRejection?: BridgeInputEditRejection;
 }
 
 /**

@@ -50,10 +50,8 @@ type PageName = 'welcome' | 'inputs' | 'summary' | 'progress' | 'result';
 interface State {
   strings: Readonly<Record<string, string>>;
   inputs: readonly BridgeInput[];
-  /** Ids the engine still needs — the ONLY completeness authority the renderer trusts. */
+  /** Ids the engine still needs, combined with projected rejection state for completeness. */
   pending: ReadonlySet<string>;
-  invalid: Map<string, string>;
-  drafts: Map<string, string>;
   planFailed: boolean;
   pageIndex: number;
   inputPages: number;
@@ -68,8 +66,6 @@ const state: State = {
   strings: {},
   inputs: [],
   pending: new Set(),
-  invalid: new Map(),
-  drafts: new Map(),
   planFailed: false,
   pageIndex: 0,
   inputPages: 0,
@@ -289,11 +285,14 @@ function currentPageComplete(): boolean {
   if (pendingInputSubmissions > 0) {
     return false;
   }
-  // The engine's pendingInputs() is the one completeness signal: a secret's value crosses
-  // masked and an unanswered value crosses absent, so the projection cannot be read for
-  // presence (§9.2).
+  // Engine pending state and main's current rejected-edit projection together determine
+  // completeness; a rejected transaction leaves the authoritative engine value unchanged.
   return pageInputs().every(
-    (input) => !state.invalid.has(input.id) && !state.pending.has(input.id),
+    (input) =>
+      !input.enabled ||
+      (input.editRejection === undefined &&
+        input.rejection === undefined &&
+        !state.pending.has(input.id)),
   );
 }
 
@@ -328,16 +327,16 @@ function renderInputs(): void {
 function renderField(input: BridgeInput): HTMLElement {
   const field = div('field');
   field.dataset['id'] = input.id;
+  const problem = inputProblem(input);
   if (!input.enabled) {
     field.classList.add('disabled');
   }
-  if (state.invalid.has(input.id)) {
+  if (problem !== undefined) {
     field.classList.add('invalid');
   }
 
   const ids = fieldIds(input.id);
   const description = text(`inputs.${input.id}.description`);
-  const problem = state.invalid.get(input.id);
   const describedBy = [
     description === '' ? undefined : ids.description,
     problem === undefined ? undefined : ids.error,
@@ -379,6 +378,19 @@ function renderField(input: BridgeInput): HTMLElement {
   return field;
 }
 
+function inputProblem(input: BridgeInput): string | undefined {
+  if (!input.enabled) {
+    return undefined;
+  }
+  if (input.editRejection !== undefined) {
+    return input.editRejection.displayText;
+  }
+  if (input.rejection === undefined) {
+    return undefined;
+  }
+  return optionalText(`inputs.${input.id}.patternHint`) ?? input.rejection.issue.message;
+}
+
 function fieldIds(inputId: string): FieldIds {
   const base = `rune-input-${encodeURIComponent(inputId)}`;
   return {
@@ -417,18 +429,15 @@ function renderControl(input: BridgeInput): HTMLElement {
   }
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
-  const rejected = input.rejection?.candidate;
-  const draft = state.drafts.get(input.id);
+  const rejected = input.editRejection?.candidate ?? input.rejection?.candidate;
   box.value =
     spec.type === 'secret'
       ? ''
-      : draft !== undefined
-        ? draft
-        : typeof rejected === 'string'
-          ? rejected
-          : typeof input.value === 'string'
-            ? input.value
-            : '';
+      : typeof rejected === 'string'
+        ? rejected
+        : typeof input.value === 'string'
+          ? input.value
+          : '';
   box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
@@ -526,14 +535,8 @@ async function submit(id: string, raw: unknown): Promise<void> {
     try {
       await window.rune.setValue(id, raw);
       accepted = true;
-      state.invalid.delete(id);
-      state.drafts.delete(id);
-    } catch (error) {
-      const hint = optionalText(`inputs.${id}.patternHint`);
-      state.invalid.set(id, hint ?? messageOf(error));
-      if (typeof raw === 'string') {
-        state.drafts.set(id, raw);
-      }
+    } catch {
+      // Main publishes the recoverable failure through the refreshed input projection.
     }
     if (accepted) {
       await refreshStringsAndWindowTitle();
@@ -563,30 +566,8 @@ async function refreshStringsAndWindowTitle(): Promise<void> {
 }
 
 async function refreshInputs(): Promise<void> {
-  const previouslyRejected = new Set(
-    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
-  );
   state.inputs = await window.rune.allInputs();
   state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
-  const rejected = new Set(
-    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
-  );
-  for (const id of previouslyRejected) {
-    if (!rejected.has(id)) {
-      state.invalid.delete(id);
-    }
-  }
-  for (const input of state.inputs) {
-    if (!input.enabled) {
-      state.invalid.delete(input.id);
-      state.drafts.delete(input.id);
-      continue;
-    }
-    if (input.rejection !== undefined) {
-      const hint = optionalText(`inputs.${input.id}.patternHint`);
-      state.invalid.set(input.id, hint ?? input.rejection.issue.message);
-    }
-  }
 }
 
 function messageOf(error: unknown): string {

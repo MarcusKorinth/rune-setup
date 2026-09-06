@@ -106,6 +106,77 @@ function rejectedFixture(): string {
   return path;
 }
 
+function editRejectionFixture(patternHint = 'Use later-secret-42\nsecond line'): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-edit-rejection-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enableCode:',
+      '    type: boolean',
+      '    default: true',
+      '  code:',
+      '    type: text',
+      '    required: false',
+      '    when: "${enableCode}"',
+      '    pattern: "[A-Z]+"',
+      `    patternHint: ${JSON.stringify(patternHint)}`,
+      '    default: GOOD',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
+function controllingRejectionFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-controlling-rejection-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  enabled:',
+      '    type: boolean',
+      '    default: false',
+      '  booleanDependent:',
+      '    type: text',
+      '    required: false',
+      '    when: "${enabled}"',
+      '    default: "${env.MISSING_BOOLEAN}"',
+      '  token:',
+      '    type: secret',
+      '    required: false',
+      '  secretDependent:',
+      '    type: text',
+      '    required: false',
+      '    when: "${token} == \'MISSING_SECRET\'"',
+      '    default: "${env.MISSING_SECRET}"',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
+function withoutEditRejections(inputs: readonly BridgeInput[]): unknown {
+  return inputs.map(({ editRejection: _editRejection, ...input }) => input);
+}
+
 function structuredProjectionFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-structured-'));
   const path = join(dir, 'installer.yaml');
@@ -721,9 +792,137 @@ describe('the IPC bridge', () => {
     });
     expect(rejected).not.toHaveProperty('value');
     expect(rejected).not.toHaveProperty('source');
+    expect(rejected).not.toHaveProperty('editRejection');
     expect(pending).toEqual([rejected]);
     expect(JSON.parse(JSON.stringify({ all, pending }))).toEqual({ all, pending });
     expect(JSON.stringify({ all, pending })).not.toContain('super-secret-value');
+  });
+
+  it('remasks a rejected public edit and its live multiline hint after a secret answer', async () => {
+    const session = await Session.open(editRejectionFixture(), {
+      environment: {},
+      mode: 'gui',
+    });
+    const bridge = await bridgeOver(session);
+    const rawCandidate = 'later-secret-42';
+
+    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toThrow('RUNE-202');
+    const beforeSecret = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const beforeRejected = beforeSecret.find((input) => input.id === 'code');
+
+    expect(beforeRejected?.editRejection).toEqual({
+      candidate: rawCandidate,
+      displayText: `Use ${rawCandidate}\nsecond line`,
+    });
+    expect(withoutEditRejections(beforeSecret)).toEqual(session.allInputs());
+    expect(beforeRejected).toMatchObject({ value: 'GOOD', source: 'default' });
+    expect(beforeRejected).not.toHaveProperty('rejection');
+    expect(await bridge.call('rune:pendingInputs')).toEqual([]);
+
+    await bridge.call('rune:setValue', 'token', rawCandidate);
+    const afterSecret = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const afterRejected = afterSecret.find((input) => input.id === 'code');
+
+    expect(afterRejected?.editRejection).toEqual({
+      candidate: '***',
+      displayText: 'Use ***\nsecond line',
+    });
+    expect(JSON.stringify(afterSecret)).not.toContain(rawCandidate);
+    expect(withoutEditRejections(afterSecret)).toEqual(session.allInputs());
+
+    await bridge.call('rune:setValue', 'code', 'VALID');
+    const corrected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    expect(corrected.find((input) => input.id === 'code')).not.toHaveProperty('editRejection');
+
+    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toThrow('RUNE-202');
+    await bridge.call('rune:setValue', 'enableCode', false);
+    const disabled = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    expect(disabled.find((input) => input.id === 'code')).toMatchObject({
+      enabled: false,
+      value: '',
+    });
+    expect(disabled.find((input) => input.id === 'code')).not.toHaveProperty('editRejection');
+  });
+
+  it('masks a rejected public edit against an already seeded secret', async () => {
+    const rawCandidate = 'later-secret-42';
+    const session = await Session.open(editRejectionFixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: rawCandidate },
+    });
+    const bridge = await bridgeOver(session);
+
+    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toThrow('RUNE-202');
+    const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+
+    expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
+      candidate: '***',
+      displayText: 'Use ***\nsecond line',
+    });
+    expect(JSON.stringify(inputs)).not.toContain(rawCandidate);
+  });
+
+  it('preserves an explicit empty pattern hint on a rejected live edit', async () => {
+    const session = await Session.open(editRejectionFixture(''), {
+      environment: {},
+      mode: 'gui',
+    });
+    const bridge = await bridgeOver(session);
+
+    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toThrow('RUNE-202');
+    const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+
+    expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
+      candidate: 'invalid',
+      displayText: '',
+    });
+  });
+
+  it('retains safe candidate-less errors for rejected boolean and secret edits', async () => {
+    const session = await Session.open(controllingRejectionFixture(), {
+      environment: {},
+      mode: 'gui',
+    });
+    const bridge = await bridgeOver(session);
+
+    await expect(bridge.call('rune:setValue', 'enabled', true)).rejects.toThrow('RUNE-301');
+    const booleanRejected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const enabled = booleanRejected.find((input) => input.id === 'enabled');
+    expect(enabled).toMatchObject({ value: false, source: 'default' });
+    expect(enabled?.editRejection?.displayText).toContain('RUNE-301 (exit 5)');
+    expect(enabled?.editRejection).not.toHaveProperty('candidate');
+    expect(withoutEditRejections(booleanRejected)).toEqual(session.allInputs());
+
+    await bridge.call('rune:setValue', 'token', 'MISSING_BOOLEAN');
+    const remasked = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const remaskedError = remasked.find((input) => input.id === 'enabled')?.editRejection;
+    expect(remaskedError?.displayText).toContain('***');
+    expect(remaskedError?.displayText).not.toContain('MISSING_BOOLEAN');
+
+    await bridge.call('rune:setValue', 'enabled', false);
+    const booleanCorrected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    expect(booleanCorrected.find((input) => input.id === 'enabled')).not.toHaveProperty(
+      'editRejection',
+    );
+
+    await expect(bridge.call('rune:setValue', 'token', 'MISSING_SECRET')).rejects.toThrow(
+      'RUNE-301',
+    );
+    const secretRejected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    const token = secretRejected.find((input) => input.id === 'token');
+    expect(token).toMatchObject({ value: null, source: 'answer' });
+    expect(token?.editRejection?.displayText).toContain('RUNE-301 (exit 5)');
+    expect(token?.editRejection?.displayText).toContain('***');
+    expect(token?.editRejection).not.toHaveProperty('candidate');
+    expect(JSON.stringify(secretRejected)).not.toContain('MISSING_SECRET');
+    expect(withoutEditRejections(secretRejected)).toEqual(session.allInputs());
+
+    await bridge.call('rune:setValue', 'token', 'replacement-secret');
+    const secretCorrected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
+    expect(secretCorrected.find((input) => input.id === 'token')).not.toHaveProperty(
+      'editRejection',
+    );
   });
 
   it('normalizes facade and unknown rejections without exposing secrets', async () => {

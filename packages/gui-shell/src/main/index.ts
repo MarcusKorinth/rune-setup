@@ -525,6 +525,10 @@ export function registerBridge(
 ): void {
   const output = hooks.output ?? fallbackOutput();
   const maskError = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
+  const rejectedEdits = new Map<
+    string,
+    { readonly safeError: string; readonly rawCandidate?: string }
+  >();
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
     register(channel, async (...args: unknown[]) => {
       try {
@@ -544,8 +548,62 @@ export function registerBridge(
     },
   }));
   handle('rune:pendingInputs', () => session.pendingInputs());
-  handle('rune:allInputs', () => session.allInputs());
-  handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
+  handle('rune:allInputs', () => {
+    const inputs = session.allInputs();
+    for (const input of inputs) {
+      if (!input.enabled) {
+        rejectedEdits.delete(input.id);
+      }
+    }
+    const strings = session.getStrings();
+    return inputs.map((input) => {
+      const rejected = rejectedEdits.get(input.id);
+      if (rejected === undefined) {
+        return input;
+      }
+      const candidate =
+        rejected.rawCandidate === undefined
+          ? {}
+          : { candidate: formatSessionTerminalLine(strings, rejected.rawCandidate) };
+      return {
+        ...input,
+        editRejection: {
+          ...candidate,
+          displayText:
+            strings.patternHint(input.id) ?? formatSessionTerminalLine(strings, rejected.safeError),
+        },
+      };
+    });
+  });
+  handle('rune:setValue', (id, raw) => {
+    const inputId = String(id);
+    const current = session.allInputs().find((input) => input.id === inputId);
+    try {
+      const changes = session.setValue(inputId, raw);
+      rejectedEdits.delete(inputId);
+      for (const change of changes) {
+        if (!change.enabled) {
+          rejectedEdits.delete(change.inputId);
+        }
+      }
+      return changes;
+    } catch (error) {
+      if (current !== undefined) {
+        const safeError = bridgeError(error, maskError).message;
+        if (
+          typeof raw === 'string' &&
+          (current.spec.type === 'text' ||
+            current.spec.type === 'file' ||
+            current.spec.type === 'directory')
+        ) {
+          rejectedEdits.set(inputId, { safeError, rawCandidate: raw });
+        } else {
+          rejectedEdits.set(inputId, { safeError });
+        }
+      }
+      throw error;
+    }
+  });
   handle('rune:plan', () => projectPlan(session.plan(), session.getStrings()));
   handle('rune:describe', () => projectResult(session.describe(), session.getStrings()));
   handle('rune:getStrings', () => {
