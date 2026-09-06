@@ -29,6 +29,8 @@ export interface RuneBridge {
 
 /** One current renderer presentation snapshot composed by main from the session string table. */
 export interface BridgeStrings {
+  /** The engine-selected locale, or built-in English defaults. */
+  readonly locale: string | null;
   readonly entries: Readonly<Record<string, string>>;
   readonly displayProduct: {
     readonly name: string;

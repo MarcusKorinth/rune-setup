@@ -436,6 +436,7 @@ describe('the IPC bridge', () => {
     const manifestPath = fixture();
     const session = await Session.open(manifestPath, {
       environment: {},
+      locale: 'C',
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
@@ -454,6 +455,7 @@ describe('the IPC bridge', () => {
     const assetDir = join(dirname(manifestPath), 'theme assets #1');
 
     expect(opened.product.name).toBe('Example super-secret-value');
+    expect(strings.locale).toBeNull();
     expect(strings.entries['product.description']).toBe('Description ***');
     expect(strings.entries['gui.windowTitle']).toBe('Window ***');
     expect(strings.displayProduct).toEqual({
@@ -468,6 +470,20 @@ describe('the IPC bridge', () => {
     expect(theme.logo).toContain('%20');
     expect(theme.logo).toContain('%23');
     expect(JSON.stringify({ strings, theme })).not.toContain('super-secret-value');
+  });
+
+  it('projects the selected regional locale when a language overlay serves it', async () => {
+    const session = await Session.open(composedDisplayFixture(), {
+      environment: {},
+      locale: 'de-DE',
+      mode: 'gui',
+    });
+    const bridge = await bridgeOver(session);
+
+    const strings = (await bridge.call('rune:getStrings')) as BridgeStrings;
+
+    expect(strings.locale).toBe('de-DE');
+    expect(strings.entries['rune.progress.output']).toBe('Output {line}');
   });
 
   it('preserves exact identity and configuration while retaining structured masking', async () => {

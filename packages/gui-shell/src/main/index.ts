@@ -552,6 +552,7 @@ export function registerBridge(
     const strings = session.getStrings();
     const product = session.manifest.product;
     return {
+      locale: strings.locale ?? null,
       entries: strings.entries,
       displayProduct: {
         name: formatSessionTerminalLine(strings, product.name),

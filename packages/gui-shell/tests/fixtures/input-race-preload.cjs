@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('rune', {
   execute: () => new Promise(() => {}),
   cancel: async () => undefined,
   getStrings: async () => ({
+    locale: null,
     entries: {
       'inputs.code.title': 'Code',
       'inputs.code.patternHint': 'Use uppercase letters',

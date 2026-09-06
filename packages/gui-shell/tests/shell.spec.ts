@@ -107,7 +107,7 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
   try {
     application = await electron.launch({
       executablePath: electronExecutable,
-      args: [launcherPath, fixturePath],
+      args: [launcherPath, fixturePath, '--locale', 'en'],
       cwd: packageDirectory,
     });
 
@@ -127,6 +127,7 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     });
 
     await expect(page.locator('#product-name')).toHaveText('RUNE Shell Smoke');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page).toHaveTitle('Custom shell window');
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
@@ -228,6 +229,7 @@ test('keeps Install disabled for the current summary plan only', async () => {
     const page = await application.firstWindow();
     const install = page.locator('#next');
 
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await install.click();
     await expect(page.locator('.result-heading')).toHaveText('Summary');
     await expect(install).toBeDisabled();

@@ -110,6 +110,7 @@ function optionalText(key: string): string | undefined {
 function applyStrings(strings: BridgeStrings): void {
   state.strings = strings.entries;
   state.displayProduct = strings.displayProduct;
+  document.documentElement.lang = strings.locale ?? 'en';
   el.productName.textContent = strings.displayProduct.name;
   el.productVersion.textContent = strings.displayProduct.version;
 }

@@ -44,6 +44,7 @@ test('renders localized progress, result counters, and warnings', async () => {
     const page = await application.firstWindow();
     const next = page.locator('#next');
 
+    await expect(page.locator('html')).toHaveAttribute('lang', 'de');
     await next.click();
     await expect(page.locator('.field[data-id="token"]')).toBeVisible();
     await expect(next).toBeEnabled();
@@ -108,6 +109,23 @@ test('renders localized progress, result counters, and warnings', async () => {
           /LOKAL ENDE SUCCEEDED CODE 0 ZEIT \d+(?:\.\d+)?\nLOKAL ENDE SKIPPED OHNE CODE ZEIT \d+(?:\.\d+)?/,
         ),
       });
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps the selected regional locale when a language overlay supplies chrome', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, fixturePath, '--locale', 'de-DE'],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+
+    await expect(page.locator('html')).toHaveAttribute('lang', 'de-DE');
   } finally {
     await application?.close();
   }

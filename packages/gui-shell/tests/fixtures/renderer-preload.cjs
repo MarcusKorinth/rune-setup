@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('rune', {
   execute: async () => result(),
   cancel: async () => undefined,
   getStrings: async () => ({
+    locale: null,
     entries: {
       'rune.page.welcome.title': 'Welcome',
       'rune.page.summary.title': 'Summary',
