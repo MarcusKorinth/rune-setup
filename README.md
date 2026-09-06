@@ -11,15 +11,16 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE is at **v0.1.0** — the complete MVP application: the engine library,
-`rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and the
-graphical wizard via `rune run --gui`), locale overlays, and the Electron GUI shell.
+The RUNE source tree is at **v0.1.0** — the source-complete MVP application: the engine
+library, `rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and
+the graphical wizard via `rune run --gui`), locale overlays, and the Electron GUI shell.
 [docs/architecture.md](docs/architecture.md) is the binding contract;
-[docs/roadmap.md](docs/roadmap.md) tracks what comes after (next: `rune package`).
+[docs/roadmap.md](docs/roadmap.md) tracks what comes after (next: shell release engineering
+and `rune package`).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
-install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
-users of a packaged installer need nothing installed.
+install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`). The
+future packaged installer produced by `rune package` needs nothing installed.
 
 ## The idea
 
@@ -77,8 +78,9 @@ steps:
         args: [scripts/install-database.sh, "${databasePort}"]
 ```
 
-The same manifest, three ways (the graphical shell is fetched once with
-`rune gui install`):
+The same manifest, three ways. In the v0.1.0 source tree, shell developers point
+`RUNE_GUI_SHELL` at `packages/gui-shell`; `rune gui install` consumes the prebuilt shell
+artifacts that arrive with M4 release engineering:
 
 ```bash
 rune run installer.yaml
@@ -94,22 +96,21 @@ rune run installer.yaml --non-interactive --values pipeline-values.yaml --result
 
 ## The graphical wizard
 
-The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
-on the target machine, runs without admin rights, and looks identical on every platform
-because it ships its own rendering engine. Its main process hosts the RUNE engine
-in-process; its window is a pure renderer that reaches the engine only through an IPC
+The wizard shell is an Electron-based app whose main process hosts the RUNE engine
+in-process. Its window is a pure renderer that reaches the engine only through an IPC
 bridge — all planning, validation and execution happen in the engine, exactly as in the
-two CLI modes.
+two CLI modes. Source checkouts launch it through `RUNE_GUI_SHELL`; M4 publishes the
+prebuilt author shell and the self-contained end-user artifact.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — `rune gui install` fetches the prebuilt shell for your OS into a
-  per-user cache (no admin rights; run once before `rune run --gui`); `rune package`
-  (roadmap milestone 4) bundles shell, engine and manifest into one portable end-user
-  artifact that needs nothing installed
+- **Author tooling** — once M4 release artifacts are available, `rune gui install` fetches
+  the prebuilt shell for your OS into a per-user cache without admin rights
+- **End-user delivery** — `rune package` (roadmap milestone 4) bundles shell, engine and
+  manifest into one portable artifact that needs nothing installed
 
 ## Design principles
 
