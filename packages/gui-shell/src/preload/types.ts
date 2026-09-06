@@ -21,7 +21,7 @@ export interface RuneBridge {
   getStrings(): Promise<Readonly<Record<string, string>>>;
   getThemeConfig(): Promise<BridgeTheme>;
   /** The §10 warnings the Result page surfaces — same run, same warnings, every mode. */
-  warnings(): Promise<readonly string[]>;
+  warnings(): Promise<readonly BridgeWarning[]>;
   /** Signals that the result page is done and the shell may close with the run's code. */
   done(): Promise<void>;
   onEvent(listener: (event: BridgeEvent) => void): void;
@@ -150,6 +150,7 @@ export type BridgePlannedStep =
       readonly title: string;
       readonly state: 'PENDING';
       readonly command: BridgePlannedCommand;
+      readonly displayCommand: string;
     }
   | {
       readonly id: string;
@@ -181,6 +182,12 @@ export interface BridgeStep {
   readonly command: readonly string[] | null;
   readonly skipReason: string | null;
   readonly outputTail?: readonly { readonly stream: BridgeStream; readonly line: string }[];
+  readonly displayTitle: string;
+}
+
+export interface BridgeWarning {
+  readonly message: string;
+  readonly displayText: string;
 }
 
 export interface BridgeResultInput {
@@ -245,6 +252,7 @@ export interface BridgeResult {
   readonly nothingExecuted: boolean;
   readonly inputs: readonly BridgeResultInput[];
   readonly steps: readonly BridgeStep[];
+  readonly displaySummary: string;
 }
 
 export interface BridgeTheme {
@@ -259,19 +267,21 @@ export interface BridgeTheme {
 }
 
 export type BridgeEvent =
-  | { readonly kind: 'runStarted'; readonly plan: BridgePlan }
+  | { readonly kind: 'runStarted'; readonly plan: BridgePlan; readonly displayText: string }
   | {
       readonly kind: 'stepStarted';
       readonly stepId: string;
       readonly index: number;
       readonly total: number;
       readonly title: string;
+      readonly displayText: string;
     }
   | {
       readonly kind: 'stepOutput';
       readonly stepId: string;
       readonly stream: BridgeStream;
       readonly line: string;
+      readonly displayText: string;
     }
   | {
       readonly kind: 'stepFinished';
@@ -280,5 +290,6 @@ export type BridgeEvent =
       /** Absent when the step has no exit code. */
       readonly exitCode?: number;
       readonly durationMs: number;
+      readonly displayText: string;
     }
   | { readonly kind: 'runFinished'; readonly result: BridgeResult };

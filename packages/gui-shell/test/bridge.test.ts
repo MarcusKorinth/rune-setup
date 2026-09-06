@@ -21,7 +21,7 @@ vi.mock('electron', () => ({
 }));
 
 import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
-import type { BridgeEvent, BridgeInput, BridgePlan } from '../src/preload/types.js';
+import type { BridgeEvent, BridgeInput, BridgePlan, BridgeResult } from '../src/preload/types.js';
 import { completeWrite } from './stream-fixture.js';
 
 function fixture(): string {
@@ -140,6 +140,79 @@ function structuredProjectionFixture(): string {
   return path;
 }
 
+function composedDisplayFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-composed-display-'));
+  const localeDir = join(dir, 'locales');
+  mkdirSync(localeDir);
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Composed display',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  runStartedBoundary:',
+      '    type: secret',
+      '  stepStartedBoundary:',
+      '    type: secret',
+      '  outputBoundary:',
+      '    type: secret',
+      '  summaryBoundary:',
+      '    type: secret',
+      '  warningBoundary:',
+      '    type: secret',
+      '  commandBoundary:',
+      '    type: secret',
+      '  titleBoundary:',
+      '    type: secret',
+      'steps:',
+      '  - id: install',
+      '    title: Install',
+      '    run:',
+      '      command: hello',
+      '      args: [world]',
+      '  - id: warning',
+      '    run:',
+      '      command: node',
+      '      args: [noop.cjs, "${warningBoundary}"]',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(localeDir, 'de.yaml'),
+    ["rune.progress.output: 'Output {line}'", "rune.warning: 'Warning {message}'", ''].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
+function planWithoutPresentation(plan: BridgePlan): unknown {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      if (step.state === 'SKIPPED') {
+        return step;
+      }
+      const { displayCommand: _displayCommand, ...machineStep } = step;
+      return machineStep;
+    }),
+  };
+}
+
+function resultWithoutPresentation(result: BridgeResult): unknown {
+  const { displaySummary: _displaySummary, ...machineResult } = result;
+  return {
+    ...machineResult,
+    steps: machineResult.steps.map((step) => {
+      const { displayTitle: _displayTitle, ...machineStep } = step;
+      return machineStep;
+    }),
+  };
+}
+
 async function bridgeOver(session: Session): Promise<{
   channels: string[];
   call: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -232,12 +305,17 @@ describe('the IPC bridge', () => {
     await expect(handlers.get('rune:execute')?.()).rejects.toThrow('RUNE-406');
 
     expect(errors).toEqual([{ error: failure, plan: expectedPlan, terminalResult }]);
-    expect(sent).toEqual([
-      {
-        channel: EVENT_CHANNEL,
-        payload: { kind: 'runFinished', result: JSON.parse(JSON.stringify(terminalResult)) },
-      },
-    ]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.channel).toBe(EVENT_CHANNEL);
+    const event = sent[0]?.payload as BridgeEvent;
+    expect(event.kind).toBe('runFinished');
+    if (event.kind !== 'runFinished') {
+      throw new Error('the terminal event was not runFinished');
+    }
+    expect(resultWithoutPresentation(event.result)).toEqual(
+      JSON.parse(JSON.stringify(terminalResult)),
+    );
+    expect(event.result.displaySummary).toContain('planned:');
     execute.mockRestore();
   });
 
@@ -344,7 +422,7 @@ describe('the IPC bridge', () => {
       windowTitle: string;
     };
     const plan = (await bridge.call('rune:plan')) as BridgePlan;
-    const result = (await bridge.call('rune:describe')) as RunResult;
+    const result = (await bridge.call('rune:describe')) as BridgeResult;
     const step = plan.steps[0];
     if (step?.state !== 'PENDING') {
       throw new Error('the structured projection fixture did not produce a pending step');
@@ -496,12 +574,12 @@ describe('the IPC bridge', () => {
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
-    vi.spyOn(Session.prototype, 'warnings').mockImplementation(() => {
+    const warnings = vi.spyOn(Session.prototype, 'warnings').mockImplementation(() => {
       throw new Error('generic failure contains super-secret-value');
     });
-    vi.spyOn(Session.prototype, 'getThemeConfig').mockImplementation(() =>
-      throwValue('non-Error failure contains super-secret-value'),
-    );
+    const theme = vi
+      .spyOn(Session.prototype, 'getThemeConfig')
+      .mockImplementation(() => throwValue('non-Error failure contains super-secret-value'));
     const bridge = await bridgeOver(session);
 
     const runeError = await rejectedBy(bridge.call('rune:setValue', 'super-secret-value', true));
@@ -516,6 +594,8 @@ describe('the IPC bridge', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain('super-secret-value');
     }
+    warnings.mockRestore();
+    theme.mockRestore();
   });
 
   it('masks a secret formed across the bridge prefix and a real validation issue', async () => {
@@ -556,7 +636,8 @@ describe('the IPC bridge', () => {
         location: { file: 'answers.yaml', line: 8, column: 9 },
       },
     ]);
-    vi.spyOn(Session.prototype, 'warnings')
+    const warnings = vi
+      .spyOn(Session.prototype, 'warnings')
       .mockImplementationOnce(() => {
         throw located;
       })
@@ -574,6 +655,7 @@ describe('the IPC bridge', () => {
       'RUNE-202 (exit 4): answers.yaml:7:9: first invalid value\\n' +
         'answers.yaml:8:9: second invalid value',
     );
+    warnings.mockRestore();
   });
 
   it('projects Session.plan exactly once as plain masked plan data', async () => {
@@ -595,7 +677,7 @@ describe('the IPC bridge', () => {
 
     expect(planSpy).toHaveBeenCalledTimes(1);
     expect(describeSpy).not.toHaveBeenCalled();
-    expect(plan).toEqual(expected);
+    expect(planWithoutPresentation(plan)).toEqual(expected);
     expect(plan).toMatchObject({
       planSchemaVersion: 1,
       manifestPath,
@@ -661,11 +743,142 @@ describe('the IPC bridge', () => {
     expect(plan.steps[0]).not.toHaveProperty('exitCode');
     expect(plan.steps[0]).not.toHaveProperty('durationMs');
     expect(plan.steps[0]).not.toHaveProperty('outputTail');
+    expect(plan.steps[0]).toHaveProperty('displayCommand', '*** --token *** ***');
     expect(plan.steps[1]).not.toHaveProperty('command');
     expect(JSON.parse(JSON.stringify(plan))).toEqual(plan);
     expect(JSON.stringify(plan)).not.toContain('super-secret-value');
     expect(JSON.stringify(inputs)).not.toContain('super-secret-value');
     expect(JSON.stringify(plan)).toContain('***');
+  });
+
+  it('masks complete GUI display composition while preserving every projected machine field', async () => {
+    const secrets = {
+      runStartedBoundary: 'running 2',
+      stepStartedBoundary: 'Step 1',
+      outputBoundary: 'Output hello',
+      summaryBoundary: 'failed: 0',
+      warningBoundary: 'Warning steps',
+      commandBoundary: 'hello world',
+      titleBoundary: 'Install (exit 9)',
+    } as const;
+    const session = await Session.open(composedDisplayFixture(), {
+      environment: {},
+      locale: 'de',
+      mode: 'gui',
+      overrides: secrets,
+    });
+    const rawPlan = session.plan();
+    const described = session.describe();
+    const failedResult = {
+      ...described,
+      status: 'failed',
+      exitCode: 1,
+      dryRun: false,
+      error: null,
+      stepsExecuted: 1,
+      stepsFailed: 1,
+      stepsNotRun: 1,
+      nothingExecuted: false,
+      steps: described.steps.map((step, index) =>
+        index === 0
+          ? { ...step, state: 'FAILED' as const, exitCode: 9, durationMs: 4 }
+          : { ...step, state: 'NOT_RUN' as const, exitCode: null, durationMs: 0 },
+      ),
+    } as RunResult;
+    const execute = vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+      const events: RunEvent[] = [
+        { kind: 'runStarted', plan: rawPlan },
+        { kind: 'stepStarted', stepId: 'install', index: 0, total: 2, title: 'Install' },
+        { kind: 'stepOutput', stepId: 'install', stream: 'stdout', line: 'hello output' },
+        { kind: 'stepFinished', stepId: 'install', state: 'FAILED', exitCode: 9, durationMs: 4 },
+        { kind: 'runFinished', result: failedResult },
+      ];
+      for (const event of events) {
+        observer?.(event);
+      }
+      return failedResult;
+    });
+    const bridge = await bridgeOver(session);
+    const plan = (await bridge.call('rune:plan')) as BridgePlan;
+    const warnings = (await bridge.call('rune:warnings')) as readonly {
+      message: string;
+      displayText: string;
+    }[];
+    const result = (await bridge.call('rune:execute')) as BridgeResult;
+
+    expect(planWithoutPresentation(plan)).toEqual(JSON.parse(JSON.stringify(rawPlan)));
+    const firstPlanStep = plan.steps[0];
+    expect(firstPlanStep?.state).toBe('PENDING');
+    if (firstPlanStep?.state !== 'PENDING') {
+      throw new Error('the composed-display plan did not contain its pending step');
+    }
+    expect(firstPlanStep.command.argv).toEqual(['hello', 'world']);
+    expect(firstPlanStep.displayCommand).toBe('***');
+    expect(warnings).toEqual([
+      {
+        message:
+          'steps[1].run.args[1] interpolates secret input "warningBoundary" into argv, ' +
+          'which may be visible in OS process listings — use env: instead',
+        displayText:
+          '***[1].run.args[1] interpolates secret input "warningBoundary" into argv, ' +
+          'which may be visible in OS process listings — use env: instead',
+      },
+    ]);
+    expect(resultWithoutPresentation(result)).toEqual(JSON.parse(JSON.stringify(failedResult)));
+    expect(result.displaySummary).toMatch(/^\*\*\* succeeded/);
+    expect(result.steps[0]).toMatchObject({
+      title: 'Install',
+      exitCode: 9,
+      displayTitle: '***',
+    });
+
+    expect(bridge.sent).toHaveLength(5);
+    const [runStarted, stepStarted, stepOutput, stepFinished, runFinished] = bridge.sent.map(
+      ({ payload }) => payload as BridgeEvent,
+    );
+    expect(runStarted).toMatchObject({
+      kind: 'runStarted',
+      displayText: `*** steps on ${rawPlan.platform}`,
+    });
+    expect(stepStarted).toMatchObject({
+      kind: 'stepStarted',
+      stepId: 'install',
+      index: 0,
+      total: 2,
+      title: 'Install',
+      displayText: '*** of 2: Install',
+    });
+    expect(stepOutput).toEqual({
+      kind: 'stepOutput',
+      stepId: 'install',
+      stream: 'stdout',
+      line: 'hello output',
+      displayText: '*** output',
+    });
+    expect(stepFinished).toMatchObject({
+      kind: 'stepFinished',
+      stepId: 'install',
+      state: 'FAILED',
+      exitCode: 9,
+      durationMs: 4,
+      displayText: '  -> FAILED (exit 9) after 4ms',
+    });
+    expect(runFinished?.kind).toBe('runFinished');
+    if (runStarted?.kind !== 'runStarted' || runFinished?.kind !== 'runFinished') {
+      throw new Error('the composed-display run was not bracketed');
+    }
+    expect(planWithoutPresentation(runStarted.plan)).toEqual(JSON.parse(JSON.stringify(rawPlan)));
+    expect(resultWithoutPresentation(runFinished.result)).toEqual(
+      JSON.parse(JSON.stringify(failedResult)),
+    );
+    expect(runFinished.result.displaySummary).toBe(result.displaySummary);
+    expect(bridge.sent.every(({ channel }) => channel === EVENT_CHANNEL)).toBe(true);
+
+    const projected = JSON.stringify({ plan, warnings, result, events: bridge.sent });
+    for (const secret of Object.values(secrets)) {
+      expect(projected).not.toContain(secret);
+    }
+    execute.mockRestore();
   });
 
   it('returns the InputStateChanged list as the resolved value of setValue', async () => {
@@ -732,14 +945,18 @@ describe('the IPC bridge', () => {
     expect(bridge.sent.length).toBeGreaterThan(0);
     expect(bridge.sent[0]).toEqual({
       channel: EVENT_CHANNEL,
-      payload: { kind: 'runStarted', plan },
+      payload: {
+        kind: 'runStarted',
+        plan,
+        displayText: `running 2 steps on ${plan.platform}`,
+      },
     });
     const started = bridge.sent[0]?.payload as BridgeEvent | undefined;
     if (started?.kind !== 'runStarted') {
       throw new Error('the first event was not runStarted');
     }
-    expect(plan).toEqual(expectedPlan);
-    expect(started.plan).toEqual(expectedPlan);
+    expect(planWithoutPresentation(plan)).toEqual(expectedPlan);
+    expect(planWithoutPresentation(started.plan)).toEqual(expectedPlan);
     const use = started.plan.steps[0];
     if (use?.state !== 'PENDING') {
       throw new Error('the first planned step was not pending');

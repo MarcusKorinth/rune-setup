@@ -39,7 +39,14 @@ import {
 } from '@rune/engine';
 
 import { parseShellArgv, type ShellInvocation } from './argv.js';
-import { project, projectEvent, projectPlan, projectResult, projectTheme } from './serialize.js';
+import {
+  project,
+  projectEvent,
+  projectPlan,
+  projectResult,
+  projectTheme,
+  projectWarnings,
+} from './serialize.js';
 import { guardShellStreams, type ShellProcessStreams, type ShellStreams } from './streams.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
@@ -499,11 +506,11 @@ export function registerBridge(
   handle('rune:pendingInputs', () => session.pendingInputs());
   handle('rune:allInputs', () => session.allInputs());
   handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
-  handle('rune:plan', () => projectPlan(session.plan()));
-  handle('rune:describe', () => projectResult(session.describe()));
+  handle('rune:plan', () => projectPlan(session.plan(), session.getStrings()));
+  handle('rune:describe', () => projectResult(session.describe(), session.getStrings()));
   handle('rune:getStrings', () => session.getStrings().entries);
   handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig()));
-  handle('rune:warnings', () => session.warnings());
+  handle('rune:warnings', () => projectWarnings(session.warnings(), session.getStrings()));
   handle('rune:cancel', () => {
     session.cancel();
     return undefined;
@@ -527,7 +534,7 @@ export function registerBridge(
         try {
           consoleObserver(event);
         } finally {
-          hooks.events.send(EVENT_CHANNEL, projectEvent(event));
+          hooks.events.send(EVENT_CHANNEL, projectEvent(event, session.getStrings()));
         }
       });
     } catch (error) {
@@ -537,7 +544,7 @@ export function registerBridge(
     // Completion owns result delivery. Its rejection must bypass the engine-failure hook,
     // because §10 permits exactly one attempt to deliver a configured result.
     await hooks.onExecuteEnd?.(result);
-    return projectResult(result);
+    return projectResult(result, session.getStrings());
   });
   handle('rune:done', async () => {
     await hooks.onRendererDone?.();

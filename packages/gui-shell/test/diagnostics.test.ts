@@ -432,7 +432,15 @@ describe('the GUI shell stderr diagnostics', () => {
     );
     expect(terminalEvent).toEqual({
       channel: 'rune:event',
-      payload: { kind: 'runFinished', result: serialized },
+      payload: {
+        kind: 'runFinished',
+        result: {
+          ...serialized,
+          displaySummary:
+            'failed: 1 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 1)',
+          steps: [{ ...serialized.steps[0], displayTitle: 'completed (exit 0)' }],
+        },
+      },
     });
   });
 

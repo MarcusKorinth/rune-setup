@@ -88,6 +88,7 @@ describe('the preload bridge', () => {
         executionOptions: { failFast: true },
         steps: [],
       },
+      displayText: 'running 0 steps on linux',
     } satisfies BridgeEvent;
     listener(undefined, runStarted);
     expect(seen).toEqual([runStarted]);

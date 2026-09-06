@@ -23,8 +23,25 @@ function plan(title) {
           timeoutSeconds: null,
           successExitCodes: [0],
         },
+        displayCommand: `echo ${title}`,
       },
     ],
+  };
+}
+
+function result() {
+  return {
+    status: 'succeeded',
+    exitCode: 0,
+    nothingExecuted: false,
+    stepsSucceeded: 1,
+    stepsFailed: 0,
+    stepsCancelled: 0,
+    stepsSkipped: 0,
+    stepsNotRun: 0,
+    stepsTotal: 1,
+    steps: [],
+    displaySummary: 'succeeded: 1 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 0)',
   };
 }
 
@@ -41,18 +58,7 @@ contextBridge.exposeInMainWorld('rune', {
     new Promise((resolve) => {
       pendingPlans.push(resolve);
     }),
-  execute: async () => ({
-    status: 'succeeded',
-    exitCode: 0,
-    nothingExecuted: false,
-    stepsSucceeded: 1,
-    stepsFailed: 0,
-    stepsCancelled: 0,
-    stepsSkipped: 0,
-    stepsNotRun: 0,
-    stepsTotal: 1,
-    steps: [],
-  }),
+  execute: async () => result(),
   cancel: async () => undefined,
   getStrings: async () => ({
     'rune.page.welcome.title': 'Welcome',
@@ -108,6 +114,7 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
       stepId: 'test-step',
       stream: 'stdout',
       line,
+      displayText: `  ${line}`,
     });
   },
   emitStepStarted: (index, total) => {
@@ -117,6 +124,7 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
       index,
       total,
       title: 'test step',
+      displayText: `Step ${index + 1} of ${total}: test step`,
     });
   },
   emitFinished: () => {
@@ -125,12 +133,13 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
       stepId: 'test-step',
       state: 'SUCCEEDED',
       durationMs: 1,
+      displayText: '  -> SUCCEEDED after 1ms',
     });
   },
   emitRunFinished: () => {
     eventListener?.({
       kind: 'runFinished',
-      result: {},
+      result: result(),
     });
   },
 });

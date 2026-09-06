@@ -1,0 +1,25 @@
+schemaVersion: 1
+product:
+  name: Composed display smoke
+  version: 1.0.0
+inputs:
+  runStartedBoundary:
+    type: secret
+  stepStartedBoundary:
+    type: secret
+  outputBoundary:
+    type: secret
+  summaryBoundary:
+    type: secret
+  warningBoundary:
+    type: secret
+  commandBoundary:
+    type: secret
+  titleBoundary:
+    type: secret
+steps:
+  - id: install
+    title: Install
+    run:
+      command: node
+      args: [boundary-step.cjs, '${warningBoundary}']

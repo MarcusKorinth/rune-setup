@@ -31,7 +31,10 @@ interface SummaryTestControl {
   planCount(): number;
   resolvePlan(index: number, title: string): void;
   warningCount(): number;
-  resolveWarnings(index: number, warnings: readonly string[]): void;
+  resolveWarnings(
+    index: number,
+    warnings: readonly { readonly message: string; readonly displayText: string }[],
+  ): void;
   doneCount(): number;
   emitOutput(line: string): void;
   emitStepStarted(index: number, total: number): void;
@@ -326,7 +329,9 @@ test('waits for Result warnings before allowing Finish', async () => {
     await page.evaluate(() =>
       (
         window as unknown as { summaryTestControl: SummaryTestControl }
-      ).summaryTestControl.resolveWarnings(0, ['A required warning']),
+      ).summaryTestControl.resolveWarnings(0, [
+        { message: 'A required warning', displayText: 'warning: A required warning' },
+      ]),
     );
     await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
     await expect(page.locator('.result-sub')).toContainText([

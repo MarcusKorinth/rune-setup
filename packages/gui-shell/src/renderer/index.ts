@@ -12,6 +12,7 @@ import type {
   BridgeInput,
   BridgePlan,
   BridgeResult,
+  BridgeWarning,
   RuneBridge,
 } from '../preload/types.js';
 
@@ -50,7 +51,7 @@ interface State {
   inputPages: number;
   page: PageName;
   result: BridgeResult | undefined;
-  warnings: readonly string[];
+  warnings: readonly BridgeWarning[];
   banner: string | undefined;
   productName: string;
   productVersion: string;
@@ -89,13 +90,6 @@ const el = {
   productName: document.getElementById('product-name') as HTMLElement,
   productVersion: document.getElementById('product-version') as HTMLElement,
 };
-
-function chrome(key: string, values: Record<string, string | number> = {}): string {
-  const template = state.strings[key] ?? key;
-  return template.replace(/\{([A-Za-z]+)\}/g, (match, name: string) =>
-    values[name] === undefined ? match : String(values[name]),
-  );
-}
 
 function text(key: string): string {
   return state.strings[key] ?? '';
@@ -576,7 +570,7 @@ async function renderSummary(version: number): Promise<void> {
     row.append(title);
     const detail = document.createElement('div');
     detail.className = 'command';
-    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.command.argv.join(' ');
+    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.displayCommand;
     row.append(detail);
     el.page.append(row);
   }
@@ -668,36 +662,18 @@ function onRunEvent(event: BridgeEvent): void {
     return;
   }
   if (event.kind === 'runStarted') {
-    progress.title.textContent = chrome('rune.progress.runStarted', {
-      total: event.plan.steps.length,
-      platform: event.plan.platform,
-    });
+    progress.title.textContent = event.displayText;
   }
   if (event.kind === 'stepStarted') {
-    progress.title.textContent = chrome('rune.progress.step', {
-      index: event.index + 1,
-      total: event.total,
-      title: event.title,
-    });
+    progress.title.textContent = event.displayText;
     const fraction = event.total > 0 ? event.index / event.total : 0;
     progress.bar.value = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
   }
   if (event.kind === 'stepOutput') {
-    appendLiveLog(chrome('rune.progress.output', { line: event.line }));
+    appendLiveLog(event.displayText);
   }
   if (event.kind === 'stepFinished') {
-    appendLiveLog(
-      chrome(
-        event.exitCode === undefined
-          ? 'rune.progress.stepFinishedWithoutExitCode'
-          : 'rune.progress.stepFinished',
-        {
-          state: event.state,
-          durationMs: event.durationMs,
-          ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
-        },
-      ),
-    );
+    appendLiveLog(event.displayText);
   }
   if (event.kind === 'runFinished') {
     progress.bar.value = progress.bar.max;
@@ -724,24 +700,14 @@ function renderResult(): void {
   const sub = document.createElement('p');
   sub.className = 'result-sub';
   sub.textContent =
-    result.nothingExecuted && ok
-      ? text('rune.result.nothingExecuted')
-      : chrome('rune.result.summary', {
-          status: result.status,
-          succeeded: result.stepsSucceeded,
-          failed: result.stepsFailed,
-          skipped: result.stepsSkipped,
-          cancelled: result.stepsCancelled,
-          notRun: result.stepsNotRun,
-          exitCode: result.exitCode,
-        });
+    result.nothingExecuted && ok ? text('rune.result.nothingExecuted') : result.displaySummary;
   el.page.append(badge, heading, sub);
 
   // The §10 warnings: the same run never warns in one mode and stays silent in another.
   for (const warning of state.warnings) {
     const line = document.createElement('p');
     line.className = 'result-sub';
-    line.textContent = chrome('rune.warning', { message: warning });
+    line.textContent = warning.displayText;
     el.page.append(line);
   }
 
@@ -751,7 +717,7 @@ function renderResult(): void {
     }
     const row = div('result-step');
     const title = document.createElement('strong');
-    title.textContent = `${step.title} (exit ${step.exitCode ?? '?'})`;
+    title.textContent = step.displayTitle;
     const tail = document.createElement('div');
     tail.className = 'tail';
     tail.textContent = (step.outputTail ?? []).map((entry) => entry.line).join('\n');
