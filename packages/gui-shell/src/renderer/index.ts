@@ -26,6 +26,13 @@ const INPUTS_PER_PAGE = 5;
 const LIVE_LOG_MAX_CHARACTERS = 20_000;
 const LIVE_LOG_PENDING_MAX_CHARACTERS = LIVE_LOG_MAX_CHARACTERS * 2;
 
+interface FieldIds {
+  readonly control: string;
+  readonly label: string;
+  readonly description: string;
+  readonly error: string;
+}
+
 /** The renderer's field registry — asserted against the manifest's types at open (§9.3). */
 const RENDERABLE_TYPES = new Set([
   'text',
@@ -327,28 +334,73 @@ function renderField(input: BridgeInput): HTMLElement {
     field.classList.add('invalid');
   }
 
+  const ids = fieldIds(input.id);
+  const description = text(`inputs.${input.id}.description`);
+  const problem = state.invalid.get(input.id);
+  const describedBy = [
+    description === '' ? undefined : ids.description,
+    problem === undefined ? undefined : ids.error,
+  ]
+    .filter((id): id is string => id !== undefined)
+    .join(' ');
+
   const label = document.createElement('label');
+  label.id = ids.label;
+  if (input.spec.type !== 'multiselect') {
+    label.htmlFor = ids.control;
+  }
   label.textContent = text(`inputs.${input.id}.title`);
   field.append(label);
 
-  const description = text(`inputs.${input.id}.description`);
   if (description !== '') {
     const paragraph = document.createElement('p');
+    paragraph.id = ids.description;
     paragraph.className = 'description';
     paragraph.textContent = description;
     field.append(paragraph);
   }
 
-  field.append(renderControl(input));
+  const control = renderControl(input);
+  configureControl(control, ids.control, describedBy, problem !== undefined);
+  if (input.spec.type === 'multiselect') {
+    control.setAttribute('role', 'group');
+    control.setAttribute('aria-labelledby', ids.label);
+  }
+  field.append(control);
 
-  const problem = state.invalid.get(input.id);
   if (problem !== undefined) {
     const error = document.createElement('p');
+    error.id = ids.error;
     error.className = 'error';
     error.textContent = problem;
     field.append(error);
   }
   return field;
+}
+
+function fieldIds(inputId: string): FieldIds {
+  const base = `rune-input-${encodeURIComponent(inputId)}`;
+  return {
+    control: `${base}-control`,
+    label: `${base}-label`,
+    description: `${base}-description`,
+    error: `${base}-error`,
+  };
+}
+
+function configureControl(
+  control: HTMLElement,
+  id: string,
+  describedBy: string,
+  invalid: boolean,
+): void {
+  control.id = id;
+  if (describedBy !== '') {
+    control.setAttribute('aria-describedby', describedBy);
+  }
+  if (invalid) {
+    control.setAttribute('aria-invalid', 'true');
+  }
 }
 
 function renderControl(input: BridgeInput): HTMLElement {
@@ -438,10 +490,12 @@ function selectBox(input: BridgeInput): HTMLElement {
 
 function multiselect(input: BridgeInput): HTMLElement {
   const container = document.createElement('div');
+  const controlId = fieldIds(input.id).control;
   const chosen = new Set(Array.isArray(input.value) ? input.value : []);
-  for (const value of input.spec.options ?? []) {
+  for (const [index, value] of (input.spec.options ?? []).entries()) {
     const row = div('option-row');
     const box = document.createElement('input');
+    box.id = `${controlId}-option-${index}`;
     box.type = 'checkbox';
     box.checked = chosen.has(value);
     box.disabled = !input.enabled;
@@ -453,7 +507,8 @@ function multiselect(input: BridgeInput): HTMLElement {
       }
       void submit(input.id, [...chosen]);
     });
-    const label = document.createElement('span');
+    const label = document.createElement('label');
+    label.htmlFor = box.id;
     label.textContent = text(`inputs.${input.id}.options.${value}.label`);
     row.append(box, label);
     container.append(row);

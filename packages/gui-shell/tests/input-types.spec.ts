@@ -33,6 +33,24 @@ test('submits every enabled input type through the real Electron shell', async (
     const channel = page.locator('.field[data-id="channel"] select');
     const components = page.locator('.field[data-id="components"]');
 
+    await expect(release).toHaveAccessibleName('Release name');
+    await expect(token).toHaveAccessibleName('Access token');
+    await expect(continueSelect).toHaveAccessibleName('Continue');
+    await expect(channel).toHaveAccessibleName('Channel');
+    await expect(components.getByRole('group')).toHaveAccessibleName('Components');
+    await expect(components.getByRole('checkbox', { name: 'Core component' })).toBeVisible();
+    await expect(components.getByRole('checkbox', { name: 'Extra component' })).toBeVisible();
+
+    for (const [field, control] of [
+      [page.locator('.field[data-id="releaseName"]'), release],
+      [page.locator('.field[data-id="accessToken"]'), token],
+      [page.locator('.field[data-id="continue"]'), continueSelect],
+      [page.locator('.field[data-id="channel"]'), channel],
+    ] as const) {
+      await field.locator('label').first().click();
+      await expect(control).toBeFocused();
+    }
+
     await expect(token).toHaveAttribute('type', 'password');
     await expect(channel.locator('option[value="stable-value"]')).toHaveText('Stable channel');
     await expect(components).toContainText('Core component');
@@ -44,21 +62,21 @@ test('submits every enabled input type through the real Electron shell', async (
     await token.dispatchEvent('change');
     await continueSelect.selectOption('false');
     await channel.selectOption('stable-value');
-    await components
-      .locator('.option-row')
-      .filter({ hasText: 'Core component' })
-      .locator('input')
-      .check();
-    await components
-      .locator('.option-row')
-      .filter({ hasText: 'Extra component' })
-      .locator('input')
-      .check();
+    await components.getByText('Core component', { exact: true }).click();
+    await expect(components.getByRole('checkbox', { name: 'Core component' })).toBeChecked();
+    await components.getByText('Extra component', { exact: true }).click();
+    await expect(components.getByRole('checkbox', { name: 'Extra component' })).toBeChecked();
     await expect(next).toBeEnabled();
     await next.click();
 
     const file = page.locator('.field[data-id="sourceFile"] input');
     const directory = page.locator('.field[data-id="targetDirectory"] input');
+    await expect(file).toHaveAccessibleName('Source file');
+    await expect(directory).toHaveAccessibleName('Target directory');
+    await page.locator('.field[data-id="sourceFile"] label').click();
+    await expect(file).toBeFocused();
+    await page.locator('.field[data-id="targetDirectory"] label').click();
+    await expect(directory).toBeFocused();
     await expect(file).toHaveAttribute('type', 'text');
     await expect(directory).toHaveAttribute('type', 'text');
     await file.fill(sourceFile);

@@ -37,9 +37,9 @@ async function expectEmptyStrings(application: ElectronApplication): Promise<voi
   await expect(selectField.locator('label')).toHaveText('');
   await expect(selectField.locator('.description')).toHaveCount(0);
   await expect(selectField.locator('option[value="select-value"]')).toHaveText('');
-  await expect(multiselectField.locator('label')).toHaveText('');
+  await expect(multiselectField.locator(':scope > label')).toHaveText('');
   await expect(multiselectField.locator('.description')).toHaveCount(0);
-  await expect(multiselectField.locator('.option-row span')).toHaveText('');
+  await expect(multiselectField.locator('.option-row label')).toHaveText('');
 
   const textInput = textField.locator('input');
   await textInput.fill('invalid');
