@@ -159,7 +159,7 @@ test('reports an actual startup RuneError with its exit code and configured resu
   }
 });
 
-test('maps a hard renderer crash during execution to exit 70 without a result', async () => {
+test('maps an unexpected renderer exit during execution to exit 70 without a result', async () => {
   const resultDirectory = await mkdtemp(join(tmpdir(), 'rune-lifecycle-renderer-crash-'));
   const resultPath = join(resultDirectory, 'result.json');
   const dialogCapturePath = join(resultDirectory, 'fatal-dialog.json');
@@ -170,9 +170,12 @@ test('maps a hard renderer crash during execution to exit 70 without a result', 
     application = running.application;
     const exited = appExit(application);
 
-    await application.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0]?.webContents.forcefullyCrashRenderer(),
+    const rendererPid = await application.evaluate(
+      ({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.getOSProcessId() ?? 0,
     );
+    expect(Number.isInteger(rendererPid)).toBe(true);
+    expect(rendererPid).toBeGreaterThan(0);
+    process.kill(rendererPid, 'SIGKILL');
     expect(await exited).toBe(70);
     await expect(access(resultPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const dialog = JSON.parse(await readFile(dialogCapturePath, 'utf8')) as { content: string };
