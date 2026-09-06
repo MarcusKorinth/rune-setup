@@ -1,14 +1,14 @@
 # Roadmap
 
-Current state: **M0–M3 (v0.1.0) complete MVP**, including the engine, CLI modes, and GUI
-shell. [architecture.md](architecture.md) is the binding architectural contract; the next
-core milestone is M4, `rune package` / **0.2.0**.
+Current state: **M0–M3 (v0.1.0) source-complete MVP**, including the engine, CLI modes,
+and GUI shell. [architecture.md](architecture.md) is the binding architectural contract;
+the next core milestone is M4, `rune package` and shell release engineering / **0.2.0**.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
 
 Milestones map to indicative product versions (SemVer, independent of the manifest
-`schemaVersion`, which stays `1` throughout): M0–M3 → **0.1.0** — the complete
+`schemaVersion`, which stays `1` throughout): M0–M3 → **0.1.0** — the source-complete
 application, graphical wizard included — and M4 → **0.2.0**. **The MVP is
 Milestones 0–3 (product 0.1.0)**; Milestone 4 is a committed core milestone beyond
 the MVP.
@@ -96,17 +96,18 @@ Linux with correct exit codes, result file and masked logs.
   properties
 - **theming layers**: manifest `gui:` block (`accentColor`, `logo`, `banner`, `theme`,
   `windowTitle`) and author CSS loaded after the default theme
-- `rune gui install` — prebuilt shell per OS from GitHub Releases into the per-user
-  cache (no admin; the CLI npm package contains no Electron); `rune run --gui`
-  launches it or exits 2 with the hint
+- `rune gui install` command, version handshake, and per-user cache contract; the first
+  prebuilt shell artifacts are published with M4 release engineering. Until then,
+  source checkouts launch the shell through the development-only `RUNE_GUI_SHELL` override
 - IPC-bridge unit test pinning the preload API as a 1:1 projection of the facade
-- dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
-  cancel, crash handling, headless run)
 - **mode-parity suite as release gate**: identical plans, event sequences and results
   across all three frontends (GUI leg = in-process parity client)
 
-## Milestone 4 — `rune package`: self-contained end-user artifact (→ 0.2.0, core roadmap, beyond MVP)
+## Milestone 4 — packaging and release engineering (→ 0.2.0, core roadmap, beyond MVP)
 
+- publish the prebuilt per-OS shell artifacts consumed by `rune gui install`
+- dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
+  cancel, crash handling, headless run), required for shell releases
 - `rune package installer.yaml` produces a portable, per-user-runnable folder/archive
   (Windows: portable `.exe` + folder or zip; Linux: AppImage or tar.gz) via
   **electron-builder**, containing the Electron shell with the engine as plain
