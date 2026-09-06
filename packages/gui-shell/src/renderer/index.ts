@@ -167,7 +167,7 @@ async function boot(): Promise<void> {
   });
 
   window.rune.onEvent(onRunEvent);
-  render();
+  render(true);
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
@@ -219,22 +219,22 @@ async function navigate(direction: 1 | -1): Promise<void> {
       }
     } else {
       state.page = 'progress';
-      render();
+      render(true);
       const result = await window.rune.execute();
       state.warnings = await window.rune.warnings();
       state.result = result;
       state.page = 'result';
-      render();
+      render(true);
       return;
     }
   } else if (state.page === 'result') {
     await window.rune.done();
     return;
   }
-  render();
+  render(true);
 }
 
-function render(): void {
+function render(focusPage = false): void {
   const focusedInputControlId =
     state.page === 'inputs' &&
     !closing &&
@@ -277,6 +277,12 @@ function render(): void {
     ) {
       control.focus();
     }
+  }
+  if (focusPage && !closing) {
+    const heading = el.page.querySelector('h2');
+    const target = heading instanceof HTMLElement ? heading : el.page;
+    target.tabIndex = -1;
+    target.focus();
   }
 }
 
@@ -669,13 +675,16 @@ let progressRenderVersion = 0;
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
+  heading.id = 'rune-page-progress-title';
   heading.className = 'result-heading';
   heading.textContent = text('rune.page.progress.title');
   const bar = document.createElement('progress');
   bar.className = 'progress-track';
   bar.max = 1;
   bar.value = 0;
+  bar.setAttribute('aria-labelledby', heading.id);
   const title = div('progress-title');
+  title.setAttribute('role', 'status');
   const log = div('log');
   el.page.append(heading, bar, title, log);
   progress = { bar, title, log };

@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('rune', {
     entries: {
       'rune.page.welcome.title': 'Welcome',
       'rune.page.summary.title': 'Summary',
+      'rune.page.progress.title': 'Installing',
       'rune.button.back': 'Back',
       'rune.button.cancel': 'Cancel',
       'rune.button.next': 'Next',
