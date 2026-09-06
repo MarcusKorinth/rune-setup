@@ -5,7 +5,7 @@
  * exclusively through the bridge (§9.2); nothing engine-side is reachable another way.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   BrowserWindow,
@@ -21,6 +21,7 @@ import {
   CancelledError,
   InternalError,
   PlatformError,
+  RESULT_LOG_COLLISION_MESSAGE,
   RUNE_VERSION,
   RuneError,
   Session,
@@ -29,6 +30,7 @@ import {
   exitCodeFor,
   formatIssues,
   formatSessionTerminalLine,
+  sameSinkPath,
   serializeResult,
   writeResult,
   type ChromeKey,
@@ -157,6 +159,15 @@ export async function main(
   };
   try {
     const parsedInvocation = parseShellArgv(argv);
+    if (
+      parsedInvocation.result !== undefined &&
+      parsedInvocation.result !== '-' &&
+      parsedInvocation.logFile !== undefined &&
+      sameSinkPath(resolve(parsedInvocation.result), resolve(parsedInvocation.logFile))
+    ) {
+      // Refuse explicit flag collisions before even a malformed manifest can produce a result.
+      throw new UsageError(RESULT_LOG_COLLISION_MESSAGE);
+    }
     invocation = parsedInvocation;
     windowed = !parsedInvocation.nonInteractive;
     const routedSignals = new LatchedSigtermSource();

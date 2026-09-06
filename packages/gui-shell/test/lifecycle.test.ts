@@ -8,6 +8,7 @@ import {
   CancelledError,
   ManifestError,
   PlatformError,
+  RESULT_LOG_COLLISION_MESSAGE,
   Session,
   createFailureResult,
   resultJsonSchema,
@@ -361,6 +362,20 @@ describe('the GUI shell main lifecycle', () => {
     vi.clearAllMocks();
     vi.mocked(app.whenReady).mockResolvedValue();
   });
+
+  it.each(['exact', 'normalized'] as const)(
+    'refuses %s result/log flag collisions before opening an invalid manifest',
+    async (spelling) => {
+      await expectInvocationSinkCollision(spelling);
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'refuses case aliases of the result/log flag destination on Windows',
+    async () => {
+      await expectInvocationSinkCollision('windows-case');
+    },
+  );
 
   it('maps invalid argv to usage without waiting for Electron readiness', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-shell-usage-'));
@@ -934,6 +949,37 @@ function deferred<T>(): {
 const resultValidator = z.fromJSONSchema(
   resultJsonSchema() as Parameters<typeof z.fromJSONSchema>[0],
 );
+
+async function expectInvocationSinkCollision(
+  spelling: 'exact' | 'normalized' | 'windows-case',
+): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-shell-flag-collision-'));
+  const manifestPath = join(directory, 'invalid.yaml');
+  const sharedPath = join(directory, 'shared.log');
+  const resultPath =
+    spelling === 'normalized'
+      ? `${directory}/not-created/../shared.log`
+      : spelling === 'windows-case'
+        ? sharedPath.toUpperCase()
+        : sharedPath;
+  const original = 'existing log contents\n';
+  writeFileSync(manifestPath, 'schemaVersion: [', 'utf8');
+  writeFileSync(sharedPath, original, 'utf8');
+  const open = vi.spyOn(Session, 'open');
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+  await main([manifestPath, '--non-interactive', '--result', resultPath, '--log-file', sharedPath]);
+
+  expect(app.whenReady).not.toHaveBeenCalled();
+  expect(open).not.toHaveBeenCalled();
+  expect(app.exit).toHaveBeenCalledOnce();
+  expect(app.exit).toHaveBeenCalledWith(2);
+  expect(readFileSync(sharedPath, 'utf8')).toBe(original);
+  expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toBe(
+    `${RESULT_LOG_COLLISION_MESSAGE}\n`,
+  );
+  expect(dialog.showErrorBox).not.toHaveBeenCalled();
+}
 
 function deliveredResult(path: string): RunResult {
   const result = JSON.parse(readFileSync(path, 'utf8')) as RunResult;
