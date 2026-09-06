@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
-import { environmentName, secretArgsWarnings } from '../../src/manifest/v1/rules.js';
+import { SourceMapBuilder } from '../../src/manifest/source.js';
+import { environmentName, environmentReferences } from '../../src/manifest/v1/rules.js';
+import type { ManifestV1 } from '../../src/manifest/v1/schema.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: 1.0.0'];
 
@@ -31,28 +33,6 @@ function codeOf(lines: readonly string[]): string {
   }
   throw new Error('expected the manifest to be rejected');
 }
-
-function secretWarningsOf(run: readonly string[]): readonly string[] {
-  const manifest = parseManifestText(
-    [
-      ...HEAD,
-      'inputs:',
-      '  token:',
-      '    type: secret',
-      'steps:',
-      '  - id: use',
-      '    run:',
-      ...run,
-      '',
-    ].join('\n'),
-    'installer.yaml',
-  );
-  return secretArgsWarnings(manifest);
-}
-
-const SECRET_ARGV_WARNING =
-  'step "use" interpolates secret input "token" into process argv (command/args) — ' +
-  'the command and its arguments can be visible in OS process listings; env: is the recommended carrier';
 
 describe('input rules', () => {
   it('rejects ids that cannot be written as ${...}', () => {
@@ -231,6 +211,87 @@ describe('input rules', () => {
       'inputs.port.patternHint has no effect without inputs.port.pattern',
     ]);
   });
+
+  it('checks a long valid condition chain without copying or scanning input prefixes', () => {
+    const inputCount = 512;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => {
+      const id = `semantic${index.toString().padStart(4, '0')}`;
+      const previous = `semantic${(index - 1).toString().padStart(4, '0')}`;
+      return [
+        `  ${id}:`,
+        '    type: boolean',
+        '    default: true',
+        ...(index === 0 ? [] : [`    when: "\${${previous}}"`]),
+      ];
+    }).flat();
+    const includes = vi.spyOn(Array.prototype, 'includes');
+    const slice = vi.spyOn(Array.prototype, 'slice');
+    let inputMembershipScans = 0;
+    let inputPrefixCopies = 0;
+
+    try {
+      expect(() =>
+        parseManifestText(
+          [...HEAD, 'inputs:', ...inputs, 'steps: []', ''].join('\n'),
+          'installer.yaml',
+        ),
+      ).not.toThrow();
+      const isInputIdList = (value: unknown): value is string[] =>
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((item) => typeof item === 'string' && /^semantic\d{4}$/.test(item));
+      inputMembershipScans = includes.mock.contexts.filter(isInputIdList).length;
+      inputPrefixCopies = slice.mock.contexts.filter(isInputIdList).length;
+    } finally {
+      includes.mockRestore();
+      slice.mockRestore();
+    }
+
+    expect(inputMembershipScans).toBe(0);
+    expect(inputPrefixCopies).toBe(0);
+  });
+
+  it('audits unknown references without doing optional suggestion work', () => {
+    const inputCount = 64;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => [
+      `  auditInput${index.toString().padStart(3, '0')}:`,
+      '    type: text',
+    ]).flat();
+    const parsed = parseManifestText(
+      [
+        ...HEAD,
+        'inputs:',
+        ...inputs,
+        'steps:',
+        '  - id: audit',
+        '    when: "true"',
+        '    run:',
+        '      command: x',
+        '',
+      ].join('\n'),
+      'installer.yaml',
+    ) as ManifestV1;
+    const manifest: ManifestV1 = {
+      ...parsed,
+      steps: parsed.steps.map((step) => ({
+        ...step,
+        when: "${env.CI} == 'true' && ${auditInputTypo} == 'x'",
+      })),
+    };
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+
+    try {
+      expect(
+        environmentReferences(manifest, {
+          file: 'installer.yaml',
+          sourceMap: new SourceMapBuilder().build(),
+        }).map((use) => use.name),
+      ).toEqual(['CI']);
+      expect(lowercase).not.toHaveBeenCalled();
+    } finally {
+      lowercase.mockRestore();
+    }
+  });
 });
 
 describe('step rules', () => {
@@ -278,52 +339,6 @@ describe('step rules', () => {
   });
 });
 
-describe('secret process-argv warnings', () => {
-  it('warns when only command contains the secret', () => {
-    expect(secretWarningsOf(['      command: "${token}"'])).toEqual([SECRET_ARGV_WARNING]);
-  });
-
-  it('warns when only args contain the secret', () => {
-    expect(
-      secretWarningsOf(['      command: deploy', '      args: ["--token", "${token}"]']),
-    ).toEqual([SECRET_ARGV_WARNING]);
-  });
-
-  it('warns once per step and secret across command, repeated args and references', () => {
-    expect(
-      secretWarningsOf([
-        '      command: "deploy-${token}-${token}"',
-        '      args: ["${token}", "again-${token}"]',
-      ]),
-    ).toEqual([SECRET_ARGV_WARNING]);
-  });
-
-  it('does not warn for env or cwd, including an env key named command', () => {
-    expect(
-      secretWarningsOf([
-        '      command: deploy',
-        '      cwd: "${token}"',
-        '      env:',
-        '        command: "${token}"',
-        '        TOKEN: "${token}"',
-      ]),
-    ).toEqual([]);
-  });
-
-  it('warns once when platform variants repeat the same step and secret', () => {
-    expect(
-      secretWarningsOf([
-        '      windows:',
-        '        command: "deploy-${token}"',
-        '        args: ["${token}"]',
-        '      linux:',
-        '        command: deploy',
-        '        args: ["${token}", "${token}"]',
-      ]),
-    ).toEqual([SECRET_ARGV_WARNING]);
-  });
-});
-
 describe('gui asset rules', () => {
   const manifest = (...gui: readonly string[]): string =>
     [...HEAD, 'gui:', ...gui, 'steps: []', ''].join('\n');
@@ -349,6 +364,28 @@ describe('gui asset rules', () => {
         manifestDir: projectDir(),
       }),
     ).not.toThrow();
+  });
+
+  it('treats drive-relative spelling as an ordinary manifest-relative asset path', () => {
+    const dir = projectDir();
+    if (process.platform !== 'win32') {
+      writeFileSync(join(dir, 'C:logo.png'), '');
+      expect(() =>
+        parseManifestText(manifest('  logo: "C:logo.png"'), 'installer.yaml', {
+          checkAssetFiles: true,
+          manifestDir: dir,
+        }),
+      ).not.toThrow();
+      return;
+    }
+
+    const drive = parse(dir).root.slice(0, 2);
+    expect(() =>
+      parseManifestText(manifest(`  logo: "${drive}."`), 'installer.yaml', {
+        checkAssetFiles: true,
+        manifestDir: dir,
+      }),
+    ).toThrow(/does not exist/);
   });
 
   it('resolves relative assets against the manifest, not the working directory', () => {

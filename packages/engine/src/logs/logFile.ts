@@ -1,131 +1,184 @@
 /**
  * The log-file sink (docs/architecture.md §10): one of the two sinks off the one event
  * stream. Timestamped lines, step output prefixed `[stepId:stdout]`. Lines arrive already
- * masked — the executor masks before any observer sees them.
+ * masked by the executor. The complete timestamped record is masked again immediately before
+ * writing so fixed prefixes and field boundaries cannot create a new clear-text match.
  */
 
-import {
-  closeSync,
-  createWriteStream,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  writeFileSync,
-  type WriteStream,
-} from 'node:fs';
+import { createWriteStream, fstat, type Stats, type WriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { finished } from 'node:stream/promises';
 
-import type { EngineObserver, RunEvent, RunFinished } from '../engine/events.js';
+import { escapeDiagnosticText } from '../diagnostics.js';
+import type { EngineObserver, RunEvent } from '../engine/events.js';
+import { ExecutionError, filesystemFailureReason } from '../errors.js';
 
 export interface LogFileSink {
   readonly observer: EngineObserver;
-  /** Flushes, writes the optional final event, and closes the file exactly once. */
-  close(finalEvent?: RunFinished): Promise<void>;
+  /** Flushes and closes the file; call once, after the run settled. */
+  close(): Promise<void>;
 }
 
-export function createLogFileSink(path: string): LogFileSink {
-  mkdirSync(dirname(path), { recursive: true });
-  // Open eagerly so an invalid target rejects before executeRun can start a runner. Keep
-  // this descriptor through finalization so every line targets the same file identity.
-  const descriptor = openSync(path, 'a');
-  let stream: WriteStream;
+/** How a RUNE-406 diagnostic names the destination (docs/architecture.md §10). */
+export interface LogFileSinkOptions {
+  /**
+   * The spelling the diagnostic names instead of `path`. A host that anchors or otherwise
+   * normalizes the log path itself writes to the anchored path but reports the spelling its
+   * supplier wrote, so the diagnostic names the same bytes a secret registry can hold.
+   * Defaults to `path`.
+   */
+  readonly announcement?: string | undefined;
+}
+
+/** Opens the log before returning, so execution cannot start until the sink is usable. */
+export async function createLogFileSink(
+  path: string,
+  mask: (text: string) => string = (text) => text,
+  options: LogFileSinkOptions = {},
+): Promise<LogFileSink> {
+  const named = options.announcement ?? path;
   try {
-    // Windows can open a directory descriptor in append mode and fail only on the first
-    // write, unlike Linux. Reject it here so both hosts preserve pre-run validation.
-    if (fstatSync(descriptor).isDirectory()) {
-      throw new Error(`log file target is a directory: ${path}`);
-    }
-    stream = createWriteStream(path, {
-      fd: descriptor,
-      autoClose: false,
-      encoding: 'utf8',
-    });
-  } catch (error) {
-    try {
-      closeSync(descriptor);
-    } catch {
-      // The open/fstat/stream-construction failure is the primary error.
-    }
-    throw error;
+    await mkdir(dirname(path), { recursive: true });
+  } catch (cause) {
+    throw logError('prepare the directory for', named, cause);
   }
 
-  let firstError: unknown;
-  let descriptorClosed = false;
-  let closePromise: Promise<void> | undefined;
-  // A WriteStream error without a listener is process-fatal. Retain the first failure so
-  // close() can report it through Session.execute's ordinary Promise boundary.
-  stream.on('error', (error: Error) => {
-    firstError ??= error;
+  let stream: WriteStream;
+  try {
+    stream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
+  } catch (cause) {
+    throw logError('open', named, cause);
+  }
+
+  let phase: 'opening' | 'writing' | 'closing' = 'opening';
+  let failure: ExecutionError | undefined;
+  const rememberFailure = (action: 'open' | 'write to' | 'close', cause: unknown): void => {
+    failure ??= logError(action, named, cause);
+  };
+  // This listener is deliberately permanent: every asynchronous stream failure must have
+  // an owner, including one emitted while end() is flushing buffered writes.
+  stream.on('error', (cause) => {
+    rememberFailure(
+      phase === 'opening' ? 'open' : phase === 'writing' ? 'write to' : 'close',
+      cause,
+    );
   });
+
+  let descriptor: number;
+  try {
+    descriptor = await new Promise<number>((resolve, reject) => {
+      const opened = (fd: number): void => {
+        stream.removeListener('error', failed);
+        resolve(fd);
+      };
+      const failed = (cause: unknown): void => {
+        stream.removeListener('open', opened);
+        reject(cause);
+      };
+      stream.once('open', opened);
+      stream.once('error', failed);
+    });
+  } catch (cause) {
+    rememberFailure('open', cause);
+    stream.destroy();
+    throw failure;
+  }
+
+  let target: Stats;
+  try {
+    target = await fileStats(descriptor);
+  } catch (cause) {
+    rememberFailure('open', cause);
+    stream.destroy();
+    throw failure;
+  }
+  if (target.isDirectory()) {
+    // Nothing threw here, so carry the errno the reason helper maps: the sink names the same
+    // fixed phrase the OS would have produced instead of the value-free fallback.
+    rememberFailure(
+      'open',
+      Object.assign(new Error('the path is a directory'), { code: 'EISDIR' }),
+    );
+    stream.destroy();
+    throw failure;
+  }
+
+  if (failure !== undefined) {
+    stream.destroy();
+    throw failure;
+  }
+  phase = 'writing';
+
+  let closePromise: Promise<void> | undefined;
 
   return {
     observer: (event) => {
-      stream.write(`${new Date().toISOString()} ${describe(event)}\n`);
-    },
-    close: (finalEvent) => {
-      if (closePromise !== undefined) {
-        return closePromise;
+      if (failure !== undefined || phase !== 'writing') {
+        return;
       }
-      closePromise = new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const settle = (): void => {
-          if (settled) {
-            return;
+      try {
+        const record = `${new Date().toISOString()} ${describe(event)}`;
+        stream.write(`${mask(escapeDiagnosticText(mask(record)))}\n`, (cause) => {
+          if (cause !== undefined && cause !== null) {
+            rememberFailure('write to', cause);
           }
-          settled = true;
-          stream.removeListener('finish', settle);
-          stream.removeListener('error', settle);
-
-          let primaryError = firstError;
-          if (primaryError === undefined && finalEvent !== undefined) {
-            try {
-              // The stream has flushed, but its original append descriptor remains open.
-              // A small synchronous terminal write keeps path replacement out of the sink.
-              writeFileSync(
-                descriptor,
-                `${new Date().toISOString()} ${describe(finalEvent)}\n`,
-                'utf8',
-              );
-            } catch (error) {
-              primaryError = error;
-            }
-          }
-
-          let closeError: unknown;
-          if (!descriptorClosed) {
-            descriptorClosed = true;
-            try {
-              closeSync(descriptor);
-            } catch (error) {
-              closeError = error;
-            }
-          }
-
-          if (primaryError !== undefined) {
-            reject(primaryError);
-          } else if (closeError !== undefined) {
-            reject(closeError);
-          } else {
-            resolve();
-          }
-        };
-
-        stream.once('finish', settle);
-        stream.once('error', settle);
-        if (firstError !== undefined || stream.writableFinished) {
-          settle();
-          return;
-        }
-        try {
-          stream.end();
-        } catch (error) {
-          firstError ??= error;
-          settle();
-        }
-      });
+        });
+      } catch (cause) {
+        rememberFailure('write to', cause);
+      }
+    },
+    close: () => {
+      closePromise ??= closeStream();
       return closePromise;
     },
   };
+
+  async function closeStream(): Promise<void> {
+    phase = 'closing';
+    try {
+      stream.end();
+    } catch (cause) {
+      rememberFailure('close', cause);
+      stream.destroy();
+    }
+
+    try {
+      await finished(stream, { cleanup: true });
+    } catch (cause) {
+      rememberFailure('close', cause);
+    }
+
+    if (failure !== undefined) {
+      throw failure;
+    }
+  }
+}
+
+function fileStats(fd: number): Promise<Stats> {
+  return new Promise((resolve, reject) => {
+    fstat(fd, (cause, stats) => {
+      if (cause === null) {
+        resolve(stats);
+      } else {
+        reject(cause);
+      }
+    });
+  });
+}
+
+function logError(
+  action: 'prepare the directory for' | 'open' | 'write to' | 'close',
+  path: string,
+  cause: unknown,
+): ExecutionError {
+  return new ExecutionError(
+    'RUNE-406',
+    `could not ${action} log file "${path}": ${filesystemFailureReason(cause)}`,
+    {
+      cause,
+    },
+  );
 }
 
 function describe(event: RunEvent): string {

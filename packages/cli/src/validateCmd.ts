@@ -4,53 +4,55 @@
  * requested machine-readable-ish output and goes to stdout (§10).
  */
 
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
-import { discoverOverlays, formatLocation, loadOverlay, validateManifest } from '@rune/engine';
+import { formatLocation, validateManifest } from '@rune/engine';
 
-import { parsePlatform } from './args.js';
-import type { CliIo } from './io.js';
+import { humanStderr, humanStdout, type CliIo } from './io.js';
 
 export async function validateCommand(
   manifestPath: string,
-  flags: { platform?: string | undefined; locale?: string | undefined },
+  flags: { locale?: string | undefined },
   io: CliIo,
 ): Promise<void> {
-  // Validation is fully static, but a bogus value must fail the same way run fails it.
-  parsePlatform(flags.platform);
   const absolute = resolve(manifestPath);
-  const report = validateManifest(absolute);
-  const { manifest } = report;
+  const report = validateManifest(absolute, { locale: flags.locale });
+  const { locales, manifest, strings } = report;
 
-  // `validate` checks ALL overlays, not just the selected locale's: an author wants to know
-  // about a broken translation before a user in that locale does (§6.3, §7 stage 1).
-  const overlays = discoverOverlays(dirname(absolute));
-  for (const overlay of overlays) {
-    loadOverlay(overlay.path, overlay.locale, manifest);
-  }
-
-  io.stdout(
-    `${manifestPath} is valid (schemaVersion ${manifest.schemaVersion}, ` +
-      `product ${manifest.product.name} ${manifest.product.version})`,
+  humanStdout(
+    io,
+    strings.chrome('rune.validate.valid', {
+      path: manifestPath,
+      schemaVersion: manifest.schemaVersion,
+      productName: manifest.product.name,
+      productVersion: manifest.product.version,
+    }),
   );
-  io.stdout(
-    overlays.length === 0
-      ? 'locales: none'
-      : `locales: ${overlays.map((overlay) => overlay.locale).join(', ')}`,
+  humanStdout(
+    io,
+    locales.length === 0
+      ? strings.chrome('rune.validate.locales.none')
+      : strings.chrome('rune.validate.locales.list', { locales: locales.join(', ') }),
   );
 
   for (const warning of report.warnings) {
-    io.stderr(`warning: ${warning}`);
+    humanStderr(io, strings.chrome('rune.warning', { message: warning }));
   }
 
   if (report.environment.length === 0) {
-    io.stdout('environment variables read: none');
+    humanStdout(io, strings.chrome('rune.validate.environment.none'));
     return;
   }
-  io.stdout('environment variables read:');
+  humanStdout(io, strings.chrome('rune.validate.environment.heading'));
   for (const use of report.environment) {
     for (const location of use.locations) {
-      io.stdout(`  ${use.name} — ${formatLocation(location)}`);
+      humanStdout(
+        io,
+        strings.chrome('rune.validate.environment.entry', {
+          name: use.name,
+          location: formatLocation(location),
+        }),
+      );
     }
   }
 }

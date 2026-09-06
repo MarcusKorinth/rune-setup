@@ -33,5 +33,7 @@ export default defineConfig({
     environment: 'node',
     include: ['packages/*/test/**/*.test.ts', 'tests/**/*.test.ts'],
     passWithNoTests: false,
+    // Several integration tests spawn real Node children; Windows CI contention can exceed Vitest's 5s default.
+    testTimeout: 15_000,
   },
 });

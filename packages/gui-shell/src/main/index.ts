@@ -10,15 +10,17 @@ import { join } from 'node:path';
 import { BrowserWindow, app, ipcMain, type WebContents } from 'electron';
 
 import {
-  assertFailureExitCode,
   CancelToken,
   CancelledError,
+  createCompletedRunFailureResult,
+  createFailureResult,
+  InternalError,
   RUNE_VERSION,
   RuneError,
   Session,
   exitCodeFor,
-  failureResult,
   writeResult,
+  type ExecutionPlan,
   type RunEvent,
   type RunResult,
 } from '@rune/engine';
@@ -48,7 +50,7 @@ export const BRIDGE_CHANNELS = [
 
 export const EVENT_CHANNEL = 'rune:event';
 
-type ResultWriter = typeof writeResult;
+type ResultWriter = (result: RunResult, path: string) => unknown;
 type SigtermSubscriber = (listener: () => void) => () => void;
 
 interface WorkflowMainOptions {
@@ -159,7 +161,7 @@ export async function runWorkflow(
       // Electron failed before a session or window exists. This is still an ordinary
       // internal-error outcome for a configured invocation (§10).
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      deliverFailure(70, invocation, writer);
+      await deliverFailure(asRuneError(error), invocation, writer);
       return 70;
     }
 
@@ -170,8 +172,9 @@ export async function runWorkflow(
       // A manifest or input error before any window exists: named on stderr, exit code from
       // the one table, and the §10 zero-counter result file — both hosts write it.
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      const code = error instanceof RuneError ? exitCodeFor(error) : 70;
-      return deliverFailure(code, invocation, writer) ? code : 70;
+      const failure = asRuneError(error);
+      const result = failureResultFor(failure, invocation);
+      return (await deliverSafely(result, invocation, writer)) ? result.exitCode : 70;
     }
 
     if (invocation.nonInteractive) {
@@ -200,7 +203,7 @@ export async function openSession(invocation: ShellInvocation): Promise<Session>
 export async function headlessRun(
   session: Session,
   invocation: ShellInvocation,
-  writer: typeof writeResult = writeResult,
+  writer: ResultWriter = writeResult,
   cancellation?: SigtermRelay,
 ): Promise<number> {
   const relay = cancellation ?? new SigtermRelay();
@@ -215,9 +218,9 @@ export async function headlessRun(
     if (result.nothingExecuted) {
       process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
     }
-    return deliverSafely(result, invocation, writer, session) ? result.exitCode : 70;
+    return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
   } catch (error) {
-    return failWith(error, invocation, session, writer);
+    return await failWith(error, invocation, session, writer);
   } finally {
     disconnectCancellation();
     if (ownsRelay) {
@@ -229,7 +232,7 @@ export async function headlessRun(
 export async function windowedRun(
   session: Session,
   invocation: ShellInvocation,
-  writer: typeof writeResult = writeResult,
+  writer: ResultWriter = writeResult,
   cancellation?: SigtermRelay,
 ): Promise<number> {
   const relay = cancellation ?? new SigtermRelay();
@@ -252,7 +255,7 @@ export async function windowedRun(
     if (ownsRelay) {
       relay.dispose();
     }
-    return failWith(error, invocation, session, writer);
+    return await failWith(error, invocation, session, writer);
   }
   window.once('ready-to-show', () => window.show());
 
@@ -294,8 +297,12 @@ export async function windowedRun(
       // Main, the Session and the writer are still alive, so this is an ordinary owned
       // internal-error outcome rather than the resultless main-process crash of §10.
       fatalCode = 70;
-      deliverFailure(70, invocation, writer, session);
-      destroyAfterRendererLoss();
+      void deliverFailure(
+        new InternalError('the renderer became unavailable'),
+        invocation,
+        writer,
+        session,
+      ).then(destroyAfterRendererLoss);
     }
   };
   window.webContents.on('render-process-gone', onRendererLost);
@@ -305,15 +312,14 @@ export async function windowedRun(
     onExecuteStart: () => {
       running = true;
     },
-    onExecuteEnd: (result) => {
+    onExecuteEnd: async (result) => {
       if (rendererLost) {
         running = false;
-        const internalResult: RunResult = {
-          ...result,
-          status: 'internal_error',
-          exitCode: 70,
-        };
-        if (deliverSafely(internalResult, invocation, writer, session)) {
+        const internalResult = createCompletedRunFailureResult(
+          new InternalError('the renderer became unavailable'),
+          result,
+        );
+        if (await deliverSafely(internalResult, invocation, writer, session)) {
           outcome = internalResult;
         } else {
           fatalCode = 70;
@@ -321,7 +327,7 @@ export async function windowedRun(
         destroyAfterRendererLoss();
         return;
       }
-      if (!deliverSafely(result, invocation, writer, session)) {
+      if (!(await deliverSafely(result, invocation, writer, session))) {
         running = false;
         fatalCode = 70;
         window.close();
@@ -329,24 +335,34 @@ export async function windowedRun(
       }
       running = false;
       outcome = result;
+      if (rendererLost) {
+        destroyAfterRendererLoss();
+        return;
+      }
       if (closeRequested) {
         // The shell finishes its own cancel (§9.4): the close that started it completes.
         window.close();
       }
     },
-    onExecuteError: (error) => {
+    onExecuteError: async (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
       if (rendererLost) {
         fatalCode = 70;
-        deliverFailure(70, invocation, writer, session);
+        await deliverFailure(
+          new InternalError('the renderer became unavailable'),
+          invocation,
+          writer,
+          session,
+        );
         destroyAfterRendererLoss();
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(session.mask(message) + String.fromCharCode(10));
-      const code = error instanceof RuneError ? exitCodeFor(error) : 70;
-      fatalCode = deliverFailure(code, invocation, writer, session) ? code : 70;
+      const failure = asRuneError(error);
+      const result = failureResultFor(failure, invocation, session);
+      fatalCode = (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
       window.close();
     },
     onRendererDone: () => {
@@ -367,6 +383,7 @@ export async function windowedRun(
       closeRequested = true;
     }
   });
+  let cancellationDeliveryStarted = false;
   window.on('close', (event) => {
     if (running) {
       event.preventDefault();
@@ -375,14 +392,24 @@ export async function windowedRun(
       return;
     }
     if (outcome === undefined && fatalCode === undefined && !renderedDone) {
+      event.preventDefault();
+      if (cancellationDeliveryStarted) {
+        return;
+      }
+      cancellationDeliveryStarted = true;
       // Closed before Proceed: use the plan when one exists, otherwise the honest
       // zero-counter cancellation shell (§10).
-      const cancelled = tryDescribeCancelled(session) ?? failureResultFor(6, invocation, session);
-      if (deliverSafely(cancelled, invocation, writer, session)) {
-        outcome = cancelled;
-      } else {
-        fatalCode = 70;
-      }
+      const cancelled = cancellationResultFor(invocation, session);
+      void deliverSafely(cancelled, invocation, writer, session).then((delivered) => {
+        if (delivered) {
+          outcome = cancelled;
+        } else {
+          fatalCode = 70;
+        }
+        if (!window.isDestroyed()) {
+          window.destroy();
+        }
+      });
     }
   });
 
@@ -401,7 +428,7 @@ export async function windowedRun(
       await closed;
       return outcome?.exitCode ?? 70;
     }
-    const code = failWith(error, invocation, session, writer);
+    const code = await failWith(error, invocation, session, writer);
     if (!window.isDestroyed()) {
       window.destroy();
     }
@@ -430,8 +457,8 @@ export function registerBridge(
   hooks: {
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
-    onExecuteEnd?: (result: RunResult) => void;
-    onExecuteError?: (error: unknown) => void;
+    onExecuteEnd?: (result: RunResult) => unknown;
+    onExecuteError?: (error: unknown) => unknown;
     onRendererDone?: () => void;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
@@ -465,7 +492,7 @@ export function registerBridge(
   register('rune:allInputs', () => project(session.allInputs(), mask));
   register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw), mask));
   register('rune:plan', () => project(session.describe(), mask));
-  register('rune:getStrings', () => project(Object.fromEntries(session.getStrings().entries)));
+  register('rune:getStrings', () => project(session.getStrings().entries));
   register('rune:getThemeConfig', () => project(session.getThemeConfig()));
   register('rune:warnings', () => project(session.warnings(), mask));
   register('rune:cancel', () => {
@@ -480,10 +507,10 @@ export function registerBridge(
         hooks.events.send(EVENT_CHANNEL, project(event, mask));
       });
     } catch (error) {
-      hooks.onExecuteError?.(error);
+      await hooks.onExecuteError?.(error);
       throw error;
     }
-    hooks.onExecuteEnd?.(result);
+    await hooks.onExecuteEnd?.(result);
     return project(result, mask);
   });
   register('rune:done', () => {
@@ -492,24 +519,24 @@ export function registerBridge(
   });
 }
 
-function deliver(
+async function deliver(
   result: RunResult,
   invocation: ShellInvocation,
-  writer: typeof writeResult = writeResult,
-): void {
+  writer: ResultWriter = writeResult,
+): Promise<void> {
   if (invocation.result !== undefined) {
-    writer(result, invocation.result);
+    await writer(result, invocation.result);
   }
 }
 
-function deliverSafely(
+async function deliverSafely(
   result: RunResult,
   invocation: ShellInvocation,
-  writer: typeof writeResult,
+  writer: ResultWriter,
   session?: Session,
-): boolean {
+): Promise<boolean> {
   try {
-    deliver(result, invocation, writer);
+    await deliver(result, invocation, writer);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -520,14 +547,14 @@ function deliverSafely(
   }
 }
 
-function deliverFailure(
-  exitCode: number,
+async function deliverFailure(
+  error: RuneError,
   invocation: ShellInvocation,
-  writer: typeof writeResult,
+  writer: ResultWriter,
   session?: Session,
-): boolean {
-  return deliverSafely(
-    failureResultFor(exitCode, invocation, session),
+): Promise<boolean> {
+  return await deliverSafely(
+    failureResultFor(error, invocation, session),
     invocation,
     writer,
     session,
@@ -536,47 +563,52 @@ function deliverFailure(
 
 /** Builds the §10 zero-counter result, retaining metadata available from an opened session. */
 export function failureResultFor(
-  exitCode: number,
+  error: RuneError,
   invocation: ShellInvocation,
   session?: Session,
+  plan?: ExecutionPlan,
 ): RunResult {
-  assertFailureExitCode(exitCode);
-  return failureResult({
-    exitCode,
+  return createFailureResult({
+    error,
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
     manifestPath: invocation.manifestPath,
-    locale: session?.getStrings().locale ?? null,
-    product:
-      session === undefined
-        ? undefined
-        : { name: session.manifest.product.name, version: session.manifest.product.version },
+    dryRun: false,
+    ...(session === undefined ? {} : { session }),
+    ...(plan === undefined ? {} : { plan }),
   });
 }
 
-function failWith(
+async function failWith(
   error: unknown,
   invocation: ShellInvocation,
   session: Session,
-  writer: typeof writeResult,
-): number {
+  writer: ResultWriter,
+): Promise<number> {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${session.mask(message)}\n`);
-  const code = error instanceof RuneError ? exitCodeFor(error) : 70;
+  const failure = asRuneError(error);
   if (error instanceof CancelledError) {
-    const cancelled = tryDescribeCancelled(session);
-    if (cancelled !== undefined) {
-      return deliverSafely(cancelled, invocation, writer, session) ? code : 70;
-    }
+    const result = cancellationResultFor(invocation, session);
+    return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
   }
-  return deliverFailure(code, invocation, writer, session) ? code : 70;
+  const result = failureResultFor(failure, invocation, session);
+  return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
 }
 
-function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
+function cancellationResultFor(invocation: ShellInvocation, session: Session): RunResult {
+  let plan: ExecutionPlan | undefined;
   try {
-    return session?.describeCancelled();
+    plan = session.plan();
   } catch {
-    return undefined;
+    // Closing before all required inputs exist has no plan to preserve.
   }
+  return failureResultFor(new CancelledError(), invocation, session, plan);
+}
+
+function asRuneError(error: unknown): RuneError {
+  return error instanceof RuneError
+    ? error
+    : new InternalError('an unexpected error escaped the GUI shell', { cause: error });
 }
 
 // Under vitest the module is imported for its exports; only Electron runs the app.

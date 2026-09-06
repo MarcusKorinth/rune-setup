@@ -25,6 +25,11 @@
 !/LICENSE
 !/README.md
 
+# Review vault: retain only the finding registers
+!/.obsidian-vault/
+!/.obsidian-vault/open-findings.md
+!/.obsidian-vault/deferred-findings.md
+
 # Source packages, tests, and docs
 !/docs/
 !/docs/**

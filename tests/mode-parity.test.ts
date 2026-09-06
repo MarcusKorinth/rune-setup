@@ -1,552 +1,655 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { afterAll, describe, expect, it, vi } from 'vitest';
-
-import { run } from '@rune/cli';
-import type { CliIo } from '@rune/cli';
 import {
+  environmentName,
   Session,
-  writeResult,
+  type EngineObserver,
   type ExecutionPlan,
   type InputStateChanged,
   type RunEvent,
   type RunResult,
+  type SessionOptions,
+  type StringTable,
 } from '@rune/engine';
+import { run, type CliIo } from '@rune/cli';
+import { expect, it, vi } from 'vitest';
 
-// Three real frontend runs spawn processes and can exceed the unit-test default under CI load.
-const INTEGRATION_TIMEOUT_MS = 30_000;
+import type { Interaction } from '../packages/cli/src/prompt.js';
 
-function slowIt(name: string, run: () => Promise<void>): void {
-  it(name, run, INTEGRATION_TIMEOUT_MS);
-}
-
-/**
- * The mode-parity contract suite (docs/architecture.md §14): one fixture through the
- * non-interactive driver, the scripted interactive CLI, and an in-process client of the
- * Session facade making exactly the calls the Electron main process makes — the GUI leg,
- * no Electron needed. The three results must be identical modulo what necessarily differs
- * between legs: run ids, timestamps, durations, the mode field, and per-input provenance.
- */
-
-const ANSWERS = {
-  installDatabase: true,
-  databasePort: '5432',
-  environment: 'production',
-  token: 'super-secret-value',
-} as const satisfies Record<string, string | boolean>;
-
+const CONTROLLER = 'parityIncludeDetails';
+const DEPENDENT = 'parityDetailCode';
+const SELECT = 'parityChannel';
+const SECRET = 'parityToken';
+const SECRET_VALUE = 'mode-parity-secret-value';
+const LOCALE = 'de-DE';
+const COMMAND_SCRIPT = "process.stdout.write(process.argv.slice(1).join('|') + '\\n')";
 const MASK = '***';
 
-// The interactive flow starts with the pending values, then enables databasePort from the
-// summary edit loop. The GUI client follows that same facade-call sequence.
-const ANSWER_ORDER = [
-  'environment',
-  'token',
-  'installDatabase',
-  'databasePort',
-] as const satisfies readonly (keyof typeof ANSWERS)[];
+type LegName = 'non-interactive' | 'interactive' | 'gui';
 
-const RUNE_ENVIRONMENT_KEYS = [
-  'RUNE_LOCALE',
-  'RUNE_INPUT_INSTALLDATABASE',
-  'RUNE_INPUT_DATABASEPORT',
-  'RUNE_INPUT_ENVIRONMENT',
-  'RUNE_INPUT_TOKEN',
-] as const;
-
-type RuneEnvironmentKey = (typeof RUNE_ENVIRONMENT_KEYS)[number];
-type RuneEnvironment = Readonly<Record<RuneEnvironmentKey, string | undefined>>;
-
-const EMPTY_RUNE_ENVIRONMENT: RuneEnvironment = {
-  RUNE_LOCALE: undefined,
-  RUNE_INPUT_INSTALLDATABASE: undefined,
-  RUNE_INPUT_DATABASEPORT: undefined,
-  RUNE_INPUT_ENVIRONMENT: undefined,
-  RUNE_INPUT_TOKEN: undefined,
-};
-
-const fixtureDirectories = new Set<string>();
-
-async function withRuneEnvironment<T>(
-  environment: RuneEnvironment,
-  run: () => Promise<T>,
-): Promise<T> {
-  const original = new Map<RuneEnvironmentKey, string | undefined>(
-    RUNE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]),
-  );
-
-  try {
-    for (const key of RUNE_ENVIRONMENT_KEYS) {
-      const value = environment[key];
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-    return await run();
-  } finally {
-    for (const key of RUNE_ENVIRONMENT_KEYS) {
-      const value = original.get(key);
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
+interface Capture extends CliIo {
+  readonly out: string[];
+  readonly err: string[];
 }
 
-function fixture(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'rune-parity-'));
-  fixtureDirectories.add(dir);
-  writeFileSync(
-    join(dir, 'installer.yaml'),
-    [
-      'schemaVersion: 1',
-      'product:',
-      '  name: Parity',
-      '  version: "1.0.0"',
-      'inputs:',
-      '  installDatabase:',
-      '    type: boolean',
-      '    default: false',
-      '  databasePort:',
-      '    type: text',
-      '    pattern: "[0-9]+"',
-      '    when: "${installDatabase}"',
-      '  environment:',
-      '    type: select',
-      '    options:',
-      '      - value: production',
-      '        label: Production',
-      '      - value: staging',
-      '        label: Staging',
-      '  token:',
-      '    type: secret',
-      'steps:',
-      '  - id: configure',
-      '    title: Configure',
-      '    run:',
-      '      command: node',
-      '      args: ["-e", "console.log(process.argv[1], process.argv[2], process.argv[3])", "${databasePort}", "${environment}", "${token}"]',
-      '  - id: skipped-elsewhere',
-      '    when: "${environment} == \'staging\'"',
-      '    run:',
-      '      command: node',
-      '      args: ["-e", "0"]',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-  mkdirSync(join(dir, 'locales'));
-  writeFileSync(join(dir, 'locales', 'de.yaml'), 'steps.configure.title: Konfigurieren\n', 'utf8');
-  return join(dir, 'installer.yaml');
+interface ScriptedInteraction extends Interaction {
+  transcript(): string;
+  remainingAnswers(): number;
+  dispose(): void;
 }
 
-/**
- * What necessarily differs between legs is stripped — run ids, timestamps, durations, the
- * mode field, per-input provenance (§14) — and nothing else.
- */
-function normalize(result: RunResult): unknown {
-  return {
-    ...result,
-    id: '<id>',
-    mode: '<mode>',
-    startedAt: '<t>',
-    finishedAt: '<t>',
-    durationMs: 0,
-    inputs: result.inputs.map((input) => ({ ...input, source: '<source>' })),
-    steps: result.steps.map((step) => ({ ...step, durationMs: 0 })),
-  };
+interface SuccessfulSetValue {
+  readonly inputId: string;
+  readonly value: unknown;
+  readonly returned: readonly InputStateChanged[];
 }
 
-/** Locale changes only display data; run identity and timing differ between separate runs. */
-function normalizeResultForLocale(result: RunResult): unknown {
-  return {
-    ...result,
-    id: '<id>',
-    startedAt: '<t>',
-    finishedAt: '<t>',
-    durationMs: 0,
-    locale: '<locale>',
-    steps: result.steps.map((step) => ({ ...step, title: '<title>', durationMs: 0 })),
-  };
+interface LegCapture {
+  readonly session: Session;
+  readonly events: RunEvent[];
+  readonly successfulSetValues: SuccessfulSetValue[];
 }
 
-/** An event sequence with only the necessarily-differing parts stripped. */
-function normalizeEvents(events: readonly RunEvent[]): unknown[] {
-  return events.map((event) => {
-    if (event.kind === 'stepFinished') {
-      return { ...event, durationMs: 0 };
-    }
-    if (event.kind === 'runFinished') {
-      return { kind: 'runFinished', result: normalize(event.result) };
-    }
-    if (event.kind === 'runStarted') {
-      return { kind: 'runStarted' };
-    }
-    return event;
-  });
-}
-
-/** Only locale and titles are display data; every other serialized field is a machine contract. */
-function normalizePlanForLocale(plan: ExecutionPlan): unknown {
-  return JSON.parse(
-    JSON.stringify({
-      ...plan,
-      locale: '<locale>',
-      steps: plan.steps.map((step) => ({ ...step, title: '<title>' })),
-    }),
-  ) as unknown;
-}
-
-function expectClearSecretAbsent(serialized: string): void {
-  // Check booleans so a masking regression cannot echo the clear test secret in a failure.
-  expect(serialized.includes(ANSWERS.token)).toBe(false);
-}
-
-function expectMasked(serialized: string): void {
-  expectClearSecretAbsent(serialized);
-  expect(serialized.includes(MASK)).toBe(true);
-}
-
-function expectPlanSecretRedacted(plan: ExecutionPlan): void {
-  const serialized = JSON.stringify(plan);
-  expectClearSecretAbsent(serialized);
-  const projected = JSON.parse(serialized) as {
-    readonly steps?: readonly { readonly command?: { readonly argv?: readonly unknown[] } }[];
-  };
-  expect(projected.steps?.[0]?.command?.argv?.at(-1)).toBeNull();
-}
-
-function silentIo(): CliIo & { out: string[]; err: string[] } {
+function captureIo(): Capture {
   const out: string[] = [];
   const err: string[] = [];
-  return {
-    out,
-    err,
-    stdout: (line) => out.push(line),
-    stderr: (line) => err.push(line),
-  };
+  return { out, err, stdout: (line) => out.push(line), stderr: (line) => err.push(line) };
 }
 
-interface CapturedLeg<T> {
-  readonly value: T;
-  readonly events: readonly RunEvent[];
-  readonly changes: readonly (readonly InputStateChanged[])[];
-}
-
-/**
- * Observes the actual sessions opened by a driver without replacing its engine path. The
- * execute wrapper sees the synchronous engine stream before forwarding it to the driver's
- * own observer, including the real RunStarted.plan. Every spy is restored before return.
- */
-async function captureDriver<T>(drive: () => Promise<T>): Promise<CapturedLeg<T>> {
-  const events: RunEvent[] = [];
-  const changes: InputStateChanged[][] = [];
-  const restoreSessionSpies: Array<() => void> = [];
-  const originalOpen = Session.open;
-  const openSpy = vi.spyOn(Session, 'open').mockImplementation(async (...args) => {
-    const session = await originalOpen(...args);
-    const originalExecute = session.execute.bind(session);
-    const originalSetValue = session.setValue.bind(session);
-    const executeSpy = vi.spyOn(session, 'execute').mockImplementation(async (observer, cancel) =>
-      originalExecute((event) => {
-        events.push(event);
-        observer?.(event);
-      }, cancel),
-    );
-    const setValueSpy = vi.spyOn(session, 'setValue').mockImplementation((id, raw) => {
-      const changed = originalSetValue(id, raw);
-      changes.push([...changed]);
-      return changed;
-    });
-    restoreSessionSpies.push(
-      () => executeSpy.mockRestore(),
-      () => setValueSpy.mockRestore(),
-    );
-    return session;
-  });
-
-  try {
-    return { value: await drive(), events, changes };
-  } finally {
-    for (const restore of restoreSessionSpies) {
-      restore();
-    }
-    openSpy.mockRestore();
-  }
-}
-
-function answerEntries(): readonly (readonly [string, string | boolean])[] {
-  return ANSWER_ORDER.map((id) => [id, ANSWERS[id]]);
-}
-
-async function nonInteractiveLeg(manifest: string, locale?: string): Promise<RunResult> {
-  const io = silentIo();
-  const argv = ['run', manifest, '--non-interactive', '--result', '-'];
-  if (locale !== undefined) {
-    argv.push('--locale', locale);
-  }
-  for (const [id, value] of answerEntries()) {
-    argv.push('--set', `${id}=${String(value)}`);
-  }
-  expect(await run(argv, io)).toBe(0);
-  const result = JSON.parse(io.out.join('\n')) as RunResult;
-  expect(io.err.some((line) => line.includes('process listings'))).toBe(true);
-  expectClearSecretAbsent(io.err.join('\n'));
-  expectMasked(JSON.stringify(result));
-  return result;
-}
-
-async function interactiveLeg(manifest: string, locale?: string): Promise<RunResult> {
-  const io = silentIo();
-  const resultPath = join(manifest, '..', 'result-interactive.json');
+/** Feed each answer only after readline has emitted its question, just as a TTY user does. */
+function scripted(answers: readonly string[], isTTY = true): ScriptedInteraction {
   const input = new PassThrough();
-  const promptOutput: string[] = [];
-  // Only environment and token are pending (installDatabase has a default and
-  // databasePort is disabled); the rest flows through the summary edit loop — change
-  // value 1 (installDatabase), answer the databasePort it enables, proceed.
-  const answers = [
-    String(ANSWERS['environment']),
-    String(ANSWERS['token']),
-    '1',
-    String(ANSWERS['installDatabase']),
-    String(ANSWERS['databasePort']),
-    'p',
-  ];
-  const interaction = {
+  const queue = [...answers];
+  const written: string[] = [];
+  return {
     input,
-    isTTY: true,
-    write: (text: string): void => {
-      promptOutput.push(text);
+    isTTY,
+    write: (text) => {
+      written.push(text);
       if (text.endsWith(': ')) {
         setImmediate(() => {
-          const next = answers.shift();
+          const next = queue.shift();
           if (next !== undefined) {
             input.write(`${next}\n`);
           }
         });
       }
     },
-    forceExit: (): void => undefined,
+    transcript: () => written.join(''),
+    remainingAnswers: () => queue.length,
+    dispose: () => input.destroy(),
   };
-  const argv = ['run', manifest, '--result', resultPath];
-  if (locale !== undefined) {
-    argv.push('--locale', locale);
+}
+
+function createFixture(): { readonly directory: string; readonly manifestPath: string } {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-mode-parity-'));
+  const manifestPath = join(directory, 'installer.yaml');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        product: {
+          name: 'ParityFixture',
+          version: '1.0.0',
+          description: 'A representative parity workflow',
+        },
+        inputs: {
+          [CONTROLLER]: {
+            type: 'boolean',
+            title: 'Include details',
+            default: false,
+          },
+          [DEPENDENT]: {
+            type: 'text',
+            title: 'Detail code',
+            when: `\${${CONTROLLER}}`,
+            pattern: 'D-[0-9]+',
+            patternHint: 'Use the form D-123',
+          },
+          [SELECT]: {
+            type: 'select',
+            title: 'Release channel',
+            options: [
+              { value: 'fast', label: 'Fast lane' },
+              { value: 'safe', label: 'Safe lane' },
+            ],
+          },
+          [SECRET]: {
+            type: 'secret',
+            title: 'Access token',
+          },
+        },
+        steps: [
+          {
+            id: 'emit-values',
+            title: 'Emit selected values',
+            run: {
+              command: process.execPath,
+              args: ['-e', COMMAND_SCRIPT, `\${${DEPENDENT}}`, `\${${SELECT}}`, `\${${SECRET}}`],
+            },
+          },
+          {
+            id: 'skip-disabled',
+            title: 'Skip when details are enabled',
+            when: `\${${CONTROLLER}} == false`,
+            run: {
+              command: process.execPath,
+              args: ['-e', "process.stdout.write('this must not run\\n')"],
+            },
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  const locales = join(directory, 'locales');
+  mkdirSync(locales);
+  writeFileSync(
+    join(locales, 'de.yaml'),
+    JSON.stringify(
+      {
+        'product.description': 'Ein repraesentativer Paritaetsablauf',
+        [`inputs.${CONTROLLER}.title`]: 'Details einschliessen',
+        [`inputs.${DEPENDENT}.title`]: 'Detailcode',
+        [`inputs.${DEPENDENT}.patternHint`]: 'Format D-123 verwenden',
+        [`inputs.${SELECT}.title`]: 'Ausgabekanal',
+        [`inputs.${SELECT}.options.fast.label`]: 'Schnelle Spur',
+        [`inputs.${SECRET}.title`]: 'Zugriffsschluessel',
+        'steps.emit-values.title': 'Lokalisierter Lauf',
+        'steps.skip-disabled.title': 'Lokalisierter uebersprungener Schritt',
+        'rune.summary.heading': 'Lokalisierte Zusammenfassung',
+        'rune.summary.proceed': 'Ausfuehren',
+        'rune.summary.proceedToken': 'weiter',
+        'rune.summary.change': 'Wert aendern',
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  return { directory, manifestPath };
+}
+
+function installSessionCapture(): {
+  readonly captures: ReadonlyMap<LegName, LegCapture>;
+  inLeg<T>(leg: LegName, action: () => Promise<T>): Promise<T>;
+  restore(): void;
+} {
+  const captures = new Map<LegName, LegCapture>();
+  let activeLeg: LegName | undefined;
+  const realOpen: typeof Session.open = Session.open.bind(Session);
+  const openSpy = vi
+    .spyOn(Session, 'open')
+    .mockImplementation(
+      async (manifestPath: string, options?: SessionOptions): Promise<Session> => {
+        if (activeLeg === undefined) {
+          throw new Error('Session.open was called outside a named parity leg');
+        }
+        if (captures.has(activeLeg)) {
+          throw new Error(`the ${activeLeg} leg opened more than one session`);
+        }
+        const session = await realOpen(manifestPath, options);
+        const captured: LegCapture = { session, events: [], successfulSetValues: [] };
+        captures.set(activeLeg, captured);
+
+        const realSetValue = session.setValue.bind(session);
+        const setValue = (inputId: string, raw: unknown) => {
+          const returned = realSetValue(inputId, raw);
+          const accepted = session.allInputs().find((input) => input.id === inputId)?.value;
+          captured.successfulSetValues.push({
+            inputId,
+            value: inputId === SECRET ? MASK : jsonValue(accepted),
+            returned: returned.map((change) => ({ ...change })),
+          });
+          return returned;
+        };
+
+        const realExecute = session.execute.bind(session);
+        const execute: Session['execute'] = (observer, cancel) => {
+          const forwardingObserver: EngineObserver = (event) => {
+            captured.events.push(event);
+            observer?.(event);
+          };
+          return realExecute(forwardingObserver, cancel);
+        };
+        const facade = new Proxy(session, {
+          get: (target, property) => {
+            if (property === 'setValue') {
+              return setValue;
+            }
+            if (property === 'execute') {
+              return execute;
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+        return facade;
+      },
+    );
+
+  return {
+    captures,
+    inLeg: async <T>(leg: LegName, action: () => Promise<T>): Promise<T> => {
+      if (activeLeg !== undefined) {
+        throw new Error(`cannot start ${leg} while ${activeLeg} is active`);
+      }
+      activeLeg = leg;
+      try {
+        return await action();
+      } finally {
+        activeLeg = undefined;
+      }
+    },
+    restore: () => {
+      openSpy.mockRestore();
+    },
+  };
+}
+
+function legCapture(captures: ReadonlyMap<LegName, LegCapture>, leg: LegName): LegCapture {
+  const captured = captures.get(leg);
+  if (captured === undefined) {
+    throw new Error(`the ${leg} leg did not open a session`);
   }
-  expect(await run(argv, io, interaction)).toBe(0);
-  const result = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-  const transcript = [...promptOutput, ...io.err].join('\n');
-  expect(transcript.includes('Production (production)')).toBe(true);
-  expect(transcript.includes('process listings')).toBe(true);
-  expectMasked(transcript);
-  expectMasked(JSON.stringify(result));
-  return result;
+  return captured;
 }
 
-/** Exactly the call sequence the Electron main process makes over the facade (§9.2). */
-async function guiLeg(manifest: string, locale?: string): Promise<RunResult> {
-  const session = await Session.open(manifest, {
-    environment: {},
-    mode: 'gui',
-    ...(locale === undefined ? {} : { locale }),
-  });
-
-  // `rune.open` creates the Session in Electron main; boot then obtains the resolved strings,
-  // input state, completeness state, and presentation-only theme through the bridge.
-  const strings = session.getStrings();
-  const configureTitle = strings.stepTitle('configure');
-  expect(configureTitle).toBe(strings.entries.get('steps.configure.title'));
-  expect(session.allInputs().map(({ id, enabled, source }) => ({ id, enabled, source }))).toEqual([
-    { id: 'installDatabase', enabled: true, source: 'default' },
-    { id: 'databasePort', enabled: false, source: undefined },
-    { id: 'environment', enabled: true, source: undefined },
-    { id: 'token', enabled: true, source: undefined },
-  ]);
-  expect(session.pendingInputs().map((input) => input.id)).toEqual(['environment', 'token']);
-  expect(session.getThemeConfig()).toEqual({});
-  const environment = session.allInputs().find((input) => input.id === 'environment');
-  expect(environment?.spec).toMatchObject({
-    type: 'select',
-    options: [
-      { value: 'production', label: 'Production' },
-      { value: 'staging', label: 'Staging' },
-    ],
-  });
-
-  // The renderer refreshes both projections after each `rune.setValue`; the refreshed pending
-  // list and enabled state are what controls its Next button and disabled field treatment.
-  const refreshes: Array<{ readonly databasePortEnabled: boolean; readonly pending: string[] }> =
-    [];
-  for (const [id, value] of answerEntries()) {
-    session.setValue(id, value);
-    const databasePort = session.allInputs().find((input) => input.id === 'databasePort');
-    expect(databasePort).toBeDefined();
-    refreshes.push({
-      databasePortEnabled: databasePort?.enabled ?? false,
-      pending: session.pendingInputs().map((input) => input.id),
-    });
-  }
-  expect(refreshes).toEqual([
-    { databasePortEnabled: false, pending: ['token'] },
-    { databasePortEnabled: false, pending: [] },
-    { databasePortEnabled: true, pending: ['databasePort'] },
-    { databasePortEnabled: true, pending: [] },
-  ]);
-  expect(session.allInputs().find((input) => input.id === 'environment')?.value).toBe('production');
-
-  // `rune.plan` maps to Session.describe() in Electron main; it is the masked summary the
-  // renderer presents before starting execution.
-  const described = session.describe();
-  expect(described.status).toBe('planned');
-  expect(described.steps.map((step) => step.state)).toEqual(['PENDING', 'SKIPPED']);
-  expect(described.steps[0]?.title).toBe(configureTitle);
-
-  const result = await session.execute();
-  expect(session.warnings().some((warning) => warning.includes('process listings'))).toBe(true);
-
-  // Electron main delivers GUI results through the engine's atomic writer. Read that file back
-  // so the parity assertion uses the same persisted result representation as the other legs.
-  const resultPath = join(manifest, '..', 'result-gui.json');
-  writeResult(result, resultPath);
-  const persisted = JSON.parse(readFileSync(resultPath, 'utf8')) as RunResult;
-  expect(persisted).toEqual(result);
-  expectMasked(JSON.stringify(persisted));
-  return persisted;
-}
-
-interface ThreeWayRun {
-  readonly nonInteractive: CapturedLeg<RunResult>;
-  readonly interactive: CapturedLeg<RunResult>;
-  readonly gui: CapturedLeg<RunResult>;
-}
-
-async function threeWayRun(manifest: string, locale?: string): Promise<ThreeWayRun> {
-  return withRuneEnvironment(EMPTY_RUNE_ENVIRONMENT, async () => ({
-    nonInteractive: await captureDriver(() => nonInteractiveLeg(manifest, locale)),
-    interactive: await captureDriver(() => interactiveLeg(manifest, locale)),
-    gui: await captureDriver(() => guiLeg(manifest, locale)),
-  }));
-}
-
-function planFrom(events: readonly RunEvent[]) {
-  const started = events.find((event) => event.kind === 'runStarted');
-  expect(started).toBeDefined();
+function runStartedPlan(captured: LegCapture): ExecutionPlan {
+  const started = captured.events.find((event) => event.kind === 'runStarted');
   if (started?.kind !== 'runStarted') {
-    throw new Error('the engine did not emit runStarted');
+    throw new Error('the execution stream has no RunStarted event');
   }
   return started.plan;
 }
 
-describe('mode parity', () => {
-  afterAll(() => {
-    for (const directory of fixtureDirectories) {
-      rmSync(directory, { recursive: true, force: true });
-    }
-    fixtureDirectories.clear();
+function runFinishedResult(captured: LegCapture): RunResult {
+  const finished = captured.events.at(-1);
+  if (finished?.kind !== 'runFinished') {
+    throw new Error('the execution stream does not end in RunFinished');
+  }
+  return finished.result;
+}
+
+function jsonValue(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(canonicalJson(value));
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalJson);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, member]) => [key, canonicalJson(member)]),
+    );
+  }
+  return value;
+}
+
+/** Normalize exactly the documented cross-mode/run-time nondeterminism, and nothing else. */
+function normalizedResult(result: RunResult): unknown {
+  return jsonValue({
+    ...result,
+    id: '<run-id>',
+    mode: '<mode>',
+    startedAt: '<timestamp>',
+    finishedAt: '<timestamp>',
+    durationMs: 0,
+    inputs: result.inputs.map((input) => ({ ...input, source: '<source>' })),
+    steps: result.steps.map((step) => ({ ...step, durationMs: 0 })),
   });
+}
 
-  slowIt('produces one result across non-interactive, interactive, and the GUI leg', async () => {
-    const manifest = fixture();
+function normalizedPlan(plan: ExecutionPlan): unknown {
+  return jsonValue({
+    ...plan,
+    resolvedInputs: plan.resolvedInputs.map((input) => ({ ...input, source: '<source>' })),
+  });
+}
 
-    // --set exercises layer 4 in the non-interactive driver; the other two legs provide
-    // the same values through layer 5. The three actual drivers must agree on the result,
-    // frozen plan, and complete engine event stream (§14).
-    const { nonInteractive, interactive, gui } = await threeWayRun(manifest);
+function normalizedEvent(event: RunEvent): unknown {
+  switch (event.kind) {
+    case 'runStarted':
+      return { kind: event.kind, plan: normalizedPlan(event.plan) };
+    case 'stepFinished':
+      return jsonValue({ ...event, durationMs: 0 });
+    case 'runFinished':
+      return { kind: event.kind, result: normalizedResult(event.result) };
+    default:
+      // RunStarted keeps its complete plan; it is also compared separately below.
+      return jsonValue(event);
+  }
+}
 
-    expect(nonInteractive.value.mode).toBe('non-interactive');
-    expect(interactive.value.mode).toBe('interactive');
-    expect(gui.value.mode).toBe('gui');
-    expect(normalize(interactive.value)).toEqual(normalize(nonInteractive.value));
-    expect(normalize(gui.value)).toEqual(normalize(nonInteractive.value));
-    expect(nonInteractive.value.steps.map((step) => step.state)).toEqual(['SUCCEEDED', 'SKIPPED']);
+function stringSnapshot(strings: StringTable): Readonly<Record<string, string | undefined>> {
+  return {
+    locale: strings.locale,
+    overlayLocale: strings.overlayLocale,
+    productDescription: strings.productDescription(),
+    controllerTitle: strings.inputTitle(CONTROLLER),
+    dependentTitle: strings.inputTitle(DEPENDENT),
+    patternHint: strings.patternHint(DEPENDENT),
+    selectTitle: strings.inputTitle(SELECT),
+    optionLabel: strings.optionLabel(SELECT, 'fast'),
+    secretTitle: strings.inputTitle(SECRET),
+    runnableTitle: strings.stepTitle('emit-values'),
+    skippedTitle: strings.stepTitle('skip-disabled'),
+    summaryHeading: strings.chrome('rune.summary.heading'),
+  };
+}
 
-    for (const leg of [nonInteractive, interactive, gui]) {
-      expectMasked(JSON.stringify(leg.value));
-      expectPlanSecretRedacted(planFrom(leg.events));
-      expectMasked(JSON.stringify(normalizeEvents(leg.events)));
-      const output = leg.events.find((event) => event.kind === 'stepOutput');
-      expect(output?.kind === 'stepOutput').toBe(true);
-      if (output?.kind === 'stepOutput') {
-        expect(output.line.includes(ANSWERS.token)).toBe(false);
-        expect(output.line === `5432 production ${MASK}`).toBe(true);
+function parseMachineResult(io: Capture): RunResult {
+  expect(io.out).toHaveLength(1);
+  return JSON.parse(io.out.join('\n')) as RunResult;
+}
+
+function suppressInputEnvironment(ids: readonly string[]): () => void {
+  const previous = new Map<string, string | undefined>();
+  for (const id of ids) {
+    const name = environmentName(id);
+    previous.set(name, process.env[name]);
+    delete process.env[name];
+  }
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
       }
     }
+  };
+}
 
-    expect(JSON.stringify(planFrom(interactive.events))).toBe(
-      JSON.stringify(planFrom(nonInteractive.events)),
+it('keeps the real non-interactive, interactive, and GUI-shaped sessions mode-identical', async () => {
+  const fixture = createFixture();
+  const restoreEnvironment = suppressInputEnvironment([CONTROLLER, DEPENDENT, SELECT, SECRET]);
+  const sessionCapture = installSessionCapture();
+  const nonInteractiveIo = captureIo();
+  const interactiveIo = captureIo();
+  const nonInteractiveInteraction = scripted([], false);
+  const interactiveInteraction = scripted([
+    'fast',
+    SECRET_VALUE,
+    '1',
+    'true',
+    'wrong-pattern',
+    'D-42',
+    'weiter',
+  ]);
+
+  try {
+    const nonInteractiveCode = await sessionCapture.inLeg('non-interactive', () =>
+      run(
+        [
+          'run',
+          fixture.manifestPath,
+          '--non-interactive',
+          '--locale',
+          LOCALE,
+          '--set',
+          `${CONTROLLER}=true`,
+          '--set',
+          `${DEPENDENT}=D-42`,
+          '--set',
+          `${SELECT}=fast`,
+          '--set',
+          `${SECRET}=${SECRET_VALUE}`,
+          '--result',
+          '-',
+        ],
+        nonInteractiveIo,
+        nonInteractiveInteraction,
+      ),
     );
-    expect(JSON.stringify(planFrom(gui.events))).toBe(
-      JSON.stringify(planFrom(nonInteractive.events)),
+
+    const interactiveArgv = ['run', fixture.manifestPath, '--locale', LOCALE, '--result', '-'];
+    expect(interactiveArgv).not.toContain('--set');
+    const interactiveCode = await sessionCapture.inLeg('interactive', () =>
+      run(interactiveArgv, interactiveIo, interactiveInteraction),
     );
-    expect(normalizeEvents(interactive.events)).toEqual(normalizeEvents(nonInteractive.events));
-    expect(normalizeEvents(gui.events)).toEqual(normalizeEvents(nonInteractive.events));
-    expect(nonInteractive.events.map((event) => event.kind)).toContain('stepOutput');
 
-    // InputStateChanged exists only for the layer-5 legs. The scripted summary edit and
-    // facade client both enable databasePort through the real Session.setValue return.
-    expect(nonInteractive.changes).toEqual([]);
-    expect(interactive.changes).toEqual([[], [], [{ inputId: 'databasePort', enabled: true }], []]);
-    expect(gui.changes).toEqual(interactive.changes);
-  });
+    const guiClient = await sessionCapture.inLeg('gui', async () => {
+      const session = await Session.open(fixture.manifestPath, { locale: LOCALE, mode: 'gui' });
+      const strings = stringSnapshot(session.getStrings());
+      const initialPending = session.pendingInputs().map((input) => input.id);
+      const initialInputs = session.allInputs();
 
-  slowIt('localizes display text without changing machine contracts in any leg', async () => {
-    const manifest = fixture();
-    // The explicit English locale is the built-in default text with no overlay, made stable
-    // even on a host whose system locale is German.
-    const defaults = await threeWayRun(manifest, 'en');
-    const { nonInteractive, interactive, gui } = await threeWayRun(manifest, 'de');
+      session.setValue(SELECT, 'fast');
+      session.setValue(SECRET, SECRET_VALUE);
+      session.setValue(CONTROLLER, true);
+      expect(session.pendingInputs().map((input) => input.id)).toEqual([DEPENDENT]);
+      expect(() => session.setValue(DEPENDENT, 'wrong-pattern')).toThrow(/wrong-pattern/);
+      expect(session.allInputs().find((input) => input.id === DEPENDENT)?.value).toBeUndefined();
+      session.setValue(DEPENDENT, 'D-42');
+      expect(session.pendingInputs()).toEqual([]);
 
-    for (const leg of [nonInteractive, interactive, gui]) {
-      expect(leg.value.steps[0]?.title).toBe('Konfigurieren');
-    }
-    for (const leg of [defaults.nonInteractive, defaults.interactive, defaults.gui]) {
-      expect(leg.value.steps[0]?.title).toBe('Configure');
-    }
-    // Locale resolution changes only display data. This retains every machine-relevant plan
-    // field — IDs, state, argv, cwd, env, timeouts, success codes, and skip reasons (§6.3, §14).
-    for (const [defaultLeg, germanLeg] of [
-      [defaults.nonInteractive, nonInteractive],
-      [defaults.interactive, interactive],
-      [defaults.gui, gui],
-    ] as const) {
-      expect(normalizeResultForLocale(germanLeg.value)).toEqual(
-        normalizeResultForLocale(defaultLeg.value),
-      );
-      expect(normalizePlanForLocale(planFrom(germanLeg.events))).toEqual(
-        normalizePlanForLocale(planFrom(defaultLeg.events)),
-      );
-    }
-  });
-
-  slowIt('isolates ambient RUNE values while preserving them after a three-way run', async () => {
-    const manifest = fixture();
-    const ambientEnvironment: RuneEnvironment = {
-      ...EMPTY_RUNE_ENVIRONMENT,
-      RUNE_LOCALE: 'de',
-      RUNE_INPUT_TOKEN: 'ambient-secret',
-    };
-
-    await withRuneEnvironment(ambientEnvironment, async () => {
-      const { nonInteractive, interactive, gui } = await threeWayRun(manifest);
-
-      expect(normalize(interactive.value)).toEqual(normalize(nonInteractive.value));
-      expect(normalize(gui.value)).toEqual(normalize(nonInteractive.value));
-      expect(nonInteractive.changes).toEqual([]);
-      expect(interactive.changes).toEqual([
-        [],
-        [],
-        [{ inputId: 'databasePort', enabled: true }],
-        [],
-      ]);
-      expect(gui.changes).toEqual(interactive.changes);
-      expect(process.env.RUNE_LOCALE).toBe(ambientEnvironment.RUNE_LOCALE);
-      expect(process.env.RUNE_INPUT_TOKEN).toBe(ambientEnvironment.RUNE_INPUT_TOKEN);
+      const summaryPlan = session.plan();
+      const forwardedEvents: RunEvent[] = [];
+      const result = await session.execute((event) => forwardedEvents.push(event));
+      return { strings, initialPending, initialInputs, summaryPlan, forwardedEvents, result };
     });
-  });
-});
+
+    expect([nonInteractiveCode, interactiveCode, guiClient.result.exitCode]).toEqual([0, 0, 0]);
+    expect(nonInteractiveInteraction.remainingAnswers()).toBe(0);
+    expect(interactiveInteraction.remainingAnswers()).toBe(0);
+
+    const nonInteractive = legCapture(sessionCapture.captures, 'non-interactive');
+    const interactive = legCapture(sessionCapture.captures, 'interactive');
+    const gui = legCapture(sessionCapture.captures, 'gui');
+    const captures = [nonInteractive, interactive, gui] as const;
+
+    const nonInteractiveResult = parseMachineResult(nonInteractiveIo);
+    const interactiveResult = parseMachineResult(interactiveIo);
+    const results = [nonInteractiveResult, interactiveResult, guiClient.result] as const;
+    expect(jsonText(nonInteractiveResult)).toBe(jsonText(runFinishedResult(nonInteractive)));
+    expect(jsonText(interactiveResult)).toBe(jsonText(runFinishedResult(interactive)));
+    expect(jsonText(guiClient.result)).toBe(jsonText(runFinishedResult(gui)));
+
+    // These are the plans carried by the actual executions, not extra comparison sessions.
+    const plans = captures.map(runStartedPlan);
+    const basePlan = plans[0];
+    if (basePlan === undefined) {
+      throw new Error('the parity suite captured no execution plan');
+    }
+    expect(plans.slice(1).map((plan) => jsonText(normalizedPlan(plan)))).toEqual([
+      jsonText(normalizedPlan(basePlan)),
+      jsonText(normalizedPlan(basePlan)),
+    ]);
+    expect(jsonText(normalizedPlan(guiClient.summaryPlan))).toBe(
+      jsonText(normalizedPlan(basePlan)),
+    );
+
+    const normalizedEventStreams = captures.map((captured) =>
+      jsonText(captured.events.map(normalizedEvent)),
+    );
+    expect(normalizedEventStreams.slice(1)).toEqual([
+      normalizedEventStreams[0],
+      normalizedEventStreams[0],
+    ]);
+    expect(captures.map((captured) => captured.events.map((event) => event.kind))).toEqual([
+      ['runStarted', 'stepStarted', 'stepOutput', 'stepFinished', 'stepFinished', 'runFinished'],
+      ['runStarted', 'stepStarted', 'stepOutput', 'stepFinished', 'stepFinished', 'runFinished'],
+      ['runStarted', 'stepStarted', 'stepOutput', 'stepFinished', 'stepFinished', 'runFinished'],
+    ]);
+    for (const captured of captures) {
+      expect(captured.events[0]).toEqual({ kind: 'runStarted', plan: runStartedPlan(captured) });
+      expect(captured.events.filter((event) => event.kind === 'stepOutput')).toEqual([
+        { kind: 'stepOutput', stepId: 'emit-values', stream: 'stdout', line: 'D-42|fast|***' },
+      ]);
+      expect(captured.events.filter((event) => event.kind === 'stepStarted')).toEqual([
+        expect.objectContaining({ kind: 'stepStarted', stepId: 'emit-values' }),
+      ]);
+      expect(
+        captured.events.filter(
+          (event) => event.kind === 'stepFinished' && event.stepId === 'skip-disabled',
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          kind: 'stepFinished',
+          stepId: 'skip-disabled',
+          state: 'SKIPPED',
+          exitCode: undefined,
+        }),
+      ]);
+    }
+
+    const normalizedResults = results.map((result) => jsonText(normalizedResult(result)));
+    expect(normalizedResults.slice(1)).toEqual([normalizedResults[0], normalizedResults[0]]);
+    expect(results.map((result) => result.mode)).toEqual(['non-interactive', 'interactive', 'gui']);
+    expect(nonInteractiveResult.inputs.map((input) => input.source)).toEqual([
+      'set',
+      'set',
+      'set',
+      'set',
+    ]);
+    expect(interactiveResult.inputs.map((input) => input.source)).toEqual([
+      'answer',
+      'answer',
+      'answer',
+      'answer',
+    ]);
+    expect(guiClient.result.inputs.map((input) => input.source)).toEqual([
+      'answer',
+      'answer',
+      'answer',
+      'answer',
+    ]);
+
+    const successfulLayerFive = [
+      { inputId: SELECT, value: 'fast', returned: [] },
+      { inputId: SECRET, value: MASK, returned: [] },
+      {
+        inputId: CONTROLLER,
+        value: true,
+        returned: [{ inputId: DEPENDENT, enabled: true }],
+      },
+      { inputId: DEPENDENT, value: 'D-42', returned: [] },
+    ];
+    expect(nonInteractive.successfulSetValues).toEqual([]);
+    expect(interactive.successfulSetValues).toEqual(successfulLayerFive);
+    expect(gui.successfulSetValues).toEqual(successfulLayerFive);
+    expect(interactive.successfulSetValues.flatMap((call) => call.returned)).toEqual([
+      { inputId: DEPENDENT, enabled: true },
+    ]);
+    expect(interactive.successfulSetValues).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ value: 'wrong-pattern' })]),
+    );
+
+    // The interactive driver really prompted, edited its summary, re-prompted, and proceeded.
+    const transcript = interactiveInteraction.transcript();
+    expect(transcript).toContain('Schnelle Spur (fast)');
+    expect(transcript.match(/Enter a value for Ausgabekanal: /g)).toHaveLength(1);
+    expect(transcript.match(/Enter a value for Zugriffsschluessel: /g)).toHaveLength(1);
+    expect(transcript.match(/Enter a value for Details einschliessen: /g)).toHaveLength(1);
+    expect(transcript.match(/Enter a value for Detailcode: /g)).toHaveLength(2);
+    expect(transcript).toContain('Format D-123 verwenden');
+    expect(transcript.match(/Ausfuehren \(weiter\) \/ Wert aendern <n>/g)).toHaveLength(2);
+    expect(interactiveIo.err.join('\n').match(/Lokalisierte Zusammenfassung/g)).toHaveLength(2);
+    expect(guiClient.initialPending).toEqual([SELECT, SECRET]);
+
+    const stringTables = [
+      stringSnapshot(nonInteractive.session.getStrings()),
+      stringSnapshot(interactive.session.getStrings()),
+      guiClient.strings,
+    ];
+    expect(stringTables[1]).toEqual(stringTables[0]);
+    expect(stringTables[2]).toEqual(stringTables[0]);
+    expect(stringTables[0]).toEqual({
+      locale: LOCALE,
+      overlayLocale: 'de',
+      productDescription: 'Ein repraesentativer Paritaetsablauf',
+      controllerTitle: 'Details einschliessen',
+      dependentTitle: 'Detailcode',
+      patternHint: 'Format D-123 verwenden',
+      selectTitle: 'Ausgabekanal',
+      optionLabel: 'Schnelle Spur',
+      secretTitle: 'Zugriffsschluessel',
+      runnableTitle: 'Lokalisierter Lauf',
+      skippedTitle: 'Lokalisierter uebersprungener Schritt',
+      summaryHeading: 'Lokalisierte Zusammenfassung',
+    });
+
+    expect(plans[0]?.steps.map((step) => step.id)).toEqual(['emit-values', 'skip-disabled']);
+    expect(plans[0]?.steps.map((step) => step.title)).toEqual([
+      'Lokalisierter Lauf',
+      'Lokalisierter uebersprungener Schritt',
+    ]);
+    expect(results.map((result) => result.steps.map((step) => step.title))).toEqual([
+      ['Lokalisierter Lauf', 'Lokalisierter uebersprungener Schritt'],
+      ['Lokalisierter Lauf', 'Lokalisierter uebersprungener Schritt'],
+      ['Lokalisierter Lauf', 'Lokalisierter uebersprungener Schritt'],
+    ]);
+    expect(results.map((result) => result.steps.map((step) => step.id))).toEqual([
+      ['emit-values', 'skip-disabled'],
+      ['emit-values', 'skip-disabled'],
+      ['emit-values', 'skip-disabled'],
+    ]);
+    expect(results.map((result) => result.inputs.map((input) => input.id))).toEqual([
+      [CONTROLLER, DEPENDENT, SELECT, SECRET],
+      [CONTROLLER, DEPENDENT, SELECT, SECRET],
+      [CONTROLLER, DEPENDENT, SELECT, SECRET],
+    ]);
+    const selectState = guiClient.initialInputs.find((input) => input.id === SELECT);
+    if (selectState?.spec.type !== 'select') {
+      throw new Error('the fixture select input was not exposed as a select');
+    }
+    expect(selectState.spec.options).toEqual(['fast', 'safe']);
+
+    const runnable = plans[0]?.steps[0];
+    if (runnable?.state !== 'PENDING') {
+      throw new Error('the representative runnable step was not pending in the plan');
+    }
+    expect(jsonValue(runnable.command.argv)).toEqual([
+      process.execPath,
+      '-e',
+      COMMAND_SCRIPT,
+      'D-42',
+      'fast',
+      MASK,
+    ]);
+    expect(results.map((result) => result.steps[0]?.command)).toEqual([
+      [process.execPath, '-e', COMMAND_SCRIPT, 'D-42', 'fast', MASK],
+      [process.execPath, '-e', COMMAND_SCRIPT, 'D-42', 'fast', MASK],
+      [process.execPath, '-e', COMMAND_SCRIPT, 'D-42', 'fast', MASK],
+    ]);
+    expect(guiClient.forwardedEvents).toEqual(gui.events);
+
+    const capturedSurfaces = jsonText({
+      plans,
+      events: captures.map((captured) => captured.events),
+      results,
+      successfulSetValues: captures.map((captured) => captured.successfulSetValues),
+      transcripts: [nonInteractiveInteraction.transcript(), transcript],
+      output: [
+        ...nonInteractiveIo.out,
+        ...nonInteractiveIo.err,
+        ...interactiveIo.out,
+        ...interactiveIo.err,
+      ],
+      guiForwardedEvents: guiClient.forwardedEvents,
+    });
+    expect(capturedSurfaces).not.toContain(SECRET_VALUE);
+    expect(capturedSurfaces).toContain(MASK);
+  } finally {
+    sessionCapture.restore();
+    restoreEnvironment();
+    nonInteractiveInteraction.dispose();
+    interactiveInteraction.dispose();
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+}, 30_000);

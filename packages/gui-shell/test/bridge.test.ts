@@ -4,7 +4,16 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CancelToken, ManifestError, Session } from '@rune/engine';
+import {
+  CancelToken,
+  CancelledError,
+  ManifestError,
+  Session,
+  type SessionOptions,
+} from '@rune/engine';
+
+import { createSessionOptionsForTesting } from '../../engine/src/engine/session.js';
+import type { Runner } from '../../engine/src/runners/base.js';
 
 const electron = vi.hoisted(() => {
   type Listener = (...args: unknown[]) => void;
@@ -140,6 +149,14 @@ import {
   runWorkflow,
   windowedRun,
 } from '../src/main/index.js';
+
+function openTestSession(
+  manifestPath: string,
+  options: SessionOptions,
+  runner: Runner,
+): Promise<Session> {
+  return Session.open(manifestPath, createSessionOptionsForTesting(options, runner));
+}
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
@@ -532,11 +549,10 @@ describe('the IPC bridge', () => {
     const finishCleanup = deferred();
     let cancelNotifications = 0;
     let cleanupFinished = false;
-    const session = await Session.open(manifestPath, {
-      environment: {},
-      mode: 'gui',
-      overrides: { token: 'provided-token' },
-      runner: {
+    const session = await openTestSession(
+      manifestPath,
+      { environment: {}, mode: 'gui', overrides: { token: 'provided-token' } },
+      {
         run: async (request) => {
           const cancelled = new Promise<void>((resolve) => {
             request.cancel.onCancel(() => {
@@ -551,13 +567,13 @@ describe('the IPC bridge', () => {
           return { kind: 'cancelled' as const };
         },
       },
-    });
+    );
     const invocation = {
       ...shellInvocation(manifestPath, false),
       result: join(tmpdir(), 'result.json'),
     };
     const writer = vi.fn();
-    const cancel = vi.spyOn(session, 'cancel');
+    const cancel = vi.spyOn(Session.prototype, 'cancel');
     const run = windowedRun(session, invocation, writer);
 
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -637,7 +653,7 @@ describe('the IPC bridge', () => {
     const rejectedExecution = new Promise<never>((_resolve, reject) => {
       rejectExecution = reject;
     });
-    vi.spyOn(session, 'execute').mockImplementation(() => {
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(() => {
       executeStarted.resolve();
       return rejectedExecution;
     });
@@ -706,12 +722,11 @@ describe('the IPC bridge', () => {
 
   it('keeps a persisted nonzero outcome authoritative after renderer loss', async () => {
     const manifestPath = fixture();
-    const session = await Session.open(manifestPath, {
-      environment: {},
-      mode: 'gui',
-      overrides: { token: 'provided-token' },
-      runner: { run: async () => ({ kind: 'exited', exitCode: 9 }) },
-    });
+    const session = await openTestSession(
+      manifestPath,
+      { environment: {}, mode: 'gui', overrides: { token: 'provided-token' } },
+      { run: async () => ({ kind: 'exited', exitCode: 9 }) },
+    );
     const invocation = {
       ...shellInvocation(manifestPath, false),
       result: join(tmpdir(), 'result.json'),
@@ -754,14 +769,14 @@ describe('the IPC bridge', () => {
     expect(errors).toHaveLength(1);
   });
 
-  it('masks a known secret in a windowed execute error and preserves its exit code', async () => {
+  it('masks an unauthenticated windowed execute error and fails closed', async () => {
     const manifestPath = fixture();
     const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
-    vi.spyOn(session, 'execute').mockRejectedValue(
+    vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new ManifestError('RUNE-103', 'windowed failure for super-secret-value'),
     );
     const invocation = {
@@ -777,9 +792,9 @@ describe('the IPC bridge', () => {
     expect(execute).toBeDefined();
     await expect(execute?.({})).rejects.toThrow('RUNE-103 (exit 3): windowed failure for ***');
 
-    expect(await run).toBe(3);
+    expect(await run).toBe(70);
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ exitCode: 3, status: 'config_error' });
+    expect(delivered[0]).toMatchObject({ exitCode: 70, status: 'internal_error' });
     const diagnostics = stderr.mock.calls.map(([message]) => String(message)).join('');
     expect(diagnostics).toContain('windowed failure for ***');
     expect(diagnostics).not.toContain('super-secret-value');
@@ -792,7 +807,9 @@ describe('the IPC bridge', () => {
       mode: 'non-interactive',
       overrides: { token: 'super-secret-value' },
     });
-    vi.spyOn(session, 'execute').mockRejectedValue('headless failure for super-secret-value');
+    vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
+      'headless failure for super-secret-value',
+    );
     const invocation = {
       ...shellInvocation(manifestPath, true),
       result: join(tmpdir(), 'result.json'),
@@ -810,7 +827,7 @@ describe('the IPC bridge', () => {
     expect(diagnostics).not.toContain('super-secret-value');
   });
 
-  it('maps an invalid headless log target to an internal-error result and exit 70', async () => {
+  it('maps an invalid headless log target to a failed result and exit 1', async () => {
     const manifestPath = emptyFixture();
     const logTarget = join(manifestPath, '..', 'log-target');
     mkdirSync(logTarget);
@@ -825,9 +842,9 @@ describe('the IPC bridge', () => {
 
     const code = await headlessRun(session, invocation, (result) => delivered.push(result));
 
-    expect(code).toBe(70);
+    expect(code).toBe(1);
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ exitCode: 70, status: 'internal_error' });
+    expect(delivered[0]).toMatchObject({ exitCode: 1, status: 'failed' });
     expect(stderr.mock.calls.map(([message]) => String(message)).join('')).toContain(logTarget);
   });
 
@@ -837,7 +854,7 @@ describe('the IPC bridge', () => {
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
-    vi.spyOn(session, 'describe').mockImplementation(() => {
+    vi.spyOn(Session.prototype, 'describe').mockImplementation(() => {
       throw new ManifestError('RUNE-103', 'IPC failure for super-secret-value');
     });
     registerBridge(session, { events: { send: () => undefined } });
@@ -861,18 +878,27 @@ describe('the IPC bridge', () => {
     const manifestPath = emptyFixture();
     const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
 
-    const result = failureResultFor(4, shellInvocation(manifestPath, false), session);
+    const result = failureResultFor(
+      new CancelledError(),
+      shellInvocation(manifestPath, false),
+      session,
+    );
 
     expect(result.product).toEqual({ name: 'Example', version: '1.0.0' });
     expect(result.locale).toBe(session.getStrings().locale);
+    expect(result.status).toBe('cancelled');
   });
 
   it('leaves metadata empty for failures before a session opens', () => {
     const manifestPath = join(tmpdir(), 'missing-installer.yaml');
 
-    const result = failureResultFor(3, shellInvocation(manifestPath, false));
+    const result = failureResultFor(
+      new ManifestError('RUNE-103', 'manifest rejected'),
+      shellInvocation(manifestPath, false),
+    );
 
-    expect(result.product).toEqual({ name: '', version: '' });
+    expect(result.product).toBeNull();
+    expect(result.manifest).toEqual({ path: manifestPath, sha256: null, schemaVersion: null });
     expect(result.locale).toBeNull();
   });
 
@@ -926,9 +952,12 @@ describe('the IPC bridge', () => {
       },
     });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(electron.handlers.has('rune:execute')).toBe(true));
     const execute = electron.handlers.get('rune:execute');
-    await expect(execute?.({})).rejects.toThrow(/databasePort/);
+    if (execute === undefined) {
+      throw new Error('execute handler was not registered');
+    }
+    await expect(execute({})).rejects.toThrow(/databasePort/);
 
     expect(await run).toBe(70);
     expect(writes).toBe(1);
@@ -968,12 +997,15 @@ describe('the IPC bridge', () => {
 
   it('ends a headless run with 70 after one masked result-write failure', async () => {
     const manifestPath = fixture();
-    const session = await Session.open(manifestPath, {
-      environment: {},
-      mode: 'non-interactive',
-      overrides: { token: 'super-secret-value' },
-      runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
-    });
+    const session = await openTestSession(
+      manifestPath,
+      {
+        environment: {},
+        mode: 'non-interactive',
+        overrides: { token: 'super-secret-value' },
+      },
+      { run: async () => ({ kind: 'exited', exitCode: 0 }) },
+    );
     const invocation = {
       ...shellInvocation(manifestPath, true),
       result: join(tmpdir(), 'result.json'),
@@ -1152,8 +1184,7 @@ describe('the IPC bridge', () => {
       subscribeToSigterm: sigterm.subscribe,
     });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(electron.windows).toHaveLength(1);
+    await vi.waitFor(() => expect(electron.windows).toHaveLength(1));
     sigterm.fire();
     sigterm.fire();
 
@@ -1185,11 +1216,10 @@ describe('the IPC bridge', () => {
     const run = runWorkflow(invocation, {
       whenReady: async () => undefined,
       open: async () => {
-        session = await Session.open(manifestPath, {
-          environment: {},
-          mode: 'gui',
-          overrides: invocation.overrides,
-          runner: {
+        session = await openTestSession(
+          manifestPath,
+          { environment: {}, mode: 'gui', overrides: invocation.overrides },
+          {
             run: async (request) =>
               new Promise((resolve) => {
                 request.cancel.onCancel(() => {
@@ -1199,21 +1229,24 @@ describe('the IPC bridge', () => {
                 runnerStarted.resolve();
               }),
           },
-        });
+        );
         return session;
       },
       writer: (result) => delivered.push(result),
       subscribeToSigterm: sigterm.subscribe,
     });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(electron.handlers.has('rune:execute')).toBe(true));
     const execute = electron.handlers.get('rune:execute');
-    const execution = execute?.({});
+    if (execute === undefined) {
+      throw new Error('execute handler was not registered');
+    }
+    const execution = execute({});
     await runnerStarted.promise;
     if (session === undefined) {
       throw new Error('session did not open');
     }
-    const cancel = vi.spyOn(session, 'cancel');
+    const cancel = vi.spyOn(Session.prototype, 'cancel');
     sigterm.fire();
     sigterm.fire();
 
@@ -1242,11 +1275,10 @@ describe('the IPC bridge', () => {
     const run = runWorkflow(invocation, {
       whenReady: async () => undefined,
       open: () =>
-        Session.open(manifestPath, {
-          environment: {},
-          mode: 'non-interactive',
-          overrides: invocation.overrides,
-          runner: {
+        openTestSession(
+          manifestPath,
+          { environment: {}, mode: 'non-interactive', overrides: invocation.overrides },
+          {
             run: async (request) =>
               new Promise((resolve) => {
                 request.cancel.onCancel(() => {
@@ -1256,7 +1288,7 @@ describe('the IPC bridge', () => {
                 runnerStarted.resolve();
               }),
           },
-        }),
+        ),
       writer: (result) => delivered.push(result),
       subscribeToSigterm: sigterm.subscribe,
     });
@@ -1299,12 +1331,11 @@ describe('the IPC bridge', () => {
     const run = runWorkflow(invocation, {
       whenReady: () => ready.promise,
       open: () =>
-        Session.open(manifestPath, {
-          environment: {},
-          mode: 'non-interactive',
-          overrides: invocation.overrides,
-          runner: { run: runner },
-        }),
+        openTestSession(
+          manifestPath,
+          { environment: {}, mode: 'non-interactive', overrides: invocation.overrides },
+          { run: runner },
+        ),
       writer: (result) => delivered.push(result),
       subscribeToSigterm: sigterm.subscribe,
     });
@@ -1416,17 +1447,16 @@ describe('the IPC bridge', () => {
   });
 
   it('pushes every run event through the serializer, pre-masked', async () => {
-    const session = await Session.open(fixture(), {
-      environment: {},
-      mode: 'gui',
-      overrides: { token: 'super-secret-value' },
-      runner: {
+    const session = await openTestSession(
+      fixture(),
+      { environment: {}, mode: 'gui', overrides: { token: 'super-secret-value' } },
+      {
         run: async (request) => {
           request.onOutput('stdout', 'the token is super-secret-value');
           return { kind: 'exited', exitCode: 0 };
         },
       },
-    });
+    );
     session.setValue('installDatabase', false);
     const bridge = await bridgeOver(session);
 

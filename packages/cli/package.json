@@ -20,6 +20,9 @@
     "@rune/engine": "0.1.0",
     "commander": "^14.0.3"
   },
+  "devDependencies": {
+    "zod": "^4.4.3"
+  },
   "scripts": {
     "build": "tsc -b",
     "prepack": "npm run build"

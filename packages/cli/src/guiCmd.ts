@@ -272,7 +272,7 @@ export async function launchGui(
   };
   const onSigint = (): void => {
     if (receivedSigint) {
-      interaction.forceExit(6);
+      interaction.forceExit?.(6);
       return;
     }
     receivedSigint = true;

@@ -7,35 +7,78 @@
  * value is matched against its `pattern`.
  */
 
-import { MASK, SecretString } from '../engine/secrets.js';
+import { createSecretString, isSecretString, MASK, secretLength } from '../engine/secrets.js';
+import { formatDiagnostic, quotedDiagnostic, type DiagnosticPart } from '../diagnostics.js';
 import { compileInputPattern } from '../manifest/v1/rules.js';
 import { optionValue, type InputSpec } from '../manifest/v1/schema.js';
-import { FALSE_WORDS, TRUE_WORDS, type Coercion, type InputTypeHandler } from './base.js';
+import {
+  FALSE_WORDS,
+  TRUE_WORDS,
+  type Coercion,
+  type InputTypeHandler,
+  type InputValue,
+} from './base.js';
+import { nativeStringArraySnapshot } from './snapshot.js';
 
 /** The cap on a value that is matched against a pattern (§4.2). */
 export const MAX_PATTERN_INPUT_BYTES = 4096;
 
-function ok(value: Parameters<typeof String>[0] | boolean | readonly string[]): Coercion {
-  return { ok: true, value: value as never };
+function ok(value: InputValue): Coercion {
+  return { ok: true, value };
 }
 
-function fail(message: string): Coercion {
-  return { ok: false, message };
+function fail(...diagnosticParts: readonly DiagnosticPart[]): Coercion {
+  const failure = {
+    ok: false,
+    message: formatDiagnostic(diagnosticParts),
+  } as const;
+  Object.defineProperty(failure, 'diagnosticParts', {
+    value: Object.freeze([...diagnosticParts]),
+  });
+  return failure;
 }
 
 /** Names a value that is not text, for a message that says what was written. */
-function describe(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
+function describe(value: unknown): DiagnosticPart {
+  switch (typeof value) {
+    case 'string':
+      return quotedDiagnostic(value);
+    case 'number':
+    case 'boolean':
+      return JSON.stringify(value) ?? 'unknown';
+    case 'undefined':
+      return 'undefined';
+    case 'bigint':
+      return 'bigint';
+    case 'symbol':
+      return 'symbol';
+    case 'function':
+      return 'function';
+    case 'object':
+      if (value === null) {
+        return 'null';
+      }
+      try {
+        return Array.isArray(value) ? 'array' : 'object';
+      } catch {
+        return 'object';
+      }
+  }
 }
 
 function optionValues(spec: InputSpec): readonly string[] {
   return 'options' in spec ? spec.options.map(optionValue) : [];
 }
 
-function listOptions(spec: InputSpec): string {
-  return optionValues(spec)
-    .map((value) => `"${value}"`)
-    .join(', ');
+function listOptions(spec: InputSpec): readonly DiagnosticPart[] {
+  return listOptionValues(optionValues(spec));
+}
+
+function listOptionValues(values: readonly string[]): readonly DiagnosticPart[] {
+  return values.flatMap((value, index) => [
+    ...(index === 0 ? [] : [', ']),
+    quotedDiagnostic(value),
+  ]);
 }
 
 /** Free text, optionally constrained by a pattern the manifest author wrote. */
@@ -57,9 +100,9 @@ function checkPattern(text: string, spec: InputSpec): Coercion {
   if (!new RegExp(`^(?:${pattern.source})$`, pattern.flags).test(text)) {
     const hint =
       'patternHint' in spec && spec.patternHint !== undefined ? spec.patternHint : undefined;
-    return fail(
-      hint === undefined ? `"${text}" does not match ${spec.pattern}` : `"${text}": ${hint}`,
-    );
+    return hint === undefined
+      ? fail(quotedDiagnostic(text), ' does not match ', spec.pattern)
+      : fail(quotedDiagnostic(text), ': ', hint);
   }
   return ok(text);
 }
@@ -71,7 +114,7 @@ const text: InputTypeHandler = {
   isAbsent: (value) => value === '',
   fromString: (value, spec) => checkPattern(value, spec),
   fromNative: (value, spec) =>
-    typeof value === 'string' ? checkPattern(value, spec) : fail(`${describe(value)} is not text`),
+    typeof value === 'string' ? checkPattern(value, spec) : fail(describe(value), ' is not text'),
   render: (value) => String(value),
   compare: (value) => String(value),
 };
@@ -79,26 +122,23 @@ const text: InputTypeHandler = {
 const secret: InputTypeHandler = {
   name: 'secret',
   secret: true,
-  empty: () => new SecretString(''),
-  isAbsent: (value) => (value instanceof SecretString ? value.length === 0 : value === ''),
-  fromString: (value) => ok(new SecretString(value) as never),
+  empty: () => createSecretString(''),
+  isAbsent: (value) => (isSecretString(value) ? secretLength(value) === 0 : value === ''),
+  fromString: (value) => ok(createSecretString(value)),
   // Never echoes what it rejects: the reason a value is wrong is public, the value is not.
-  // An already-wrapped secret passes through: a frontend hands back what resolution gave it
-  // when it re-resolves after another answer changed, and unwrapping it to check would be
-  // the one place a secret is turned back into a plain string for no reason.
+  // A frontend may hand back an already opaque immutable wrapper when it re-resolves. Retain it:
+  // its private value is fixed, and public consumers continue to observe only the mask.
   fromNative: (value) => {
-    if (value instanceof SecretString) {
-      return ok(value as never);
+    if (typeof value === 'string') {
+      return ok(createSecretString(value));
     }
-    return typeof value === 'string'
-      ? ok(new SecretString(value) as never)
-      : fail('the value is not text');
+    return isSecretString(value) ? ok(value) : fail('the value is not text');
   },
   // Renders the mask, never the secret. A secret reaches a command as the wrapper itself,
   // and the runner unwraps it at spawn — this is a rendering function, and rendering a
   // secret into text is exactly what invariant 6 forbids everywhere but there.
   render: () => MASK,
-  compare: (value) => (value instanceof SecretString ? value.reveal() : String(value)),
+  compare: (value) => (isSecretString(value) ? value : createSecretString('')),
 };
 
 const boolean: InputTypeHandler = {
@@ -116,27 +156,39 @@ const boolean: InputTypeHandler = {
     if ((FALSE_WORDS as readonly string[]).includes(written)) {
       return ok(false);
     }
-    return fail(`"${value}" is not one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(', ')}`);
+    return fail(
+      quotedDiagnostic(value),
+      ` is not one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(', ')}`,
+    );
   },
   fromNative: (value) =>
-    typeof value === 'boolean' ? ok(value) : fail(`${describe(value)} is not true or false`),
+    typeof value === 'boolean' ? ok(value) : fail(describe(value), ' is not true or false'),
   render: (value) => (value === true ? 'true' : 'false'),
   compare: (value) => value === true,
 };
+
+/** Reads one select option value written as text. */
+function selectFromString(value: string, spec: InputSpec): Coercion {
+  return optionValues(spec).includes(value)
+    ? ok(value)
+    : fail(
+        quotedDiagnostic(value),
+        ' is not one of the option values (',
+        ...listOptions(spec),
+        ')',
+      );
+}
 
 const select: InputTypeHandler = {
   name: 'select',
   secret: false,
   empty: () => '',
   isAbsent: (value) => value === '',
-  fromString: (value, spec) =>
-    optionValues(spec).includes(value)
-      ? ok(value)
-      : fail(`"${value}" is not one of the option values (${listOptions(spec)})`),
+  fromString: selectFromString,
   fromNative: (value, spec) =>
     typeof value === 'string'
-      ? select.fromString(value, spec)
-      : fail(`${describe(value)} is not text`),
+      ? selectFromString(value, spec)
+      : fail(describe(value), ' is not text'),
   render: (value) => String(value),
   compare: (value) => String(value),
 };
@@ -153,9 +205,9 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
     let parsed: unknown;
     try {
       parsed = JSON.parse(value);
-    } catch (cause) {
+    } catch {
       return fail(
-        `starts with "[" and is therefore read as a JSON array, but it is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+        'starts with "[" and is therefore read as a JSON array, but it is not valid JSON',
       );
     }
     if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
@@ -163,39 +215,60 @@ function multiselectFromString(value: string, spec: InputSpec): Coercion {
     }
     entries = parsed as string[];
   } else {
-    entries = value === '' ? [] : value.split(',').map((entry) => entry.trim());
+    entries = value.split(',').map((entry) => entry.trim());
   }
 
-  return membership(entries, spec);
+  return membership(entries, spec, value);
 }
 
-/** The one sentence a value outside the options gets, wherever it was written. */
-function membership(entries: readonly string[], spec: InputSpec): Coercion {
-  const known = optionValues(spec);
-  const unknown = entries.filter((entry) => !known.includes(entry));
+/**
+ * The one sentence a value outside the options gets, wherever it was written.
+ *
+ * `supplied` is the single text the entries were parsed out of, when there was one. The
+ * diagnostic then names that text instead of the entries: splitting and trimming are
+ * spellings RUNE derived, and a registry holds what its supplier wrote, so naming the pieces
+ * would print a declared secret piece by piece past masks that cannot match any of them
+ * (§10). A native array arrives already in pieces, and each of those its caller did write.
+ */
+function membership(entries: readonly string[], spec: InputSpec, supplied?: string): Coercion {
+  const values = optionValues(spec);
+  const known = new Set(values);
+  const unknown = entries.filter((entry) => !known.has(entry));
   if (unknown.length === 0) {
-    return ok(entries);
+    return ok(Object.freeze([...entries]));
   }
-  const named = unknown.map((entry) => `"${entry}"`).join(', ');
+  const options: readonly DiagnosticPart[] = [' (', ...listOptionValues(values), ')'];
+  if (supplied === undefined) {
+    return fail(
+      ...listOptionValues(unknown),
+      unknown.length === 1 ? ' is not one of the option values' : ' are not option values',
+      ...options,
+    );
+  }
   return fail(
-    `${named} ${unknown.length === 1 ? 'is not one of the option values' : 'are not option values'} (${listOptions(spec)})`,
+    quotedDiagnostic(supplied),
+    entries.length === 1
+      ? ' is not one of the option values'
+      : ' contains values that are not option values',
+    ...options,
   );
 }
 
 const multiselect: InputTypeHandler = {
   name: 'multiselect',
   secret: false,
-  empty: () => [],
+  empty: () => Object.freeze([]),
   isAbsent: (value) => Array.isArray(value) && value.length === 0,
   fromString: multiselectFromString,
   fromNative: (value, spec) => {
     if (typeof value === 'string') {
       return multiselectFromString(value, spec);
     }
-    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
-      return fail(`${describe(value)} is not a list of option values`);
+    const entries = nativeStringArraySnapshot(value);
+    if (entries === undefined) {
+      return fail(describe(value), ' is not a list of option values');
     }
-    return membership(value as string[], spec);
+    return membership(entries, spec);
   },
   render: (value) => (Array.isArray(value) ? value.join(',') : String(value)),
   compare: (value) => (Array.isArray(value) ? (value as readonly string[]) : []),
@@ -213,7 +286,7 @@ function pathType(name: 'file' | 'directory'): InputTypeHandler {
     isAbsent: (value) => value === '',
     fromString: (value) => ok(value),
     fromNative: (value) =>
-      typeof value === 'string' ? ok(value) : fail(`${describe(value)} is not a path`),
+      typeof value === 'string' ? ok(value) : fail(describe(value), ' is not a path'),
     render: (value) => String(value),
     compare: (value) => String(value),
   };

@@ -26,22 +26,22 @@ the MVP.
 - [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
   (no Electron in core jobs)
 
-## Milestone 1 — engine core and non-interactive execution (part of 0.1.0)
+## Milestone 1 — engine core and non-interactive execution (part of 0.1.0, complete)
 
 The complete pipeline behind `rune validate`, `rune schema` and
 `rune run --non-interactive` — the `@rune/engine` library plus the `rune` CLI binary:
 
-- manifest loader (`yaml` core schema, `uniqueKeys` duplicate-key detection,
-  SourceMap from node ranges) and zod v1 schema (`.strict()` objects, discriminated
-  unions) with located, understandable error messages
+- manifest loader (`yaml` core schema, a source-order-stable duplicate-key walk with
+  `uniqueKeys: false`, SourceMap from node ranges) and zod v1 schema (`.strict()` objects,
+  discriminated unions) with located, understandable error messages
 - `rune schema [--output] [--result]` — manifest and result-file JSON Schema generated
-  from the zod schemas via zod's built-in `z.toJSONSchema()` (editor autocompletion, no drift)
+  from the zod schemas via built-in `z.toJSONSchema()` (editor autocompletion, no drift)
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
-- five-layer value resolution with provenance (layers 1–4 here:
-  `defaults < values files < env < --set`; layer 5 = interactive answers lands with
-  Milestones 2 and 3)
+- five-layer value resolution with provenance (layers 1–4 delivered here:
+  `defaults < values files < env < --set`; layer 5 interactive answers use
+  `Session.setValue`; the GUI client remains planned for Milestone 3)
 - conditional inputs (`when:` on inputs, same typed grammar as steps, acyclicity rule,
   disabled ⇒ empty value, ignored supplied values with warning + provenance)
 - `${...}` interpolation and the typed `when:` condition language; `--platform`
@@ -63,7 +63,9 @@ The complete pipeline behind `rune validate`, `rune schema` and
 Exit criterion: a CI pipeline can run a fixture manifest end to end on Windows and
 Linux with correct exit codes, result file and masked logs.
 
-## Milestone 2 — interactive CLI and frozen frontend contract (part of 0.1.0)
+## Milestone 2 — interactive CLI and frozen frontend contract (part of 0.1.0, complete)
+
+The interactive CLI, frozen `Session` facade, and cross-client contract suite are delivered.
 
 - prompts for still-missing, enabled inputs (Node `readline`, muted-echo helper for
   secrets — no prompt library), re-prompt on validation/pattern error; option labels
@@ -71,8 +73,8 @@ Linux with correct exit codes, result file and masked logs.
 - plan summary with **edit loop** (`Proceed / Change value <n> / Cancel`), progress
   rendering off the event stream; localized chrome via `getStrings()`
 - cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits)
-- **`Session` facade frozen as the frontend contract**: the async facade
-  (`open/pendingInputs/allInputs/setValue/plan/execute/cancel/getStrings/getThemeConfig`)
+- **`Session` facade frozen as the frontend contract**: the facade methods
+  (`open/pendingInputs/allInputs/warnings/setValue/plan/describe/execute/cancel/getStrings/getThemeConfig`)
   plus `EngineObserver` events and the observer delivery contract — the surface every
   frontend, including the Electron main process in M3, drives 1:1
 - **in-process parity client**: a scripted client of the `Session` facade making

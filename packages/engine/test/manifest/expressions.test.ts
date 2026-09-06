@@ -1,18 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { ManifestError } from '../../src/errors.js';
+import { ManifestError } from '../../src/errors.js';
 import { parseManifestText } from '../../src/manifest/index.js';
 
 const HEAD = ['schemaVersion: 1', 'product:', '  name: Example', '  version: "1.0.0"'];
 
 /** Every message a manifest is rejected with; the checks under test collect, never stop early. */
-function messagesOf(lines: readonly string[]): string[] {
+function errorOf(lines: readonly string[]): ManifestError {
   try {
     parseManifestText([...HEAD, ...lines, ''].join('\n'), 'installer.yaml');
   } catch (error) {
-    return (error as ManifestError).issues.map((issue) => issue.message);
+    if (error instanceof ManifestError) {
+      return error;
+    }
+    throw error;
   }
   throw new Error('expected the manifest to be rejected');
+}
+
+function messagesOf(lines: readonly string[]): string[] {
+  return errorOf(lines).issues.map((issue) => issue.message);
 }
 
 function accepts(lines: readonly string[]): void {
@@ -166,6 +173,36 @@ describe('conditions', () => {
     ]);
   });
 
+  it('reports unsafe integer literals in input and step conditions as located RUNE-104 issues', () => {
+    const error = errorOf([
+      'inputs:',
+      '  guarded:',
+      '    type: text',
+      '    when: "-9007199254740992 == -9007199254740991"',
+      'steps:',
+      '  - id: guarded-step',
+      '    when: "9007199254740992 == 9007199254740991"',
+      '    run:',
+      '      command: x',
+    ]);
+
+    expect(error.code).toBe('RUNE-104');
+    expect(error.issues).toEqual([
+      expect.objectContaining({
+        code: 'RUNE-104',
+        message:
+          'inputs.guarded.when: integer literals must be between -9007199254740991 and 9007199254740991',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 8, column: 5 }),
+      }),
+      expect.objectContaining({
+        code: 'RUNE-104',
+        message:
+          'steps[0].when: integer literals must be between -9007199254740991 and 9007199254740991',
+        location: expect.objectContaining({ file: 'installer.yaml', line: 11, column: 5 }),
+      }),
+    ]);
+  });
+
   it('refuses a select standing on its own and shows the comparison to write', () => {
     expect(
       messagesOf(
@@ -204,6 +241,75 @@ describe('conditions', () => {
         withInputs('steps:', '  - id: a', '    when: "${nope}"', '    run:', '      command: x'),
       ),
     ).toEqual(['steps[0].when: ${nope} is neither a declared input nor a built-in variable']);
+  });
+
+  it('reuses one unknown-reference explanation across repeated step conditions', () => {
+    const inputCount = 64;
+    const stepCount = 100;
+    const inputs = [
+      '  cacheTarget:',
+      '    type: text',
+      ...Array.from({ length: inputCount - 1 }, (_unused, index) => [
+        `  cache${index.toString().padStart(3, '0')}:`,
+        '    type: text',
+      ]).flat(),
+    ];
+    const steps = Array.from({ length: stepCount }, (_unused, index) => [
+      `  - id: cached-${index}`,
+      '    when: "${cacheTargte} == \'x\'"',
+      '    run:',
+      '      command: x',
+    ]).flat();
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+    let messages: string[];
+    let inputCandidateReads = 0;
+
+    try {
+      messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);
+      inputCandidateReads = lowercase.mock.contexts.filter((value) =>
+        /^cache(?:Target|\d{3})$/.test(String(value)),
+      ).length;
+    } finally {
+      lowercase.mockRestore();
+    }
+
+    expect(messages).toHaveLength(stepCount);
+    expect(messages.every((message) => message.includes('did you mean ${cacheTarget}?'))).toBe(
+      true,
+    );
+    // At most one pass indexes candidate widths and one cache miss scans candidates for the hint.
+    expect(inputCandidateReads).toBeLessThanOrEqual(inputCount * 2);
+  });
+
+  it('bounds unique-reference suggestion work without dropping any issue', () => {
+    const inputCount = 100;
+    const inputs = Array.from({ length: inputCount }, (_unused, index) => [
+      `  budget${index.toString().padStart(3, '0')}:`,
+      '    type: text',
+    ]).flat();
+    const steps = Array.from({ length: inputCount }, (_unused, index) => [
+      `  - id: budget-${index}`,
+      `    when: "\${budegt${index.toString().padStart(3, '0')}} == 'x'"`,
+      '    run:',
+      '      command: x',
+    ]).flat();
+    const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
+    let messages: string[];
+    let inputCandidateReads = 0;
+
+    try {
+      messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);
+      inputCandidateReads = lowercase.mock.contexts.filter((value) =>
+        /^budget\d{3}$/.test(String(value)),
+      ).length;
+    } finally {
+      lowercase.mockRestore();
+    }
+
+    expect(messages).toHaveLength(inputCount);
+    expect(messages.filter((message) => message.includes('did you mean')).length).toBe(24);
+    // At most one width-index pass plus 24 allowed candidate scans; denied hints do not scan.
+    expect(inputCandidateReads).toBeLessThanOrEqual(inputCount * 25);
   });
 });
 

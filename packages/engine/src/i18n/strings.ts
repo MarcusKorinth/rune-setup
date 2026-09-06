@@ -7,44 +7,130 @@
  * this table and never resolve text themselves.
  */
 
+import { InternalError } from '../errors.js';
+import { escapeDiagnosticText } from '../diagnostics.js';
+import { projectStructuredString, type SecretMasker } from '../engine/secrets.js';
+import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { optionLabel, optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
-import { CHROME_CATALOG, formatChrome } from './catalog.js';
-import type { LocaleOverlay } from './overlay.js';
+import { CHROME_CATALOG, formatChrome, type ChromeKey } from './catalog.js';
+import { matchOverlay } from './locale.js';
+import { overlayManifestFor, type LocaleOverlay } from './overlay.js';
 
 export interface StringTable {
-  /** The session's selected locale — what the result file records; `undefined` means the built-in defaults (§6.3). */
+  /** The session's selected locale; `undefined` means the built-in defaults and serializes as `null` (§6.3). */
   readonly locale: string | undefined;
   /** The overlay file that served it — `de` may serve a selected `de-DE`. */
   readonly overlayLocale: string | undefined;
   /** Every resolved key → text — what `getStrings()` hands a frontend, whole (§6.3, §9.1). */
-  readonly entries: ReadonlyMap<string, string>;
+  readonly entries: Readonly<Record<string, string>>;
   /** A chrome string, `{placeholders}` filled; the catalogue guarantees the key exists. */
-  chrome(key: string, values?: Readonly<Record<string, string | number>>): string;
-  inputTitle(id: string): string;
-  inputDescription(id: string): string | undefined;
-  patternHint(id: string): string | undefined;
-  optionLabel(inputId: string, value: string): string;
-  stepTitle(id: string): string;
-  productDescription(): string | undefined;
-  windowTitle(): string | undefined;
+  readonly chrome: (key: ChromeKey, values?: Readonly<Record<string, string | number>>) => string;
+  readonly inputTitle: (id: string) => string;
+  readonly inputDescription: (id: string) => string | undefined;
+  readonly patternHint: (id: string) => string | undefined;
+  readonly optionLabel: (inputId: string, value: string) => string;
+  readonly stepTitle: (id: string) => string;
+  readonly productDescription: () => string | undefined;
+  readonly windowTitle: () => string | undefined;
 }
 
 export interface ResolveStringsOptions {
   readonly manifest: ManifestV1;
-  /** The selected locale tag; defaults to the overlay's own tag when only that is known. */
-  readonly locale?: string | undefined;
+  /** The selected locale tag; `undefined` means the built-in defaults. */
+  readonly locale: string | undefined;
   /** The overlay serving the session's locale; none means defaults only. */
   readonly overlay?: LocaleOverlay | undefined;
+}
+
+export interface StringTableContext {
+  readonly manifest: ManifestV1;
+  readonly locale: string | undefined;
+}
+
+const stringTableContexts = new WeakMap<StringTable, StringTableContext>();
+/** Live terminal maskers belong only to exact tables returned by Session.getStrings(). */
+const sessionTerminalMaskers = new WeakMap<StringTable, SecretMasker>();
+
+/** Internal fail-closed lookup: structural table copies have no resolution provenance. */
+export function stringTableContextFor(table: StringTable): StringTableContext {
+  const context = stringTableContexts.get(table);
+  if (context === undefined) {
+    throw new InternalError('the string table was not created by resolveStrings');
+  }
+  return context;
+}
+
+/**
+ * Projects a resolved table through a sink masker without losing its manifest provenance.
+ * The masker is invoked on every access so a long-lived frontend table follows successful
+ * session edits that replace the active secret snapshot.
+ */
+export function projectStringsForSink(source: StringTable, secrets: SecretMasker): StringTable {
+  const context = stringTableContextFor(source);
+  const project = (text: string): string => projectStructuredString(text, secrets);
+  const maskedOptional = (text: string | undefined): string | undefined =>
+    text === undefined ? undefined : project(text);
+  const table: StringTable = {
+    locale: source.locale,
+    overlayLocale: source.overlayLocale,
+    get entries() {
+      return Object.freeze(
+        Object.fromEntries(
+          Object.entries(source.entries).map(([key, text]) => [key, project(text)]),
+        ),
+      );
+    },
+    chrome: (key, values) => project(source.chrome(key, values)),
+    inputTitle: (id) => project(source.inputTitle(id)),
+    inputDescription: (id) => maskedOptional(source.inputDescription(id)),
+    patternHint: (id) => maskedOptional(source.patternHint(id)),
+    optionLabel: (inputId, value) => project(source.optionLabel(inputId, value)),
+    stepTitle: (id) => project(source.stepTitle(id)),
+    productDescription: () => maskedOptional(source.productDescription()),
+    windowTitle: () => maskedOptional(source.windowTitle()),
+  };
+  const frozenTable = Object.freeze(table);
+  stringTableContexts.set(frozenTable, context);
+  sessionTerminalMaskers.set(frozenTable, secrets);
+  return frozenTable;
+}
+
+/**
+ * Projects one fully composed human line for a terminal using an authentic session table.
+ * The second mask catches registered literals created by visible control-character escaping.
+ */
+export function formatSessionTerminalLine(strings: StringTable, line: string): string {
+  const secrets = sessionTerminalMaskers.get(strings);
+  if (secrets === undefined) {
+    throw new InternalError(
+      'terminal rendering requires the exact StringTable returned by Session.getStrings',
+    );
+  }
+  return secrets.mask(escapeDiagnosticText(secrets.mask(line)));
 }
 
 /** Builds the one string table of a session. */
 export function resolveStrings(options: ResolveStringsOptions): StringTable {
   const { manifest, overlay } = options;
+  manifestDescriptorFor(manifest);
+  if (overlay !== undefined) {
+    if (overlayManifestFor(overlay) !== manifest) {
+      throw new InternalError('the locale overlay belongs to a different manifest');
+    }
+    const candidate = { locale: overlay.locale, path: overlay.file };
+    if (options.locale === undefined || matchOverlay(options.locale, [candidate]) === undefined) {
+      const selected =
+        options.locale === undefined
+          ? 'the built-in defaults'
+          : `selected locale "${options.locale}"`;
+      throw new InternalError(`locale overlay "${overlay.locale}" cannot serve ${selected}`);
+    }
+  }
   const entries = new Map<string, string>();
 
   // Layer 1: the defaults — the manifest's own text, ids where nothing was written, and
   // the English chrome built-ins.
-  for (const [key, text] of CHROME_CATALOG) {
+  for (const [key, text] of Object.entries(CHROME_CATALOG)) {
     entries.set(key, text);
   }
   if (manifest.product.description !== undefined) {
@@ -72,17 +158,28 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
   }
 
   // Layer 2: the overlay, key by key — a partial overlay fills its gaps from layer 1.
-  for (const [key, text] of overlay?.entries ?? []) {
+  for (const [key, text] of Object.entries(overlay?.entries ?? {})) {
     entries.set(key, text);
   }
 
-  const get = (key: string): string | undefined => entries.get(key);
+  const snapshot: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(entries));
+  const get = (key: string): string | undefined =>
+    Object.hasOwn(snapshot, key) ? snapshot[key] : undefined;
 
-  return {
-    locale: options.locale ?? overlay?.locale,
+  const table: StringTable = {
+    locale: options.locale,
     overlayLocale: overlay?.locale,
-    entries,
-    chrome: (key, values) => formatChrome(get(key) ?? key, values),
+    entries: snapshot,
+    chrome: (key, values) => {
+      if (!Object.hasOwn(CHROME_CATALOG, key)) {
+        throw new InternalError(`unknown chrome string key "${key}"`);
+      }
+      const template = get(key);
+      if (template === undefined) {
+        throw new InternalError(`missing resolved chrome string for key "${key}"`);
+      }
+      return formatChrome(template, values);
+    },
     inputTitle: (id) => get(`inputs.${id}.title`) ?? id,
     inputDescription: (id) => get(`inputs.${id}.description`),
     patternHint: (id) => get(`inputs.${id}.patternHint`),
@@ -91,4 +188,7 @@ export function resolveStrings(options: ResolveStringsOptions): StringTable {
     productDescription: () => get('product.description'),
     windowTitle: () => get('gui.windowTitle'),
   };
+  const frozenTable = Object.freeze(table);
+  stringTableContexts.set(frozenTable, Object.freeze({ manifest, locale: options.locale }));
+  return frozenTable;
 }
