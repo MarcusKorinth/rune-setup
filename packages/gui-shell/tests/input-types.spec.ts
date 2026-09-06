@@ -92,8 +92,8 @@ test('submits every enabled input type through the real Electron shell', async (
     await expect(summary).toContainText('false');
     await expect(summary).toContainText('stable-value');
     await expect(summary).toContainText('core-value,extras-value');
-    await expect(summary).toContainText(sourceFile);
-    await expect(summary).toContainText(targetDirectory);
+    await expect(summary).toContainText(JSON.stringify(sourceFile));
+    await expect(summary).toContainText(JSON.stringify(targetDirectory));
     await expect(summary).toContainText('***');
     await expect(summary).not.toContainText(accessToken);
 

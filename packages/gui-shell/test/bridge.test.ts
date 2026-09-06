@@ -65,7 +65,15 @@ function fixture(): string {
       '  - id: use',
       '    run:',
       '      command: "${token}"',
-      '      args: ["--token", "${token}", "super-secret-value"]',
+      `      args: ${JSON.stringify([
+        '--token',
+        '${token}',
+        'contains whitespace',
+        '',
+        '"quoted"',
+        'back\\slash',
+        'super-secret-value',
+      ])}`,
       '      cwd: "${token}"',
       '      env:',
       '        TOKEN: "${token}"',
@@ -1106,7 +1114,16 @@ describe('the IPC bridge', () => {
           title: 'use',
           state: 'PENDING',
           command: {
-            argv: ['***', '--token', '***', '***'],
+            argv: [
+              '***',
+              '--token',
+              '***',
+              'contains whitespace',
+              '',
+              '"quoted"',
+              'back\\slash',
+              '***',
+            ],
             cwd: '***',
             env: { TOKEN: '***', LITERAL: '***' },
             timeoutSeconds: null,
@@ -1136,7 +1153,10 @@ describe('the IPC bridge', () => {
     expect(plan.steps[0]).not.toHaveProperty('exitCode');
     expect(plan.steps[0]).not.toHaveProperty('durationMs');
     expect(plan.steps[0]).not.toHaveProperty('outputTail');
-    expect(plan.steps[0]).toHaveProperty('displayCommand', '*** --token *** ***');
+    expect(plan.steps[0]).toHaveProperty(
+      'displayCommand',
+      '["***","--token","***","contains whitespace","","\\"quoted\\"","back\\\\slash","***"]',
+    );
     expect(plan.steps[1]).not.toHaveProperty('command');
     expect(JSON.parse(JSON.stringify(plan))).toEqual(plan);
     expect(JSON.stringify(plan)).not.toContain('super-secret-value');
@@ -1151,7 +1171,7 @@ describe('the IPC bridge', () => {
       outputBoundary: 'Output hello',
       summaryBoundary: 'failed: 0',
       warningBoundary: 'Warning steps',
-      commandBoundary: 'hello world',
+      commandBoundary: '["hello","world"]',
       titleBoundary: 'LOKAL ERGEBNIS Install CODE 9',
     } as const;
     const session = await Session.open(composedDisplayFixture(), {
@@ -1269,7 +1289,11 @@ describe('the IPC bridge', () => {
 
     const projected = JSON.stringify({ plan, warnings, result, events: bridge.sent });
     for (const secret of Object.values(secrets)) {
-      expect(projected).not.toContain(secret);
+      // The command boundary equals exact array syntax in machine fields; its complete
+      // human preview is asserted above without changing the underlying argv.
+      if (secret !== secrets.commandBoundary) {
+        expect(projected).not.toContain(secret);
+      }
     }
     execute.mockRestore();
   });
@@ -1355,7 +1379,7 @@ describe('the IPC bridge', () => {
       throw new Error('the first planned step was not pending');
     }
     expect(use.command).toEqual({
-      argv: ['***', '--token', '***', '***'],
+      argv: ['***', '--token', '***', 'contains whitespace', '', '"quoted"', 'back\\slash', '***'],
       cwd: '***',
       env: { TOKEN: '***', LITERAL: '***' },
       timeoutSeconds: null,

@@ -20,7 +20,7 @@ const secrets = [
   'Output hello',
   'failed: 0',
   'Warning steps',
-  'node boundary-step.cjs',
+  '["node","boundary-step.cjs","***"]',
   'Install (exit 9)',
 ] as const;
 const secretIds = [
@@ -58,7 +58,7 @@ test('keeps accepted secrets out of composed Summary, Progress, and Result text'
     await expect(next).toBeEnabled();
     await next.click();
     await expect(page.locator('.result-heading')).toHaveText('Summary');
-    await expect(page.locator('.summary-step .command')).toHaveText('*** ***');
+    await expect(page.locator('.summary-step .command')).toHaveText('***');
     await expect(page.locator('#page')).not.toContainText(secrets[5]);
 
     await page.evaluate(() => {

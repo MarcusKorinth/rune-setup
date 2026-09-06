@@ -41,7 +41,7 @@ export function projectPlan(plan: ExecutionPlan, strings: StringTable): BridgePl
       step.state === 'PENDING'
         ? {
             ...step,
-            displayCommand: formatSessionTerminalLine(strings, step.command.argv.join(' ')),
+            displayCommand: formatSessionTerminalLine(strings, JSON.stringify(step.command.argv)),
           }
         : step,
     ),
