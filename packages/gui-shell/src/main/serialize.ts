@@ -119,7 +119,10 @@ export function projectResult(result: RunResult, strings: StringTable): BridgeRe
       ...step,
       displayTitle: formatSessionTerminalLine(
         strings,
-        `${step.title} (exit ${step.exitCode ?? '?'})`,
+        strings.chrome('rune.result.stepTitle', {
+          title: step.title,
+          exitCode: step.exitCode ?? '?',
+        }),
       ),
     })),
   };

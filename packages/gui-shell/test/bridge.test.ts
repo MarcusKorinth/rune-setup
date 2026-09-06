@@ -183,7 +183,12 @@ function composedDisplayFixture(): string {
   );
   writeFileSync(
     join(localeDir, 'de.yaml'),
-    ["rune.progress.output: 'Output {line}'", "rune.warning: 'Warning {message}'", ''].join('\n'),
+    [
+      "rune.progress.output: 'Output {line}'",
+      "rune.warning: 'Warning {message}'",
+      "rune.result.stepTitle: 'LOKAL ERGEBNIS {title} CODE {exitCode}'",
+      '',
+    ].join('\n'),
     'utf8',
   );
   return path;
@@ -783,7 +788,7 @@ describe('the IPC bridge', () => {
       summaryBoundary: 'failed: 0',
       warningBoundary: 'Warning steps',
       commandBoundary: 'hello world',
-      titleBoundary: 'Install (exit 9)',
+      titleBoundary: 'LOKAL ERGEBNIS Install CODE 9',
     } as const;
     const session = await Session.open(composedDisplayFixture(), {
       environment: {},

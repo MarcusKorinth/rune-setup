@@ -64,6 +64,7 @@ export const CHROME_CATALOG = Object.freeze({
   'rune.result.summary':
     '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
     '{cancelled} cancelled, {notRun} not run (exit {exitCode})',
+  'rune.result.stepTitle': '{title} (exit {exitCode})',
   'rune.result.written': 'result written to {path}',
   'rune.validate.valid':
     '{path} is valid (schemaVersion {schemaVersion}, product {productName} {productVersion})',

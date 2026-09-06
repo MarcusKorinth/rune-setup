@@ -13,6 +13,13 @@ const fixturePath = join(
   'localized-chrome',
   'installer.yaml',
 );
+const failingFixturePath = join(
+  packageDirectory,
+  'tests',
+  'fixtures',
+  'localized-failing-result',
+  'installer.yaml',
+);
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
 const invocation = [
@@ -141,4 +148,30 @@ test('writes localized progress and warnings to headless stderr', async () => {
   expect(stderr).toMatch(/LOKAL ENDE SUCCEEDED CODE 0 ZEIT \d+(?:\.\d+)?/);
   expect(stderr).toMatch(/LOKAL ENDE SKIPPED OHNE CODE ZEIT \d+(?:\.\d+)?/);
   expect(stderr).toContain('LOKAL WARNUNG steps[0].run.args[1] interpolates secret input "token"');
+});
+
+test('renders a localized failed Result step title', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, failingFixturePath, '--locale', 'de'],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
+    await next.click();
+
+    await expect(page.locator('.result-heading')).toHaveText('LOKAL FEHLER');
+    await expect(page.locator('.result-step strong')).toHaveText(
+      'LOKAL ERGEBNIS Localized failing step CODE 9',
+    );
+    await expect(page.locator('.result-step strong')).not.toContainText('(exit 9)');
+  } finally {
+    await application?.close();
+  }
 });
