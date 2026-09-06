@@ -60,7 +60,14 @@ async function runHeadlessShell(resultPath: string): Promise<{
 }> {
   const child = spawn(
     electronExecutable,
-    [launcherPath, executionFixturePath, '--non-interactive', '--result', resultPath],
+    [
+      '--no-sandbox',
+      launcherPath,
+      executionFixturePath,
+      '--non-interactive',
+      '--result',
+      resultPath,
+    ],
     { cwd: packageDirectory, windowsHide: true },
   );
   let stdout = '';
