@@ -124,6 +124,7 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     });
 
     await expect(page.locator('#product-name')).toHaveText('RUNE Shell Smoke');
+    await expect(page).toHaveTitle('Custom shell window');
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
     await expect(page.locator('#logo')).toBeVisible();

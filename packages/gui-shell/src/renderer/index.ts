@@ -139,7 +139,7 @@ async function boot(): Promise<void> {
 
   state.productName = opened.product.name;
   state.productVersion = opened.product.version;
-  el.productName.textContent = text('gui.windowTitle') || state.productName;
+  el.productName.textContent = state.productName;
   el.productVersion.textContent = state.productVersion;
 
   el.back.addEventListener('click', () => {
