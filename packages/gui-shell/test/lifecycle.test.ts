@@ -763,7 +763,7 @@ describe('the GUI shell main lifecycle', () => {
 
     expect(existsSync(resultPath)).toBe(false);
     const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
-    expect(diagnostic).toContain('install.cmd');
+    expect(diagnostic).toContain('RUNE_MISSING_COMMAND');
     expect(diagnostic.match(/could not write the result file/g)).toHaveLength(1);
     expect(diagnostic).not.toContain(derivedPath);
   });
@@ -1124,7 +1124,7 @@ describe('windowed result delivery', () => {
     const displayFatal = vi.fn();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:plan')())).rejects.toThrow('RUNE-405');
+      await expect(Promise.resolve(bridgeHandler('rune:plan')())).rejects.toThrow('RUNE-301');
       electronHarness.emitRendererGone?.();
     };
 
@@ -1878,9 +1878,9 @@ async function failedPlanningFixture(mode: 'gui' | 'non-interactive'): Promise<{
       '    run:',
       '      command: node',
       '      cwd: "${secretPath}"',
-      '  - id: reject-batch-command',
+      '  - id: reject-missing-environment-command',
       '    run:',
-      '      command: install.cmd',
+      '      command: "${env.RUNE_MISSING_COMMAND}"',
       '',
     ].join('\n'),
     'utf8',
@@ -1898,7 +1898,6 @@ async function failedPlanningFixture(mode: 'gui' | 'non-interactive'): Promise<{
     locale: 'de',
     mode,
     overrides: { secretPath: relativeSecret },
-    platform: 'windows',
     resultDestination: resultPath,
   });
   return {
