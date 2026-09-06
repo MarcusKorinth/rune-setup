@@ -1,10 +1,10 @@
+import { RUNE_VERSION, UsageError } from '@rune/engine';
+
 /**
  * The shell's invocation (docs/architecture.md §9.4): `rune run --gui` launches the shell
  * with the run's own flags, and main opens the Session from them — the renderer never
  * supplies a manifest path or any layer value.
  */
-
-import { RUNE_VERSION } from '@rune/engine';
 
 export const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
 
@@ -30,7 +30,7 @@ export interface ShellInvocation {
 export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   let manifestPath: string | undefined;
   const values: string[] = [];
-  const overrides = Object.create(null) as Record<string, string>;
+  const overrides = new Map<string, string>();
   let locale: string | undefined;
   let result: string | undefined;
   let logFile: string | undefined;
@@ -42,12 +42,15 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
       index += 1;
       const value = argv[index];
       if (value === undefined) {
-        throw new Error(`${argument} expects a value`);
+        throw new UsageError(`${argument} expects a value`);
       }
       return value;
     };
     switch (argument) {
       case '--':
+        if (manifestPath !== undefined) {
+          throw new UsageError('the shell accepts exactly one manifest path');
+        }
         // Launcher protocol: the literal manifest path comes first, then RUNE options.
         manifestPath = next();
         break;
@@ -55,9 +58,9 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         const pair = next();
         const separator = pair.indexOf('=');
         if (separator <= 0) {
-          throw new Error(`--set expects key=value, got "${pair}"`);
+          throw new UsageError(`--set expects key=value, got "${pair}"`);
         }
-        overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
+        overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
         break;
       }
       case '--values':
@@ -77,14 +80,28 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         break;
       default:
         if (argument.startsWith('--')) {
-          throw new Error(`unknown flag ${argument}`);
+          throw new UsageError(`unknown flag ${argument}`);
+        }
+        if (manifestPath !== undefined) {
+          throw new UsageError('the shell accepts exactly one manifest path');
         }
         manifestPath = argument;
     }
   }
 
   if (manifestPath === undefined) {
-    throw new Error('the shell needs a manifest path');
+    throw new UsageError('the shell needs a manifest path');
   }
-  return { manifestPath, values, overrides, locale, result, logFile, nonInteractive };
+  if (result === '-' && !nonInteractive) {
+    throw new UsageError('--result - requires --non-interactive in the GUI shell');
+  }
+  return {
+    manifestPath,
+    values,
+    overrides: Object.fromEntries(overrides),
+    locale,
+    result,
+    logFile,
+    nonInteractive,
+  };
 }

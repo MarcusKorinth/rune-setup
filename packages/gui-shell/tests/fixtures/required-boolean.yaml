@@ -1,0 +1,9 @@
+schemaVersion: 1
+product:
+  name: Required boolean smoke
+  version: 1.0.0
+inputs:
+  continue:
+    type: boolean
+    title: Continue
+steps: []

@@ -1,7 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { BridgeEvent } from '../src/preload/types.js';
+
+const { electron, restoreElectronRequire } = vi.hoisted(() => {
+  const electron = {
+    contextBridge: { exposeInMainWorld: vi.fn() },
+    ipcRenderer: { invoke: vi.fn(), on: vi.fn() },
+  };
+  const moduleApi = process.getBuiltinModule('node:module') as unknown as {
+    _load: (request: string, parent: unknown, isMain: boolean) => unknown;
+  };
+  const originalLoad = moduleApi._load;
+  moduleApi._load = (request, parent, isMain) =>
+    request === 'electron' ? electron : originalLoad(request, parent, isMain);
+
+  return {
+    electron,
+    restoreElectronRequire: () => {
+      moduleApi._load = originalLoad;
+    },
+  };
+});
+
+vi.mock('electron', () => electron);
+
 // @ts-expect-error tsc addresses the compiled file as .cjs; vitest resolves the source
 import { buildBridge } from '../src/preload/index.cts';
+
+restoreElectronRequire();
 
 function fakeIpc(): {
   invoke: ReturnType<typeof vi.fn>;
@@ -20,6 +46,7 @@ describe('the preload bridge', () => {
         'allInputs',
         'setValue',
         'plan',
+        'describe',
         'execute',
         'cancel',
         'getStrings',
@@ -41,12 +68,25 @@ describe('the preload bridge', () => {
     expect(ipc.invoke).toHaveBeenCalledWith('rune:execute');
     await api.plan();
     expect(ipc.invoke).toHaveBeenCalledWith('rune:plan');
+    await api.describe();
+    expect(ipc.invoke).toHaveBeenCalledWith('rune:describe');
 
     const seen: unknown[] = [];
     api.onEvent((event) => seen.push(event));
     expect(ipc.on).toHaveBeenCalledWith('rune:event', expect.any(Function));
     const listener = ipc.on.mock.calls[0]?.[1] as (event: unknown, payload: unknown) => void;
-    listener(undefined, { kind: 'runStarted' });
-    expect(seen).toEqual([{ kind: 'runStarted' }]);
+    const runStarted = {
+      kind: 'runStarted',
+      plan: {
+        manifestPath: 'installer.yaml',
+        locale: null,
+        platform: 'linux',
+        preview: false,
+        failFast: true,
+        steps: [],
+      },
+    } satisfies BridgeEvent;
+    listener(undefined, runStarted);
+    expect(seen).toEqual([runStarted]);
   });
 });

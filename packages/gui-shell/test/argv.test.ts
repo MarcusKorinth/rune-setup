@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { RUNE_VERSION } from '@rune/engine';
+import { RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
 
 import {
   SHELL_VERSION_PROBE_FLAG,
@@ -18,12 +18,47 @@ describe('the shell version probe', () => {
       runeVersion: RUNE_VERSION,
     });
   });
+});
 
-  it('does not change ordinary run argv parsing', () => {
-    expect(parseShellArgv(['installer.yaml', '--locale', 'de'])).toMatchObject({
+describe('parseShellArgv', () => {
+  it('parses a valid shell invocation', () => {
+    expect(
+      parseShellArgv([
+        'installer.yaml',
+        '--values',
+        'base.yaml',
+        '--set',
+        'port=8080',
+        '--locale',
+        'de-DE',
+        '--result',
+        'result.json',
+        '--log-file',
+        'run.log',
+        '--non-interactive',
+      ]),
+    ).toEqual({
       manifestPath: 'installer.yaml',
-      locale: 'de',
+      values: ['base.yaml'],
+      overrides: { port: '8080' },
+      locale: 'de-DE',
+      result: 'result.json',
+      logFile: 'run.log',
+      nonInteractive: true,
     });
+  });
+
+  it('keeps prototype-named overrides enumerable and uses the last duplicate value', () => {
+    const invocation = parseShellArgv([
+      'installer.yaml',
+      '--set',
+      '__proto__=first',
+      '--set',
+      '__proto__=last',
+    ]);
+
+    expect(Object.entries(invocation.overrides)).toEqual([['__proto__', 'last']]);
+    expect(Object.hasOwn(invocation.overrides, '__proto__')).toBe(true);
   });
 
   it('accepts a literal manifest path beginning with -- before launcher options', () => {
@@ -33,28 +68,59 @@ describe('the shell version probe', () => {
     });
   });
 
-  it('preserves every override name as an own key without a prototype', () => {
-    const { overrides } = parseShellArgv([
-      'installer.yaml',
-      '--set',
-      'greeting=first',
-      '--set',
-      '__proto__=boom',
-      '--set',
-      'constructor=build',
-      '--set',
-      'toString=render',
-      '--set',
-      'greeting=last',
-    ]);
+  it.each([
+    [['first.yaml', 'second.yaml']],
+    [['first.yaml', '--locale', 'de-DE', 'second.yaml']],
+  ] as const)('rejects multiple manifest paths: %s', (argv) => {
+    try {
+      parseShellArgv(argv);
+      throw new Error('expected parsing to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UsageError);
+      expect(error).toMatchObject({
+        code: 'RUNE-001',
+        message: 'the shell accepts exactly one manifest path',
+      });
+      expect(exitCodeFor(error)).toBe(2);
+    }
+  });
 
-    expect(Object.getPrototypeOf(overrides)).toBeNull();
-    expect(Object.hasOwn(overrides, '__proto__')).toBe(true);
-    expect(Object.hasOwn(overrides, 'constructor')).toBe(true);
-    expect(Object.hasOwn(overrides, 'toString')).toBe(true);
-    expect(overrides['__proto__']).toBe('boom');
-    expect(overrides['constructor']).toBe('build');
-    expect(overrides['toString']).toBe('render');
-    expect(overrides['greeting']).toBe('last');
+  it.each([
+    [['installer.yaml', '--result', '-'], '--result - requires --non-interactive in the GUI shell'],
+    [
+      ['installer.yaml', '--result', '-', '--set', 'port=8080'],
+      '--result - requires --non-interactive in the GUI shell',
+    ],
+    [['installer.yaml', '--result', '-', '--non-interactive'], undefined],
+    [['installer.yaml', '--non-interactive', '--result', '-'], undefined],
+  ] as const)('accepts --result - only for headless invocations: %s', (argv, message) => {
+    if (message === undefined) {
+      expect(parseShellArgv(argv).result).toBe('-');
+      return;
+    }
+
+    expect(() => parseShellArgv(argv)).toThrowError(
+      expect.objectContaining({ code: 'RUNE-001', message }),
+    );
+  });
+
+  it.each([
+    [['--unknown'], 'unknown flag --unknown'],
+    [['--set'], '--set expects a value'],
+    [['--values'], '--values expects a value'],
+    [['--locale'], '--locale expects a value'],
+    [['--result'], '--result expects a value'],
+    [['--log-file'], '--log-file expects a value'],
+    [['--set', 'port'], '--set expects key=value, got "port"'],
+    [[], 'the shell needs a manifest path'],
+  ] as const)('reports %s as a RUNE usage error', (argv, message) => {
+    try {
+      parseShellArgv(argv);
+      throw new Error('expected parsing to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UsageError);
+      expect(error).toMatchObject({ code: 'RUNE-001', message });
+      expect(exitCodeFor(error)).toBe(2);
+    }
   });
 });

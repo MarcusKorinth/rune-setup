@@ -1,0 +1,73 @@
+const { contextBridge } = require('electron');
+
+const pendingSetValues = [];
+
+function input() {
+  return {
+    id: 'code',
+    enabled: true,
+    source: 'default',
+    value: 'GOOD',
+    spec: {
+      type: 'text',
+      required: true,
+      pattern: '[A-Z]+',
+      patternHint: 'Use uppercase letters',
+    },
+  };
+}
+
+contextBridge.exposeInMainWorld('rune', {
+  open: async () => ({
+    runeVersion: 'test',
+    inputTypes: ['text'],
+    product: { name: 'Input race test', version: '1.0.0' },
+  }),
+  pendingInputs: async () => [],
+  allInputs: async () => [input()],
+  setValue: (_id, _raw) =>
+    new Promise((resolve, reject) => {
+      pendingSetValues.push({ resolve, reject });
+    }),
+  plan: async () => ({
+    manifestPath: '/test/installer.yaml',
+    platform: 'windows',
+    preview: false,
+    failFast: true,
+    steps: [],
+  }),
+  execute: () => new Promise(() => {}),
+  cancel: async () => undefined,
+  getStrings: async () => ({
+    'inputs.code.title': 'Code',
+    'inputs.code.patternHint': 'Use uppercase letters',
+    'rune.page.welcome.title': 'Welcome',
+    'rune.page.summary.title': 'Summary',
+    'rune.button.back': 'Back',
+    'rune.button.cancel': 'Cancel',
+    'rune.button.next': 'Next',
+    'rune.button.install': 'Install',
+  }),
+  getThemeConfig: async () => ({}),
+  warnings: async () => [],
+  done: async () => undefined,
+  onEvent: () => undefined,
+});
+
+contextBridge.exposeInMainWorld('inputRaceTestControl', {
+  submissionCount: () => pendingSetValues.length,
+  rejectSubmission: (index) => {
+    const submission = pendingSetValues[index];
+    if (submission === undefined) {
+      throw new Error(`no pending submission at index ${index}`);
+    }
+    submission.reject(new Error('Use uppercase letters'));
+  },
+  resolveSubmission: (index) => {
+    const submission = pendingSetValues[index];
+    if (submission === undefined) {
+      throw new Error(`no pending submission at index ${index}`);
+    }
+    submission.resolve([]);
+  },
+});

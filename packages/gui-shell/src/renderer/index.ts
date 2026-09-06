@@ -7,7 +7,13 @@
  * and keeps Next disabled, and the enabled/disabled flips come back from the same call.
  */
 
-import type { BridgeEvent, BridgeInput, BridgeResult, RuneBridge } from '../preload/types.js';
+import type {
+  BridgeEvent,
+  BridgeInput,
+  BridgePlan,
+  BridgeResult,
+  RuneBridge,
+} from '../preload/types.js';
 
 declare global {
   interface Window {
@@ -16,6 +22,8 @@ declare global {
 }
 
 const INPUTS_PER_PAGE = 5;
+const LIVE_LOG_MAX_CHARACTERS = 20_000;
+const LIVE_LOG_PENDING_MAX_CHARACTERS = LIVE_LOG_MAX_CHARACTERS * 2;
 
 /** The renderer's field registry — asserted against the manifest's types at open (§9.3). */
 const RENDERABLE_TYPES = new Set([
@@ -36,11 +44,13 @@ interface State {
   /** Ids the engine still needs — the ONLY completeness authority the renderer trusts. */
   pending: ReadonlySet<string>;
   invalid: Map<string, string>;
+  drafts: Map<string, string>;
   planFailed: boolean;
   pageIndex: number;
   inputPages: number;
   page: PageName;
   result: BridgeResult | undefined;
+  banner: string | undefined;
   productName: string;
   productVersion: string;
 }
@@ -50,14 +60,23 @@ const state: State = {
   inputs: [],
   pending: new Set(),
   invalid: new Map(),
+  drafts: new Map(),
   planFailed: false,
   pageIndex: 0,
   inputPages: 0,
   page: 'welcome',
   result: undefined,
+  banner: undefined,
   productName: '',
   productVersion: '',
 };
+
+/** Advances on every page render so an async summary can only update its own page. */
+let renderVersion = 0;
+/** Keeps forward navigation closed until every in-flight engine submission has settled. */
+let pendingInputSubmissions = 0;
+/** Remembers a forward click whose blur-triggered validation is still in flight. */
+let forwardRequested = false;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -102,13 +121,14 @@ async function boot(): Promise<void> {
     document.head.append(accent);
   }
   if (theme.logo !== undefined) {
-    el.logo.src = `file://${theme.logo}`;
+    el.logo.src = theme.logo;
     el.logo.hidden = false;
   }
+  state.banner = theme.banner;
   if (theme.theme !== undefined) {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = `file://${theme.theme}`;
+    link.href = theme.theme;
     document.head.append(link);
   }
   if (theme.windowTitle !== undefined) {
@@ -126,6 +146,11 @@ async function boot(): Promise<void> {
   el.next.addEventListener('click', () => {
     void navigate(1);
   });
+  el.next.addEventListener('pointerdown', () => {
+    if (state.page === 'inputs') {
+      forwardRequested = true;
+    }
+  });
   el.cancel.addEventListener('click', () => {
     void window.rune.cancel().then(() => window.close());
   });
@@ -135,6 +160,18 @@ async function boot(): Promise<void> {
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
+  if (state.page === 'inputs' && direction === 1) {
+    if (pendingInputSubmissions > 0) {
+      forwardRequested = true;
+      renderFooter();
+      return;
+    }
+    forwardRequested = false;
+    if (!currentPageComplete()) {
+      renderFooter();
+      return;
+    }
+  }
   if (state.page === 'welcome' && direction === 1) {
     state.page = state.inputs.length > 0 ? 'inputs' : 'summary';
     state.pageIndex = 0;
@@ -168,6 +205,7 @@ async function navigate(direction: 1 | -1): Promise<void> {
 }
 
 function render(): void {
+  const version = ++renderVersion;
   el.page.classList.remove('page');
   void el.page.offsetWidth; // restart the page-in animation
   el.page.classList.add('page');
@@ -181,7 +219,9 @@ function render(): void {
       renderInputs();
       break;
     case 'summary':
-      void renderSummary();
+      // A summary cannot proceed until the engine has produced the current plan.
+      state.planFailed = true;
+      void renderSummary(version);
       break;
     case 'progress':
       renderProgress();
@@ -218,6 +258,9 @@ function currentPageComplete(): boolean {
   if (state.page !== 'inputs') {
     return true;
   }
+  if (pendingInputSubmissions > 0) {
+    return false;
+  }
   // The engine's pendingInputs() is the one completeness signal: a secret's value crosses
   // masked and an unanswered value crosses absent, so the projection cannot be read for
   // presence (§9.2).
@@ -233,6 +276,13 @@ function pageInputs(): readonly BridgeInput[] {
 
 function renderWelcome(): void {
   const container = div('welcome');
+  if (state.banner !== undefined) {
+    const banner = document.createElement('img');
+    banner.className = 'banner';
+    banner.src = state.banner;
+    banner.alt = '';
+    container.append(banner);
+  }
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.welcome.title');
   const description = document.createElement('p');
@@ -285,7 +335,7 @@ function renderField(input: BridgeInput): HTMLElement {
 function renderControl(input: BridgeInput): HTMLElement {
   const { spec } = input;
   if (spec.type === 'boolean') {
-    return checkbox(input);
+    return booleanSelect(input);
   }
   if (spec.type === 'select') {
     return selectBox(input);
@@ -295,30 +345,56 @@ function renderControl(input: BridgeInput): HTMLElement {
   }
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
-  box.value = spec.type === 'secret' ? '' : typeof input.value === 'string' ? input.value : '';
+  const rejected = input.rejection?.candidate;
+  const draft = state.drafts.get(input.id);
+  box.value =
+    spec.type === 'secret'
+      ? ''
+      : draft !== undefined
+        ? draft
+        : typeof rejected === 'string'
+          ? rejected
+          : typeof input.value === 'string'
+            ? input.value
+            : '';
+  box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
   });
   return box;
 }
 
-function checkbox(input: BridgeInput): HTMLElement {
-  const row = div('option-row');
-  const box = document.createElement('input');
-  box.type = 'checkbox';
-  box.checked = input.value === true;
-  box.addEventListener('change', () => {
-    void submit(input.id, box.checked);
+function booleanSelect(input: BridgeInput): HTMLElement {
+  const select = document.createElement('select');
+  select.disabled = !input.enabled;
+  if (input.value === undefined) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    placeholder.textContent = text('rune.summary.notSet');
+    select.append(placeholder);
+  }
+  for (const value of [true, false]) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = String(value);
+    option.selected = input.value === value;
+    select.append(option);
+  }
+  select.addEventListener('change', () => {
+    void submit(input.id, select.value === 'true');
   });
-  row.append(box);
-  return row;
+  return select;
 }
 
 function selectBox(input: BridgeInput): HTMLElement {
   const select = document.createElement('select');
-  // Until the engine has a value, the display must not pretend one: a hidden placeholder
-  // keeps the first option from looking chosen while nothing is set.
-  if (state.pending.has(input.id)) {
+  select.disabled = !input.enabled;
+  const options = input.spec.options ?? [];
+  const hasSelectedOption = options.some((value) => input.value === value);
+  // When the engine value is not an option, keep the first option from looking chosen.
+  if (!hasSelectedOption) {
     const placeholder = document.createElement('option');
     placeholder.value = '';
     placeholder.disabled = true;
@@ -326,8 +402,7 @@ function selectBox(input: BridgeInput): HTMLElement {
     placeholder.hidden = true;
     select.append(placeholder);
   }
-  for (const option of input.spec.options ?? []) {
-    const value = typeof option === 'string' ? option : option.value;
+  for (const value of options) {
     const item = document.createElement('option');
     item.value = value;
     item.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
@@ -345,12 +420,12 @@ function selectBox(input: BridgeInput): HTMLElement {
 function multiselect(input: BridgeInput): HTMLElement {
   const container = document.createElement('div');
   const chosen = new Set(Array.isArray(input.value) ? input.value : []);
-  for (const option of input.spec.options ?? []) {
-    const value = typeof option === 'string' ? option : option.value;
+  for (const value of input.spec.options ?? []) {
     const row = div('option-row');
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = chosen.has(value);
+    box.disabled = !input.enabled;
     box.addEventListener('change', () => {
       if (box.checked) {
         chosen.add(value);
@@ -369,20 +444,61 @@ function multiselect(input: BridgeInput): HTMLElement {
 
 /** One authority: the engine's setValue. Rejection marks the field; flips re-render. */
 async function submit(id: string, raw: unknown): Promise<void> {
+  pendingInputSubmissions += 1;
+  renderFooter();
   try {
-    await window.rune.setValue(id, raw);
-    state.invalid.delete(id);
-  } catch (error) {
-    const hint = text(`inputs.${id}.patternHint`);
-    state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+    try {
+      await window.rune.setValue(id, raw);
+      state.invalid.delete(id);
+      state.drafts.delete(id);
+    } catch (error) {
+      const hint = text(`inputs.${id}.patternHint`);
+      state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+      if (typeof raw === 'string') {
+        state.drafts.set(id, raw);
+      }
+    }
+    await refreshInputs();
+  } finally {
+    pendingInputSubmissions -= 1;
+    render();
+    if (
+      pendingInputSubmissions === 0 &&
+      forwardRequested &&
+      state.page === 'inputs' &&
+      currentPageComplete()
+    ) {
+      forwardRequested = false;
+      await navigate(1);
+    }
   }
-  await refreshInputs();
-  render();
 }
 
 async function refreshInputs(): Promise<void> {
+  const previouslyRejected = new Set(
+    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
+  );
   state.inputs = await window.rune.allInputs();
   state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
+  const rejected = new Set(
+    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
+  );
+  for (const id of previouslyRejected) {
+    if (!rejected.has(id)) {
+      state.invalid.delete(id);
+    }
+  }
+  for (const input of state.inputs) {
+    if (!input.enabled) {
+      state.invalid.delete(input.id);
+      state.drafts.delete(input.id);
+      continue;
+    }
+    if (input.rejection !== undefined) {
+      const hint = text(`inputs.${input.id}.patternHint`);
+      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.issue.message);
+    }
+  }
 }
 
 function messageOf(error: unknown): string {
@@ -391,24 +507,38 @@ function messageOf(error: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '');
 }
 
-async function renderSummary(): Promise<void> {
+function isCurrentSummary(version: number): boolean {
+  return state.page === 'summary' && renderVersion === version;
+}
+
+async function renderSummary(version: number): Promise<void> {
+  if (!isCurrentSummary(version)) {
+    return;
+  }
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.summary.title');
   heading.className = 'result-heading';
   el.page.append(heading);
 
-  const plan = await window.rune.plan().catch((error: unknown) => {
+  let plan: BridgePlan;
+  try {
+    plan = await window.rune.plan();
+  } catch (error) {
+    if (!isCurrentSummary(version)) {
+      return;
+    }
     const problem = document.createElement('p');
     problem.className = 'error';
     problem.textContent = messageOf(error);
     el.page.append(problem);
-    return undefined;
-  });
-  state.planFailed = plan === undefined;
-  renderFooter();
-  if (plan === undefined) {
+    renderFooter();
     return;
   }
+  if (!isCurrentSummary(version)) {
+    return;
+  }
+  state.planFailed = false;
+  renderFooter();
   for (const step of plan.steps) {
     const row = div('summary-step');
     if (step.state === 'SKIPPED') {
@@ -419,26 +549,91 @@ async function renderSummary(): Promise<void> {
     row.append(title);
     const detail = document.createElement('div');
     detail.className = 'command';
-    detail.textContent =
-      step.state === 'SKIPPED' ? (step.skipReason ?? '') : (step.command ?? []).join(' ');
+    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.command.argv.join(' ');
     row.append(detail);
     el.page.append(row);
   }
 }
 
-let progress: { fill: HTMLElement; title: HTMLElement; log: HTMLElement } | undefined;
+let progress: { bar: HTMLProgressElement; title: HTMLElement; log: HTMLElement } | undefined;
+let liveLog = '';
+let pendingLiveLog: string[] = [];
+let pendingLiveLogStart = 0;
+let pendingLiveLogCharacters = 0;
+let liveLogFrame: number | undefined;
+let progressRenderVersion = 0;
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
   heading.className = 'result-heading';
   heading.textContent = text('rune.page.progress.title');
-  const track = div('progress-track');
-  const fill = div('progress-fill');
-  track.append(fill);
+  const bar = document.createElement('progress');
+  bar.className = 'progress-track';
+  bar.max = 1;
+  bar.value = 0;
   const title = div('progress-title');
   const log = div('log');
-  el.page.append(heading, track, title, log);
-  progress = { fill, title, log };
+  el.page.append(heading, bar, title, log);
+  progress = { bar, title, log };
+  progressRenderVersion += 1;
+  liveLog = '';
+  pendingLiveLog = [];
+  pendingLiveLogStart = 0;
+  pendingLiveLogCharacters = 0;
+  if (liveLogFrame !== undefined) {
+    cancelAnimationFrame(liveLogFrame);
+    liveLogFrame = undefined;
+  }
+}
+
+function appendLiveLog(line: string): void {
+  if (progress === undefined) {
+    return;
+  }
+
+  const entry = `${line}\n`;
+  pendingLiveLog.push(entry);
+  pendingLiveLogCharacters += entry.length;
+  while (
+    pendingLiveLogCharacters > LIVE_LOG_PENDING_MAX_CHARACTERS &&
+    pendingLiveLogStart < pendingLiveLog.length - 1
+  ) {
+    pendingLiveLogCharacters -= pendingLiveLog[pendingLiveLogStart]?.length ?? 0;
+    pendingLiveLogStart += 1;
+  }
+  if (pendingLiveLogCharacters > LIVE_LOG_PENDING_MAX_CHARACTERS) {
+    const first = pendingLiveLog[pendingLiveLogStart];
+    if (first !== undefined) {
+      const omittedCharacters = pendingLiveLogCharacters - LIVE_LOG_PENDING_MAX_CHARACTERS;
+      pendingLiveLog[pendingLiveLogStart] = first.slice(omittedCharacters);
+      pendingLiveLogCharacters -= omittedCharacters;
+    }
+  }
+  if (pendingLiveLogStart > 128 && pendingLiveLogStart * 2 > pendingLiveLog.length) {
+    pendingLiveLog = pendingLiveLog.slice(pendingLiveLogStart);
+    pendingLiveLogStart = 0;
+  }
+
+  if (liveLogFrame !== undefined) {
+    return;
+  }
+
+  const renderVersion = progressRenderVersion;
+  liveLogFrame = requestAnimationFrame(() => {
+    liveLogFrame = undefined;
+    if (renderVersion !== progressRenderVersion || progress === undefined) {
+      return;
+    }
+
+    liveLog = `${liveLog}${pendingLiveLog.slice(pendingLiveLogStart).join('')}`.slice(
+      -LIVE_LOG_MAX_CHARACTERS,
+    );
+    pendingLiveLog = [];
+    pendingLiveLogStart = 0;
+    pendingLiveLogCharacters = 0;
+    progress.log.textContent = liveLog;
+    progress.log.scrollTop = progress.log.scrollHeight;
+  });
 }
 
 function onRunEvent(event: BridgeEvent): void {
@@ -451,18 +646,17 @@ function onRunEvent(event: BridgeEvent): void {
       total: event.total,
       title: event.title,
     });
-    progress.fill.style.width = `${(event.index / event.total) * 100}%`;
+    const fraction = event.total > 0 ? event.index / event.total : 0;
+    progress.bar.value = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
   }
   if (event.kind === 'stepOutput') {
-    progress.log.textContent += `${event.line}\n`;
-    progress.log.scrollTop = progress.log.scrollHeight;
+    appendLiveLog(event.line);
   }
   if (event.kind === 'stepFinished') {
-    progress.log.textContent += `-- ${event.stepId}: ${event.state}\n`;
-    progress.log.scrollTop = progress.log.scrollHeight;
+    appendLiveLog(`-- ${event.stepId}: ${event.state}`);
   }
   if (event.kind === 'runFinished') {
-    progress.fill.style.width = '100%';
+    progress.bar.value = progress.bar.max;
   }
 }
 

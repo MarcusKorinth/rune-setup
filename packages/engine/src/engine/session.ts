@@ -570,11 +570,6 @@ export class Session {
     this.#activeExecution?.cancel.cancel();
   }
 
-  /** Masks one host-composed line with the current session/plan secret snapshot. */
-  mask(text: string): string {
-    return this.#sinkSecrets().mask(text);
-  }
-
   /** The fully resolved string table for the session's locale (§6.3). */
   getStrings(): StringTable {
     return this.#sinkStrings;

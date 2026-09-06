@@ -1,0 +1,11 @@
+schemaVersion: 1
+product:
+  name: RUNE Execution Smoke
+  version: 1.0.0
+  description: Real Electron execution smoke
+steps:
+  - id: execution-smoke
+    title: Run real execution smoke
+    run:
+      command: node
+      args: [execution-step.cjs]

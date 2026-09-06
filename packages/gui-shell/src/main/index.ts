@@ -7,22 +7,31 @@
 
 import { join } from 'node:path';
 
-import { BrowserWindow, app, ipcMain, type WebContents } from 'electron';
+import {
+  BrowserWindow,
+  app,
+  dialog,
+  ipcMain,
+  type BrowserWindowConstructorOptions,
+  type WebContents,
+} from 'electron';
 
 import {
   CancelToken,
   CancelledError,
-  createCompletedRunFailureResult,
-  createFailureResult,
   InternalError,
   RUNE_VERSION,
   RuneError,
   Session,
+  createFailureResult,
   exitCodeFor,
+  formatIssues,
+  formatSessionTerminalLine,
+  serializeResult,
   writeResult,
-  type ExecutionPlan,
   type RunEvent,
   type RunResult,
+  type ThemeConfig,
 } from '@rune/engine';
 
 import {
@@ -31,7 +40,7 @@ import {
   shellVersionProbeOutput,
   type ShellInvocation,
 } from './argv.js';
-import { project } from './serialize.js';
+import { project, projectEvent, projectPlan, projectResult, projectTheme } from './serialize.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -40,6 +49,7 @@ export const BRIDGE_CHANNELS = [
   'rune:allInputs',
   'rune:setValue',
   'rune:plan',
+  'rune:describe',
   'rune:execute',
   'rune:cancel',
   'rune:getStrings',
@@ -50,262 +60,226 @@ export const BRIDGE_CHANNELS = [
 
 export const EVENT_CHANNEL = 'rune:event';
 
-type ResultWriter = (result: RunResult, path: string) => unknown;
-type SigtermSubscriber = (listener: () => void) => () => void;
-
-interface WorkflowMainOptions {
-  readonly whenReady?: () => Promise<void>;
-  readonly open?: (invocation: ShellInvocation) => Promise<Session>;
-  readonly writer?: ResultWriter;
-  readonly subscribeToSigterm?: SigtermSubscriber;
+export interface SigtermSource {
+  on(signal: 'SIGTERM', listener: () => void): void;
+  off(signal: 'SIGTERM', listener: () => void): void;
 }
 
-/** Test seam for the Electron startup boundary outside the regular workflow lifecycle. */
-export interface ShellMainOptions {
-  readonly argv?: readonly string[];
-  readonly packaged?: boolean;
-  readonly exit?: (code: number) => void;
-  readonly runWorkflow?: (invocation: ShellInvocation) => Promise<number>;
-  readonly writeStderr?: (message: string) => void;
-}
-
-/** Buffers the one §9.4 cancel request until the window/session lifecycle can receive it. */
-class SigtermRelay {
-  readonly #unsubscribe: () => void;
+/** Keeps one early SIGTERM until the selected shell lifecycle is ready to receive it. */
+class LatchedSigtermSource implements SigtermSource {
+  #listener: (() => void) | undefined;
   #requested = false;
-  #delivered = false;
-  #target: (() => void) | undefined;
 
-  constructor(subscribe: SigtermSubscriber = subscribeToSigterm) {
-    this.#unsubscribe = subscribe(() => this.#request());
+  on(_signal: 'SIGTERM', listener: () => void): void {
+    this.#listener = listener;
+    if (this.#requested) {
+      listener();
+    }
   }
 
-  connect(target: () => void): () => void {
-    this.#target = target;
-    this.#deliver();
-    return () => {
-      if (this.#target === target) {
-        this.#target = undefined;
-      }
-    };
+  off(_signal: 'SIGTERM', listener: () => void): void {
+    if (this.#listener === listener) {
+      this.#listener = undefined;
+    }
   }
 
-  dispose(): void {
-    this.#target = undefined;
-    this.#unsubscribe();
-  }
-
-  #request(): void {
+  request(): void {
     if (this.#requested) {
       return;
     }
     this.#requested = true;
-    this.#deliver();
-  }
-
-  #deliver(): void {
-    if (!this.#requested || this.#delivered || this.#target === undefined) {
-      return;
-    }
-    this.#delivered = true;
-    this.#target();
+    this.#listener?.();
   }
 }
 
-function subscribeToSigterm(listener: () => void): () => void {
-  process.on('SIGTERM', listener);
-  return () => process.removeListener('SIGTERM', listener);
-}
-
-/**
- * Owns the shell process boundary. Workflow results already carry their §10 exit code;
- * only failures that escape startup or the Electron lifecycle become internal errors.
- */
-export async function runShell(options: ShellMainOptions = {}): Promise<void> {
-  const exit = options.exit ?? ((code: number) => app.exit(code));
-  const writeStderr = options.writeStderr ?? ((message: string) => process.stderr.write(message));
-
+/** Keeps a process signal listener scoped to exactly one asynchronous shell run. */
+export async function withSigtermHandler<T>(
+  action: () => void,
+  run: () => Promise<T>,
+  source: SigtermSource = process,
+): Promise<T> {
+  const listener = (): void => action();
+  source.on('SIGTERM', listener);
   try {
-    const argv = (options.argv ?? process.argv).slice((options.packaged ?? app.isPackaged) ? 1 : 2);
-    if (isShellVersionProbe(argv)) {
-      await new Promise<void>((resolve) =>
-        process.stdout.write(shellVersionProbeOutput(), () => resolve()),
-      );
-      exit(0);
-      return;
-    }
-    const invocation = parseShellArgv(argv);
-
-    exit(await (options.runWorkflow ?? runWorkflow)(invocation));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    writeStderr(`internal shell error: ${message}\n`);
-    exit(70);
-  }
-}
-
-/** Runs one ordinary shell invocation; the standalone version probe never enters here. */
-export async function runWorkflow(
-  invocation: ShellInvocation,
-  options: WorkflowMainOptions = {},
-): Promise<number> {
-  // Start before Electron readiness/session open so either shell mode can buffer the one
-  // cooperative cancellation request required by §7/§9.4.
-  const relay = new SigtermRelay(options.subscribeToSigterm);
-  const writer = options.writer ?? writeResult;
-
-  try {
-    try {
-      await (options.whenReady ?? (() => app.whenReady()))();
-    } catch (error) {
-      // Electron failed before a session or window exists. This is still an ordinary
-      // internal-error outcome for a configured invocation (§10).
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      await deliverFailure(asRuneError(error), invocation, writer);
-      return 70;
-    }
-
-    let session: Session;
-    try {
-      session = await (options.open ?? openSession)(invocation);
-    } catch (error) {
-      // A manifest or input error before any window exists: named on stderr, exit code from
-      // the one table, and the §10 zero-counter result file — both hosts write it.
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      const failure = asRuneError(error);
-      const result = failureResultFor(failure, invocation);
-      return (await deliverSafely(result, invocation, writer)) ? result.exitCode : 70;
-    }
-
-    if (invocation.nonInteractive) {
-      // The headless path (§9.4): no window, the same engine walk the CLI does.
-      const code = await headlessRun(session, invocation, writer, relay);
-      return code;
-    }
-
-    const code = await windowedRun(session, invocation, writer, relay);
-    return code;
+    return await run();
   } finally {
-    relay.dispose();
+    source.off('SIGTERM', listener);
   }
 }
 
-export async function openSession(invocation: ShellInvocation): Promise<Session> {
+/** SIGTERM in windowed mode enters the ordinary close-window state machine. */
+export function closeWindowOnSigterm(window: Pick<BrowserWindow, 'close'>): () => void {
+  return () => window.close();
+}
+
+export function windowOptions(theme: Pick<ThemeConfig, 'logo'>): BrowserWindowConstructorOptions {
+  return {
+    width: 900,
+    height: 640,
+    show: false,
+    autoHideMenuBar: true,
+    ...(theme.logo === undefined ? {} : { icon: theme.logo }),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
+    },
+  };
+}
+
+export async function main(
+  argv: readonly string[] = process.argv.slice(app.isPackaged ? 1 : 2),
+  signals: SigtermSource = process,
+): Promise<void> {
+  if (isShellVersionProbe(argv)) {
+    try {
+      await writeVersionProbe();
+      app.exit(0);
+    } catch {
+      app.exit(70);
+    }
+    return;
+  }
+
+  let exitCode: number;
+  let windowed = false;
+  let activeSession: Session | undefined;
+  let fatalDisplayed = false;
+  const displayFatal = (error: unknown, session = activeSession): void => {
+    if (!windowed || fatalDisplayed) {
+      return;
+    }
+    fatalDisplayed = true;
+    showWindowedFatal(error, session);
+  };
+  try {
+    const invocation = parseShellArgv(argv);
+    windowed = !invocation.nonInteractive;
+    const routedSignals = new LatchedSigtermSource();
+    exitCode = await withSigtermHandler(
+      () => routedSignals.request(),
+      async () => {
+        await app.whenReady();
+        const session = await openSession(invocation);
+        activeSession = session;
+
+        return invocation.nonInteractive
+          ? headlessRun(session, invocation, routedSignals)
+          : windowedRun(session, invocation, routedSignals, displayFatal);
+      },
+      signals,
+    );
+  } catch (error) {
+    process.stderr.write(
+      `${windowed ? describeWindowedFatal(error, activeSession) : error instanceof Error ? error.message : String(error)}\n`,
+    );
+    displayFatal(error);
+    exitCode = exitCodeFor(error);
+  }
+  app.exit(exitCode);
+}
+
+/** Writes the standalone launcher handshake without entering Electron or the workflow. */
+async function writeVersionProbe(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    process.stdout.write(shellVersionProbeOutput(), (error?: Error | null) => {
+      if (error === undefined || error === null) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
+
+async function openSession(invocation: ShellInvocation): Promise<Session> {
   return Session.open(invocation.manifestPath, {
     values: invocation.values,
     overrides: invocation.overrides,
     locale: invocation.locale,
     logFile: invocation.logFile,
+    ...(invocation.result === undefined || invocation.result === '-'
+      ? {}
+      : { resultDestination: invocation.result }),
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
   });
 }
 
-export async function headlessRun(
+export function headlessRun(
   session: Session,
   invocation: ShellInvocation,
-  writer: ResultWriter = writeResult,
-  cancellation?: SigtermRelay,
+  signals: SigtermSource = process,
 ): Promise<number> {
-  const relay = cancellation ?? new SigtermRelay();
-  const ownsRelay = cancellation === undefined;
   const cancel = new CancelToken();
-  const disconnectCancellation = relay.connect(() => cancel.cancel());
-  try {
-    const result = await session.execute(undefined, cancel);
-    for (const warning of session.warnings()) {
-      process.stderr.write(`warning: ${warning}` + String.fromCharCode(10));
-    }
-    if (result.nothingExecuted) {
-      process.stderr.write('warning: nothing was executed' + String.fromCharCode(10));
-    }
-    return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
-  } catch (error) {
-    return await failWith(error, invocation, session, writer);
-  } finally {
-    disconnectCancellation();
-    if (ownsRelay) {
-      relay.dispose();
-    }
-  }
+  return withSigtermHandler(
+    () => {
+      // Preserve Session.cancel() as the public shell action (§9.4). The explicit token also
+      // remembers a signal that arrived before execute() installed it on the Session.
+      cancel.cancel();
+      session.cancel();
+    },
+    () => executeHeadless(session, invocation, cancel),
+    signals,
+  );
 }
 
-export async function windowedRun(
+async function executeHeadless(
   session: Session,
   invocation: ShellInvocation,
-  writer: ResultWriter = writeResult,
-  cancellation?: SigtermRelay,
+  cancel: CancelToken,
 ): Promise<number> {
-  const relay = cancellation ?? new SigtermRelay();
-  const ownsRelay = cancellation === undefined;
-  let window: BrowserWindow;
+  let terminalResult: RunResult | undefined;
+  let result: RunResult;
   try {
-    window = new BrowserWindow({
-      width: 900,
-      height: 640,
-      show: false,
-      autoHideMenuBar: true,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        preload: join(app.getAppPath(), 'dist', 'preload', 'index.cjs'),
-      },
-    });
+    const progress = shellProgressObserver(session);
+    result = await session.execute((event) => {
+      if (event.kind === 'runFinished') {
+        terminalResult = event.result;
+      }
+      progress(event);
+    }, cancel);
   } catch (error) {
-    if (ownsRelay) {
-      relay.dispose();
-    }
-    return await failWith(error, invocation, session, writer);
+    return failWith(error, invocation, session, terminalResult);
   }
-  window.once('ready-to-show', () => window.show());
 
-  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
+  for (const warning of session.warnings()) {
+    writeSessionDiagnostic(session, `warning: ${warning}`);
+  }
+  if (result.nothingExecuted) {
+    writeSessionDiagnostic(session, 'warning: nothing was executed');
+  }
+  try {
+    await deliver(result, invocation);
+  } catch (error) {
+    writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+    return error instanceof RuneError ? exitCodeFor(error) : 70;
+  }
+  return result.exitCode;
+}
+
+async function windowedRun(
+  session: Session,
+  invocation: ShellInvocation,
+  signals: SigtermSource,
+  displayFatal: (error: unknown, session?: Session) => void,
+): Promise<number> {
+  const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
+  window.once('ready-to-show', () => window.show());
 
   let running = false;
   let closeRequested = false;
   let outcome: RunResult | undefined;
   let fatalCode: number | undefined;
   let renderedDone = false;
-  let windowLoaded = false;
-  let rendererLost = false;
-  let resolveRendererLost: (() => void) | undefined;
-  const rendererLostSignal = new Promise<void>((resolve) => {
-    resolveRendererLost = resolve;
-  });
-
-  const destroyAfterRendererLoss = (): void => {
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
+  let rendererGone = false;
+  let sigtermRequested = false;
+  let closeFinalizing = false;
+  let delivery: Promise<void> | undefined;
+  const deliverOutcome = (result: RunResult): Promise<void> => {
+    delivery ??= deliver(result, invocation);
+    return delivery;
   };
-
-  const onRendererLost = (): void => {
-    if (rendererLost) {
-      return;
-    }
-    rendererLost = true;
-    resolveRendererLost?.();
-    // Once the engine outcome is durably delivered it remains authoritative: losing only
-    // the Result-page renderer cannot rewrite the workflow behind the caller's back.
-    if (outcome !== undefined) {
-      destroyAfterRendererLoss();
-      return;
-    }
-    if (running) {
-      session.cancel();
-    } else {
-      // Main, the Session and the writer are still alive, so this is an ordinary owned
-      // internal-error outcome rather than the resultless main-process crash of §10.
-      fatalCode = 70;
-      void deliverFailure(
-        new InternalError('the renderer became unavailable'),
-        invocation,
-        writer,
-        session,
-      ).then(destroyAfterRendererLoss);
-    }
-  };
-  window.webContents.on('render-process-gone', onRendererLost);
 
   registerBridge(session, {
     events: window.webContents,
@@ -313,77 +287,73 @@ export async function windowedRun(
       running = true;
     },
     onExecuteEnd: async (result) => {
-      if (rendererLost) {
-        running = false;
-        const internalResult = createCompletedRunFailureResult(
-          new InternalError('the renderer became unavailable'),
-          result,
-        );
-        if (await deliverSafely(internalResult, invocation, writer, session)) {
-          outcome = internalResult;
-        } else {
-          fatalCode = 70;
-        }
-        destroyAfterRendererLoss();
-        return;
-      }
-      if (!(await deliverSafely(result, invocation, writer, session))) {
-        running = false;
-        fatalCode = 70;
+      running = false;
+      if (rendererGone) {
+        // A renderer crash is a hard shell failure, not an ordinary cancelled outcome.
         window.close();
         return;
       }
-      running = false;
       outcome = result;
-      if (rendererLost) {
-        destroyAfterRendererLoss();
-        return;
-      }
       if (closeRequested) {
         // The shell finishes its own cancel (§9.4): the close that started it completes.
+        try {
+          await deliverOutcome(result);
+        } catch (error) {
+          outcome = undefined;
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+          displayFatal(error, session);
+        }
         window.close();
       }
     },
     onExecuteError: async (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
-      if (rendererLost) {
-        fatalCode = 70;
-        await deliverFailure(
-          new InternalError('the renderer became unavailable'),
-          invocation,
-          writer,
-          session,
-        );
-        destroyAfterRendererLoss();
+      if (rendererGone) {
+        // The renderer crash already owns the fatal classification and diagnostic.
+        window.close();
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(session.mask(message) + String.fromCharCode(10));
-      const failure = asRuneError(error);
-      const result = failureResultFor(failure, invocation, session);
-      fatalCode = (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
+      fatalCode = await failWith(error, invocation, session);
+      displayFatal(error, session);
       window.close();
     },
-    onRendererDone: () => {
+    onRendererDone: async () => {
       renderedDone = true;
+      if (outcome !== undefined) {
+        try {
+          await deliverOutcome(outcome);
+        } catch (error) {
+          outcome = undefined;
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+          displayFatal(error, session);
+        }
+      }
       window.close();
     },
   });
 
-  // A relayed SIGTERM keeps the existing §9.4 behavior: running means CancelToken;
-  // otherwise it is the close-window path. Before load completes, defer only the close.
-  const disconnectCancellation = relay.connect(() => {
-    if (running) {
-      closeRequested = true;
-      session.cancel();
-    } else if (windowLoaded) {
-      window.close();
-    } else {
-      closeRequested = true;
+  window.webContents.on('render-process-gone', () => {
+    if (rendererGone || renderedDone) {
+      return;
     }
+    rendererGone = true;
+    const error = new InternalError('the renderer process exited unexpectedly');
+    fatalCode = exitCodeFor(error);
+    writeSessionDiagnostic(session, describeWindowedFatal(error, session));
+
+    if (running) {
+      // Let the engine settle its cooperative cancellation before closing the host window.
+      session.cancel();
+      displayFatal(error, session);
+      return;
+    }
+    displayFatal(error, session);
+    window.close();
   });
-  let cancellationDeliveryStarted = false;
+
   window.on('close', (event) => {
     if (running) {
       event.preventDefault();
@@ -392,54 +362,48 @@ export async function windowedRun(
       return;
     }
     if (outcome === undefined && fatalCode === undefined && !renderedDone) {
+      // Closed before Proceed: a cancelled result over the plan when one exists (§10).
       event.preventDefault();
-      if (cancellationDeliveryStarted) {
+      if (closeFinalizing) {
         return;
       }
-      cancellationDeliveryStarted = true;
-      // Closed before Proceed: use the plan when one exists, otherwise the honest
-      // zero-counter cancellation shell (§10).
-      const cancelled = cancellationResultFor(invocation, session);
-      void deliverSafely(cancelled, invocation, writer, session).then((delivered) => {
-        if (delivered) {
+      closeFinalizing = true;
+      void (async () => {
+        try {
+          const cancelled = describeCancelled(session, invocation);
+          await deliverOutcome(cancelled);
           outcome = cancelled;
-        } else {
-          fatalCode = 70;
+        } catch (error) {
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+          displayFatal(error, session);
+        } finally {
+          window.close();
         }
-        if (!window.isDestroyed()) {
-          window.destroy();
-        }
-      });
+      })();
     }
   });
+  const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
 
-  try {
-    const loaded = window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-    await Promise.race([loaded, rendererLostSignal]);
-    if (!rendererLost) {
-      windowLoaded = true;
-      if (closeRequested) {
-        window.close();
+  await withSigtermHandler(
+    () => {
+      sigtermRequested = true;
+      closeWindowOnSigterm(window)();
+    },
+    async () => {
+      if (!sigtermRequested) {
+        try {
+          await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+        } catch (error) {
+          if (!sigtermRequested && !rendererGone) {
+            throw error;
+          }
+        }
       }
-    }
-    await closed;
-  } catch (error) {
-    if (rendererLost) {
       await closed;
-      return outcome?.exitCode ?? 70;
-    }
-    const code = await failWith(error, invocation, session, writer);
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
-    return code;
-  } finally {
-    window.webContents.removeListener('render-process-gone', onRendererLost);
-    disconnectCancellation();
-    if (ownsRelay) {
-      relay.dispose();
-    }
-  }
+    },
+    signals,
+  );
 
   if (fatalCode !== undefined) {
     return fatalCode;
@@ -457,158 +421,213 @@ export function registerBridge(
   hooks: {
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
-    onExecuteEnd?: (result: RunResult) => unknown;
-    onExecuteError?: (error: unknown) => unknown;
-    onRendererDone?: () => void;
+    onExecuteEnd?: (result: RunResult) => void | Promise<void>;
+    onExecuteError?: (error: unknown) => void | Promise<void>;
+    onRendererDone?: () => void | Promise<void>;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
-    ipcMain.handle(c, async (_event, ...args: unknown[]) => {
-      try {
-        return await h(...args);
-      } catch (error) {
-        // Electron serializes only the message across invoke; carry the RUNE code and the
-        // exit code the CLI would have used inside it (§9.2).
-        if (error instanceof RuneError) {
-          throw new Error(
-            session.mask(`${error.code} (exit ${exitCodeFor(error)}): ${error.message}`),
-          );
-        }
-        throw error;
-      }
-    }),
+    ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
 ): void {
-  const mask = (text: string): string => session.mask(text);
-  register('rune:open', () =>
-    project({
-      runeVersion: RUNE_VERSION,
-      inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
-      product: {
-        name: session.manifest.product.name,
-        version: session.manifest.product.version,
-      },
-    }),
-  );
-  register('rune:pendingInputs', () => project(session.pendingInputs(), mask));
-  register('rune:allInputs', () => project(session.allInputs(), mask));
-  register('rune:setValue', (id, raw) => project(session.setValue(String(id), raw), mask));
-  register('rune:plan', () => project(session.describe(), mask));
-  register('rune:getStrings', () => project(session.getStrings().entries));
-  register('rune:getThemeConfig', () => project(session.getThemeConfig()));
-  register('rune:warnings', () => project(session.warnings(), mask));
-  register('rune:cancel', () => {
+  const mask = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
+  const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
+    register(channel, async (...args: unknown[]) => {
+      try {
+        return project(await handler(...args));
+      } catch (error) {
+        throw bridgeError(error, mask);
+      }
+    });
+  };
+
+  handle('rune:open', () => ({
+    runeVersion: RUNE_VERSION,
+    inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
+    product: {
+      name: mask(session.manifest.product.name),
+      version: mask(session.manifest.product.version),
+    },
+  }));
+  handle('rune:pendingInputs', () => session.pendingInputs());
+  handle('rune:allInputs', () => session.allInputs());
+  handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
+  handle('rune:plan', () => projectPlan(session.plan(), mask));
+  handle('rune:describe', () => projectResult(session.describe(), mask));
+  handle('rune:getStrings', () => session.getStrings().entries);
+  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig(), mask));
+  handle('rune:warnings', () => session.warnings());
+  handle('rune:cancel', () => {
     session.cancel();
     return undefined;
   });
-  register('rune:execute', async () => {
+  handle('rune:execute', async () => {
     hooks.onExecuteStart?.();
-    let result: RunResult;
     try {
-      result = await session.execute((event: RunEvent) => {
-        hooks.events.send(EVENT_CHANNEL, project(event, mask));
+      const consoleObserver = shellProgressObserver(session);
+      const result = await session.execute((event: RunEvent) => {
+        // Keep the terminal sink independent of renderer delivery. The engine owns the
+        // observer exception boundary, so neither sink can corrupt the run.
+        try {
+          consoleObserver(event);
+        } finally {
+          hooks.events.send(EVENT_CHANNEL, projectEvent(event, mask));
+        }
       });
+      await hooks.onExecuteEnd?.(result);
+      return projectResult(result, mask);
     } catch (error) {
       await hooks.onExecuteError?.(error);
       throw error;
     }
-    await hooks.onExecuteEnd?.(result);
-    return project(result, mask);
   });
-  register('rune:done', () => {
-    hooks.onRendererDone?.();
+  handle('rune:done', async () => {
+    await hooks.onRendererDone?.();
     return undefined;
   });
 }
 
-async function deliver(
-  result: RunResult,
-  invocation: ShellInvocation,
-  writer: ResultWriter = writeResult,
-): Promise<void> {
-  if (invocation.result !== undefined) {
-    await writer(result, invocation.result);
-  }
-}
-
-async function deliverSafely(
-  result: RunResult,
-  invocation: ShellInvocation,
-  writer: ResultWriter,
-  session?: Session,
-): Promise<boolean> {
-  try {
-    await deliver(result, invocation, writer);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `failed to write result: ${session?.mask(message) ?? message}` + String.fromCharCode(10),
+function bridgeError(error: unknown, mask: (text: string) => string): Error {
+  if (error instanceof RuneError) {
+    return new Error(
+      mask(`${error.code} (exit ${exitCodeFor(error)}): ${formatIssues(error.issues)}`),
     );
-    return false;
+  }
+  if (error instanceof Error) {
+    return new Error(mask(error.message));
+  }
+  try {
+    return new Error(mask(String(error)));
+  } catch {
+    return new Error('RUNE-500 (exit 70): An unexpected shell error occurred.');
   }
 }
 
-async function deliverFailure(
-  error: RuneError,
-  invocation: ShellInvocation,
-  writer: ResultWriter,
-  session?: Session,
-): Promise<boolean> {
-  return await deliverSafely(
-    failureResultFor(error, invocation, session),
-    invocation,
-    writer,
-    session,
-  );
+function describeWindowedFatal(error: unknown, session: Session | undefined): string {
+  const code = error instanceof RuneError ? error.code : 'RUNE-500';
+  const prefix = `${code} (exit ${exitCodeFor(error)})`;
+  if (session === undefined) {
+    // Session.open may fail before input secrets can be registered. Keep this sink useful
+    // without echoing manifest, values-file, or command-line data that cannot yet be masked.
+    return `${prefix}: The setup could not be started.`;
+  }
+  const details =
+    error instanceof RuneError
+      ? formatIssues(error.issues)
+      : error instanceof Error
+        ? error.message
+        : 'An unexpected shell error occurred.';
+  return formatSessionTerminalLine(session.getStrings(), `${prefix}: ${details}`);
 }
 
-/** Builds the §10 zero-counter result, retaining metadata available from an opened session. */
-export function failureResultFor(
-  error: RuneError,
-  invocation: ShellInvocation,
-  session?: Session,
-  plan?: ExecutionPlan,
-): RunResult {
-  return createFailureResult({
-    error,
-    mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
-    manifestPath: invocation.manifestPath,
-    dryRun: false,
-    ...(session === undefined ? {} : { session }),
-    ...(plan === undefined ? {} : { plan }),
-  });
+function showWindowedFatal(error: unknown, session: Session | undefined): void {
+  try {
+    dialog.showErrorBox('RUNE setup failed', describeWindowedFatal(error, session));
+  } catch {
+    // A failed native dialog must not replace the original error or its exit code.
+  }
+}
+
+async function deliver(result: RunResult, invocation: ShellInvocation): Promise<void> {
+  if (invocation.result === '-') {
+    // Headless result streams own stdout (§4.1, §10); everything else stays on stderr.
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(serializeResult(result), (error?: Error | null) => {
+        if (error === undefined || error === null) {
+          resolve();
+        } else {
+          reject(error);
+        }
+      });
+    });
+    return;
+  }
+  if (invocation.result !== undefined) {
+    await writeResult(result, invocation.result);
+  }
 }
 
 async function failWith(
   error: unknown,
   invocation: ShellInvocation,
   session: Session,
-  writer: ResultWriter,
+  terminalResult?: RunResult,
 ): Promise<number> {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${session.mask(message)}\n`);
-  const failure = asRuneError(error);
-  if (error instanceof CancelledError) {
-    const result = cancellationResultFor(invocation, session);
-    return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
+  const failure =
+    error instanceof RuneError
+      ? error
+      : new InternalError('an unexpected error escaped the shell run', { cause: error });
+  writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+
+  try {
+    const result =
+      terminalResult ??
+      createFailureResult({
+        error: failure,
+        manifestPath: invocation.manifestPath,
+        dryRun: false,
+        session,
+      });
+    await deliver(result, invocation);
+  } catch (deliveryError) {
+    writeSessionDiagnostic(
+      session,
+      deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+    );
+    return deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70;
   }
-  const result = failureResultFor(failure, invocation, session);
-  return (await deliverSafely(result, invocation, writer, session)) ? result.exitCode : 70;
+  return exitCodeFor(failure);
 }
 
-function cancellationResultFor(invocation: ShellInvocation, session: Session): RunResult {
-  let plan: ExecutionPlan | undefined;
+function describeCancelled(session: Session, invocation: ShellInvocation): RunResult {
+  let plan: ReturnType<Session['plan']> | undefined;
   try {
     plan = session.plan();
-  } catch {
-    // Closing before all required inputs exist has no plan to preserve.
+  } catch (error) {
+    if (error instanceof InternalError || !(error instanceof RuneError)) {
+      throw error;
+    }
   }
-  return failureResultFor(new CancelledError(), invocation, session, plan);
+  return createFailureResult({
+    error: new CancelledError(),
+    manifestPath: invocation.manifestPath,
+    dryRun: false,
+    session,
+    ...(plan === undefined ? {} : { plan }),
+  });
 }
 
-function asRuneError(error: unknown): RuneError {
-  return error instanceof RuneError
-    ? error
-    : new InternalError('an unexpected error escaped the GUI shell', { cause: error });
+/** Writes one shell-owned diagnostic through the Session's authenticated terminal sink. */
+function writeSessionDiagnostic(session: Session, message: string): void {
+  process.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
+}
+
+/** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
+function shellProgressObserver(session: Session): (event: RunEvent) => void {
+  return (event) => {
+    switch (event.kind) {
+      case 'runStarted':
+        writeSessionDiagnostic(
+          session,
+          `running ${event.plan.steps.length} steps on ${event.plan.platform}`,
+        );
+        break;
+      case 'stepStarted':
+        writeSessionDiagnostic(session, `[${event.index + 1}/${event.total}] ${event.title}`);
+        break;
+      case 'stepOutput':
+        writeSessionDiagnostic(session, `  ${event.line}`);
+        break;
+      case 'stepFinished':
+        writeSessionDiagnostic(
+          session,
+          `  -> ${event.state}` +
+            (event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`) +
+            ` after ${event.durationMs}ms`,
+        );
+        break;
+      case 'runFinished':
+        break;
+    }
+  };
 }
 
 // Under vitest the module is imported for its exports; only Electron runs the app.
@@ -616,5 +635,5 @@ if (
   process.versions['electron'] !== undefined &&
   (process as { type?: string }).type === 'browser'
 ) {
-  void runShell();
+  void main();
 }

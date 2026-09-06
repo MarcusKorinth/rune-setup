@@ -34,30 +34,6 @@
 - **Recommended next step:** Gate `rune:done` on a delivered terminal outcome and add
   premature-done tests.
 
-## PR11-O002 — Support stdout results in the packaged headless shell
-
-- **Priority:** P1 (automation compatibility)
-- **Affected components:** GUI shell headless delivery and argv parser
-- **Description:** The direct headless shell hands `--result -` to the engine file writer, so it
-  treats `-` as a filename instead of writing machine JSON to stdout.
-- **Reason for separate work:** Direct packaged-shell operation belongs to the M4 artifact seam,
-  while PR #11 implements CLI-driven GUI launch and rejects stdout for windowed runs.
-- **Risk:** A packaged headless invocation can silently violate the documented stdout contract.
-- **Recommended next step:** Share host delivery semantics with the CLI and test success, failure,
-  and cancellation using stdout.
-
-## PR11-O003 — Classify direct shell argv errors as usage errors
-
-- **Priority:** P2 (exit-code compatibility)
-- **Affected components:** GUI shell argv parser and process boundary
-- **Description:** The direct shell parser throws generic errors that the process boundary maps to
-  exit 70.
-- **Reason for separate work:** Direct packaged-shell usage classification belongs to the M4
-  artifact entry point rather than PR #11's CLI-owned argument validation.
-- **Risk:** Malformed direct invocations are reported as internal errors instead of usage exit 2.
-- **Recommended next step:** Use `UsageError` and `exitCodeFor` at the shell boundary and add an
-  argv error table.
-
 ## PR11-O004 — Preserve structured errors across the GUI bridge
 
 - **Priority:** P2 (bridge contract)
@@ -69,16 +45,3 @@
 - **Risk:** Error code, exit code, and source location are lost or coupled to message parsing.
 - **Recommended next step:** Define a JSON-safe tagged error envelope and test every `RuneError`
   class plus masking and unknown errors.
-
-## PR11-O005 — Align dynamic GUI styling with the CSP
-
-- **Priority:** P2 (GUI behavior)
-- **Affected components:** `packages/gui-shell/src/renderer/index.html`, renderer theming and
-  progress
-- **Description:** The renderer creates a dynamic `<style>` rule and assigns inline progress
-  widths while the CSP allows only `style-src 'self'`.
-- **Reason for separate work:** The renderer and CSP are inherited from the GUI-shell base, and
-  browser-level verification belongs to M4's real-Electron smoke lane.
-- **Risk:** Chromium can block accent theming and progress width updates.
-- **Recommended next step:** Choose a narrowly scoped nonce or CSS-only policy and verify computed
-  styles in the Electron smoke suite.

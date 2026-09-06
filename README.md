@@ -13,10 +13,10 @@ installer, the command line or a CI/CD pipeline.
 
 The RUNE source tree is at **v0.1.0** — the source-complete MVP application: the engine
 library, `rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and
-the graphical wizard via `rune run --gui`), locale overlays, and the Electron GUI shell.
-[docs/architecture.md](docs/architecture.md) is the binding contract;
-[docs/roadmap.md](docs/roadmap.md) tracks what comes after (next: shell release engineering
-and `rune package`).
+the graphical wizard via `rune run --gui`), locale overlays, the sandboxed Electron GUI
+shell, and its cross-platform smoke suite. [docs/architecture.md](docs/architecture.md) is
+the binding contract; [docs/roadmap.md](docs/roadmap.md) tracks what comes after (next:
+shell release engineering and `rune package`).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`). The
@@ -86,6 +86,8 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
+The same manifest, three ways:
+
 ```bash
 # Guided on a TTY; non-interactive fallback when stdin is not a TTY
 rune run installer.yaml
@@ -141,11 +143,14 @@ Requires Node 22 LTS. The repository is an npm-workspaces monorepo
 npm ci
 ```
 
-The local gate is exactly what CI runs (`npm run format` fixes formatting):
+The core local gate mirrors the core CI job (`npm run format` fixes formatting):
 
 ```bash
 npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test
 ```
+
+The Electron CI lane additionally runs `npm run build` and
+`npm run test:smoke --workspace @rune/gui-shell` on Windows and Linux.
 
 ## Contributing
 
