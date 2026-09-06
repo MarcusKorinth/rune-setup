@@ -322,7 +322,7 @@ export async function windowedRun(
         }
       }
     },
-    onExecuteError: async (error, plan) => {
+    onExecuteError: async (error, plan, terminalResult) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
       if (rendererGone) {
@@ -330,7 +330,7 @@ export async function windowedRun(
         window.close();
         return;
       }
-      fatalCode = await failWith(error, invocation, session, undefined, plan, deliverOutcome);
+      fatalCode = await failWith(error, invocation, session, terminalResult, plan, deliverOutcome);
       displayFatal(error, session);
       window.close();
     },
@@ -435,7 +435,11 @@ export function registerBridge(
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
     onExecuteEnd?: (result: RunResult) => void | Promise<void>;
-    onExecuteError?: (error: unknown, plan?: ExecutionPlan) => void | Promise<void>;
+    onExecuteError?: (
+      error: unknown,
+      plan?: ExecutionPlan,
+      terminalResult?: RunResult,
+    ) => void | Promise<void>;
     onRendererDone?: () => void | Promise<void>;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
@@ -474,12 +478,18 @@ export function registerBridge(
   });
   handle('rune:execute', async () => {
     let plan: ExecutionPlan | undefined;
+    let terminalResult: RunResult | undefined;
     let result: RunResult;
     try {
       plan = session.plan();
       hooks.onExecuteStart?.();
       const consoleObserver = shellProgressObserver(session);
       result = await session.execute((event: RunEvent) => {
+        if (event.kind === 'runFinished') {
+          // Session can publish the engine-owned failed terminal before rejecting when its
+          // log sink fails during finalization. Retain that authoritative result for delivery.
+          terminalResult = event.result;
+        }
         // Keep the terminal sink independent of renderer delivery. The engine owns the
         // observer exception boundary, so neither sink can corrupt the run.
         try {
@@ -489,7 +499,7 @@ export function registerBridge(
         }
       });
     } catch (error) {
-      await hooks.onExecuteError?.(error, plan);
+      await hooks.onExecuteError?.(error, plan, terminalResult);
       throw error;
     }
     // Completion owns result delivery. Its rejection must bypass the engine-failure hook,

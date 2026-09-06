@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ import { ExecutionError, Session, type RunEvent, type RunResult } from '@rune/en
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  sent: [] as Array<{ channel: string; payload: unknown }>,
   duringLoad: undefined as (() => Promise<void>) | undefined,
   closeDuringLoad: false,
   emitRendererGone: undefined as (() => void) | undefined,
@@ -17,7 +18,9 @@ const electronHarness = vi.hoisted(() => ({
 
 vi.mock('electron', () => {
   class FakeWebContents {
-    readonly send = vi.fn();
+    readonly send = vi.fn((channel: string, payload: unknown) => {
+      electronHarness.sent.push({ channel, payload });
+    });
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
     on(event: string, listener: (...args: unknown[]) => void): void {
@@ -112,6 +115,7 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   electronHarness.handlers.clear();
+  electronHarness.sent = [];
   electronHarness.duringLoad = undefined;
   electronHarness.closeDuringLoad = false;
   electronHarness.emitRendererGone = undefined;
@@ -339,6 +343,94 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(existsSync(fixture.sentinelPath)).toBe(false);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(stderr.mock.calls.flat().join('')).toContain('log file');
+  });
+
+  it('delivers the terminal result after a windowed late log close failure', async () => {
+    const manifestPath = manifest([
+      'inputs: {}',
+      'steps:',
+      '  - id: completed',
+      '    run:',
+      '      command: echo',
+    ]);
+    const resultPath = join(dirname(manifestPath), 'result.json');
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const plan = session.plan();
+    const described = session.describe();
+    if (described.status !== 'planned') {
+      throw new Error('the fixture did not produce a planned result');
+    }
+    const completedSteps = described.steps.map((step) =>
+      step.state === 'PENDING'
+        ? { ...step, state: 'SUCCEEDED' as const, exitCode: 0, durationMs: 1 }
+        : step,
+    );
+    const terminalResult = {
+      ...described,
+      status: 'failed' as const,
+      exitCode: 1,
+      dryRun: false,
+      error: { code: 'RUNE-406' as const, message: 'the log close failed', location: null },
+      steps: completedSteps,
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+    } satisfies RunResult;
+    vi.spyOn(Session, 'open').mockResolvedValue(session);
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+      observer?.({ kind: 'runStarted', plan });
+      observer?.({
+        kind: 'stepStarted',
+        stepId: 'completed',
+        index: 0,
+        total: 1,
+        title: 'completed',
+      });
+      observer?.({
+        kind: 'stepFinished',
+        stepId: 'completed',
+        state: 'SUCCEEDED',
+        exitCode: 0,
+        durationMs: 1,
+      });
+      observer?.({ kind: 'runFinished', result: terminalResult });
+      throw new ExecutionError('RUNE-406', 'the log close failed');
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      await expect(execute()).rejects.toThrow('RUNE-406');
+    };
+
+    await main([manifestPath, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    const serialized = JSON.parse(readFileSync(resultPath, 'utf8'));
+    expect(serialized).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsFailed: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+      steps: [{ id: 'completed', state: 'SUCCEEDED', exitCode: 0 }],
+    });
+    const terminalEvent = electronHarness.sent.find(
+      (event) => (event.payload as { kind?: unknown }).kind === 'runFinished',
+    );
+    expect(terminalEvent).toEqual({
+      channel: 'rune:event',
+      payload: { kind: 'runFinished', result: serialized },
+    });
   });
 
   it('masks registered secrets when windowed result delivery rejects', async () => {

@@ -5,7 +5,14 @@ import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { InputError, RuneError, Session, type RunEvent, type RunResult } from '@rune/engine';
+import {
+  ExecutionError,
+  InputError,
+  RuneError,
+  Session,
+  type RunEvent,
+  type RunResult,
+} from '@rune/engine';
 
 vi.mock('electron', () => ({
   app: {},
@@ -186,6 +193,50 @@ describe('the IPC bridge', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(onExecuteStart).not.toHaveBeenCalled();
     plan.mockRestore();
+    execute.mockRestore();
+  });
+
+  it('retains an engine terminal result when execute rejects during finalization', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    session.setValue('installDatabase', false);
+    const expectedPlan = session.plan();
+    const terminalResult = session.describe();
+    const failure = new ExecutionError('RUNE-406', 'the log close failed');
+    const execute = vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+      observer?.({ kind: 'runFinished', result: terminalResult });
+      throw failure;
+    });
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    const errors: Array<{
+      error: unknown;
+      plan: unknown;
+      terminalResult: RunResult | undefined;
+    }> = [];
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerBridge(
+      session,
+      {
+        events: { send: (channel, payload) => sent.push({ channel, payload }) },
+        onExecuteError: (error, plan, result) => {
+          errors.push({ error, plan, terminalResult: result });
+        },
+      },
+      (channel, handler) => handlers.set(channel, handler),
+    );
+
+    await expect(handlers.get('rune:execute')?.()).rejects.toThrow('RUNE-406');
+
+    expect(errors).toEqual([{ error: failure, plan: expectedPlan, terminalResult }]);
+    expect(sent).toEqual([
+      {
+        channel: EVENT_CHANNEL,
+        payload: { kind: 'runFinished', result: JSON.parse(JSON.stringify(terminalResult)) },
+      },
+    ]);
     execute.mockRestore();
   });
 
