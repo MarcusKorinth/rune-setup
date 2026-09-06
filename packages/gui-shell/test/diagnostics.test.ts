@@ -107,6 +107,7 @@ import { app, dialog } from 'electron';
 
 import { headlessRun, main } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
+import { completeWrite } from './stream-fixture.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -145,7 +146,7 @@ describe('the GUI shell stderr diagnostics', () => {
       { stream: 'stdout', line: `stdout ${secret}` },
       { stream: 'stderr', line: `stderr ${secret}` },
     ]);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
       _chunk: unknown,
       callback: () => void,
@@ -187,7 +188,7 @@ describe('the GUI shell stderr diagnostics', () => {
       mode: 'non-interactive',
       overrides: { token: 'warningInput', warningInput: 'discarded' },
     });
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await expect(headlessRun(session, invocation(manifestPath))).resolves.toBe(0);
 
@@ -214,12 +215,14 @@ describe('the GUI shell stderr diagnostics', () => {
     vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new Error('runner rejected headless-secret'),
     );
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await expect(headlessRun(session, invocation(manifestPath))).resolves.toBe(70);
 
-    expect(stderr).toHaveBeenCalledWith('runner rejected ***\n');
-    expect(stderr.mock.calls.flat().join('')).not.toContain('headless-secret');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain('runner rejected ***\n');
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(
+      'headless-secret',
+    );
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
@@ -230,7 +233,7 @@ describe('the GUI shell stderr diagnostics', () => {
       mode: 'non-interactive',
       logFile: fixture.logPath,
     });
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await expect(
       headlessRun(session, {
@@ -258,7 +261,7 @@ describe('the GUI shell stderr diagnostics', () => {
       ],
     });
     expect(existsSync(fixture.sentinelPath)).toBe(false);
-    expect(stderr.mock.calls.flat().join('')).toContain('log file');
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain('log file');
   });
 
   it('shows one named and masked error when renderer execution rejects', async () => {
@@ -275,7 +278,7 @@ describe('the GUI shell stderr diagnostics', () => {
     vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new ExecutionError('RUNE-403', `cannot start ${secret}`),
     );
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
       if (execute === undefined) {
@@ -296,12 +299,12 @@ describe('the GUI shell stderr diagnostics', () => {
       'RUNE setup failed',
       'RUNE-403 (exit 1): cannot start ***',
     );
-    expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(secret);
   });
 
   it('preserves the plan topology when windowed log preparation fails', async () => {
     const fixture = blockedLogFixture('rune-shell-windowed-log-failure-');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
       if (execute === undefined) {
@@ -342,7 +345,7 @@ describe('the GUI shell stderr diagnostics', () => {
     });
     expect(existsSync(fixture.sentinelPath)).toBe(false);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
-    expect(stderr.mock.calls.flat().join('')).toContain('log file');
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain('log file');
   });
 
   it('delivers the terminal result after a windowed late log close failure', async () => {
@@ -400,7 +403,7 @@ describe('the GUI shell stderr diagnostics', () => {
       observer?.({ kind: 'runFinished', result: terminalResult });
       throw new ExecutionError('RUNE-406', 'the log close failed');
     });
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
       if (execute === undefined) {
@@ -439,7 +442,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const secret = 'windowed-secret';
     const blockedDirectory = join(dir, `blocked-${secret}`);
     writeFileSync(blockedDirectory, 'not a directory', 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
       if (execute === undefined) {
@@ -474,7 +477,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const blockedDirectory = join(dir, `blocked-${secret}`);
     const resultPath = join(blockedDirectory, 'cancelled.json');
     writeFileSync(blockedDirectory, 'not a directory', 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.closeDuringLoad = true;
 
     await expect(
@@ -499,7 +502,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const manifestPath = manifest(['inputs:', '  token:', '    type: secret', 'steps: []'], dir);
     const resultPath = join(dir, 'result.json');
     const secret = 'renderer-gone-secret';
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       electronHarness.emitRendererGone?.();
       electronHarness.emitRendererGone?.();
@@ -515,7 +518,7 @@ describe('the GUI shell stderr diagnostics', () => {
       'RUNE setup failed',
       expect.stringContaining('RUNE-500 (exit 70): the renderer process exited unexpectedly'),
     );
-    const diagnostics = stderr.mock.calls.flat().join('');
+    const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toContain('RUNE-500 (exit 70)');
     expect(diagnostics).not.toContain(secret);
   });
@@ -546,7 +549,7 @@ describe('the GUI shell stderr diagnostics', () => {
       cancelled.resolve();
     });
     vi.spyOn(Session, 'open').mockResolvedValue(session);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.onClosed = () => order.push('closed');
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');

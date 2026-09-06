@@ -39,6 +39,7 @@ import {
 
 import { parseShellArgv, type ShellInvocation } from './argv.js';
 import { project, projectEvent, projectPlan, projectResult, projectTheme } from './serialize.js';
+import { guardShellStreams, type ShellProcessStreams, type ShellStreams } from './streams.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -129,7 +130,10 @@ export function windowOptions(theme: Pick<ThemeConfig, 'logo'>): BrowserWindowCo
 export async function main(
   argv: readonly string[] = process.argv.slice(app.isPackaged ? 1 : 2),
   signals: SigtermSource = process,
+  processStreams: ShellProcessStreams = { stdout: process.stdout, stderr: process.stderr },
 ): Promise<void> {
+  // Install both error owners before argv parsing or Electron readiness can emit a diagnostic.
+  const output = guardShellStreams(processStreams);
   let exitCode: number;
   let invocation: ShellInvocation | undefined;
   let openingSession = false;
@@ -158,8 +162,8 @@ export async function main(
         activeSession = session;
 
         return parsedInvocation.nonInteractive
-          ? headlessRun(session, parsedInvocation, routedSignals)
-          : windowedRun(session, parsedInvocation, routedSignals, displayFatal);
+          ? headlessRun(session, parsedInvocation, routedSignals, output)
+          : windowedRun(session, parsedInvocation, routedSignals, displayFatal, output);
       },
       signals,
     );
@@ -171,15 +175,13 @@ export async function main(
       !(error instanceof UsageError) &&
       !(error instanceof PlatformError)
     ) {
-      process.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
-      const deliveryError = await deliverOpenFailure(error, invocation);
+      output.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
+      const deliveryError = await deliverOpenFailure(error, invocation, output);
       if (deliveryError === undefined) {
         displayFatal(error);
         exitCode = exitCodeFor(error);
       } else {
-        process.stderr.write(
-          `${deliveryError instanceof RuneError && deliveryError.code === 'RUNE-407' ? 'could not write the result file' : describeWindowedFatal(deliveryError, undefined)}\n`,
-        );
+        writeOpenDeliveryDiagnostic(deliveryError, output);
         displayFatal(deliveryError);
         exitCode = exitCodeFor(deliveryError);
       }
@@ -190,12 +192,14 @@ export async function main(
           : error instanceof Error
             ? error.message
             : String(error);
-      process.stderr.write(`${message}\n`);
+      output.stderr.write(`${message}\n`);
       displayFatal(error);
       exitCode = exitCodeFor(error);
     }
   }
-  app.exit(exitCode);
+  const effectiveExitCode = output.stdout.failed() ? 70 : exitCode;
+  output.dispose();
+  app.exit(effectiveExitCode);
 }
 
 async function openSession(invocation: ShellInvocation): Promise<Session> {
@@ -215,31 +219,41 @@ export function headlessRun(
   session: Session,
   invocation: ShellInvocation,
   signals: SigtermSource = process,
+  output?: ShellStreams,
 ): Promise<number> {
+  const ownedOutput =
+    output ?? guardShellStreams({ stdout: process.stdout, stderr: process.stderr });
   const cancel = new CancelToken();
-  return withSigtermHandler(
+  const run = withSigtermHandler(
     () => {
       // Preserve Session.cancel() as the public shell action (§9.4). The explicit token also
       // remembers a signal that arrived before execute() installed it on the Session.
       cancel.cancel();
       session.cancel();
     },
-    () => executeHeadless(session, invocation, cancel),
+    () => executeHeadless(session, invocation, cancel, ownedOutput),
     signals,
   );
+  if (output !== undefined) {
+    return run;
+  }
+  return run
+    .then((code) => (ownedOutput.stdout.failed() ? 70 : code))
+    .finally(() => ownedOutput.dispose());
 }
 
 async function executeHeadless(
   session: Session,
   invocation: ShellInvocation,
   cancel: CancelToken,
+  output: ShellStreams,
 ): Promise<number> {
   let plan: ExecutionPlan | undefined;
   let terminalResult: RunResult | undefined;
   let result: RunResult;
   try {
     plan = session.plan();
-    const progress = shellProgressObserver(session);
+    const progress = shellProgressObserver(session, output);
     result = await session.execute((event) => {
       if (event.kind === 'runFinished') {
         terminalResult = event.result;
@@ -247,19 +261,19 @@ async function executeHeadless(
       progress(event);
     }, cancel);
   } catch (error) {
-    return failWith(error, invocation, session, terminalResult, plan);
+    return failWith(error, invocation, session, output, terminalResult, plan);
   }
 
   for (const warning of session.warnings()) {
-    writeSessionDiagnostic(session, `warning: ${warning}`);
+    writeSessionDiagnostic(session, `warning: ${warning}`, output);
   }
   if (result.nothingExecuted) {
-    writeSessionDiagnostic(session, 'warning: nothing was executed');
+    writeSessionDiagnostic(session, 'warning: nothing was executed', output);
   }
   try {
-    await deliver(result, invocation);
+    await deliver(result, invocation, output);
   } catch (error) {
-    writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+    writeDeliveryDiagnostic(session, error, output);
     return error instanceof RuneError ? exitCodeFor(error) : 70;
   }
   return result.exitCode;
@@ -270,7 +284,11 @@ export async function windowedRun(
   invocation: ShellInvocation,
   signals: SigtermSource,
   displayFatal: (error: unknown, session?: Session) => void,
-  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = deliver,
+  output: ShellStreams = fallbackOutput(),
+  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = (
+    result,
+    target,
+  ) => deliver(result, target, output),
 ): Promise<number> {
   const window = new BrowserWindow(windowOptions(session.getThemeConfig()));
   window.once('ready-to-show', () => window.show());
@@ -296,6 +314,7 @@ export async function windowedRun(
   };
 
   registerBridge(session, {
+    output,
     events: window.webContents,
     onExecuteStart: () => {
       running = true;
@@ -311,7 +330,7 @@ export async function windowedRun(
         await deliverOutcome(result);
         outcome = result;
       } catch (error) {
-        writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+        writeDeliveryDiagnostic(session, error, output);
         fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
         displayFatal(error, session);
         throw error;
@@ -330,7 +349,15 @@ export async function windowedRun(
         window.close();
         return;
       }
-      fatalCode = await failWith(error, invocation, session, terminalResult, plan, deliverOutcome);
+      fatalCode = await failWith(
+        error,
+        invocation,
+        session,
+        output,
+        terminalResult,
+        plan,
+        deliverOutcome,
+      );
       displayFatal(error, session);
       window.close();
     },
@@ -350,7 +377,7 @@ export async function windowedRun(
     rendererGone = true;
     const error = new InternalError('the renderer process exited unexpectedly');
     fatalCode = exitCodeFor(error);
-    writeSessionDiagnostic(session, describeWindowedFatal(error, session));
+    writeSessionDiagnostic(session, describeWindowedFatal(error, session), output);
 
     if (running) {
       // Let the engine settle its cooperative cancellation before closing the host window.
@@ -387,7 +414,7 @@ export async function windowedRun(
           await deliverOutcome(cancelled);
           outcome = cancelled;
         } catch (error) {
-          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          writeDeliveryDiagnostic(session, error, output);
           fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
           displayFatal(error, session);
         } finally {
@@ -432,6 +459,7 @@ export async function windowedRun(
 export function registerBridge(
   session: Session,
   hooks: {
+    output?: ShellStreams;
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
     onExecuteEnd?: (result: RunResult) => void | Promise<void>;
@@ -445,6 +473,7 @@ export function registerBridge(
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
     ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
 ): void {
+  const output = hooks.output ?? fallbackOutput();
   const maskError = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
     register(channel, async (...args: unknown[]) => {
@@ -483,7 +512,7 @@ export function registerBridge(
     try {
       plan = session.plan();
       hooks.onExecuteStart?.();
-      const consoleObserver = shellProgressObserver(session);
+      const consoleObserver = shellProgressObserver(session, output);
       result = await session.execute((event: RunEvent) => {
         if (event.kind === 'runFinished') {
           // Session can publish the engine-owned failed terminal before rejecting when its
@@ -554,18 +583,19 @@ function showWindowedFatal(error: unknown, session: Session | undefined): void {
   }
 }
 
-async function deliver(result: RunResult, invocation: ShellInvocation): Promise<void> {
+class StdoutDeliveryError extends Error {}
+
+async function deliver(
+  result: RunResult,
+  invocation: ShellInvocation,
+  output: ShellStreams,
+): Promise<void> {
   if (invocation.result === '-') {
     // Headless result streams own stdout (§4.1, §10); everything else stays on stderr.
-    await new Promise<void>((resolve, reject) => {
-      process.stdout.write(serializeResult(result), (error?: Error | null) => {
-        if (error === undefined || error === null) {
-          resolve();
-        } else {
-          reject(error);
-        }
-      });
-    });
+    const outcome = await output.stdout.writeAndWait(serializeResult(result));
+    if (outcome === 'failed') {
+      throw new StdoutDeliveryError();
+    }
     return;
   }
   if (invocation.result !== undefined) {
@@ -576,6 +606,7 @@ async function deliver(result: RunResult, invocation: ShellInvocation): Promise<
 async function deliverOpenFailure(
   error: RuneError,
   invocation: ShellInvocation,
+  output: ShellStreams,
 ): Promise<unknown | undefined> {
   try {
     const result = createFailureResult({
@@ -584,7 +615,7 @@ async function deliverOpenFailure(
       dryRun: false,
       mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
     });
-    await deliver(result, invocation);
+    await deliver(result, invocation, output);
     return undefined;
   } catch (deliveryError) {
     return deliveryError;
@@ -595,15 +626,19 @@ async function failWith(
   error: unknown,
   invocation: ShellInvocation,
   session: Session,
+  output: ShellStreams,
   terminalResult?: RunResult,
   plan?: ExecutionPlan,
-  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = deliver,
+  deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = (
+    result,
+    target,
+  ) => deliver(result, target, output),
 ): Promise<number> {
   const failure =
     error instanceof RuneError
       ? error
       : new InternalError('an unexpected error escaped the shell run', { cause: error });
-  writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+  writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error), output);
 
   try {
     const result =
@@ -617,10 +652,7 @@ async function failWith(
       });
     await deliverResult(result, invocation);
   } catch (deliveryError) {
-    writeSessionDiagnostic(
-      session,
-      deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
-    );
+    writeDeliveryDiagnostic(session, deliveryError, output);
     return deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70;
   }
   return exitCodeFor(failure);
@@ -645,25 +677,30 @@ function describeCancelled(session: Session, invocation: ShellInvocation): RunRe
 }
 
 /** Writes one shell-owned diagnostic through the Session's authenticated terminal sink. */
-function writeSessionDiagnostic(session: Session, message: string): void {
-  process.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
+function writeSessionDiagnostic(session: Session, message: string, output: ShellStreams): void {
+  output.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
 }
 
 /** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
-function shellProgressObserver(session: Session): (event: RunEvent) => void {
+function shellProgressObserver(session: Session, output: ShellStreams): (event: RunEvent) => void {
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
         writeSessionDiagnostic(
           session,
           `running ${event.plan.steps.length} steps on ${event.plan.platform}`,
+          output,
         );
         break;
       case 'stepStarted':
-        writeSessionDiagnostic(session, `[${event.index + 1}/${event.total}] ${event.title}`);
+        writeSessionDiagnostic(
+          session,
+          `[${event.index + 1}/${event.total}] ${event.title}`,
+          output,
+        );
         break;
       case 'stepOutput':
-        writeSessionDiagnostic(session, `  ${event.line}`);
+        writeSessionDiagnostic(session, `  ${event.line}`, output);
         break;
       case 'stepFinished':
         writeSessionDiagnostic(
@@ -671,12 +708,36 @@ function shellProgressObserver(session: Session): (event: RunEvent) => void {
           `  -> ${event.state}` +
             (event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`) +
             ` after ${event.durationMs}ms`,
+          output,
         );
         break;
       case 'runFinished':
         break;
     }
   };
+}
+
+function writeDeliveryDiagnostic(session: Session, error: unknown, output: ShellStreams): void {
+  if (error instanceof StdoutDeliveryError) {
+    return;
+  }
+  writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error), output);
+}
+
+function writeOpenDeliveryDiagnostic(error: unknown, output: ShellStreams): void {
+  if (error instanceof StdoutDeliveryError) {
+    return;
+  }
+  output.stderr.write(
+    `${error instanceof RuneError && error.code === 'RUNE-407' ? 'could not write the result file' : describeWindowedFatal(error, undefined)}\n`,
+  );
+}
+
+let fallbackProcessOutput: ShellStreams | undefined;
+
+function fallbackOutput(): ShellStreams {
+  fallbackProcessOutput ??= guardShellStreams({ stdout: process.stdout, stderr: process.stderr });
+  return fallbackProcessOutput;
 }
 
 // Under vitest the module is imported for its exports; only Electron runs the app.

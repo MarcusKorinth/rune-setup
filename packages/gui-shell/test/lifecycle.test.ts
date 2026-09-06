@@ -106,6 +106,7 @@ import {
   type SigtermSource,
 } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
+import { completeWrite } from './stream-fixture.js';
 
 class FakeSigtermSource implements SigtermSource {
   readonly added: Array<{ signal: 'SIGTERM'; listener: () => void }> = [];
@@ -249,7 +250,7 @@ describe('the GUI shell SIGTERM lifecycle', () => {
       return result;
     });
     const cancel = vi.spyOn(Session.prototype, 'cancel');
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     const signals = new FakeSigtermSource();
     const invocation: ShellInvocation = {
       manifestPath,
@@ -316,7 +317,7 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     const ready = deferred<void>();
     vi.mocked(app.whenReady).mockReturnValue(ready.promise);
     const signals = new FakeSigtermSource();
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     const run = main([manifestPath, '--non-interactive', '--result', resultPath], signals);
 
@@ -364,27 +365,27 @@ describe('the GUI shell main lifecycle', () => {
   it('maps invalid argv to usage without waiting for Electron readiness', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-shell-usage-'));
     const resultPath = join(dir, 'result.json');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main(['installer.yaml', '--result', resultPath, '--unknown']);
 
     expect(app.whenReady).not.toHaveBeenCalled();
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(2);
-    expect(stderr).toHaveBeenCalledWith('unknown flag --unknown\n');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain('unknown flag --unknown\n');
     expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
   it('does not echo a malformed --set candidate in usage stderr', async () => {
     const candidate = 'distinctive-secret-candidate';
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main(['installer.yaml', '--set', candidate]);
 
     expect(app.whenReady).not.toHaveBeenCalled();
     expect(app.exit).toHaveBeenCalledWith(2);
-    const output = stderr.mock.calls.flat().join('');
+    const output = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(output).toBe('--set expects key=value\n');
     expect(output).not.toContain(candidate);
   });
@@ -392,7 +393,7 @@ describe('the GUI shell main lifecycle', () => {
   it('maps an unhandled readiness failure to one internal exit', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-shell-readiness-'));
     const resultPath = join(dir, 'result.json');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     vi.mocked(app.whenReady).mockRejectedValue(new Error('Electron readiness failed'));
 
     await main(['installer.yaml', '--result', resultPath]);
@@ -400,7 +401,9 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(70);
     expect(existsSync(resultPath)).toBe(false);
-    expect(stderr).toHaveBeenCalledWith('RUNE-500 (exit 70): The setup could not be started.\n');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+      'RUNE-500 (exit 70): The setup could not be started.\n',
+    );
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
       'RUNE setup failed',
@@ -409,7 +412,7 @@ describe('the GUI shell main lifecycle', () => {
   });
 
   it('maps a RuneError from readiness through the shared exit table', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     vi.mocked(app.whenReady).mockRejectedValue(
       new ManifestError('RUNE-101', 'the shell manifest is invalid'),
     );
@@ -418,7 +421,9 @@ describe('the GUI shell main lifecycle', () => {
 
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(3);
-    expect(stderr).toHaveBeenCalledWith('RUNE-101 (exit 3): The setup could not be started.\n');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+      'RUNE-101 (exit 3): The setup could not be started.\n',
+    );
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
       'RUNE setup failed',
@@ -431,14 +436,16 @@ describe('the GUI shell main lifecycle', () => {
     vi.spyOn(Session, 'open').mockRejectedValue(
       new ManifestError('RUNE-101', `the shell could not read ${secret}`),
     );
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main(['installer.yaml', '--set', `token=${secret}`]);
 
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(3);
-    expect(stderr).toHaveBeenCalledWith('RUNE-101 (exit 3): The setup could not be started.\n');
-    expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+      'RUNE-101 (exit 3): The setup could not be started.\n',
+    );
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(secret);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
       'RUNE setup failed',
@@ -451,7 +458,7 @@ describe('the GUI shell main lifecycle', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-windowed-open-failure-'));
     const manifestPath = join(dir, 'missing-installer.yaml');
     const resultPath = join(dir, 'result.json');
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--result', resultPath]);
 
@@ -488,7 +495,7 @@ describe('the GUI shell main lifecycle', () => {
       ].join('\n'),
       'utf8',
     );
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--non-interactive', '--result', resultPath]);
 
@@ -524,7 +531,7 @@ describe('the GUI shell main lifecycle', () => {
       'utf8',
     );
     writeFileSync(valuesPath, `${candidate}: value\n`, 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--values', valuesPath, '--result', resultPath]);
 
@@ -535,7 +542,7 @@ describe('the GUI shell main lifecycle', () => {
       mode: 'gui',
       product: { name: 'Values failure', version: '1.0.0' },
     });
-    expect(stderr.mock.calls.flat().join('')).not.toContain(candidate);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(candidate);
     expect(vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')).not.toContain(candidate);
   });
 
@@ -549,7 +556,7 @@ describe('the GUI shell main lifecycle', () => {
       callback();
       return true;
     }) as typeof process.stdout.write);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--non-interactive', '--result', '-']);
 
@@ -570,13 +577,13 @@ describe('the GUI shell main lifecycle', () => {
     const blockedDirectory = join(dir, 'blocked-parent');
     const resultPath = join(blockedDirectory, 'result.json');
     writeFileSync(blockedDirectory, 'occupied', 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--result', resultPath]);
 
     expect(app.exit).toHaveBeenCalledWith(1);
     expect(existsSync(resultPath)).toBe(false);
-    const diagnostic = stderr.mock.calls.flat().join('');
+    const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostic).toContain('RUNE-101 (exit 3): The setup could not be started.');
     expect(diagnostic).toContain('could not write the result file');
     expect(diagnostic).not.toContain(resultPath);
@@ -591,7 +598,7 @@ describe('the GUI shell main lifecycle', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-platform-open-failure-'));
     const resultPath = join(dir, 'result.json');
     vi.spyOn(Session, 'open').mockRejectedValue(new PlatformError('unsupported host'));
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main(['installer.yaml', '--non-interactive', '--result', resultPath]);
 
@@ -603,13 +610,15 @@ describe('the GUI shell main lifecycle', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-crashed-open-'));
     const resultPath = join(dir, 'result.json');
     vi.spyOn(Session, 'open').mockRejectedValue(new Error('Session.open crashed'));
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main(['installer.yaml', '--non-interactive', '--result', resultPath]);
 
     expect(app.exit).toHaveBeenCalledWith(70);
     expect(existsSync(resultPath)).toBe(false);
-    expect(stderr).toHaveBeenCalledWith('RUNE-500 (exit 70): The setup could not be started.\n');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
+      'RUNE-500 (exit 70): The setup could not be started.\n',
+    );
   });
 
   it('writes one serialized headless result to stdout for --result -', async () => {
@@ -637,7 +646,7 @@ describe('the GUI shell main lifecycle', () => {
       callback();
       return true;
     }) as typeof process.stdout.write);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--result', '-', '--non-interactive']);
 
@@ -669,8 +678,8 @@ describe('the GUI shell main lifecycle', () => {
       ].join('\n'),
       'utf8',
     );
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(completeWrite);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await main([manifestPath, '--non-interactive', '--result', resultPath]);
 
@@ -726,7 +735,7 @@ describe('windowed result delivery', () => {
     };
 
     await expect(
-      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), undefined, deliverResult),
     ).resolves.toBe(0);
     expect(deliverResult).toHaveBeenCalledOnce();
     expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
@@ -758,7 +767,7 @@ describe('windowed result delivery', () => {
     };
 
     await expect(
-      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), undefined, deliverResult),
     ).resolves.toBe(0);
     expect(deliverResult).toHaveBeenCalledOnce();
     expect(electronHarness.closed).toBe(true);
@@ -774,13 +783,20 @@ describe('windowed result delivery', () => {
     const failedInvocation = { ...invocation, result: resultPath };
     const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
     const displayFatal = vi.fn();
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-407');
     };
 
     await expect(
-      windowedRun(session, failedInvocation, new FakeSigtermSource(), displayFatal, deliverResult),
+      windowedRun(
+        session,
+        failedInvocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
     ).resolves.toBe(1);
     expect(deliverResult).toHaveBeenCalledOnce();
     expect(displayFatal).toHaveBeenCalledOnce();
@@ -788,7 +804,7 @@ describe('windowed result delivery', () => {
       expect.objectContaining({ code: 'RUNE-407' }),
       session,
     );
-    expect(stderr.mock.calls.flat().join('')).toContain('blocked-parent');
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain('blocked-parent');
     expect(existsSync(resultPath)).toBe(false);
   });
 
@@ -806,7 +822,7 @@ describe('windowed result delivery', () => {
       await releaseDelivery.promise;
       await writeResult(result, resultPath);
     });
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execution = Promise.resolve(bridgeHandler('rune:execute')());
       await deliveryStarted.promise;
@@ -821,7 +837,7 @@ describe('windowed result delivery', () => {
     };
 
     await expect(
-      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), deliverResult),
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), undefined, deliverResult),
     ).resolves.toBe(4);
     expect(deliverResult).toHaveBeenCalledOnce();
     expect(electronHarness.closed).toBe(true);

@@ -22,6 +22,7 @@ vi.mock('electron', () => ({
 
 import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
 import type { BridgeEvent, BridgeInput, BridgePlan } from '../src/preload/types.js';
+import { completeWrite } from './stream-fixture.js';
 
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-'));
@@ -241,7 +242,7 @@ describe('the IPC bridge', () => {
   });
 
   it('does not route a rejected execute completion through the engine failure hook', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
@@ -676,7 +677,7 @@ describe('the IPC bridge', () => {
   });
 
   it('pushes every run event through the serializer, pre-masked', async () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
