@@ -180,7 +180,7 @@ export interface BridgeStep {
   readonly durationMs: number;
   readonly command: readonly string[] | null;
   readonly skipReason: string | null;
-  readonly outputTail: readonly { readonly stream: BridgeStream; readonly line: string }[] | null;
+  readonly outputTail?: readonly { readonly stream: BridgeStream; readonly line: string }[];
 }
 
 export interface BridgeResultInput {
@@ -190,7 +190,7 @@ export interface BridgeResultInput {
   readonly source: BridgeValueSource | null;
   readonly secret: boolean;
   readonly enabled: boolean;
-  readonly ignored: 'input disabled' | null;
+  readonly ignored?: 'input disabled';
 }
 
 export type BridgeRunStatus =
