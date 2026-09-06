@@ -100,12 +100,12 @@ rune run installer.yaml --non-interactive --values pipeline-values.yaml --result
 
 ## The graphical wizard shell (Milestone 3)
 
-The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
-on the target machine, runs without admin rights, and looks identical on every platform
-because it ships its own rendering engine. Its main process hosts the RUNE engine
-in-process; its window is a pure renderer that reaches the engine only through an IPC
-bridge — all planning, validation and execution happen in the engine, exactly as in the
-two CLI modes.
+The repository currently provides an Electron development shell for the wizard. Its main
+process hosts the RUNE engine in-process; its window is a pure renderer that reaches the
+engine only through an IPC bridge — all planning, validation and execution happen in the
+engine, exactly as in the two CLI modes. A planned packaging target is a self-contained
+end-user artifact that needs nothing installed, runs without admin rights, and renders
+identically on every platform because it ships its own rendering engine.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
