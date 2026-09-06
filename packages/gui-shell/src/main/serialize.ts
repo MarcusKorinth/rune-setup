@@ -8,22 +8,9 @@
 
 import { pathToFileURL } from 'node:url';
 
-import type {
-  ExecutionPlan,
-  ResolvedCommand,
-  RunEvent,
-  RunResult,
-  ThemeConfig,
-} from '@rune/engine';
+import type { ExecutionPlan, RunEvent, RunResult, ThemeConfig } from '@rune/engine';
 
-import type {
-  BridgeEvent,
-  BridgePlan,
-  BridgePlannedCommand,
-  BridgePlannedStep,
-  BridgeResult,
-  BridgeTheme,
-} from '../preload/types.js';
+import type { BridgeEvent, BridgePlan, BridgeResult, BridgeTheme } from '../preload/types.js';
 
 export function project<T>(value: T): unknown {
   if (value === undefined) {
@@ -32,36 +19,9 @@ export function project<T>(value: T): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
-/** Projects the current bridge plan shape; SecretString.toJSON() supplies its literal mask. */
+/** Projects the complete ExecutionPlan; SecretString.toJSON() supplies its literal mask. */
 export function projectPlan(plan: ExecutionPlan): BridgePlan {
-  const projected: BridgePlan = {
-    manifestPath: plan.manifestPath,
-    locale: plan.locale,
-    platform: plan.platform,
-    preview: plan.preview,
-    failFast: plan.executionOptions.failFast,
-    ...(plan.executionOptions.logFile === undefined
-      ? {}
-      : { logFile: plan.executionOptions.logFile }),
-    steps: plan.steps.map((step): BridgePlannedStep => {
-      if (step.state === 'SKIPPED') {
-        return {
-          id: step.id,
-          title: step.title,
-          state: step.state,
-          skipReason: step.skipReason,
-        };
-      }
-      return {
-        id: step.id,
-        title: step.title,
-        state: step.state,
-        command: projectCommand(step.command),
-      };
-    }),
-  };
-
-  return project(projected) as BridgePlan;
+  return project(plan) as BridgePlan;
 }
 
 /** Projects one run event, routing its plan through the same masked plan contract. */
@@ -95,8 +55,4 @@ export function projectTheme(theme: ThemeConfig): BridgeTheme {
     ...(theme.theme === undefined ? {} : { theme: fileUrl(theme.theme) }),
     ...(theme.windowTitle === undefined ? {} : { windowTitle: theme.windowTitle }),
   };
-}
-
-function projectCommand(command: ResolvedCommand): BridgePlannedCommand {
-  return project(command) as BridgePlannedCommand;
 }

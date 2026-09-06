@@ -113,13 +113,35 @@ export type BridgeInput =
 
 /** JSON-safe projection of the frozen ExecutionPlan returned by Session.plan(). */
 export interface BridgePlan {
+  readonly planSchemaVersion: 1;
   readonly manifestPath: string;
+  readonly manifestSha256: string;
   readonly locale: string | null;
   readonly platform: 'windows' | 'linux';
   readonly preview: boolean;
-  readonly failFast: boolean;
-  readonly logFile?: string;
+  readonly resolvedInputs: readonly BridgePlanInput[];
+  readonly executionOptions: BridgePlanExecutionOptions;
   readonly steps: readonly BridgePlannedStep[];
+}
+
+/** JSON-safe final input state from the static execution plan. */
+export interface BridgePlanInput {
+  readonly id: string;
+  /** SecretString serializes to the literal mask `***`. */
+  readonly value: string | boolean | readonly string[];
+  /** Omitted when no source supplied the input. */
+  readonly source?: BridgeValueSource;
+  readonly secret: boolean;
+  readonly enabled: boolean;
+  /** Omitted unless a supplied value was discarded for a disabled input. */
+  readonly ignored?: BridgeValueSource;
+}
+
+/** JSON-safe execution settings captured in the static plan. */
+export interface BridgePlanExecutionOptions {
+  readonly failFast: boolean;
+  /** Omitted when the manifest and invocation specify no log file. */
+  readonly logFile?: string;
 }
 
 export type BridgePlannedStep =

@@ -520,8 +520,9 @@ describe('the IPC bridge', () => {
     const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'gui',
-      overrides: { token: 'super-secret-value' },
+      overrides: { token: 'super-secret-value', databasePort: '5432' },
     });
+    const expected = JSON.parse(JSON.stringify(session.plan())) as unknown;
     const planSpy = vi.spyOn(Session.prototype, 'plan');
     const describeSpy = vi.spyOn(Session.prototype, 'describe');
     const bridge = await bridgeOver(session);
@@ -533,10 +534,36 @@ describe('the IPC bridge', () => {
 
     expect(planSpy).toHaveBeenCalledTimes(1);
     expect(describeSpy).not.toHaveBeenCalled();
+    expect(plan).toEqual(expected);
     expect(plan).toMatchObject({
+      planSchemaVersion: 1,
       manifestPath,
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       preview: false,
-      failFast: true,
+      executionOptions: { failFast: true },
+      resolvedInputs: [
+        {
+          id: 'installDatabase',
+          value: false,
+          source: 'default',
+          secret: false,
+          enabled: true,
+        },
+        {
+          id: 'databasePort',
+          value: '',
+          secret: false,
+          enabled: false,
+          ignored: 'set',
+        },
+        {
+          id: 'token',
+          value: '***',
+          source: 'set',
+          secret: true,
+          enabled: true,
+        },
+      ],
       steps: [
         {
           id: 'use',
@@ -635,6 +662,7 @@ describe('the IPC bridge', () => {
     });
     const bridge = await bridgeOver(session);
     const plan = (await bridge.call('rune:plan')) as BridgePlan;
+    const expectedPlan = JSON.parse(JSON.stringify(rawPlan)) as unknown;
 
     const result = (await bridge.call('rune:execute')) as { status: string; mode: string };
 
@@ -649,6 +677,8 @@ describe('the IPC bridge', () => {
     if (started?.kind !== 'runStarted') {
       throw new Error('the first event was not runStarted');
     }
+    expect(plan).toEqual(expectedPlan);
+    expect(started.plan).toEqual(expectedPlan);
     const use = started.plan.steps[0];
     if (use?.state !== 'PENDING') {
       throw new Error('the first planned step was not pending');

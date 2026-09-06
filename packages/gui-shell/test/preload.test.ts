@@ -78,11 +78,14 @@ describe('the preload bridge', () => {
     const runStarted = {
       kind: 'runStarted',
       plan: {
+        planSchemaVersion: 1,
         manifestPath: 'installer.yaml',
+        manifestSha256: 'a'.repeat(64),
         locale: null,
         platform: 'linux',
         preview: false,
-        failFast: true,
+        resolvedInputs: [],
+        executionOptions: { failFast: true },
         steps: [],
       },
     } satisfies BridgeEvent;
