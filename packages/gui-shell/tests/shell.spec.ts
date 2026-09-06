@@ -29,6 +29,8 @@ const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'render
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
 
 interface SummaryTestControl {
+  cancelCount(): number;
+  executeCount(): number;
   planCount(): number;
   resolvePlan(index: number, title: string): void;
   warningCount(): number;
@@ -274,6 +276,142 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps Cancel authoritative over a same-task Install click', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const back = page.locator('#back');
+    const cancel = page.locator('#cancel');
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'ready plan'),
+    );
+    await expect(install).toBeEnabled();
+
+    await page.evaluate(() => {
+      const cancelButton = document.querySelector('#cancel');
+      const installButton = document.querySelector('#next');
+      if (
+        !(cancelButton instanceof HTMLButtonElement) ||
+        !(installButton instanceof HTMLButtonElement)
+      ) {
+        throw new Error('wizard controls did not render');
+      }
+      cancelButton.click();
+      installButton.click();
+    });
+
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.cancelCount(),
+      ),
+    ).toBe(1);
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.executeCount(),
+      ),
+    ).toBe(0);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps a cancelled pending Summary disabled after its plan completes', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const back = page.locator('#back');
+    const cancel = page.locator('#cancel');
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await cancel.click();
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'late plan'),
+    );
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolveFrame) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()));
+        }),
+    );
+    await expect(page.locator('.summary-step')).toHaveCount(0);
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+    await page.evaluate(() => {
+      const installButton = document.querySelector('#next');
+      if (!(installButton instanceof HTMLButtonElement)) {
+        throw new Error('Install did not render');
+      }
+      installButton.click();
+    });
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.cancelCount(),
+      ),
+    ).toBe(1);
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.executeCount(),
+      ),
+    ).toBe(0);
   } finally {
     await application?.close();
   }

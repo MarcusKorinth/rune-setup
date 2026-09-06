@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CancelledError,
   ExecutionError,
   InputError,
   RuneError,
@@ -378,7 +379,42 @@ describe('the IPC bridge', () => {
     expect(errors[0]?.plan).toBeUndefined();
     expect(plan).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
-    expect(onExecuteStart).not.toHaveBeenCalled();
+    expect(onExecuteStart).toHaveBeenCalledOnce();
+    plan.mockRestore();
+    execute.mockRestore();
+  });
+
+  it('denies execute admission before planning without entering failure delivery', async () => {
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: 'super-secret-value' },
+    });
+    const plan = vi.spyOn(Session.prototype, 'plan');
+    const execute = vi.spyOn(Session.prototype, 'execute');
+    const onExecuteStart = vi.fn(() => {
+      throw new CancelledError();
+    });
+    const onExecuteError = vi.fn();
+    const onExecuteEnd = vi.fn();
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerBridge(
+      session,
+      {
+        events: { send: () => undefined },
+        onExecuteStart,
+        onExecuteError,
+        onExecuteEnd,
+      },
+      (channel, handler) => handlers.set(channel, handler),
+    );
+
+    await expect(handlers.get('rune:execute')?.()).rejects.toThrow('RUNE-601 (exit 6)');
+    expect(onExecuteStart).toHaveBeenCalledOnce();
+    expect(plan).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(onExecuteError).not.toHaveBeenCalled();
+    expect(onExecuteEnd).not.toHaveBeenCalled();
     plan.mockRestore();
     execute.mockRestore();
   });

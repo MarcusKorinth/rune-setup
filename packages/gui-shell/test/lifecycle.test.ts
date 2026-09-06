@@ -1042,6 +1042,62 @@ describe('the GUI shell native window', () => {
 });
 
 describe('windowed result delivery', () => {
+  it.each(['renderer Cancel', 'native close'] as const)(
+    'denies Execute after %s starts pre-Proceed cancelled delivery',
+    async (trigger) => {
+      const { invocation, resultPath, session } = await windowedFixture(
+        ['inputs: {}'],
+        ['steps:', '  - id: must-not-run', '    run:', '      command: must-not-run'],
+      );
+      const execute = vi.spyOn(Session.prototype, 'execute');
+      const deliveryStarted = deferred<void>();
+      const releaseDelivery = deferred<void>();
+      const deliverResult = vi.fn(async (result: RunResult) => {
+        deliveryStarted.resolve();
+        await releaseDelivery.promise;
+        await writeResult(result, resultPath);
+      });
+      const displayFatal = vi.fn();
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+      electronHarness.duringLoad = async () => {
+        if (trigger === 'renderer Cancel') {
+          await bridgeHandler('rune:cancel')();
+        } else {
+          electronHarness.window?.close();
+        }
+        await deliveryStarted.promise;
+        expect(existsSync(resultPath)).toBe(false);
+
+        await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow(
+          'RUNE-601 (exit 6)',
+        );
+        expect(execute).not.toHaveBeenCalled();
+
+        releaseDelivery.resolve();
+      };
+
+      await expect(
+        windowedRun(
+          session,
+          invocation,
+          new FakeSigtermSource(),
+          displayFatal,
+          undefined,
+          deliverResult,
+        ),
+      ).resolves.toBe(6);
+      expect(deliverResult).toHaveBeenCalledOnce();
+      expect(displayFatal).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+        status: 'cancelled',
+        exitCode: 6,
+        mode: 'gui',
+      });
+    },
+  );
+
   it('routes renderer cancellation through native close and waits for result delivery', async () => {
     const { invocation, resultPath, session } = await windowedFixture();
     const plan = session.plan();
@@ -1588,7 +1644,10 @@ function bridgeHandler(channel: string): (...args: unknown[]) => unknown {
   return handler;
 }
 
-async function windowedFixture(inputLines: readonly string[] = ['inputs: {}']): Promise<{
+async function windowedFixture(
+  inputLines: readonly string[] = ['inputs: {}'],
+  steps: readonly string[] = ['steps: []'],
+): Promise<{
   directory: string;
   invocation: ShellInvocation;
   resultPath: string;
@@ -1605,12 +1664,15 @@ async function windowedFixture(inputLines: readonly string[] = ['inputs: {}']): 
       '  name: Windowed delivery',
       '  version: 1.0.0',
       ...inputLines,
-      'steps: []',
+      ...steps,
       '',
     ].join('\n'),
     'utf8',
   );
-  const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+  const session = await Session.open(manifestPath, {
+    environment: {},
+    mode: 'gui',
+  });
   return {
     directory,
     invocation: {

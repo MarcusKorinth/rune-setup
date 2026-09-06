@@ -359,6 +359,9 @@ export async function windowedRun(
     output,
     events: window.webContents,
     onExecuteStart: () => {
+      if (closeRequested || closeFinalizing) {
+        throw new CancelledError();
+      }
       running = true;
     },
     onExecuteEnd: async (result) => {
@@ -629,12 +632,12 @@ export function registerBridge(
     return undefined;
   });
   handle('rune:execute', async () => {
+    hooks.onExecuteStart?.();
     let plan: ExecutionPlan | undefined;
     let terminalResult: RunResult | undefined;
     let result: RunResult;
     try {
       plan = session.plan();
-      hooks.onExecuteStart?.();
       const consoleObserver = shellProgressObserver(session, output);
       result = await session.execute((event: RunEvent) => {
         if (event.kind === 'runFinished') {

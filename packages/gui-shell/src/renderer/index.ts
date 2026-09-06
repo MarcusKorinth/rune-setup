@@ -84,6 +84,8 @@ let pendingInputSubmissions = 0;
 let forwardRequested = false;
 /** Keeps Summary navigation closed while Back refreshes plan-masked renderer state. */
 let summaryBackPending = false;
+/** Latches the renderer closed to navigation as soon as Cancel is accepted locally. */
+let closing = false;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -159,6 +161,12 @@ async function boot(): Promise<void> {
     }
   });
   el.cancel.addEventListener('click', () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    forwardRequested = false;
+    renderFooter();
     void window.rune.cancel();
   });
 
@@ -167,6 +175,9 @@ async function boot(): Promise<void> {
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
+  if (closing) {
+    return;
+  }
   if (direction === -1) {
     forwardRequested = false;
   }
@@ -275,6 +286,11 @@ function renderFooter(): void {
   } else {
     el.next.textContent = text('rune.button.next');
     el.next.disabled = !currentPageComplete();
+  }
+  if (closing) {
+    el.back.disabled = true;
+    el.next.disabled = true;
+    el.cancel.disabled = true;
   }
 }
 
@@ -577,7 +593,7 @@ function messageOf(error: unknown): string {
 }
 
 function isCurrentSummary(version: number): boolean {
-  return state.page === 'summary' && renderVersion === version && !summaryBackPending;
+  return state.page === 'summary' && renderVersion === version && !summaryBackPending && !closing;
 }
 
 async function renderSummary(version: number): Promise<void> {

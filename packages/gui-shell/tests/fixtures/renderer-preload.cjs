@@ -4,6 +4,8 @@ const pendingPlans = [];
 const pendingWarnings = [];
 let eventListener;
 let doneCount = 0;
+let cancelCount = 0;
+let executeCount = 0;
 
 function plan(title) {
   return {
@@ -58,8 +60,13 @@ contextBridge.exposeInMainWorld('rune', {
     new Promise((resolve) => {
       pendingPlans.push(resolve);
     }),
-  execute: async () => result(),
-  cancel: async () => undefined,
+  execute: async () => {
+    executeCount += 1;
+    return result();
+  },
+  cancel: async () => {
+    cancelCount += 1;
+  },
   getStrings: async () => ({
     locale: null,
     entries: {
@@ -99,6 +106,8 @@ contextBridge.exposeInMainWorld('rune', {
 });
 
 contextBridge.exposeInMainWorld('summaryTestControl', {
+  cancelCount: () => cancelCount,
+  executeCount: () => executeCount,
   planCount: () => pendingPlans.length,
   resolvePlan: (index, title) => {
     const resolve = pendingPlans[index];
