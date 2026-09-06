@@ -10,9 +10,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type * as Fs from 'node:fs';
 
@@ -50,6 +49,7 @@ beforeEach(() => {
   process.env['RUNE_GUI_SHELL'] = join(testDirectory, shellBinary);
   tarExit = 0;
   tarCreatesShell = true;
+  spawnMock.mockReset();
   spawnMock.mockImplementation((_command, args) => {
     const child = new EventEmitter();
     queueMicrotask(() => {
@@ -147,6 +147,25 @@ function waitingProcess(
   child.pid = pid;
   child.kill = vi.fn();
   return child;
+}
+
+function developmentShell(): { readonly directory: string; readonly electron: string } {
+  const directory = join(testDirectory, 'development-shell');
+  const electronPackage = join(directory, 'node_modules', 'electron');
+  const electron = join(testDirectory, 'fake-electron');
+  mkdirSync(electronPackage, { recursive: true });
+  writeFileSync(join(directory, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+  writeFileSync(
+    join(electronPackage, 'package.json'),
+    JSON.stringify({ name: 'electron', version: '0.0.0', main: 'index.cjs' }),
+    'utf8',
+  );
+  writeFileSync(
+    join(electronPackage, 'index.cjs'),
+    `module.exports = ${JSON.stringify(electron)};\n`,
+    'utf8',
+  );
+  return { directory, electron };
 }
 
 function downloadedArchive(): string {
@@ -367,7 +386,7 @@ describe('rune run --gui shell version handshake', () => {
   });
 
   it('probes and launches a development-directory shell through its Electron', async () => {
-    const shellDirectory = join(process.cwd(), 'packages', 'gui-shell');
+    const { directory: shellDirectory, electron } = developmentShell();
     process.env['RUNE_GUI_SHELL'] = shellDirectory;
     spawnMock
       .mockImplementationOnce(() =>
@@ -377,7 +396,6 @@ describe('rune run --gui shell version handshake', () => {
 
     await launchGui('installer.yaml', {}, capture(), interaction);
 
-    const electron = createRequire(join(shellDirectory, 'package.json'))('electron') as string;
     expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
@@ -385,8 +403,8 @@ describe('rune run --gui shell version handshake', () => {
   });
 
   it('normalizes a relative development-directory shell before probing and launching', async () => {
-    const relativeShellDirectory = join('packages', 'gui-shell');
-    const shellDirectory = join(process.cwd(), relativeShellDirectory);
+    const { directory: shellDirectory, electron } = developmentShell();
+    const relativeShellDirectory = relative(process.cwd(), shellDirectory);
     process.env['RUNE_GUI_SHELL'] = relativeShellDirectory;
     expect(locateShell()).toEqual({ kind: 'dev', dir: shellDirectory });
     spawnMock
@@ -397,7 +415,6 @@ describe('rune run --gui shell version handshake', () => {
 
     await launchGui('installer.yaml', {}, capture(), interaction);
 
-    const electron = createRequire(join(shellDirectory, 'package.json'))('electron') as string;
     expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([shellDirectory, '--rune-version-probe']);
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
