@@ -372,7 +372,7 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.whenReady).not.toHaveBeenCalled();
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(2);
-    expect(stderr.mock.calls.map(([text]) => String(text))).toContain('unknown flag --unknown\n');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain('unknown flag\n');
     expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
@@ -389,6 +389,21 @@ describe('the GUI shell main lifecycle', () => {
     expect(output).toBe('--set expects key=value\n');
     expect(output).not.toContain(candidate);
   });
+
+  it.each(['--set=token=distinctive-secret-candidate', '--unknown=distinctive-secret-candidate'])(
+    'does not echo values embedded in an unknown flag: %s',
+    async (argument) => {
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+      await main(['installer.yaml', argument]);
+
+      expect(app.whenReady).not.toHaveBeenCalled();
+      expect(app.exit).toHaveBeenCalledWith(2);
+      const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+      expect(output).toBe('unknown flag\n');
+      expect(output).not.toContain('distinctive-secret-candidate');
+    },
+  );
 
   it('maps an unhandled readiness failure to one internal exit', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-shell-readiness-'));

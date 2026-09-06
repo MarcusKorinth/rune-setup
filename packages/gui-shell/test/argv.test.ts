@@ -82,7 +82,9 @@ describe('parseShellArgv', () => {
   });
 
   it.each([
-    [['--unknown'], 'unknown flag --unknown'],
+    [['--unknown'], 'unknown flag'],
+    [['--set=token=distinctive-secret-candidate'], 'unknown flag'],
+    [['--unknown=distinctive-secret-candidate'], 'unknown flag'],
     [['--set'], '--set expects a value'],
     [['--values'], '--values expects a value'],
     [['--locale'], '--locale expects a value'],

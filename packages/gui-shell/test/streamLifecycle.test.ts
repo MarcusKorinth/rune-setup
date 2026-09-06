@@ -147,7 +147,7 @@ describe('the GUI shell stream contract', () => {
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(2);
     expect(stdout.text()).toBe('');
-    expect(stderr.attempts).toEqual(['unknown flag --unknown\n']);
+    expect(stderr.attempts).toEqual(['unknown flag\n']);
     expect(stderr.stream.listenerCount('error')).toBe(1);
 
     await listenersDrained();
