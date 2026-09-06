@@ -191,6 +191,8 @@ async function navigate(direction: 1 | -1): Promise<void> {
     }
   } else if (state.page === 'summary') {
     if (direction === -1) {
+      await refreshStringsAndWindowTitle();
+      await refreshInputs();
       state.page = state.inputs.length > 0 ? 'inputs' : 'welcome';
       state.pageIndex = Math.max(0, state.inputPages - 1);
     } else {
@@ -453,8 +455,10 @@ async function submit(id: string, raw: unknown): Promise<void> {
   pendingInputSubmissions += 1;
   renderFooter();
   try {
+    let accepted = false;
     try {
       await window.rune.setValue(id, raw);
+      accepted = true;
       state.invalid.delete(id);
       state.drafts.delete(id);
     } catch (error) {
@@ -463,6 +467,9 @@ async function submit(id: string, raw: unknown): Promise<void> {
       if (typeof raw === 'string') {
         state.drafts.set(id, raw);
       }
+    }
+    if (accepted) {
+      await refreshStringsAndWindowTitle();
     }
     await refreshInputs();
   } finally {
@@ -477,6 +484,14 @@ async function submit(id: string, raw: unknown): Promise<void> {
       forwardRequested = false;
       await navigate(1);
     }
+  }
+}
+
+async function refreshStringsAndWindowTitle(): Promise<void> {
+  state.strings = await window.rune.getStrings();
+  const theme = await window.rune.getThemeConfig();
+  if (theme.windowTitle !== undefined) {
+    document.title = theme.windowTitle;
   }
 }
 
@@ -543,6 +558,12 @@ async function renderSummary(version: number): Promise<void> {
   if (!isCurrentSummary(version)) {
     return;
   }
+  await refreshStringsAndWindowTitle();
+  await refreshInputs();
+  if (!isCurrentSummary(version)) {
+    return;
+  }
+  heading.textContent = text('rune.page.summary.title');
   state.planFailed = false;
   renderFooter();
   for (const step of plan.steps) {
