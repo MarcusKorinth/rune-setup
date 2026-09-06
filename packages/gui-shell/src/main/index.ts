@@ -31,6 +31,7 @@ import {
   formatSessionTerminalLine,
   serializeResult,
   writeResult,
+  type ExecutionPlan,
   type RunEvent,
   type RunResult,
   type ThemeConfig,
@@ -233,9 +234,11 @@ async function executeHeadless(
   invocation: ShellInvocation,
   cancel: CancelToken,
 ): Promise<number> {
+  let plan: ExecutionPlan | undefined;
   let terminalResult: RunResult | undefined;
   let result: RunResult;
   try {
+    plan = session.plan();
     const progress = shellProgressObserver(session);
     result = await session.execute((event) => {
       if (event.kind === 'runFinished') {
@@ -244,7 +247,7 @@ async function executeHeadless(
       progress(event);
     }, cancel);
   } catch (error) {
-    return failWith(error, invocation, session, terminalResult);
+    return failWith(error, invocation, session, terminalResult, plan);
   }
 
   for (const warning of session.warnings()) {
@@ -311,7 +314,7 @@ async function windowedRun(
         window.close();
       }
     },
-    onExecuteError: async (error) => {
+    onExecuteError: async (error, plan) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
       if (rendererGone) {
@@ -319,7 +322,7 @@ async function windowedRun(
         window.close();
         return;
       }
-      fatalCode = await failWith(error, invocation, session);
+      fatalCode = await failWith(error, invocation, session, undefined, plan);
       displayFatal(error, session);
       window.close();
     },
@@ -426,7 +429,7 @@ export function registerBridge(
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
     onExecuteEnd?: (result: RunResult) => void | Promise<void>;
-    onExecuteError?: (error: unknown) => void | Promise<void>;
+    onExecuteError?: (error: unknown, plan?: ExecutionPlan) => void | Promise<void>;
     onRendererDone?: () => void | Promise<void>;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
@@ -464,8 +467,10 @@ export function registerBridge(
     return undefined;
   });
   handle('rune:execute', async () => {
-    hooks.onExecuteStart?.();
+    let plan: ExecutionPlan | undefined;
     try {
+      plan = session.plan();
+      hooks.onExecuteStart?.();
       const consoleObserver = shellProgressObserver(session);
       const result = await session.execute((event: RunEvent) => {
         // Keep the terminal sink independent of renderer delivery. The engine owns the
@@ -479,7 +484,7 @@ export function registerBridge(
       await hooks.onExecuteEnd?.(result);
       return projectResult(result);
     } catch (error) {
-      await hooks.onExecuteError?.(error);
+      await hooks.onExecuteError?.(error, plan);
       throw error;
     }
   });
@@ -572,6 +577,7 @@ async function failWith(
   invocation: ShellInvocation,
   session: Session,
   terminalResult?: RunResult,
+  plan?: ExecutionPlan,
 ): Promise<number> {
   const failure =
     error instanceof RuneError
@@ -587,6 +593,7 @@ async function failWith(
         manifestPath: invocation.manifestPath,
         dryRun: false,
         session,
+        ...(plan === undefined ? {} : { plan }),
       });
     await deliver(result, invocation);
   } catch (deliveryError) {

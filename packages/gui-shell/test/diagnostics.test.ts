@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -219,6 +219,44 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
+  it('preserves the plan topology when headless log preparation fails', async () => {
+    const fixture = blockedLogFixture('rune-shell-headless-log-failure-');
+    const session = await Session.open(fixture.manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      logFile: fixture.logPath,
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await expect(
+      headlessRun(session, {
+        ...invocation(fixture.manifestPath),
+        result: fixture.resultPath,
+        logFile: fixture.logPath,
+      }),
+    ).resolves.toBe(1);
+
+    expect(JSON.parse(readFileSync(fixture.resultPath, 'utf8'))).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+      steps: [
+        { id: 'runnable', state: 'NOT_RUN' },
+        { id: 'skipped', state: 'SKIPPED' },
+      ],
+    });
+    expect(existsSync(fixture.sentinelPath)).toBe(false);
+    expect(stderr.mock.calls.flat().join('')).toContain('log file');
+  });
+
   it('shows one named and masked error when renderer execution rejects', async () => {
     const secret = 'execute-secret';
     const manifestPath = manifest([
@@ -255,6 +293,52 @@ describe('the GUI shell stderr diagnostics', () => {
       'RUNE-403 (exit 1): cannot start ***',
     );
     expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
+  });
+
+  it('preserves the plan topology when windowed log preparation fails', async () => {
+    const fixture = blockedLogFixture('rune-shell-windowed-log-failure-');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      try {
+        await execute();
+      } catch {
+        // Main owns the fatal error; the bridge also rejects to the renderer.
+      }
+    };
+
+    await main([
+      fixture.manifestPath,
+      '--log-file',
+      fixture.logPath,
+      '--result',
+      fixture.resultPath,
+    ]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(JSON.parse(readFileSync(fixture.resultPath, 'utf8'))).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+      steps: [
+        { id: 'runnable', state: 'NOT_RUN' },
+        { id: 'skipped', state: 'SKIPPED' },
+      ],
+    });
+    expect(existsSync(fixture.sentinelPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(stderr.mock.calls.flat().join('')).toContain('log file');
   });
 
   it('masks registered secrets when windowed result delivery rejects', async () => {
@@ -430,6 +514,44 @@ function invocation(manifestPath: string): ShellInvocation {
     result: undefined,
     logFile: undefined,
     nonInteractive: true,
+  };
+}
+
+function blockedLogFixture(prefix: string): {
+  readonly manifestPath: string;
+  readonly logPath: string;
+  readonly resultPath: string;
+  readonly sentinelPath: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const blockedParent = join(dir, 'blocked-parent');
+  const sentinelPath = join(dir, 'runner-started');
+  writeFileSync(blockedParent, 'not a directory', 'utf8');
+  return {
+    manifestPath: manifest(
+      [
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        'steps:',
+        '  - id: runnable',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        `      args: ${JSON.stringify([
+          '-e',
+          `require('node:fs').writeFileSync(${JSON.stringify(sentinelPath)}, 'started')`,
+        ])}`,
+        '  - id: skipped',
+        '    when: "${enabled}"',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+      ],
+      dir,
+    ),
+    logPath: join(blockedParent, 'run.log'),
+    resultPath: join(dir, 'result.json'),
+    sentinelPath,
   };
 }
 

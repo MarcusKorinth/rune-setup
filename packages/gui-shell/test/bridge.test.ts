@@ -162,14 +162,18 @@ describe('the IPC bridge', () => {
     // Required input left unanswered: execute() throws at plan time.
     const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
     session.setValue('installDatabase', true);
-    const errors: unknown[] = [];
+    const plan = vi.spyOn(Session.prototype, 'plan');
+    const execute = vi.spyOn(Session.prototype, 'execute');
+    const onExecuteStart = vi.fn();
+    const errors: Array<{ error: unknown; plan: unknown }> = [];
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     registerBridge(
       session,
       {
         events: { send: () => undefined },
-        onExecuteError: (error) => {
-          errors.push(error);
+        onExecuteStart,
+        onExecuteError: (error, failedPlan) => {
+          errors.push({ error, plan: failedPlan });
         },
       },
       (channel, handler) => handlers.set(channel, handler),
@@ -177,6 +181,12 @@ describe('the IPC bridge', () => {
 
     await expect(handlers.get('rune:execute')?.()).rejects.toThrow(/token|databasePort/);
     expect(errors).toHaveLength(1);
+    expect(errors[0]?.plan).toBeUndefined();
+    expect(plan).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(onExecuteStart).not.toHaveBeenCalled();
+    plan.mockRestore();
+    execute.mockRestore();
   });
 
   it('reports a rejected execute completion through the same fatal boundary', async () => {
