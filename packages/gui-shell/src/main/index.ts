@@ -432,13 +432,13 @@ export function registerBridge(
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
     ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
 ): void {
-  const mask = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
+  const maskError = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
     register(channel, async (...args: unknown[]) => {
       try {
         return project(await handler(...args));
       } catch (error) {
-        throw bridgeError(error, mask);
+        throw bridgeError(error, maskError);
       }
     });
   };
@@ -447,17 +447,17 @@ export function registerBridge(
     runeVersion: RUNE_VERSION,
     inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
     product: {
-      name: mask(session.manifest.product.name),
-      version: mask(session.manifest.product.version),
+      name: session.manifest.product.name,
+      version: session.manifest.product.version,
     },
   }));
   handle('rune:pendingInputs', () => session.pendingInputs());
   handle('rune:allInputs', () => session.allInputs());
   handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
-  handle('rune:plan', () => projectPlan(session.plan(), mask));
-  handle('rune:describe', () => projectResult(session.describe(), mask));
+  handle('rune:plan', () => projectPlan(session.plan()));
+  handle('rune:describe', () => projectResult(session.describe()));
   handle('rune:getStrings', () => session.getStrings().entries);
-  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig(), mask));
+  handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig()));
   handle('rune:warnings', () => session.warnings());
   handle('rune:cancel', () => {
     session.cancel();
@@ -473,11 +473,11 @@ export function registerBridge(
         try {
           consoleObserver(event);
         } finally {
-          hooks.events.send(EVENT_CHANNEL, projectEvent(event, mask));
+          hooks.events.send(EVENT_CHANNEL, projectEvent(event));
         }
       });
       await hooks.onExecuteEnd?.(result);
-      return projectResult(result, mask);
+      return projectResult(result);
     } catch (error) {
       await hooks.onExecuteError?.(error);
       throw error;

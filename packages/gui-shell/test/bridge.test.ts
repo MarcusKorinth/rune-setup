@@ -92,6 +92,46 @@ function rejectedFixture(): string {
   return path;
 }
 
+function structuredProjectionFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-structured-'));
+  const path = join(dir, 'installer.yaml');
+  writeFileSync(
+    path,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: COLLISION_PRODUCT',
+      '  version: "1.2.3"',
+      '  description: "Description DISPLAY_SECRET\\nsecond\\tline"',
+      'gui:',
+      '  accentColor: "#123abc"',
+      '  windowTitle: "Window DISPLAY_SECRET\\nsecond\\tline"',
+      'inputs:',
+      '  productIdentity:',
+      '    type: secret',
+      '  productVersion:',
+      '    type: secret',
+      '  environmentName:',
+      '    type: secret',
+      '  accent:',
+      '    type: secret',
+      '  display:',
+      '    type: secret',
+      'steps:',
+      '  - id: use',
+      '    title: "Step DISPLAY_SECRET\\nsecond\\tline"',
+      '    run:',
+      '      command: echo',
+      '      args: ["Argument public\\nsecond\\tline", "${display}"]',
+      '      env:',
+      '        COLLISION_ENV: "Environment public\\nsecond\\tline"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return path;
+}
+
 async function bridgeOver(session: Session): Promise<{
   channels: string[];
   call: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -187,7 +227,7 @@ describe('the IPC bridge', () => {
     expect(bridge.channels.sort()).toEqual([...BRIDGE_CHANNELS].sort());
   });
 
-  it('masks every successful return through the common registration sink', async () => {
+  it('uses the engine structured projections for successful returns', async () => {
     const manifestPath = fixture();
     const session = await Session.open(manifestPath, {
       environment: {},
@@ -208,7 +248,7 @@ describe('the IPC bridge', () => {
     };
     const assetDir = join(dirname(manifestPath), 'theme assets #1');
 
-    expect(opened.product.name).toBe('Example ***');
+    expect(opened.product.name).toBe('Example super-secret-value');
     expect(strings['product.description']).toBe('Description ***');
     expect(strings['gui.windowTitle']).toBe('Window ***');
     expect(theme.windowTitle).toBe('Window ***');
@@ -217,7 +257,85 @@ describe('the IPC bridge', () => {
     expect(theme.theme).toBe(pathToFileURL(join(assetDir, 'custom #1.css')).href);
     expect(theme.logo).toContain('%20');
     expect(theme.logo).toContain('%23');
-    expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
+    expect(JSON.stringify({ strings, theme })).not.toContain('super-secret-value');
+  });
+
+  it('preserves exact identity and configuration while retaining structured masking', async () => {
+    const session = await Session.open(structuredProjectionFixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: {
+        productIdentity: 'COLLISION_PRODUCT',
+        productVersion: '1.2.3',
+        environmentName: 'COLLISION_ENV',
+        accent: '#123abc',
+        display: 'DISPLAY_SECRET',
+      },
+    });
+    const bridge = await bridgeOver(session);
+
+    const opened = (await bridge.call('rune:open')) as {
+      product: { name: string; version: string };
+    };
+    const strings = (await bridge.call('rune:getStrings')) as Record<string, string>;
+    const theme = (await bridge.call('rune:getThemeConfig')) as {
+      accentColor: string;
+      windowTitle: string;
+    };
+    const plan = (await bridge.call('rune:plan')) as BridgePlan;
+    const result = (await bridge.call('rune:describe')) as RunResult;
+    const step = plan.steps[0];
+    if (step?.state !== 'PENDING') {
+      throw new Error('the structured projection fixture did not produce a pending step');
+    }
+
+    expect(opened.product).toEqual({ name: 'COLLISION_PRODUCT', version: '1.2.3' });
+    expect(result.product).toEqual(opened.product);
+    expect(theme.accentColor).toBe('#123abc');
+    expect(Object.keys(step.command.env)).toEqual(['COLLISION_ENV']);
+    expect(strings['product.description']).toBe('Description ***\nsecond\tline');
+    expect(strings['gui.windowTitle']).toBe('Window ***\nsecond\tline');
+    expect(theme.windowTitle).toBe('Window ***\nsecond\tline');
+    expect(step.title).toBe('Step ***\nsecond\tline');
+    expect(step.command.argv.at(-2)).toBe('Argument public\nsecond\tline');
+    expect(step.command.argv.at(-1)).toBe('***');
+    expect(step.command.env['COLLISION_ENV']).toBe('Environment public\nsecond\tline');
+    expect(result.steps[0]?.title).toBe('Step ***\nsecond\tline');
+    expect(result.steps[0]?.command?.at(-2)).toBe('Argument public\nsecond\tline');
+    expect(result.steps[0]?.command?.at(-1)).toBe('***');
+    expect(result.inputs.every((input) => input.secret && input.value === null)).toBe(true);
+
+    const plain = JSON.parse(JSON.stringify({ opened, strings, theme, plan, result })) as unknown;
+    expect(plain).toEqual({ opened, strings, theme, plan, result });
+    const withoutExactExceptions = JSON.stringify({
+      opened: { ...opened, product: { name: 'identity', version: 'identity' } },
+      strings,
+      theme: { ...theme, accentColor: 'identity' },
+      plan: {
+        ...plan,
+        steps: plan.steps.map((plannedStep) =>
+          plannedStep.state === 'PENDING'
+            ? {
+                ...plannedStep,
+                command: {
+                  ...plannedStep.command,
+                  env: { identity: plannedStep.command.env['COLLISION_ENV'] },
+                },
+              }
+            : plannedStep,
+        ),
+      },
+      result: { ...result, product: { name: 'identity', version: 'identity' } },
+    });
+    for (const secret of [
+      'COLLISION_PRODUCT',
+      '1.2.3',
+      'COLLISION_ENV',
+      '#123abc',
+      'DISPLAY_SECRET',
+    ]) {
+      expect(withoutExactExceptions).not.toContain(secret);
+    }
   });
 
   it('keeps exact theme asset paths while encoding them as file URLs', async () => {
@@ -311,7 +429,7 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify({ all, pending })).not.toContain('super-secret-value');
   });
 
-  it('masks and normalizes every rejection through the injectable registration sink', async () => {
+  it('normalizes facade and unknown rejections without exposing secrets', async () => {
     const session = await Session.open(fixture(), {
       environment: {},
       mode: 'gui',
@@ -337,6 +455,23 @@ describe('the IPC bridge', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error.message).not.toContain('super-secret-value');
     }
+  });
+
+  it('masks a secret formed across the bridge prefix and a real validation issue', async () => {
+    const secret = '): installDatabase';
+    const session = await Session.open(fixture(), {
+      environment: {},
+      mode: 'gui',
+      overrides: { token: secret },
+    });
+    const bridge = await bridgeOver(session);
+
+    const error = await rejectedBy(bridge.call('rune:setValue', 'installDatabase', 'invalid'));
+
+    expect(error.message).toContain('RUNE-202');
+    expect(error.message).toContain('exit 4');
+    expect(error.message).toContain('***');
+    expect(error.message).not.toContain(secret);
   });
 
   it('includes located RuneError issues once and masks them at the rejection sink', async () => {
@@ -531,7 +666,22 @@ describe('the IPC bridge', () => {
       // JSON-safe plain data only — a raw engine object would not survive this round trip.
       expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
     }
-    expect(JSON.stringify(bridge.sent)).not.toContain('super-secret-value');
+    const eventsWithoutExactProduct = bridge.sent.map(({ channel, payload }) => {
+      const event = payload as BridgeEvent;
+      return event.kind === 'runFinished' && event.result.product !== null
+        ? {
+            channel,
+            payload: {
+              ...event,
+              result: {
+                ...event.result,
+                product: { name: 'identity', version: 'identity' },
+              },
+            },
+          }
+        : { channel, payload };
+    });
+    expect(JSON.stringify(eventsWithoutExactProduct)).not.toContain('super-secret-value');
     expect(JSON.stringify(bridge.sent)).toContain('***');
     const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toMatch(/^running 2 steps on \w+\r?\n/);

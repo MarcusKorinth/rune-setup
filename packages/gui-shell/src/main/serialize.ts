@@ -32,8 +32,8 @@ export function project<T>(value: T): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
-/** Projects the engine plan without letting SecretString.toJSON() erase command text. */
-export function projectPlan(plan: ExecutionPlan, mask: (text: string) => string): BridgePlan {
+/** Projects the current bridge plan shape; SecretString.toJSON() supplies its literal mask. */
+export function projectPlan(plan: ExecutionPlan): BridgePlan {
   const projected: BridgePlan = {
     manifestPath: plan.manifestPath,
     locale: plan.locale,
@@ -47,16 +47,16 @@ export function projectPlan(plan: ExecutionPlan, mask: (text: string) => string)
       if (step.state === 'SKIPPED') {
         return {
           id: step.id,
-          title: mask(step.title),
+          title: step.title,
           state: step.state,
-          skipReason: mask(step.skipReason),
+          skipReason: step.skipReason,
         };
       }
       return {
         id: step.id,
-        title: mask(step.title),
+        title: step.title,
         state: step.state,
-        command: projectCommand(step.command, mask),
+        command: projectCommand(step.command),
       };
     }),
   };
@@ -65,92 +65,38 @@ export function projectPlan(plan: ExecutionPlan, mask: (text: string) => string)
 }
 
 /** Projects one run event, routing its plan through the same masked plan contract. */
-export function projectEvent(event: RunEvent, mask: (text: string) => string): BridgeEvent {
+export function projectEvent(event: RunEvent): BridgeEvent {
   switch (event.kind) {
     case 'runStarted':
-      return { kind: event.kind, plan: projectPlan(event.plan, mask) };
+      return { kind: event.kind, plan: projectPlan(event.plan) };
     case 'stepStarted':
-      return { ...event, title: mask(event.title) };
+      return project(event) as BridgeEvent;
     case 'stepOutput':
-      return { ...event, line: mask(event.line) };
+      return project(event) as BridgeEvent;
     case 'stepFinished':
       return project(event) as BridgeEvent;
     case 'runFinished':
-      return { kind: event.kind, result: projectResult(event.result, mask) };
+      return { kind: event.kind, result: projectResult(event.result) };
   }
 }
 
-/** Masks only data-bearing result fields, leaving enums and machine identities intact. */
-export function projectResult(result: RunResult, mask: (text: string) => string): BridgeResult {
-  return project({
-    ...result,
-    product:
-      result.product === null
-        ? null
-        : { name: mask(result.product.name), version: mask(result.product.version) },
-    error:
-      result.error === null
-        ? null
-        : {
-            ...result.error,
-            message: mask(result.error.message),
-            location:
-              result.error.location === null
-                ? null
-                : { ...result.error.location, file: mask(result.error.location.file) },
-          },
-    inputs: result.inputs.map((input) => ({
-      ...input,
-      value: Array.isArray(input.value)
-        ? input.value.map(mask)
-        : typeof input.value === 'string'
-          ? mask(input.value)
-          : input.value,
-    })),
-    steps: result.steps.map((step) => ({
-      ...step,
-      title: mask(step.title),
-      command: step.command === null ? null : step.command.map(mask),
-      skipReason: step.skipReason === null ? null : mask(step.skipReason),
-      ...(step.outputTail === undefined
-        ? {}
-        : {
-            outputTail: step.outputTail.map((line) => ({ ...line, line: mask(line.line) })),
-          }),
-    })),
-  }) as BridgeResult;
+/** Results are already field-aware structured-sink projections from the engine. */
+export function projectResult(result: RunResult): BridgeResult {
+  return project(result) as BridgeResult;
 }
 
 /** Keeps the engine path-based while giving the sandboxed renderer canonical asset URLs. */
-export function projectTheme(theme: ThemeConfig, mask: (text: string) => string): BridgeTheme {
+export function projectTheme(theme: ThemeConfig): BridgeTheme {
   const fileUrl = (path: string): string => pathToFileURL(path).href;
   return {
-    ...(theme.accentColor === undefined ? {} : { accentColor: mask(theme.accentColor) }),
+    ...(theme.accentColor === undefined ? {} : { accentColor: theme.accentColor }),
     ...(theme.logo === undefined ? {} : { logo: fileUrl(theme.logo) }),
     ...(theme.banner === undefined ? {} : { banner: fileUrl(theme.banner) }),
     ...(theme.theme === undefined ? {} : { theme: fileUrl(theme.theme) }),
-    ...(theme.windowTitle === undefined ? {} : { windowTitle: mask(theme.windowTitle) }),
+    ...(theme.windowTitle === undefined ? {} : { windowTitle: theme.windowTitle }),
   };
 }
 
-function projectCommand(
-  command: ResolvedCommand,
-  mask: (text: string) => string,
-): BridgePlannedCommand {
-  return {
-    argv: command.argv.map((value) => mask(projectCommandText(value))),
-    cwd: mask(projectCommandText(command.cwd)),
-    env: Object.fromEntries(
-      Object.entries(command.env).map(([name, value]) => [
-        mask(name),
-        mask(projectCommandText(value)),
-      ]),
-    ),
-    timeoutSeconds: command.timeoutSeconds,
-    successExitCodes: command.successExitCodes,
-  };
-}
-
-function projectCommandText(value: ResolvedCommand['cwd']): string {
-  return String(value);
+function projectCommand(command: ResolvedCommand): BridgePlannedCommand {
+  return project(command) as BridgePlannedCommand;
 }
