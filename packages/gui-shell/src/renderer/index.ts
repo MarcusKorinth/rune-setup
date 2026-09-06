@@ -50,6 +50,7 @@ interface State {
   inputPages: number;
   page: PageName;
   result: BridgeResult | undefined;
+  warnings: readonly string[];
   banner: string | undefined;
   productName: string;
   productVersion: string;
@@ -66,6 +67,7 @@ const state: State = {
   inputPages: 0,
   page: 'welcome',
   result: undefined,
+  warnings: [],
   banner: undefined,
   productName: '',
   productVersion: '',
@@ -195,6 +197,7 @@ async function navigate(direction: 1 | -1): Promise<void> {
       state.page = 'progress';
       render();
       const result = await window.rune.execute();
+      state.warnings = await window.rune.warnings();
       state.result = result;
       state.page = 'result';
       render();
@@ -689,14 +692,12 @@ function renderResult(): void {
   el.page.append(badge, heading, sub);
 
   // The §10 warnings: the same run never warns in one mode and stays silent in another.
-  void window.rune.warnings().then((warnings) => {
-    for (const warning of warnings) {
-      const line = document.createElement('p');
-      line.className = 'result-sub';
-      line.textContent = warning;
-      el.page.append(line);
-    }
-  });
+  for (const warning of state.warnings) {
+    const line = document.createElement('p');
+    line.className = 'result-sub';
+    line.textContent = warning;
+    el.page.append(line);
+  }
 
   for (const step of result.steps) {
     if (step.state !== 'FAILED') {

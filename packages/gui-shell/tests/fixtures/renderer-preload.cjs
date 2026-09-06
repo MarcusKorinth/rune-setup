@@ -1,7 +1,9 @@
 const { contextBridge } = require('electron');
 
 const pendingPlans = [];
+const pendingWarnings = [];
 let eventListener;
+let doneCount = 0;
 
 function plan(title) {
   return {
@@ -39,7 +41,13 @@ contextBridge.exposeInMainWorld('rune', {
     new Promise((resolve) => {
       pendingPlans.push(resolve);
     }),
-  execute: () => new Promise(() => {}),
+  execute: async () => ({
+    status: 'succeeded',
+    nothingExecuted: false,
+    stepsSucceeded: 1,
+    stepsTotal: 1,
+    steps: [],
+  }),
   cancel: async () => undefined,
   getStrings: async () => ({
     'rune.page.welcome.title': 'Welcome',
@@ -48,10 +56,17 @@ contextBridge.exposeInMainWorld('rune', {
     'rune.button.cancel': 'Cancel',
     'rune.button.next': 'Next',
     'rune.button.install': 'Install',
+    'rune.button.finish': 'Finish',
+    'rune.result.succeeded': 'Setup completed successfully.',
   }),
   getThemeConfig: async () => ({}),
-  warnings: async () => [],
-  done: async () => undefined,
+  warnings: () =>
+    new Promise((resolve) => {
+      pendingWarnings.push(resolve);
+    }),
+  done: async () => {
+    doneCount += 1;
+  },
   onEvent: (listener) => {
     eventListener = listener;
   },
@@ -66,6 +81,15 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
     }
     resolve(plan(title));
   },
+  warningCount: () => pendingWarnings.length,
+  resolveWarnings: (index, warnings) => {
+    const resolve = pendingWarnings[index];
+    if (resolve === undefined) {
+      throw new Error(`no pending warnings at index ${index}`);
+    }
+    resolve(warnings);
+  },
+  doneCount: () => doneCount,
   emitOutput: (line) => {
     eventListener?.({
       kind: 'stepOutput',

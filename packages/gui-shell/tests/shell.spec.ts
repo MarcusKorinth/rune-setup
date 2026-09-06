@@ -30,6 +30,9 @@ const electronExecutable = createRequire(import.meta.url)('electron') as string;
 interface SummaryTestControl {
   planCount(): number;
   resolvePlan(index: number, title: string): void;
+  warningCount(): number;
+  resolveWarnings(index: number, warnings: readonly string[]): void;
+  doneCount(): number;
   emitOutput(line: string): void;
   emitStepStarted(index: number, total: number): void;
   emitFinished(): void;
@@ -264,6 +267,80 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('waits for Result warnings before allowing Finish', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'warning plan'),
+    );
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.warningCount(),
+        ),
+      )
+      .toBe(1);
+
+    await expect(page.locator('.progress-track')).toBeVisible();
+    await expect(page.locator('.result-badge')).toHaveCount(0);
+    await expect(next).toBeDisabled();
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.doneCount(),
+      ),
+    ).toBe(0);
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolveWarnings(0, ['A required warning']),
+    );
+    await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
+    await expect(page.locator('.result-sub')).toContainText(['1 / 1', 'A required warning']);
+    await expect(next).toHaveText('Finish');
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.doneCount(),
+        ),
+      )
+      .toBe(1);
   } finally {
     await application?.close();
   }
