@@ -1,0 +1,51 @@
+schemaVersion: 1
+product:
+  name: All input types smoke
+  version: 1.0.0
+inputs:
+  releaseName:
+    type: text
+    title: Release name
+  accessToken:
+    type: secret
+    title: Access token
+  continue:
+    type: boolean
+    title: Continue
+  channel:
+    type: select
+    title: Channel
+    options:
+      - value: stable-value
+        label: Stable channel
+      - value: preview-value
+        label: Preview channel
+  components:
+    type: multiselect
+    title: Components
+    options:
+      - value: core-value
+        label: Core component
+      - value: extras-value
+        label: Extra component
+  sourceFile:
+    type: file
+    title: Source file
+  targetDirectory:
+    type: directory
+    title: Target directory
+steps:
+  - id: verify-submitted-inputs
+    title: Verify submitted inputs
+    run:
+      command: node
+      args:
+        - -e
+        - 'process.exit(0)'
+        - '${releaseName}'
+        - '${accessToken}'
+        - '${continue}'
+        - '${channel}'
+        - '${components}'
+        - '${sourceFile}'
+        - '${targetDirectory}'
