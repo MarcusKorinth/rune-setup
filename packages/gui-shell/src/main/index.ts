@@ -153,7 +153,7 @@ export async function main(
   let windowed = false;
   let activeSession: Session | undefined;
   let fatalDisplayed = false;
-  const displayFatal = (error: unknown, session = activeSession): void => {
+  const displayFatal = (error: unknown, session: Session | undefined): void => {
     if (!windowed || fatalDisplayed) {
       return;
     }
@@ -198,7 +198,7 @@ export async function main(
         activeSession,
         output,
       );
-      displayFatal(failure.error, activeSession);
+      displayFatal(failure.error, undefined);
       exitCode = failure.exitCode;
     } else if (
       openingSession &&
@@ -213,11 +213,11 @@ export async function main(
       output.stderr.write(`${describeWindowedFatal(failure, undefined)}\n`);
       const deliveryError = await deliverOpenFailure(failure, invocation, output);
       if (deliveryError === undefined) {
-        displayFatal(failure);
+        displayFatal(failure, undefined);
         exitCode = exitCodeFor(failure);
       } else {
         writeOpenDeliveryDiagnostic(deliveryError, output);
-        displayFatal(deliveryError);
+        displayFatal(deliveryError, undefined);
         exitCode = exitCodeFor(deliveryError);
       }
     } else {
@@ -228,7 +228,7 @@ export async function main(
             ? error.message
             : String(error);
       output.stderr.write(`${message}\n`);
-      displayFatal(error);
+      displayFatal(error, undefined);
       exitCode = exitCodeFor(error);
     }
   }
@@ -320,7 +320,7 @@ export async function windowedRun(
   session: Session,
   invocation: ShellInvocation,
   signals: SigtermSource,
-  displayFatal: (error: unknown, session?: Session) => void,
+  displayFatal: (error: unknown, session: Session | undefined) => void,
   output: ShellStreams = fallbackOutput(),
   deliverResult: (result: RunResult, invocation: ShellInvocation) => Promise<void> = (
     result,
@@ -404,7 +404,7 @@ export async function windowedRun(
         deliverOutcome,
       );
       fatalCode = failure.exitCode;
-      displayFatal(failure.error, session);
+      displayFatal(failure.error, plan === undefined ? undefined : session);
       window.close();
     },
     onCancelRequested: () => window.close(),
@@ -429,15 +429,16 @@ export async function windowedRun(
     }
     const error = new InternalError('the renderer process exited unexpectedly');
     fatalCode = exitCodeFor(error);
-    writeSessionDiagnostic(session, describeWindowedFatal(error, session), output);
-
     if (running) {
-      // Let the engine settle its cooperative cancellation before closing the host window.
+      // Synchronous planning cannot interleave with this event, and its failure hook clears
+      // running before awaiting. A true value therefore proves a completed-plan masker is active.
+      writeSessionDiagnostic(session, describeWindowedFatal(error, session), output);
       session.cancel();
       displayFatal(error, session);
       return;
     }
-    displayFatal(error, session);
+    output.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
+    displayFatal(error, undefined);
     window.close();
   });
 
@@ -461,14 +462,20 @@ export async function windowedRun(
       }
       closeFinalizing = true;
       void (async () => {
+        let hasPlan = false;
         try {
           const cancelled = describeCancelled(session, invocation);
-          await deliverOutcome(cancelled);
-          outcome = cancelled;
+          hasPlan = cancelled.hasPlan;
+          await deliverOutcome(cancelled.result);
+          outcome = cancelled.result;
         } catch (error) {
-          writeDeliveryDiagnostic(session, error, output);
+          if (hasPlan) {
+            writeDeliveryDiagnostic(session, error, output);
+          } else {
+            writeOpenDeliveryDiagnostic(error, output);
+          }
           fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
-          displayFatal(error, session);
+          displayFatal(error, hasPlan ? session : undefined);
         } finally {
           window.close();
         }
@@ -688,8 +695,8 @@ function describeWindowedFatal(error: unknown, session: Session | undefined): st
   const code = error instanceof RuneError ? error.code : 'RUNE-500';
   const prefix = `${code} (exit ${exitCodeFor(error)})`;
   if (session === undefined) {
-    // Session.open may fail before input secrets can be registered. Keep this sink useful
-    // without echoing manifest, values-file, or command-line data that cannot yet be masked.
+    // Opening or planning may fail without a complete authenticated masker. Keep this
+    // sink useful without echoing data whose secret transformations are not available.
     return `${prefix}: The setup could not be started.`;
   }
   const details =
@@ -789,7 +796,11 @@ async function failWith(
       });
     await deliverResult(result, invocation);
   } catch (deliveryError) {
-    writeDeliveryDiagnostic(session, deliveryError, output);
+    if (plan === undefined) {
+      writeOpenDeliveryDiagnostic(deliveryError, output);
+    } else {
+      writeDeliveryDiagnostic(session, deliveryError, output);
+    }
     return {
       exitCode: deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70,
       error: deliveryError,
@@ -798,7 +809,10 @@ async function failWith(
   return { exitCode: exitCodeFor(failure), error: failure };
 }
 
-function describeCancelled(session: Session, invocation: ShellInvocation): RunResult {
+function describeCancelled(
+  session: Session,
+  invocation: ShellInvocation,
+): { readonly result: RunResult; readonly hasPlan: boolean } {
   let plan: ReturnType<Session['plan']> | undefined;
   try {
     plan = session.plan();
@@ -807,13 +821,16 @@ function describeCancelled(session: Session, invocation: ShellInvocation): RunRe
       throw error;
     }
   }
-  return createFailureResult({
-    error: new CancelledError(),
-    manifestPath: invocation.manifestPath,
-    dryRun: false,
-    session,
-    ...(plan === undefined ? {} : { plan }),
-  });
+  return {
+    result: createFailureResult({
+      error: new CancelledError(),
+      manifestPath: invocation.manifestPath,
+      dryRun: false,
+      session,
+      ...(plan === undefined ? {} : { plan }),
+    }),
+    hasPlan: plan !== undefined,
+  };
 }
 
 /** Writes one shell-owned diagnostic through the Session's authenticated terminal sink. */

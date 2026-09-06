@@ -720,8 +720,8 @@ describe('the GUI shell main lifecycle', () => {
       expect(diagnostic).not.toContain(resultPath);
       expect(dialog.showErrorBox).toHaveBeenCalledOnce();
       expect(dialog.showErrorBox).toHaveBeenCalledWith(
-        'RUNE setup failed',
-        expect.stringContaining('RUNE-500 (exit 70):'),
+        'RUNE',
+        'RUNE-500 (exit 70): The setup could not be started.',
       );
       const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
       expect(dialogText).not.toContain(rawFailure);
@@ -729,7 +729,7 @@ describe('the GUI shell main lifecycle', () => {
     },
   );
 
-  it('uses one masked RUNE-407 outcome when window startup result delivery fails', async () => {
+  it('uses one value-free RUNE-407 outcome when window startup result delivery fails', async () => {
     const { manifestPath, resultPath } = windowStartupFailureFixture(true);
     const rawFailure = `native window failure exposed ${resultPath}`;
     electronHarness.constructionError = new Error(rawFailure);
@@ -741,18 +741,56 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.exit).toHaveBeenCalledWith(1);
     expect(existsSync(resultPath)).toBe(false);
     const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
-    expect(diagnostic).toContain('could not prepare the directory for result file "***"');
+    expect(diagnostic).toContain('could not write the result file');
     expect(diagnostic).not.toContain(resultPath);
     expect(diagnostic).not.toContain(rawFailure);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
-      expect.stringContaining('RUNE-407 (exit 1):'),
+      'RUNE',
+      'RUNE-407 (exit 1): The setup could not be started.',
     );
     const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
-    expect(dialogText).toContain('***');
     expect(dialogText).not.toContain(resultPath);
     expect(dialogText).not.toContain(rawFailure);
+  });
+
+  it('uses value-free delivery diagnostics after a headless planning failure', async () => {
+    const { derivedPath, invocation, resultPath, session } =
+      await failedPlanningFixture('non-interactive');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+    await expect(headlessRun(session, invocation, new FakeSigtermSource())).resolves.toBe(1);
+
+    expect(existsSync(resultPath)).toBe(false);
+    const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostic).toContain('install.cmd');
+    expect(diagnostic.match(/could not write the result file/g)).toHaveLength(1);
+    expect(diagnostic).not.toContain(derivedPath);
+  });
+
+  it('uses fixed native failure presentation when pre-Proceed cancellation cannot be written', async () => {
+    const { derivedPath, invocation, resultPath, session } = await failedPlanningFixture('gui');
+    const open = vi.spyOn(Session, 'open').mockResolvedValue(session);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = () => electronHarness.window?.close();
+
+    await main([invocation.manifestPath, '--locale', 'de', '--result', resultPath]);
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(electronHarness.closeAttempts).toBe(2);
+    const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostic).toBe('could not write the result file\n');
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE',
+      'RUNE-407 (exit 1): The setup could not be started.',
+    );
+    const visibleOutput = `${diagnostic}${vi.mocked(dialog.showErrorBox).mock.calls.flat().join('')}`;
+    expect(visibleOutput.match(/RUNE-407/g)).toHaveLength(1);
+    expect(visibleOutput).not.toContain(derivedPath);
   });
 
   it('does not write a configured result for an unsupported platform error', async () => {
@@ -1042,6 +1080,131 @@ describe('the GUI shell native window', () => {
 });
 
 describe('windowed result delivery', () => {
+  it('writes one cancelled outcome and uses safe fallback after failed pre-Proceed planning', async () => {
+    const { derivedPath, invocation, resultPath, session } = await failedPlanningFixture('gui');
+    const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+    const displayFatal = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = () => electronHarness.window?.close();
+
+    await expect(
+      windowedRun(
+        session,
+        invocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
+    ).resolves.toBe(1);
+
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(deliverResult.mock.calls[0]?.[0]).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'gui',
+      error: { code: 'RUNE-601' },
+    });
+    expect(resultValidator.safeParse(deliverResult.mock.calls[0]?.[0]).success).toBe(true);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toBe(
+      'could not write the result file\n',
+    );
+    expect(displayFatal).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RUNE-407' }),
+      undefined,
+    );
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(derivedPath);
+  });
+
+  it('uses safe fallback when the idle renderer is lost after failed Summary planning', async () => {
+    const { derivedPath, invocation, resultPath, session } = await failedPlanningFixture('gui');
+    const deliverResult = vi.fn();
+    const displayFatal = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      await expect(Promise.resolve(bridgeHandler('rune:plan')())).rejects.toThrow('RUNE-405');
+      electronHarness.emitRendererGone?.();
+    };
+
+    await expect(
+      windowedRun(
+        session,
+        invocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
+    ).resolves.toBe(70);
+
+    expect(deliverResult).not.toHaveBeenCalled();
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toBe(
+      'RUNE-500 (exit 70): The setup could not be started.\n',
+    );
+    expect(displayFatal).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RUNE-500' }),
+      undefined,
+    );
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(derivedPath);
+  });
+
+  it('retains completed-plan presentation when the renderer is lost during execution', async () => {
+    const { invocation, resultPath, session } = await windowedFixture();
+    const executionStarted = deferred<void>();
+    const cancelRequested = deferred<void>();
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async () => {
+      const plan = session.plan();
+      executionStarted.resolve();
+      await cancelRequested.promise;
+      return createFailureResult({
+        error: new CancelledError(),
+        manifestPath: invocation.manifestPath,
+        dryRun: false,
+        session,
+        plan,
+      });
+    });
+    const cancel = vi.spyOn(Session.prototype, 'cancel').mockImplementation(() => {
+      cancelRequested.resolve();
+    });
+    const deliverResult = vi.fn();
+    const displayFatal = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      const execution = Promise.resolve(bridgeHandler('rune:execute')());
+      await executionStarted.promise;
+      electronHarness.emitRendererGone?.();
+      await execution;
+    };
+
+    await expect(
+      windowedRun(
+        session,
+        invocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
+    ).resolves.toBe(70);
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(deliverResult).not.toHaveBeenCalled();
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain(
+      'the renderer process exited unexpectedly',
+    );
+    expect(displayFatal).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RUNE-500' }),
+      session,
+    );
+  });
+
   it.each(['renderer Cancel', 'native close'] as const)(
     'denies Execute after %s starts pre-Proceed cancelled delivery',
     async (trigger) => {
@@ -1322,7 +1485,7 @@ describe('windowed result delivery', () => {
     expect(displayFatal).toHaveBeenCalledOnce();
     expect(displayFatal).toHaveBeenCalledWith(
       expect.objectContaining({ code: 'RUNE-201' }),
-      session,
+      undefined,
     );
     expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain('RUNE-500');
     expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
@@ -1683,6 +1846,71 @@ async function windowedFixture(
       result: resultPath,
       logFile: undefined,
       nonInteractive: false,
+    },
+    resultPath,
+    session,
+  };
+}
+
+async function failedPlanningFixture(mode: 'gui' | 'non-interactive'): Promise<{
+  derivedPath: string;
+  invocation: ShellInvocation;
+  resultPath: string;
+  session: Session;
+}> {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-failed-plan-presentation-'));
+  const manifestPath = join(directory, 'installer.yaml');
+  const relativeSecret = 'private/../blocked-parent';
+  const derivedPath = join(directory, 'blocked-parent');
+  const resultPath = join(derivedPath, 'result.json');
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Failed planning presentation',
+      '  version: 1.0.0',
+      'inputs:',
+      '  secretPath:',
+      '    type: secret',
+      'steps:',
+      '  - id: derive-secret-path',
+      '    run:',
+      '      command: node',
+      '      cwd: "${secretPath}"',
+      '  - id: reject-batch-command',
+      '    run:',
+      '      command: install.cmd',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const localeDirectory = join(directory, 'locales');
+  mkdirSync(localeDirectory);
+  writeFileSync(
+    join(localeDirectory, 'de.yaml'),
+    `rune.dialog.fatal.title: ${JSON.stringify(derivedPath)}\n`,
+    'utf8',
+  );
+  writeFileSync(derivedPath, 'occupied', 'utf8');
+  const session = await Session.open(manifestPath, {
+    environment: {},
+    locale: 'de',
+    mode,
+    overrides: { secretPath: relativeSecret },
+    platform: 'windows',
+    resultDestination: resultPath,
+  });
+  return {
+    derivedPath,
+    invocation: {
+      manifestPath,
+      values: [],
+      overrides: { secretPath: relativeSecret },
+      locale: 'de',
+      result: resultPath,
+      logFile: undefined,
+      nonInteractive: mode === 'non-interactive',
     },
     resultPath,
     session,

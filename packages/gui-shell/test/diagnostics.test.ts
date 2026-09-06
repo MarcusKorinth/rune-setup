@@ -530,8 +530,8 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
-      expect.stringContaining('RUNE-500 (exit 70): the renderer process exited unexpectedly'),
+      'RUNE',
+      'RUNE-500 (exit 70): The setup could not be started.',
     );
     const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toContain('RUNE-500 (exit 70)');
