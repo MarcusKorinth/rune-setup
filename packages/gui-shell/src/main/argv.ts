@@ -40,7 +40,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         const pair = next();
         const separator = pair.indexOf('=');
         if (separator <= 0) {
-          throw new UsageError(`--set expects key=value, got "${pair}"`);
+          throw new UsageError('--set expects key=value');
         }
         overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
         break;

@@ -294,6 +294,19 @@ describe('the GUI shell main lifecycle', () => {
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
+  it('does not echo a malformed --set candidate in usage stderr', async () => {
+    const candidate = 'distinctive-secret-candidate';
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await main(['installer.yaml', '--set', candidate]);
+
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.exit).toHaveBeenCalledWith(2);
+    const output = stderr.mock.calls.flat().join('');
+    expect(output).toBe('--set expects key=value\n');
+    expect(output).not.toContain(candidate);
+  });
+
   it('maps an unhandled readiness failure to one internal exit', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.mocked(app.whenReady).mockRejectedValue(new Error('Electron readiness failed'));

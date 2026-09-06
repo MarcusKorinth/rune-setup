@@ -88,7 +88,7 @@ describe('parseShellArgv', () => {
     [['--locale'], '--locale expects a value'],
     [['--result'], '--result expects a value'],
     [['--log-file'], '--log-file expects a value'],
-    [['--set', 'port'], '--set expects key=value, got "port"'],
+    [['--set', 'port'], '--set expects key=value'],
     [[], 'the shell needs a manifest path'],
   ] as const)('reports %s as a RUNE usage error', (argv, message) => {
     try {
