@@ -187,7 +187,17 @@ export async function main(
       signals,
     );
   } catch (error) {
-    if (
+    if (windowed && activeSession !== undefined && invocation !== undefined) {
+      // The host is alive with authenticated Session context, so this remains a configured run.
+      const failure = await failWith(
+        new InternalError('the setup window could not be started', { cause: error }),
+        invocation,
+        activeSession,
+        output,
+      );
+      displayFatal(failure.error, activeSession);
+      exitCode = failure.exitCode;
+    } else if (
       openingSession &&
       invocation !== undefined &&
       error instanceof RuneError &&

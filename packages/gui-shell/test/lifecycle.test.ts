@@ -24,7 +24,9 @@ interface FakeWindow {
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  constructionError: undefined as Error | undefined,
   duringLoad: undefined as (() => void | Promise<void>) | undefined,
+  loadError: undefined as Error | undefined,
   emitRendererGone: undefined as (() => void) | undefined,
   window: undefined as FakeWindow | undefined,
   closed: false,
@@ -46,6 +48,9 @@ vi.mock('electron', () => {
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
     constructor() {
+      if (electronHarness.constructionError !== undefined) {
+        throw electronHarness.constructionError;
+      }
       electronHarness.window = this;
     }
 
@@ -76,6 +81,9 @@ vi.mock('electron', () => {
     }
 
     async loadFile(): Promise<void> {
+      if (electronHarness.loadError !== undefined) {
+        throw electronHarness.loadError;
+      }
       await electronHarness.duringLoad?.();
     }
 
@@ -148,7 +156,9 @@ afterEach(() => {
 
 beforeEach(() => {
   electronHarness.handlers.clear();
+  electronHarness.constructionError = undefined;
   electronHarness.duringLoad = undefined;
+  electronHarness.loadError = undefined;
   electronHarness.emitRendererGone = undefined;
   electronHarness.window = undefined;
   electronHarness.closed = false;
@@ -653,6 +663,93 @@ describe('the GUI shell main lifecycle', () => {
       'RUNE setup failed',
       'RUNE-407 (exit 1): The setup could not be started.',
     );
+  });
+
+  it.each(['construction', 'load'] as const)(
+    'writes an authenticated internal result when window %s fails',
+    async (stage) => {
+      const { manifestPath, resultPath } = windowStartupFailureFixture();
+      const rawFailure = `native ${stage} failure exposed ${resultPath}`;
+      const open = vi.spyOn(Session, 'open');
+      electronHarness[stage === 'construction' ? 'constructionError' : 'loadError'] = new Error(
+        rawFailure,
+      );
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+      await main([
+        manifestPath,
+        '--set',
+        `resultDestination=${resultPath}`,
+        '--result',
+        resultPath,
+      ]);
+
+      expect(app.exit).toHaveBeenCalledOnce();
+      expect(app.exit).toHaveBeenCalledWith(70);
+      expect(open).toHaveBeenCalledOnce();
+      const result = deliveredResult(resultPath);
+      expect(result).toMatchObject({
+        status: 'internal_error',
+        exitCode: 70,
+        mode: 'gui',
+        product: { name: 'Window startup', version: '1.2.3' },
+        manifest: {
+          path: manifestPath,
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          schemaVersion: 1,
+        },
+        inputs: [
+          {
+            id: 'resultDestination',
+            value: null,
+            source: 'set',
+            secret: true,
+            enabled: true,
+          },
+        ],
+        error: { code: 'RUNE-500' },
+      });
+      const serializedResult = JSON.stringify(result);
+      expect(serializedResult).not.toContain(rawFailure);
+      expect(serializedResult).not.toContain(resultPath);
+      const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+      expect(diagnostic).not.toContain(rawFailure);
+      expect(diagnostic).not.toContain(resultPath);
+      expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+      expect(dialog.showErrorBox).toHaveBeenCalledWith(
+        'RUNE setup failed',
+        expect.stringContaining('RUNE-500 (exit 70):'),
+      );
+      const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
+      expect(dialogText).not.toContain(rawFailure);
+      expect(dialogText).not.toContain(resultPath);
+    },
+  );
+
+  it('uses one masked RUNE-407 outcome when window startup result delivery fails', async () => {
+    const { manifestPath, resultPath } = windowStartupFailureFixture(true);
+    const rawFailure = `native window failure exposed ${resultPath}`;
+    electronHarness.constructionError = new Error(rawFailure);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+    await main([manifestPath, '--set', `resultDestination=${resultPath}`, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(existsSync(resultPath)).toBe(false);
+    const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostic).toContain('could not prepare the directory for result file "***"');
+    expect(diagnostic).not.toContain(resultPath);
+    expect(diagnostic).not.toContain(rawFailure);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      expect.stringContaining('RUNE-407 (exit 1):'),
+    );
+    const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
+    expect(dialogText).toContain('***');
+    expect(dialogText).not.toContain(resultPath);
+    expect(dialogText).not.toContain(rawFailure);
   });
 
   it('does not write a configured result for an unsupported platform error', async () => {
@@ -1394,4 +1491,35 @@ function windowedLogAndResultFailureFixture(): {
     manifestPath,
     resultPath,
   };
+}
+
+function windowStartupFailureFixture(blockedResult = false): {
+  manifestPath: string;
+  resultPath: string;
+} {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-window-startup-failure-'));
+  const manifestPath = join(directory, 'installer.yaml');
+  const resultParent = join(directory, 'result-parent');
+  const resultPath = blockedResult
+    ? join(resultParent, 'result.json')
+    : join(directory, 'result.json');
+  if (blockedResult) {
+    writeFileSync(resultParent, 'occupied', 'utf8');
+  }
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Window startup',
+      '  version: 1.2.3',
+      'inputs:',
+      '  resultDestination:',
+      '    type: secret',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return { manifestPath, resultPath };
 }
