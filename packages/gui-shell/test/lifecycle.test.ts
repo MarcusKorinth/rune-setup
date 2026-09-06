@@ -705,6 +705,61 @@ describe('the GUI shell native window', () => {
 });
 
 describe('windowed result delivery', () => {
+  it('routes renderer cancellation through native close and waits for result delivery', async () => {
+    const { invocation, resultPath, session } = await windowedFixture();
+    const plan = session.plan();
+    const executionStarted = deferred<void>();
+    const cancelRequested = deferred<void>();
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<void>();
+    const cancelled = createFailureResult({
+      error: new CancelledError(),
+      manifestPath: invocation.manifestPath,
+      dryRun: false,
+      session,
+      plan,
+    });
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async () => {
+      executionStarted.resolve();
+      await cancelRequested.promise;
+      return cancelled;
+    });
+    const cancel = vi.spyOn(Session.prototype, 'cancel').mockImplementation(() => {
+      cancelRequested.resolve();
+    });
+    const deliverResult = vi.fn(async (result: RunResult) => {
+      deliveryStarted.resolve();
+      await releaseDelivery.promise;
+      await writeResult(result, resultPath);
+    });
+    electronHarness.duringLoad = async () => {
+      const execution = Promise.resolve(bridgeHandler('rune:execute')());
+      await executionStarted.promise;
+
+      await bridgeHandler('rune:cancel')();
+      expect(electronHarness.closeAttempts).toBe(1);
+      expect(electronHarness.closed).toBe(false);
+
+      await deliveryStarted.promise;
+      expect(existsSync(resultPath)).toBe(false);
+      releaseDelivery.resolve();
+      await execution;
+    };
+
+    await expect(
+      windowedRun(session, invocation, new FakeSigtermSource(), vi.fn(), undefined, deliverResult),
+    ).resolves.toBe(6);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(electronHarness.closed).toBe(true);
+    expect(electronHarness.closeAttempts).toBe(2);
+    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+      status: 'cancelled',
+      exitCode: 6,
+      mode: 'gui',
+    });
+  });
+
   it('keeps rune.execute pending until the configured result exists', async () => {
     const { invocation, resultPath, session } = await windowedFixture();
     const deliveryStarted = deferred<void>();

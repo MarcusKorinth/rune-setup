@@ -148,7 +148,7 @@ async function boot(): Promise<void> {
     }
   });
   el.cancel.addEventListener('click', () => {
-    void window.rune.cancel().then(() => window.close());
+    void window.rune.cancel();
   });
 
   window.rune.onEvent(onRunEvent);

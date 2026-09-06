@@ -371,6 +371,7 @@ export async function windowedRun(
       displayFatal(error, session);
       window.close();
     },
+    onCancelRequested: () => window.close(),
     onRendererDone: () => {
       if (outcome === undefined || deliveryPending) {
         return;
@@ -478,6 +479,7 @@ export function registerBridge(
       plan?: ExecutionPlan,
       terminalResult?: RunResult,
     ) => void | Promise<void>;
+    onCancelRequested?: () => void;
     onRendererDone?: () => void | Promise<void>;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
@@ -513,6 +515,7 @@ export function registerBridge(
   handle('rune:warnings', () => projectWarnings(session.warnings(), session.getStrings()));
   handle('rune:cancel', () => {
     session.cancel();
+    hooks.onCancelRequested?.();
     return undefined;
   });
   handle('rune:execute', async () => {

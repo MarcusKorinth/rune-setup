@@ -366,6 +366,30 @@ describe('the IPC bridge', () => {
     expect(bridge.channels.sort()).toEqual([...BRIDGE_CHANNELS].sort());
   });
 
+  it('notifies the host after requesting Session cancellation', async () => {
+    const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
+    const calls: string[] = [];
+    const cancel = vi.spyOn(Session.prototype, 'cancel').mockImplementation(() => {
+      calls.push('cancel');
+    });
+    const onCancelRequested = vi.fn(() => {
+      calls.push('host');
+    });
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerBridge(
+      session,
+      { events: { send: () => undefined }, onCancelRequested },
+      (channel, handler) => handlers.set(channel, handler),
+    );
+
+    await handlers.get('rune:cancel')?.();
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(onCancelRequested).toHaveBeenCalledOnce();
+    expect(calls).toEqual(['cancel', 'host']);
+    cancel.mockRestore();
+  });
+
   it('uses the engine structured projections for successful returns', async () => {
     const manifestPath = fixture();
     const session = await Session.open(manifestPath, {
