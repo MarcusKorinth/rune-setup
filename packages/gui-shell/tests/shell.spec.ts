@@ -39,6 +39,7 @@ interface SummaryTestControl {
 interface InputRaceTestControl {
   submissionCount(): number;
   rejectSubmission(index: number): void;
+  resolveSubmission(index: number): void;
 }
 
 interface SmokeRunResult {
@@ -167,15 +168,14 @@ test('runs the real windowed shell through Result and exits successfully', async
     await next.click();
     await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
 
-    const result = await readSmokeResult(resultPath);
-    expect(result).toMatchObject({ exitCode: 0, mode: 'gui', status: 'succeeded' });
-    expect(result.steps).toMatchObject([{ id: 'execution-smoke', state: 'SUCCEEDED' }]);
-
     const exited = new Promise<number | null>((resolve) => {
       application?.process().once('exit', resolve);
     });
     await next.click();
     expect(await exited).toBe(0);
+    const result = await readSmokeResult(resultPath);
+    expect(result).toMatchObject({ exitCode: 0, mode: 'gui', status: 'succeeded' });
+    expect(result.steps).toMatchObject([{ id: 'execution-smoke', state: 'SUCCEEDED' }]);
     application = undefined;
   } finally {
     if (application !== undefined) {
@@ -313,8 +313,35 @@ test('blocks Next while the engine is validating an edited input', async () => {
     );
     await expect(field).toHaveClass(/invalid/);
     await expect(field.locator('.error')).toHaveText('Use uppercase letters');
+    await expect(field.locator('input')).toHaveValue('bad');
     await expect(next).toBeDisabled();
     await expect(page.locator('.result-heading')).toHaveCount(0);
+
+    await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      const nextButton = document.querySelector('#next');
+      if (!(input instanceof HTMLInputElement) || !(nextButton instanceof HTMLButtonElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'GOOD';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(2);
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.resolveSubmission(1),
+    );
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
   } finally {
     await application?.close();
   }

@@ -66,5 +66,5 @@ describe('import boundaries (dependency-cruiser gate)', () => {
     expect(cli, 'packages/cli/src/cli.ts must be part of the cruise').toBeDefined();
     expect(cli?.dependencies.map((d) => d.resolved)).toContain('packages/engine/src/index.ts');
     expect(cli?.dependencies.some((d) => d.couldNotResolve)).toBe(false);
-  }, 90_000);
+  }, 60_000);
 });

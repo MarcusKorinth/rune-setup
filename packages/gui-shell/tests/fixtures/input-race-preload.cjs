@@ -63,4 +63,11 @@ contextBridge.exposeInMainWorld('inputRaceTestControl', {
     }
     submission.reject(new Error('Use uppercase letters'));
   },
+  resolveSubmission: (index) => {
+    const submission = pendingSetValues[index];
+    if (submission === undefined) {
+      throw new Error(`no pending submission at index ${index}`);
+    }
+    submission.resolve([]);
+  },
 });

@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { formatIssues, ManifestError } from '../../src/errors.js';
-import { loadYamlFile, loadYamlText, MAX_DOCUMENT_BYTES } from '../../src/manifest/loader.js';
+import {
+  loadYamlFile,
+  loadYamlFileAsync,
+  loadYamlText,
+  MAX_DOCUMENT_BYTES,
+} from '../../src/manifest/loader.js';
 
 function tempFile(name: string, contents: Buffer | string): string {
   const dir = mkdtempSync(join(tmpdir(), 'rune-loader-'));
@@ -15,10 +20,19 @@ function tempFile(name: string, contents: Buffer | string): string {
 }
 
 describe('loadYamlText', () => {
+  it('hashes the UTF-8 bytes of the exact text source', () => {
+    const document = loadYamlText('a: 1\n', 'f.yaml');
+
+    expect(document.sha256).toBe(
+      '37b128c59f1f5097f73f82691cb519f1f568667faab5ced1b4ab979d36837eae',
+    );
+  });
+
   it('parses plain YAML into plain data', () => {
-    const { value } = loadYamlText('a: 1\nb: [x, y]\nc: { d: true }\n', 'f.yaml');
+    const { value, isEmpty } = loadYamlText('a: 1\nb: [x, y]\nc: { d: true }\n', 'f.yaml');
 
     expect(value).toEqual({ a: 1, b: ['x', 'y'], c: { d: true } });
+    expect(isEmpty).toBe(false);
   });
 
   it('reports a syntax error with its position', () => {
@@ -168,9 +182,31 @@ describe('loadYamlText', () => {
     expect(() => loadYamlText('a: 1\n---\nb: 2\n', 'f.yaml')).toThrow(ManifestError);
   });
 
-  it('returns null for an empty document', () => {
-    expect(loadYamlText('', 'f.yaml').value).toBeNull();
-    expect(loadYamlText('# just a comment\n', 'f.yaml').value).toBeNull();
+  it.each([
+    ['empty', ''],
+    ['comment-only', '# just a comment\n'],
+    ['marker-only', '---\n'],
+    ['directive and marker-only', '%YAML 1.2\n---'],
+  ])('marks a %s document as empty', (_name, text) => {
+    const document = loadYamlText(text, 'f.yaml');
+
+    expect(document.value).toBeNull();
+    expect(document.isEmpty).toBe(true);
+  });
+
+  it.each([
+    ['explicit null', 'null\n'],
+    ['explicit tilde null', '~\n'],
+    ['marked explicit null', '---\nnull\n'],
+    ['anchored null', '&a null\n'],
+    ['anchored empty scalar', '&a\n'],
+    ['tagged null', '!!null null\n'],
+    ['tagged empty scalar', '!!null\n'],
+  ])('does not mark %s as empty', (_name, text) => {
+    const document = loadYamlText(text, 'f.yaml');
+
+    expect(document.value).toBeNull();
+    expect(document.isEmpty).toBe(false);
   });
 });
 
@@ -220,16 +256,79 @@ describe('source map', () => {
 });
 
 describe('loadYamlFile', () => {
+  it('keeps asynchronous decoding, parsing, hashing, and source locations identical', async () => {
+    const path = tempFile('async.yaml', Buffer.from('\uFEFFa:\r\n  b: 1\r\n', 'utf8'));
+
+    const synchronous = loadYamlFile('shown.yaml', path);
+    const asynchronous = await loadYamlFileAsync('shown.yaml', path);
+
+    expect(asynchronous.value).toEqual(synchronous.value);
+    expect(asynchronous.sha256).toBe(synchronous.sha256);
+    expect(asynchronous.isEmpty).toBe(synchronous.isEmpty);
+    expect(asynchronous.sourceMap.location(['a', 'b'])).toEqual(
+      synchronous.sourceMap.location(['a', 'b']),
+    );
+  });
+
+  it.each([
+    {
+      name: 'missing',
+      path: () => join(mkdtempSync(join(tmpdir(), 'rune-loader-')), 'missing.yaml'),
+    },
+    {
+      name: 'not a file',
+      path: () => mkdtempSync(join(tmpdir(), 'rune-loader-')),
+    },
+    {
+      name: 'too large',
+      path: () => tempFile('huge-async.yaml', Buffer.alloc(MAX_DOCUMENT_BYTES + 1, 0x20)),
+    },
+    {
+      name: 'invalid UTF-8',
+      path: () => tempFile('latin1-async.yaml', Buffer.from([0x61, 0x3a, 0x20, 0xff, 0x0a])),
+    },
+  ])('matches synchronous error semantics for $name input', async ({ path: makePath }) => {
+    const path = makePath();
+    let synchronous: ManifestError | undefined;
+    try {
+      loadYamlFile('shown.yaml', path);
+    } catch (error) {
+      synchronous = error as ManifestError;
+    }
+
+    let asynchronous: ManifestError | undefined;
+    try {
+      await loadYamlFileAsync('shown.yaml', path);
+    } catch (error) {
+      asynchronous = error as ManifestError;
+    }
+
+    expect(asynchronous).toBeInstanceOf(ManifestError);
+    expect({
+      code: asynchronous?.code,
+      message: asynchronous?.message,
+      issues: asynchronous?.issues,
+    }).toEqual({
+      code: synchronous?.code,
+      message: synchronous?.message,
+      issues: synchronous?.issues,
+    });
+  });
+
   it('reads a file from disk', () => {
     const path = tempFile('installer.yaml', 'a: 1\n');
 
     expect(loadYamlFile(path).value).toEqual({ a: 1 });
   });
 
-  it('strips a byte-order mark', () => {
-    const path = tempFile('bom.yaml', Buffer.from('\uFEFFa: 1\n', 'utf8'));
+  it('strips a byte-order mark for parsing but hashes the exact BOM and CRLF bytes', () => {
+    const path = tempFile('bom.yaml', Buffer.from('\uFEFFa: 1\r\n', 'utf8'));
+    const document = loadYamlFile(path);
 
-    expect(loadYamlFile(path).value).toEqual({ a: 1 });
+    expect(document.value).toEqual({ a: 1 });
+    expect(document.sha256).toBe(
+      'd154b5589a138ef7a6ff502ecf270b04afa5eb5c56fb398f5cfe9a055a33316d',
+    );
   });
 
   it('refuses input that is not valid UTF-8 instead of substituting characters', () => {

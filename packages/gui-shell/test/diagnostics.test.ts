@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ExecutionError, Session } from '@rune/engine';
+import { ExecutionError, Session, type RunEvent, type RunResult } from '@rune/engine';
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -136,16 +136,19 @@ describe('the GUI shell stderr diagnostics', () => {
       environment: {},
       mode: 'non-interactive',
       overrides: { token: secret },
-      runner: {
-        run: async (request) => {
-          request.onOutput('stdout', `stdout ${secret}`);
-          request.onOutput('stderr', `stderr ${secret}`);
-          return { kind: 'exited', exitCode: 0 };
-        },
-      },
     });
+    mockSuccessfulExecution(session, [
+      { stream: 'stdout', line: `stdout ${secret}` },
+      { stream: 'stderr', line: `stderr ${secret}` },
+    ]);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: unknown,
+      callback: () => void,
+    ) => {
+      callback();
+      return true;
+    }) as typeof process.stdout.write);
 
     await expect(headlessRun(session, { ...invocation(manifestPath), result: '-' })).resolves.toBe(
       0,
@@ -203,12 +206,10 @@ describe('the GUI shell stderr diagnostics', () => {
       environment: {},
       mode: 'non-interactive',
       overrides: { token: 'headless-secret' },
-      runner: {
-        run: async () => {
-          throw new Error('runner rejected headless-secret');
-        },
-      },
     });
+    vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
+      new Error('runner rejected headless-secret'),
+    );
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     await expect(headlessRun(session, invocation(manifestPath))).resolves.toBe(70);
@@ -265,14 +266,12 @@ describe('the GUI shell stderr diagnostics', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
-      if (execute === undefined) {
-        throw new Error('the execute handler was not registered');
+      const done = electronHarness.handlers.get('rune:done');
+      if (execute === undefined || done === undefined) {
+        throw new Error('the execute or done handler was not registered');
       }
-      try {
-        await execute();
-      } catch {
-        // The bridge also rejects to the renderer; main has already handled the fatal error.
-      }
+      await execute();
+      await done();
     };
 
     await main([
@@ -284,12 +283,12 @@ describe('the GUI shell stderr diagnostics', () => {
     ]);
 
     const output = stderr.mock.calls.map(([text]) => String(text)).join('');
-    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(app.exit).toHaveBeenCalledWith(1);
     expect(output).toContain('blocked-***');
     expect(output).not.toContain(secret);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     const dialogText = String(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]);
-    expect(dialogText).toContain('RUNE-500 (exit 70)');
+    expect(dialogText).toContain('RUNE-407 (exit 1)');
     expect(dialogText).toContain('blocked-***');
     expect(dialogText).not.toContain(secret);
   });
@@ -310,13 +309,13 @@ describe('the GUI shell stderr diagnostics', () => {
 
     const output = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(app.exit).toHaveBeenCalledOnce();
-    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(app.exit).toHaveBeenCalledWith(1);
     expect(output).toContain('blocked-***');
     expect(output).not.toContain(secret);
     expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     const dialogText = String(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]);
-    expect(dialogText).toContain('RUNE-500 (exit 70)');
+    expect(dialogText).toContain('RUNE-407 (exit 1)');
     expect(dialogText).toContain('blocked-***');
     expect(dialogText).not.toContain(secret);
   });
@@ -361,19 +360,17 @@ describe('the GUI shell stderr diagnostics', () => {
     const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'gui',
-      runner: {
-        run: async (request) => {
-          order.push('started');
-          started.resolve();
-          request.cancel.onCancel(() => {
-            order.push('cancelled');
-            cancelled.resolve();
-          });
-          return settlement.promise;
-        },
-      },
     });
-    const cancel = vi.spyOn(session, 'cancel');
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async () => {
+      order.push('started');
+      started.resolve();
+      await settlement.promise;
+      return session.describe();
+    });
+    const cancel = vi.spyOn(Session.prototype, 'cancel').mockImplementation(() => {
+      order.push('cancelled');
+      cancelled.resolve();
+    });
     vi.spyOn(Session, 'open').mockResolvedValue(session);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     electronHarness.onClosed = () => order.push('closed');
@@ -434,6 +431,67 @@ function invocation(manifestPath: string): ShellInvocation {
     logFile: undefined,
     nonInteractive: true,
   };
+}
+
+function mockSuccessfulExecution(
+  session: Session,
+  output: readonly { readonly stream: 'stdout' | 'stderr'; readonly line: string }[],
+): void {
+  const plan = session.plan();
+  const described = session.describe();
+  const steps = described.steps.map((step) =>
+    step.state === 'PENDING'
+      ? { ...step, state: 'SUCCEEDED' as const, exitCode: 0, durationMs: 1 }
+      : step,
+  );
+  const succeeded = steps.filter((step) => step.state === 'SUCCEEDED').length;
+  const result = {
+    ...described,
+    status: 'succeeded',
+    exitCode: 0,
+    dryRun: false,
+    error: null,
+    steps,
+    stepsExecuted: succeeded,
+    stepsSucceeded: succeeded,
+    stepsNotRun: 0,
+    nothingExecuted: succeeded === 0,
+  } as RunResult;
+
+  vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+    observer?.({ kind: 'runStarted', plan });
+    for (const [index, step] of plan.steps.entries()) {
+      if (step.state === 'SKIPPED') {
+        observer?.({
+          kind: 'stepFinished',
+          stepId: step.id,
+          state: step.state,
+          exitCode: undefined,
+          durationMs: 0,
+        });
+        continue;
+      }
+      observer?.({
+        kind: 'stepStarted',
+        stepId: step.id,
+        index,
+        total: plan.steps.length,
+        title: step.title,
+      });
+      for (const line of output) {
+        observer?.({ kind: 'stepOutput', stepId: step.id, ...line } as RunEvent);
+      }
+      observer?.({
+        kind: 'stepFinished',
+        stepId: step.id,
+        state: 'SUCCEEDED',
+        exitCode: 0,
+        durationMs: 1,
+      });
+    }
+    observer?.({ kind: 'runFinished', result });
+    return result;
+  });
 }
 
 function deferred<T>(): {

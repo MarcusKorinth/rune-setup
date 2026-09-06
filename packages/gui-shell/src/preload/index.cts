@@ -51,6 +51,7 @@ export function buildBridge(ipc: BridgeIpc): RuneBridge {
         readonly { inputId: string; enabled: boolean }[]
       >,
     plan: () => ipc.invoke('rune:plan') as Promise<BridgePlan>,
+    describe: () => ipc.invoke('rune:describe') as Promise<BridgeResult>,
     execute: () => ipc.invoke('rune:execute') as Promise<BridgeResult>,
     cancel: () => ipc.invoke('rune:cancel') as Promise<void>,
     getStrings: () => ipc.invoke('rune:getStrings') as Promise<Readonly<Record<string, string>>>,

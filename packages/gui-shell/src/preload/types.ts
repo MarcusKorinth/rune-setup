@@ -15,6 +15,7 @@ export interface RuneBridge {
   allInputs(): Promise<readonly BridgeInput[]>;
   setValue(id: string, raw: unknown): Promise<readonly { inputId: string; enabled: boolean }[]>;
   plan(): Promise<BridgePlan>;
+  describe(): Promise<BridgeResult>;
   execute(): Promise<BridgeResult>;
   cancel(): Promise<void>;
   getStrings(): Promise<Readonly<Record<string, string>>>;
@@ -30,7 +31,7 @@ export type BridgeValueSource = 'default' | 'values' | 'environment' | 'set' | '
 
 export interface BridgeInputRejection {
   readonly source: BridgeValueSource;
-  readonly problem: {
+  readonly issue: {
     readonly code: 'RUNE-202';
     readonly message: string;
     readonly location?: { readonly file: string; readonly line: number; readonly column: number };
@@ -45,53 +46,32 @@ export type BridgeInputType =
 export type BridgeOption = string | { readonly value: string; readonly label: string };
 
 interface BridgeInputSpecBase {
-  readonly title?: string;
-  readonly description?: string;
   readonly required: boolean;
-  readonly when?: string;
 }
 
 export type BridgeInputSpec =
   | (BridgeInputSpecBase & {
       readonly type: 'text';
-      readonly default?: string;
-      readonly pattern?: string;
-      readonly patternHint?: string;
       readonly options?: never;
     })
   | (BridgeInputSpecBase & {
       readonly type: 'secret';
-      readonly default?: never;
-      readonly pattern?: never;
-      readonly patternHint?: never;
       readonly options?: never;
     })
   | (BridgeInputSpecBase & {
       readonly type: 'boolean';
-      readonly default?: boolean;
-      readonly pattern?: never;
-      readonly patternHint?: never;
       readonly options?: never;
     })
   | (BridgeInputSpecBase & {
       readonly type: 'select';
-      readonly default?: string;
-      readonly pattern?: never;
-      readonly patternHint?: never;
-      readonly options: readonly BridgeOption[];
+      readonly options: readonly string[];
     })
   | (BridgeInputSpecBase & {
       readonly type: 'multiselect';
-      readonly default?: readonly string[];
-      readonly pattern?: never;
-      readonly patternHint?: never;
-      readonly options: readonly BridgeOption[];
+      readonly options: readonly string[];
     })
   | (BridgeInputSpecBase & {
       readonly type: 'file' | 'directory';
-      readonly default?: string;
-      readonly pattern?: never;
-      readonly patternHint?: never;
       readonly options?: never;
     });
 
@@ -134,7 +114,7 @@ export type BridgeInput =
 /** JSON-safe projection of the frozen ExecutionPlan returned by Session.plan(). */
 export interface BridgePlan {
   readonly manifestPath: string;
-  readonly locale?: string;
+  readonly locale: string | null;
   readonly platform: 'windows' | 'linux';
   readonly preview: boolean;
   readonly failFast: boolean;
@@ -205,7 +185,7 @@ export type BridgeRunMode = 'gui' | 'interactive' | 'non-interactive';
 
 /** The complete plain-data RunResult that already crosses the bridge. */
 export interface BridgeResult {
-  readonly resultSchemaVersion: 1;
+  readonly resultSchemaVersion: 2;
   readonly id: string;
   readonly status: BridgeRunStatus;
   readonly exitCode: number;
@@ -218,8 +198,21 @@ export interface BridgeResult {
   readonly finishedAt: string;
   readonly durationMs: number;
   readonly runeVersion: string;
-  readonly product: { readonly name: string; readonly version: string };
-  readonly manifestPath: string;
+  readonly product: { readonly name: string; readonly version: string } | null;
+  readonly manifest: {
+    readonly path: string;
+    readonly sha256: string | null;
+    readonly schemaVersion: number | null;
+  };
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly location: {
+      readonly file: string;
+      readonly line: number;
+      readonly column: number;
+    } | null;
+  } | null;
   readonly stepsTotal: number;
   readonly stepsExecuted: number;
   readonly stepsSucceeded: number;

@@ -7,11 +7,31 @@
 import { createInterface, type Interface } from 'node:readline';
 import { Writable } from 'node:stream';
 
-import { CancelledError, InputError } from '@rune/engine';
-import type { InputState, Session, StringTable } from '@rune/engine';
+import {
+  CancelledError,
+  formatRuneError,
+  formatSessionTerminalLine,
+  InputError,
+  InternalError,
+} from '@rune/engine';
+import type {
+  CancelToken,
+  ExecutionPlan,
+  InputState,
+  InputType,
+  Session,
+  StringTable,
+} from '@rune/engine';
 
-import type { CliIo } from './io.js';
+import { sessionHumanStderr, type CliIo } from './io.js';
 import { renderPlan } from './render.js';
+
+const MASK = '***';
+const SUMMARY_ACTION_FALLBACKS = Object.freeze({ proceed: 'p', cancel: 'c' });
+const SUMMARY_ACTIONS = Object.freeze({
+  proceed: Object.freeze({ alias: 'proceed', tokenKey: 'rune.summary.proceedToken' as const }),
+  cancel: Object.freeze({ alias: 'cancel', tokenKey: 'rune.summary.cancelToken' as const }),
+});
 
 /** Where the prompter reads and writes — injected, so tests can script a whole session. */
 export interface Interaction {
@@ -19,8 +39,58 @@ export interface Interaction {
   readonly isTTY: boolean;
   /** Raw prompt text, no implied newline — stderr in the real process. */
   write(text: string): void;
-  /** The documented second-Ctrl+C force quit (§9.3); `process.exit` in the real process. */
-  forceExit(code: number): void;
+}
+
+/** Everything the readline layer needs to render and ask one input question. */
+export interface CliPromptPresentation {
+  readonly lines: readonly string[];
+  readonly question: string;
+  readonly muted: boolean;
+}
+
+/** Presentation-only counterpart of one engine input type (docs/architecture.md §13). */
+export interface CliPromptPresenter {
+  readonly name: InputType;
+  present(state: InputState, strings: StringTable): CliPromptPresentation;
+}
+
+/** The CLI's explicit name-to-presenter registry; it never validates input values. */
+export class CliPromptRegistry {
+  readonly #presenters = new Map<string, CliPromptPresenter>();
+
+  constructor(presenters: Iterable<CliPromptPresenter> = []) {
+    for (const presenter of presenters) {
+      this.register(presenter);
+    }
+  }
+
+  register(presenter: CliPromptPresenter): void {
+    if (this.#presenters.has(presenter.name)) {
+      throw new InternalError(
+        `the CLI prompt presenter for input type "${presenter.name}" is registered twice`,
+      );
+    }
+    this.#presenters.set(presenter.name, presenter);
+  }
+
+  get(name: string): CliPromptPresenter {
+    const presenter = this.#presenters.get(name);
+    if (presenter === undefined) {
+      throw new InternalError(`no CLI prompt presenter is registered for input type "${name}"`);
+    }
+    return presenter;
+  }
+
+  names(): readonly string[] {
+    return [...this.#presenters.keys()];
+  }
+
+  /** The fail-fast session-open check required by docs/architecture.md §9.3. */
+  assertPresentable(states: Iterable<InputState>): void {
+    for (const state of states) {
+      this.get(state.spec.type);
+    }
+  }
 }
 
 /** A writable readline can echo through, with a switch for the muted secret echo. */
@@ -47,27 +117,65 @@ class MutedOutput extends Writable {
 
 export class Prompter {
   readonly #interaction: Interaction;
+  readonly #inputEndedMessage: string;
+  readonly #cancel: CancelToken | undefined;
+  readonly #onInterrupt: (() => void) | undefined;
   readonly #output: MutedOutput;
   #rl: Interface | undefined;
   #reject: ((error: Error) => void) | undefined;
+  #disposeCancel: (() => void) | undefined;
+  #inputEnded = false;
 
-  constructor(interaction: Interaction) {
+  constructor(
+    interaction: Interaction,
+    inputEndedMessage: string,
+    cancel?: CancelToken,
+    onInterrupt?: () => void,
+  ) {
     this.#interaction = interaction;
+    this.#inputEndedMessage = inputEndedMessage;
+    this.#cancel = cancel;
+    this.#onInterrupt = onInterrupt;
     this.#output = new MutedOutput(interaction.write);
   }
 
   /** Asks one question; `muted` suppresses the echo while a secret is typed. */
   ask(question: string, muted = false): Promise<string> {
+    if (this.#cancel?.isCancelled === true) {
+      return Promise.reject(new CancelledError());
+    }
+    if (this.#inputEnded) {
+      return Promise.reject(new CancelledError(this.#inputEndedMessage));
+    }
     const rl = this.#interface();
     const promise = new Promise<string>((resolve, reject) => {
-      this.#reject = reject;
-      rl.question(question, (answer) => {
+      let settled = false;
+      const settle = (): boolean => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
         this.#output.muted = false;
         this.#reject = undefined;
-        if (muted) {
-          this.#interaction.write('\n');
+        this.#disposeCancel?.();
+        this.#disposeCancel = undefined;
+        return true;
+      };
+      this.#reject = (error) => {
+        if (settle()) {
+          reject(error);
         }
-        resolve(answer);
+      };
+      rl.question(question, (answer) => {
+        if (settle()) {
+          if (muted) {
+            this.#interaction.write('\n');
+          }
+          resolve(answer);
+        }
+      });
+      this.#disposeCancel = this.#cancel?.onCancel(() => {
+        this.#reject?.(new CancelledError());
       });
     });
     // The question text is already written; only the typed characters stay dark.
@@ -83,6 +191,8 @@ export class Prompter {
   close(): void {
     this.#rl?.close();
     this.#rl = undefined;
+    this.#disposeCancel?.();
+    this.#disposeCancel = undefined;
   }
 
   #interface(): Interface {
@@ -91,24 +201,77 @@ export class Prompter {
         input: this.#interaction.input,
         output: this.#output,
         terminal: this.#interaction.isTTY,
+        historySize: 0,
       });
       // Ctrl+C during a prompt, and a script that ran out of answers, both mean: stop.
       this.#rl.on('SIGINT', () => {
         this.#output.muted = false;
+        if (this.#onInterrupt === undefined) {
+          this.#cancel?.cancel();
+        } else {
+          this.#onInterrupt();
+        }
         this.#reject?.(new CancelledError());
       });
       this.#rl.on('close', () => {
+        this.#inputEnded = true;
         this.#output.muted = false;
-        this.#reject?.(new CancelledError('input ended before every question was answered'));
+        this.#reject?.(new CancelledError(this.#inputEndedMessage));
       });
     }
     return this.#rl;
   }
 }
 
+function basePresentation(
+  state: InputState,
+  strings: StringTable,
+  typeLines: readonly string[] = [],
+  muted = false,
+): CliPromptPresentation {
+  const description = strings.inputDescription(state.id);
+  return {
+    lines: description === undefined ? typeLines : [description, ...typeLines],
+    question: `${strings.chrome('rune.prompt.value', { title: strings.inputTitle(state.id) })}: `,
+    muted,
+  };
+}
+
+function optionPresentation(state: InputState, strings: StringTable): CliPromptPresentation {
+  const spec = state.spec;
+  if (spec.type !== 'select' && spec.type !== 'multiselect') {
+    throw new InternalError(
+      `the CLI option presenter received the input type "${spec.type}" for "${state.id}"`,
+    );
+  }
+  const lines = spec.options.map((option) => {
+    const value = option;
+    return `  - ${strings.optionLabel(state.id, value)} (${value})`;
+  });
+  lines.push(
+    strings.chrome(spec.type === 'select' ? 'rune.prompt.selectOne' : 'rune.prompt.selectMany'),
+  );
+  return basePresentation(state, strings, lines);
+}
+
+/** Exactly the seven public MVP input types, each registered deliberately. */
+export const cliPromptPresenters = new CliPromptRegistry([
+  { name: 'text', present: (state, strings) => basePresentation(state, strings) },
+  { name: 'secret', present: (state, strings) => basePresentation(state, strings, [], true) },
+  {
+    name: 'boolean',
+    present: (state, strings) =>
+      basePresentation(state, strings, [strings.chrome('rune.prompt.boolean')]),
+  },
+  { name: 'select', present: optionPresentation },
+  { name: 'multiselect', present: optionPresentation },
+  { name: 'file', present: (state, strings) => basePresentation(state, strings) },
+  { name: 'directory', present: (state, strings) => basePresentation(state, strings) },
+]);
+
 /**
- * Prompts for every pending input, in declaration order, until nothing is missing or
- * rejected. A rejected answer re-prompts with the message and `patternHint` (§9.3).
+ * Prompts for every pending input, in declaration order, until nothing is missing. A
+ * rejected value re-prompts with the engine-owned diagnostic (§9.3).
  */
 export async function promptForInputs(session: Session, prompter: Prompter): Promise<void> {
   const strings = session.getStrings();
@@ -131,46 +294,69 @@ export async function summaryLoop(
   session: Session,
   prompter: Prompter,
   io: CliIo,
+  spelled: { readonly manifestPath: string; readonly logFile: string | undefined },
+  publishPlan: (plan: ExecutionPlan | undefined) => void,
 ): Promise<'proceed' | 'cancel'> {
   const strings = session.getStrings();
   // The summary is a prompt, not requested machine output — everything goes to stderr.
   const stderrOnly: CliIo = { stdout: io.stderr, stderr: io.stderr };
 
   for (;;) {
-    io.stderr('');
-    io.stderr(strings.chrome('rune.summary.heading'));
-    renderPlan(session.describe(), stderrOnly);
+    sessionHumanStderr(io, strings, '');
+    sessionHumanStderr(io, strings, strings.chrome('rune.summary.heading'));
+    const plan = session.plan();
+    publishPlan(plan);
+    renderPlan(plan, session.manifest.product, spelled, stderrOnly, strings);
     const editable = session.allInputs().filter((state) => state.enabled);
     editable.forEach((state, index) => {
-      io.stderr(
+      sessionHumanStderr(
+        io,
+        strings,
         `  ${index + 1}) ${strings.inputTitle(state.id)} = ${displayValue(state, strings)}`,
       );
     });
 
-    const choice = (
-      await prompter.ask(
-        `${strings.chrome('rune.summary.proceed')} (p) / ` +
-          `${strings.chrome('rune.summary.change')} <n> / ` +
-          `${strings.chrome('rune.summary.cancel')} (c): `,
-      )
-    )
-      .trim()
-      .toLowerCase();
-
-    if (choice === 'p' || choice === 'proceed' || choice === '') {
-      return 'proceed';
+    let proceedToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.proceed.tokenKey));
+    let cancelToken = normalizeSummaryChoice(strings.chrome(SUMMARY_ACTIONS.cancel.tokenKey));
+    if (proceedToken === cancelToken) {
+      proceedToken = SUMMARY_ACTION_FALLBACKS.proceed;
+      cancelToken = SUMMARY_ACTION_FALLBACKS.cancel;
     }
-    if (choice === 'c' || choice === 'cancel') {
-      return 'cancel';
+    for (;;) {
+      const rawChoice = await prompter.ask(
+        formatSessionTerminalLine(
+          strings,
+          `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
+            `${strings.chrome('rune.summary.change')} <n> / ` +
+            `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
+        ),
+      );
+      const choice = normalizeSummaryChoice(rawChoice);
+      if (choice === proceedToken || choice === SUMMARY_ACTIONS.proceed.alias) {
+        return 'proceed';
+      }
+      if (choice === cancelToken || choice === SUMMARY_ACTIONS.cancel.alias) {
+        return 'cancel';
+      }
+      const index = /^\d+$/.test(choice) ? Number(choice) : Number.NaN;
+      const chosen = Number.isSafeInteger(index) && index > 0 ? editable[index - 1] : undefined;
+      if (chosen === undefined) {
+        sessionHumanStderr(
+          io,
+          strings,
+          strings.chrome('rune.summary.invalidChoice', {
+            choice: rawChoice,
+            proceed: proceedToken,
+            cancel: cancelToken,
+          }),
+        );
+        continue;
+      }
+      await askUntilAccepted(session, chosen, strings, prompter);
+      publishPlan(undefined);
+      await promptForInputs(session, prompter);
+      break;
     }
-    const index = Number.parseInt(choice, 10);
-    const chosen = editable[index - 1];
-    if (Number.isNaN(index) || chosen === undefined) {
-      io.stderr(strings.chrome('rune.summary.invalidChoice', { choice }));
-      continue;
-    }
-    await askUntilAccepted(session, chosen, strings, prompter);
-    await promptForInputs(session, prompter);
   }
 }
 
@@ -180,9 +366,18 @@ async function askUntilAccepted(
   strings: StringTable,
   prompter: Prompter,
 ): Promise<void> {
-  const question = questionFor(state, strings, prompter);
+  const presentation = cliPromptPresenters.get(state.spec.type).present(state, strings);
+  for (const line of presentation.lines) {
+    prompter.say(formatSessionTerminalLine(strings, line));
+  }
+  if (state.rejection !== undefined) {
+    prompter.say(formatSessionTerminalLine(strings, state.rejection.issue.message));
+  }
   for (;;) {
-    const raw = await prompter.ask(question, state.spec.type === 'secret');
+    const raw = await prompter.ask(
+      formatSessionTerminalLine(strings, presentation.question),
+      presentation.muted,
+    );
     try {
       session.setValue(state.id, raw);
       return;
@@ -190,49 +385,25 @@ async function askUntilAccepted(
       if (!(error instanceof InputError)) {
         throw error;
       }
-      prompter.say(error.message);
-      const hint = strings.patternHint(state.id);
-      if (hint !== undefined) {
-        prompter.say(hint);
-      }
+      prompter.say(formatSessionTerminalLine(strings, formatRuneError(error)));
     }
   }
 }
 
-function questionFor(state: InputState, strings: StringTable, prompter: Prompter): string {
-  const title = strings.inputTitle(state.id);
-  const lines: string[] = [];
-  const description = strings.inputDescription(state.id);
-  if (description !== undefined) {
-    lines.push(description);
-  }
-  const spec = state.spec;
-  if (spec.type === 'select' || spec.type === 'multiselect') {
-    for (const option of spec.options) {
-      const value = typeof option === 'string' ? option : option.value;
-      lines.push(`  - ${strings.optionLabel(state.id, value)} (${value})`);
-    }
-    lines.push(
-      strings.chrome(spec.type === 'select' ? 'rune.prompt.selectOne' : 'rune.prompt.selectMany'),
-    );
-  }
-  if (spec.type === 'boolean') {
-    lines.push(strings.chrome('rune.prompt.boolean'));
-  }
-  for (const line of lines) {
-    prompter.say(line);
-  }
-  return `${strings.chrome('rune.prompt.value', { title })}: `;
+function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
 }
 
 function displayValue(state: InputState, strings: StringTable): string {
-  const value = state.value;
-  if (value === undefined) {
-    return strings.chrome('rune.summary.notSet');
+  if (state.secret) {
+    return MASK;
   }
+  const value = state.value;
   if (Array.isArray(value)) {
     return value.join(', ');
   }
-  // A SecretString renders itself as *** — exactly what a summary should show.
+  if (value === undefined) {
+    return strings.chrome('rune.summary.notSet');
+  }
   return String(value);
 }

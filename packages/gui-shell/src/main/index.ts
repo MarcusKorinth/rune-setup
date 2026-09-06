@@ -23,8 +23,10 @@ import {
   RUNE_VERSION,
   RuneError,
   Session,
+  createFailureResult,
   exitCodeFor,
   formatIssues,
+  formatSessionTerminalLine,
   serializeResult,
   writeResult,
   type RunEvent,
@@ -33,7 +35,7 @@ import {
 } from '@rune/engine';
 
 import { parseShellArgv, type ShellInvocation } from './argv.js';
-import { project, projectEvent, projectPlan, projectTheme } from './serialize.js';
+import { project, projectEvent, projectPlan, projectResult, projectTheme } from './serialize.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -42,6 +44,7 @@ export const BRIDGE_CHANNELS = [
   'rune:allInputs',
   'rune:setValue',
   'rune:plan',
+  'rune:describe',
   'rune:execute',
   'rune:cancel',
   'rune:getStrings',
@@ -168,6 +171,9 @@ async function openSession(invocation: ShellInvocation): Promise<Session> {
     overrides: invocation.overrides,
     locale: invocation.locale,
     logFile: invocation.logFile,
+    ...(invocation.result === undefined || invocation.result === '-'
+      ? {}
+      : { resultDestination: invocation.result }),
     mode: invocation.nonInteractive ? 'non-interactive' : 'gui',
   });
 }
@@ -195,19 +201,33 @@ async function executeHeadless(
   invocation: ShellInvocation,
   cancel: CancelToken,
 ): Promise<number> {
+  let terminalResult: RunResult | undefined;
+  let result: RunResult;
   try {
-    const result = await session.execute(shellProgressObserver(session), cancel);
-    for (const warning of session.warnings()) {
-      writeSessionDiagnostic(session, `warning: ${warning}`);
-    }
-    if (result.nothingExecuted) {
-      writeSessionDiagnostic(session, 'warning: nothing was executed');
-    }
-    deliver(result, invocation);
-    return result.exitCode;
+    const progress = shellProgressObserver(session);
+    result = await session.execute((event) => {
+      if (event.kind === 'runFinished') {
+        terminalResult = event.result;
+      }
+      progress(event);
+    }, cancel);
   } catch (error) {
-    return failWith(error, invocation, session);
+    return failWith(error, invocation, session, terminalResult);
   }
+
+  for (const warning of session.warnings()) {
+    writeSessionDiagnostic(session, `warning: ${warning}`);
+  }
+  if (result.nothingExecuted) {
+    writeSessionDiagnostic(session, 'warning: nothing was executed');
+  }
+  try {
+    await deliver(result, invocation);
+  } catch (error) {
+    writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+    return error instanceof RuneError ? exitCodeFor(error) : 70;
+  }
+  return result.exitCode;
 }
 
 async function windowedRun(
@@ -226,13 +246,19 @@ async function windowedRun(
   let renderedDone = false;
   let rendererGone = false;
   let sigtermRequested = false;
+  let closeFinalizing = false;
+  let delivery: Promise<void> | undefined;
+  const deliverOutcome = (result: RunResult): Promise<void> => {
+    delivery ??= deliver(result, invocation);
+    return delivery;
+  };
 
   registerBridge(session, {
     events: window.webContents,
     onExecuteStart: () => {
       running = true;
     },
-    onExecuteEnd: (result) => {
+    onExecuteEnd: async (result) => {
       running = false;
       if (rendererGone) {
         // A renderer crash is a hard shell failure, not an ordinary cancelled outcome.
@@ -240,13 +266,20 @@ async function windowedRun(
         return;
       }
       outcome = result;
-      deliver(result, invocation);
       if (closeRequested) {
         // The shell finishes its own cancel (§9.4): the close that started it completes.
+        try {
+          await deliverOutcome(result);
+        } catch (error) {
+          outcome = undefined;
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+          displayFatal(error, session);
+        }
         window.close();
       }
     },
-    onExecuteError: (error) => {
+    onExecuteError: async (error) => {
       // Errors from execute are FATAL: main, not the renderer, maps them (§9.2).
       running = false;
       if (rendererGone) {
@@ -254,32 +287,42 @@ async function windowedRun(
         window.close();
         return;
       }
-      writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
-      fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+      fatalCode = await failWith(error, invocation, session);
       displayFatal(error, session);
       window.close();
     },
-    onRendererDone: () => {
+    onRendererDone: async () => {
       renderedDone = true;
+      if (outcome !== undefined) {
+        try {
+          await deliverOutcome(outcome);
+        } catch (error) {
+          outcome = undefined;
+          writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
+          displayFatal(error, session);
+        }
+      }
       window.close();
     },
   });
 
   window.webContents.on('render-process-gone', () => {
-    if (rendererGone) {
+    if (rendererGone || renderedDone) {
       return;
     }
     rendererGone = true;
     const error = new InternalError('the renderer process exited unexpectedly');
     fatalCode = exitCodeFor(error);
     writeSessionDiagnostic(session, describeWindowedFatal(error, session));
-    displayFatal(error, session);
 
     if (running) {
       // Let the engine settle its cooperative cancellation before closing the host window.
       session.cancel();
+      displayFatal(error, session);
       return;
     }
+    displayFatal(error, session);
     window.close();
   });
 
@@ -292,17 +335,24 @@ async function windowedRun(
     }
     if (outcome === undefined && fatalCode === undefined && !renderedDone) {
       // Closed before Proceed: a cancelled result over the plan when one exists (§10).
-      const cancelled = tryDescribeCancelled(session);
-      if (cancelled !== undefined) {
+      event.preventDefault();
+      if (closeFinalizing) {
+        return;
+      }
+      closeFinalizing = true;
+      void (async () => {
         try {
-          deliver(cancelled, invocation);
+          const cancelled = describeCancelled(session, invocation);
+          await deliverOutcome(cancelled);
           outcome = cancelled;
         } catch (error) {
           writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
-          fatalCode = 70;
+          fatalCode = error instanceof RuneError ? exitCodeFor(error) : 70;
           displayFatal(error, session);
+        } finally {
+          window.close();
         }
-      }
+      })();
     }
   });
   const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
@@ -343,18 +393,18 @@ export function registerBridge(
   hooks: {
     events: Pick<WebContents, 'send'>;
     onExecuteStart?: () => void;
-    onExecuteEnd?: (result: RunResult) => void;
-    onExecuteError?: (error: unknown) => void;
-    onRendererDone?: () => void;
+    onExecuteEnd?: (result: RunResult) => void | Promise<void>;
+    onExecuteError?: (error: unknown) => void | Promise<void>;
+    onRendererDone?: () => void | Promise<void>;
   },
   register: (channel: string, handler: (...args: unknown[]) => unknown) => void = (c, h) =>
     ipcMain.handle(c, (_event, ...args: unknown[]) => h(...args)),
 ): void {
-  const mask = (text: string): string => session.mask(text);
+  const mask = (text: string): string => formatSessionTerminalLine(session.getStrings(), text);
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
     register(channel, async (...args: unknown[]) => {
       try {
-        return project(await handler(...args), mask);
+        return project(await handler(...args));
       } catch (error) {
         throw bridgeError(error, mask);
       }
@@ -365,15 +415,16 @@ export function registerBridge(
     runeVersion: RUNE_VERSION,
     inputTypes: [...new Set(Object.values(session.manifest.inputs).map((spec) => spec.type))],
     product: {
-      name: session.manifest.product.name,
-      version: session.manifest.product.version,
+      name: mask(session.manifest.product.name),
+      version: mask(session.manifest.product.version),
     },
   }));
   handle('rune:pendingInputs', () => session.pendingInputs());
   handle('rune:allInputs', () => session.allInputs());
   handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
   handle('rune:plan', () => projectPlan(session.plan(), mask));
-  handle('rune:getStrings', () => Object.fromEntries(session.getStrings().entries));
+  handle('rune:describe', () => projectResult(session.describe(), mask));
+  handle('rune:getStrings', () => session.getStrings().entries);
   handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig(), mask));
   handle('rune:warnings', () => session.warnings());
   handle('rune:cancel', () => {
@@ -393,15 +444,15 @@ export function registerBridge(
           hooks.events.send(EVENT_CHANNEL, projectEvent(event, mask));
         }
       });
-      hooks.onExecuteEnd?.(result);
-      return result;
+      await hooks.onExecuteEnd?.(result);
+      return projectResult(result, mask);
     } catch (error) {
-      hooks.onExecuteError?.(error);
+      await hooks.onExecuteError?.(error);
       throw error;
     }
   });
-  handle('rune:done', () => {
-    hooks.onRendererDone?.();
+  handle('rune:done', async () => {
+    await hooks.onRendererDone?.();
     return undefined;
   });
 }
@@ -418,7 +469,7 @@ function bridgeError(error: unknown, mask: (text: string) => string): Error {
   try {
     return new Error(mask(String(error)));
   } catch {
-    return new Error('Unknown error');
+    return new Error('RUNE-500 (exit 70): An unexpected shell error occurred.');
   }
 }
 
@@ -436,7 +487,7 @@ function describeWindowedFatal(error: unknown, session: Session | undefined): st
       : error instanceof Error
         ? error.message
         : 'An unexpected shell error occurred.';
-  return session.mask(`${prefix}: ${details}`);
+  return formatSessionTerminalLine(session.getStrings(), `${prefix}: ${details}`);
 }
 
 function showWindowedFatal(error: unknown, session: Session | undefined): void {
@@ -447,33 +498,78 @@ function showWindowedFatal(error: unknown, session: Session | undefined): void {
   }
 }
 
-function deliver(result: RunResult, invocation: ShellInvocation): void {
+async function deliver(result: RunResult, invocation: ShellInvocation): Promise<void> {
   if (invocation.result === '-') {
     // Headless result streams own stdout (§4.1, §10); everything else stays on stderr.
-    process.stdout.write(serializeResult(result));
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(serializeResult(result), (error?: Error | null) => {
+        if (error === undefined || error === null) {
+          resolve();
+        } else {
+          reject(error);
+        }
+      });
+    });
     return;
   }
   if (invocation.result !== undefined) {
-    writeResult(result, invocation.result);
+    await writeResult(result, invocation.result);
   }
 }
 
-function failWith(error: unknown, invocation: ShellInvocation, session: Session): number {
+async function failWith(
+  error: unknown,
+  invocation: ShellInvocation,
+  session: Session,
+  terminalResult?: RunResult,
+): Promise<number> {
+  const failure =
+    error instanceof RuneError
+      ? error
+      : new InternalError('an unexpected error escaped the shell run', { cause: error });
   writeSessionDiagnostic(session, error instanceof Error ? error.message : String(error));
-  // Only a cancellation has a truthful result to leave behind here; the failure shells
-  // for other owned outcomes arrive with the rune run --gui wiring.
-  if (error instanceof CancelledError) {
-    const cancelled = tryDescribeCancelled(session);
-    if (cancelled !== undefined) {
-      deliver(cancelled, invocation);
+
+  try {
+    const result =
+      terminalResult ??
+      createFailureResult({
+        error: failure,
+        manifestPath: invocation.manifestPath,
+        dryRun: false,
+        session,
+      });
+    await deliver(result, invocation);
+  } catch (deliveryError) {
+    writeSessionDiagnostic(
+      session,
+      deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+    );
+    return deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70;
+  }
+  return exitCodeFor(failure);
+}
+
+function describeCancelled(session: Session, invocation: ShellInvocation): RunResult {
+  let plan: ReturnType<Session['plan']> | undefined;
+  try {
+    plan = session.plan();
+  } catch (error) {
+    if (error instanceof InternalError || !(error instanceof RuneError)) {
+      throw error;
     }
   }
-  return error instanceof RuneError ? exitCodeFor(error) : 70;
+  return createFailureResult({
+    error: new CancelledError(),
+    manifestPath: invocation.manifestPath,
+    dryRun: false,
+    session,
+    ...(plan === undefined ? {} : { plan }),
+  });
 }
 
-/** Writes one shell-owned diagnostic only after applying the active Session's mask. */
+/** Writes one shell-owned diagnostic through the Session's authenticated terminal sink. */
 function writeSessionDiagnostic(session: Session, message: string): void {
-  process.stderr.write(`${session.mask(message)}\n`);
+  process.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
 }
 
 /** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
@@ -504,14 +600,6 @@ function shellProgressObserver(session: Session): (event: RunEvent) => void {
         break;
     }
   };
-}
-
-function tryDescribeCancelled(session: Session | undefined): RunResult | undefined {
-  try {
-    return session?.describeCancelled();
-  } catch {
-    return undefined;
-  }
 }
 
 // Under vitest the module is imported for its exports; only Electron runs the app.

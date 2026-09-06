@@ -4,7 +4,13 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ManifestError, Session } from '@rune/engine';
+import {
+  CancelledError,
+  ManifestError,
+  Session,
+  createFailureResult,
+  type RunResult,
+} from '@rune/engine';
 
 vi.mock('electron', () => ({
   app: {
@@ -125,16 +131,45 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'non-interactive',
-      runner: {
-        run: async (request) => {
-          started.resolve();
-          return new Promise((resolve) => {
-            request.cancel.onCancel(() => resolve({ kind: 'cancelled' }));
-          });
-        },
-      },
     });
-    const cancel = vi.spyOn(session, 'cancel');
+    const plan = session.plan();
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer, cancelToken) => {
+      observer?.({ kind: 'runStarted', plan });
+      observer?.({
+        kind: 'stepStarted',
+        stepId: 'wait',
+        index: 0,
+        total: 1,
+        title: 'wait',
+      });
+      started.resolve();
+      await new Promise<void>((resolve) => cancelToken?.onCancel(resolve));
+      const base = createFailureResult({
+        error: new CancelledError(),
+        manifestPath,
+        dryRun: false,
+        session,
+        plan,
+      });
+      const result = {
+        ...base,
+        steps: base.steps.map((step) => ({ ...step, state: 'CANCELLED' as const })),
+        stepsExecuted: 1,
+        stepsCancelled: 1,
+        stepsNotRun: 0,
+        nothingExecuted: false,
+      } as RunResult;
+      observer?.({
+        kind: 'stepFinished',
+        stepId: 'wait',
+        state: 'CANCELLED',
+        exitCode: undefined,
+        durationMs: 0,
+      });
+      observer?.({ kind: 'runFinished', result });
+      return result;
+    });
+    const cancel = vi.spyOn(Session.prototype, 'cancel');
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const signals = new FakeSigtermSource();
     const invocation: ShellInvocation = {
@@ -186,11 +221,17 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'non-interactive',
-      runner: {
-        run: vi.fn(async () => {
-          throw new Error('a latched cancellation must stop before the runner');
-        }),
-      },
+    });
+    const plan = session.plan();
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (_observer, cancelToken) => {
+      expect(cancelToken?.isCancelled).toBe(true);
+      return createFailureResult({
+        error: new CancelledError(),
+        manifestPath,
+        dryRun: false,
+        session,
+        plan,
+      });
     });
     const open = vi.spyOn(Session, 'open').mockResolvedValue(session);
     const ready = deferred<void>();
@@ -326,7 +367,13 @@ describe('the GUI shell main lifecycle', () => {
       ].join('\n'),
       'utf8',
     );
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: unknown,
+      callback: () => void,
+    ) => {
+      callback();
+      return true;
+    }) as typeof process.stdout.write);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     await main([manifestPath, '--result', '-', '--non-interactive']);

@@ -44,6 +44,7 @@ interface State {
   /** Ids the engine still needs — the ONLY completeness authority the renderer trusts. */
   pending: ReadonlySet<string>;
   invalid: Map<string, string>;
+  drafts: Map<string, string>;
   planFailed: boolean;
   pageIndex: number;
   inputPages: number;
@@ -59,6 +60,7 @@ const state: State = {
   inputs: [],
   pending: new Set(),
   invalid: new Map(),
+  drafts: new Map(),
   planFailed: false,
   pageIndex: 0,
   inputPages: 0,
@@ -73,6 +75,8 @@ const state: State = {
 let renderVersion = 0;
 /** Keeps forward navigation closed until every in-flight engine submission has settled. */
 let pendingInputSubmissions = 0;
+/** Remembers a forward click whose blur-triggered validation is still in flight. */
+let forwardRequested = false;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -142,6 +146,11 @@ async function boot(): Promise<void> {
   el.next.addEventListener('click', () => {
     void navigate(1);
   });
+  el.next.addEventListener('pointerdown', () => {
+    if (state.page === 'inputs') {
+      forwardRequested = true;
+    }
+  });
   el.cancel.addEventListener('click', () => {
     void window.rune.cancel().then(() => window.close());
   });
@@ -151,9 +160,17 @@ async function boot(): Promise<void> {
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
-  if (state.page === 'inputs' && direction === 1 && !currentPageComplete()) {
-    renderFooter();
-    return;
+  if (state.page === 'inputs' && direction === 1) {
+    if (pendingInputSubmissions > 0) {
+      forwardRequested = true;
+      renderFooter();
+      return;
+    }
+    forwardRequested = false;
+    if (!currentPageComplete()) {
+      renderFooter();
+      return;
+    }
   }
   if (state.page === 'welcome' && direction === 1) {
     state.page = state.inputs.length > 0 ? 'inputs' : 'summary';
@@ -329,14 +346,17 @@ function renderControl(input: BridgeInput): HTMLElement {
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
   const rejected = input.rejection?.candidate;
+  const draft = state.drafts.get(input.id);
   box.value =
     spec.type === 'secret'
       ? ''
-      : typeof rejected === 'string'
-        ? rejected
-        : typeof input.value === 'string'
-          ? input.value
-          : '';
+      : draft !== undefined
+        ? draft
+        : typeof rejected === 'string'
+          ? rejected
+          : typeof input.value === 'string'
+            ? input.value
+            : '';
   box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
@@ -372,10 +392,7 @@ function selectBox(input: BridgeInput): HTMLElement {
   const select = document.createElement('select');
   select.disabled = !input.enabled;
   const options = input.spec.options ?? [];
-  const hasSelectedOption = options.some((option) => {
-    const value = typeof option === 'string' ? option : option.value;
-    return input.value === value;
-  });
+  const hasSelectedOption = options.some((value) => input.value === value);
   // When the engine value is not an option, keep the first option from looking chosen.
   if (!hasSelectedOption) {
     const placeholder = document.createElement('option');
@@ -385,8 +402,7 @@ function selectBox(input: BridgeInput): HTMLElement {
     placeholder.hidden = true;
     select.append(placeholder);
   }
-  for (const option of options) {
-    const value = typeof option === 'string' ? option : option.value;
+  for (const value of options) {
     const item = document.createElement('option');
     item.value = value;
     item.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
@@ -404,8 +420,7 @@ function selectBox(input: BridgeInput): HTMLElement {
 function multiselect(input: BridgeInput): HTMLElement {
   const container = document.createElement('div');
   const chosen = new Set(Array.isArray(input.value) ? input.value : []);
-  for (const option of input.spec.options ?? []) {
-    const value = typeof option === 'string' ? option : option.value;
+  for (const value of input.spec.options ?? []) {
     const row = div('option-row');
     const box = document.createElement('input');
     box.type = 'checkbox';
@@ -435,14 +450,27 @@ async function submit(id: string, raw: unknown): Promise<void> {
     try {
       await window.rune.setValue(id, raw);
       state.invalid.delete(id);
+      state.drafts.delete(id);
     } catch (error) {
       const hint = text(`inputs.${id}.patternHint`);
       state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+      if (typeof raw === 'string') {
+        state.drafts.set(id, raw);
+      }
     }
     await refreshInputs();
   } finally {
     pendingInputSubmissions -= 1;
     render();
+    if (
+      pendingInputSubmissions === 0 &&
+      forwardRequested &&
+      state.page === 'inputs' &&
+      currentPageComplete()
+    ) {
+      forwardRequested = false;
+      await navigate(1);
+    }
   }
 }
 
@@ -463,11 +491,12 @@ async function refreshInputs(): Promise<void> {
   for (const input of state.inputs) {
     if (!input.enabled) {
       state.invalid.delete(input.id);
+      state.drafts.delete(input.id);
       continue;
     }
     if (input.rejection !== undefined) {
       const hint = text(`inputs.${input.id}.patternHint`);
-      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.problem.message);
+      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.issue.message);
     }
   }
 }

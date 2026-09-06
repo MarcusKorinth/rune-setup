@@ -13,10 +13,12 @@ export {
   ExecutionError,
   exitCodeFor,
   formatIssues,
+  formatRuneError,
   InputError,
   InternalError,
   INTERNAL_EXIT_CODE,
   ManifestError,
+  PlatformError,
   ResolutionError,
   RuneError,
   UsageError,
@@ -41,81 +43,71 @@ export {
   SUPPORTED_SCHEMA_VERSIONS,
   validateManifest,
 } from './manifest/index.js';
-export type { Manifest, ParseManifestOptions, ValidationReport } from './manifest/index.js';
-
-export {
-  BUILT_IN_NAMES,
-  BUILT_IN_VARIABLES,
-  createRuntimeContext,
-  hostPlatform,
-  PRODUCT_FIELDS,
-} from './engine/context.js';
 export type {
-  Platform,
-  RuntimeContext,
-  RuntimeContextOptions,
-  ValueType,
-} from './engine/context.js';
+  Manifest,
+  ParseManifestOptions,
+  ValidateManifestOptions,
+  ValidationReport,
+} from './manifest/index.js';
 
-export { parseValuesFile, resolveInputs, VALUE_SOURCES } from './engine/inputs.js';
+export { BUILT_IN_NAMES, BUILT_IN_VARIABLES, PRODUCT_FIELDS } from './engine/context.js';
+export type { Platform, ValueType } from './engine/context.js';
+
+export { PLAN_SCHEMA_VERSION } from './engine/plan.js';
 export type {
-  InputRejection,
-  InputState,
-  RejectedInputCandidate,
-  Resolution,
-  ResolveInputsOptions,
-  ValuesDocument,
-  ValueSource,
-} from './engine/inputs.js';
+  ExecutionPlan,
+  PlannedStep,
+  PlanExecutionOptions,
+  PlanInput,
+  ResolvedCommand,
+} from './engine/plan.js';
 
-export { isSecretString, MASK, SecretRegistry, SecretString } from './engine/secrets.js';
+export { sameSinkPath } from './engine/paths.js';
 
-export { inputTypes, InputTypeRegistry } from './inputs/registry.js';
-export type { Coercion, InputTypeHandler, InputValue } from './inputs/base.js';
+export { RESULT_LOG_COLLISION_MESSAGE, Session } from './engine/session.js';
+export type {
+  EffectiveLogFile,
+  InputStateChanged,
+  SessionOptions,
+  ThemeConfig,
+} from './engine/session.js';
+export type { InputRejection, InputState, InputViewSpec, ValueSource } from './engine/inputs.js';
 
-export { buildPlan } from './engine/plan.js';
-export type { ExecutionPlan, PlannedStep, PlanOptions, ResolvedCommand } from './engine/plan.js';
-
-export { Session } from './engine/session.js';
-export type { InputStateChanged, SessionOptions, ThemeConfig } from './engine/session.js';
-
-export {
-  describeCancelled,
-  describePlan,
-  executeRun,
-  OUTPUT_TAIL_LINES,
-} from './engine/executor.js';
-export type { ExecuteOptions } from './engine/executor.js';
+export { createFailureResult } from './engine/executor.js';
+export type { FailureResultOptions, FailureResultSession } from './engine/executor.js';
 
 export { CancelToken } from './engine/cancel.js';
-export type { EngineObserver, RunEvent } from './engine/events.js';
+export type {
+  EngineObserver,
+  RunEvent,
+  RunFinished,
+  RunStarted,
+  StepFinished,
+  StepOutput,
+  StepStarted,
+} from './engine/events.js';
 
-export { isLegalTransition, isTerminal, STEP_STATES } from './engine/state.js';
 export type { StepState } from './engine/state.js';
 
-export { SpawnRunner } from './runners/spawnRunner.js';
-export type { Runner, SpawnOutcome, SpawnRequest } from './runners/base.js';
-
-export { EXIT_CODE_BY_STATUS, RESULT_SCHEMA_VERSION } from './results/model.js';
-export type { ResultInput, ResultStep, RunMode, RunResult, RunStatus } from './results/model.js';
-export { serializeResult, writeResult } from './results/writer.js';
+export { RESULT_SCHEMA_VERSION } from './results/model.js';
+export type {
+  ResultInput,
+  ResultError,
+  ResultErrorCode,
+  ResultManifest,
+  ResultOutputLine,
+  ResultStep,
+  RunResult,
+  RunMode,
+  RunStatus,
+} from './results/model.js';
 export { resultJsonSchema } from './results/schema.js';
-export { createLogFileSink } from './logs/logFile.js';
-export type { LogFileSink } from './logs/logFile.js';
+export { serializeResult, writeResult } from './results/writer.js';
+export type { WriteResultOptions } from './results/writer.js';
 
-export { CHROME_CATALOG, formatChrome } from './i18n/catalog.js';
-export {
-  discoverOverlays,
-  LOCALES_DIRECTORY,
-  matchOverlay,
-  normalizeLocaleTag,
-  selectLocale,
-} from './i18n/locale.js';
-export type { DiscoveredOverlay, LocaleSelectionOptions } from './i18n/locale.js';
-export { loadOverlay, loadOverlayText, localizableKeys } from './i18n/overlay.js';
-export type { LocaleOverlay } from './i18n/overlay.js';
-export { resolveStrings } from './i18n/strings.js';
-export type { ResolveStringsOptions, StringTable } from './i18n/strings.js';
+export type { StringTable } from './i18n/strings.js';
+export { formatSessionTerminalLine } from './i18n/strings.js';
+export type { ChromeKey } from './i18n/catalog.js';
 
 export { MAX_DOCUMENT_BYTES } from './manifest/loader.js';
 

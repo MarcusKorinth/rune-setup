@@ -7,8 +7,14 @@
  * validation error, never a silent no-op.
  */
 
-import { ManifestError, type RuneIssue } from '../errors.js';
-import { loadYamlFile, loadYamlText } from '../manifest/loader.js';
+import { InternalError, ManifestError, orderIssues, type RuneIssue } from '../errors.js';
+import {
+  loadYamlFile,
+  loadYamlFileAsync,
+  loadYamlText,
+  type LoadedDocument,
+} from '../manifest/loader.js';
+import { manifestDescriptorFor } from '../manifest/provenance.js';
 import { startOfFile, type SourceMap } from '../manifest/source.js';
 import { optionValue, type ManifestV1 } from '../manifest/v1/schema.js';
 import { CHROME_CATALOG } from './catalog.js';
@@ -17,12 +23,32 @@ export interface LocaleOverlay {
   /** The tag the file serves, taken from its name (`locales/de.yaml` → `de`). */
   readonly locale: string;
   readonly file: string;
-  readonly entries: ReadonlyMap<string, string>;
+  readonly entries: Readonly<Record<string, string>>;
+}
+
+const overlayManifests = new WeakMap<LocaleOverlay, ManifestV1>();
+
+/** Internal fail-closed lookup: structural overlay copies have no manifest provenance. */
+export function overlayManifestFor(overlay: LocaleOverlay): ManifestV1 {
+  const manifest = overlayManifests.get(overlay);
+  if (manifest === undefined) {
+    throw new InternalError('the locale overlay was not created by loadOverlay or loadOverlayText');
+  }
+  return manifest;
 }
 
 /** Reads and validates one overlay file against the manifest it accompanies. */
 export function loadOverlay(path: string, locale: string, manifest: ManifestV1): LocaleOverlay {
   return fromDocument(loadYamlFile(path), locale, manifest);
+}
+
+/** Session-only asynchronous overlay loader; validation is shared with the synchronous API. */
+export async function loadOverlayAsync(
+  path: string,
+  locale: string,
+  manifest: ManifestV1,
+): Promise<LocaleOverlay> {
+  return fromDocument(await loadYamlFileAsync(path), locale, manifest);
 }
 
 /** Same as {@link loadOverlay} for text already in memory — the test seam. */
@@ -36,17 +62,19 @@ export function loadOverlayText(
 }
 
 function fromDocument(
-  document: { readonly file: string; readonly value: unknown; readonly sourceMap: SourceMap },
+  document: LoadedDocument,
   locale: string,
   manifest: ManifestV1,
 ): LocaleOverlay {
-  const { file, value, sourceMap } = document;
-  if (value === null || value === undefined) {
-    return { locale, file, entries: new Map() };
+  manifestDescriptorFor(manifest);
+  const { file, value, isEmpty, sourceMap } = document;
+  const rootLocation = sourceMap.location([]);
+  if (isEmpty) {
+    return createOverlay(locale, file, {}, manifest);
   }
-  if (typeof value !== 'object' || Array.isArray(value)) {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
     throw new ManifestError('RUNE-104', 'a locale overlay must be a mapping of key to text', {
-      location: startOfFile(file),
+      location: rootLocation ?? startOfFile(file),
     });
   }
 
@@ -56,7 +84,7 @@ function fromDocument(
 
   for (const [key, text] of Object.entries(value)) {
     const location = sourceMap.best([key]) ?? startOfFile(file);
-    if (!known.has(key) && !CHROME_CATALOG.has(key)) {
+    if (!known.has(key) && !Object.hasOwn(CHROME_CATALOG, key)) {
       issues.push({
         code: 'RUNE-104',
         message: keyProblem(key),
@@ -71,10 +99,134 @@ function fromDocument(
     entries.set(key, text);
   }
 
+  issues.push(...summaryTokenIssues(entries, sourceMap, file));
+
   if (issues.length > 0) {
-    throw ManifestError.fromIssues('RUNE-104', issues);
+    throw ManifestError.fromIssues('RUNE-104', orderIssues(issues));
   }
-  return { locale, file, entries };
+  return createOverlay(locale, file, Object.fromEntries(entries), manifest);
+}
+
+const SUMMARY_TOKENS = Object.freeze({
+  proceed: Object.freeze({
+    alias: 'proceed',
+    key: 'rune.summary.proceedToken' as const,
+    fallback: CHROME_CATALOG['rune.summary.proceedToken'],
+    oppositeAlias: 'cancel',
+  }),
+  cancel: Object.freeze({
+    alias: 'cancel',
+    key: 'rune.summary.cancelToken' as const,
+    fallback: CHROME_CATALOG['rune.summary.cancelToken'],
+    oppositeAlias: 'proceed',
+  }),
+});
+
+function normalizeSummaryChoice(choice: string): string {
+  return choice.trim().toLowerCase();
+}
+
+function summaryTokenIssues(
+  entries: ReadonlyMap<string, string>,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue[] {
+  const proceed = {
+    ...SUMMARY_TOKENS.proceed,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_TOKENS.proceed.key) ?? SUMMARY_TOKENS.proceed.fallback,
+    ),
+  };
+  const cancel = {
+    ...SUMMARY_TOKENS.cancel,
+    value: normalizeSummaryChoice(
+      entries.get(SUMMARY_TOKENS.cancel.key) ?? SUMMARY_TOKENS.cancel.fallback,
+    ),
+  };
+  const issues: RuneIssue[] = [];
+  const proceedProblem = summaryTokenProblem(proceed.key, proceed.value, proceed.oppositeAlias);
+  const cancelProblem = summaryTokenProblem(cancel.key, cancel.value, cancel.oppositeAlias);
+
+  for (const [token, message] of [
+    [proceed, proceedProblem],
+    [cancel, cancelProblem],
+  ] as const) {
+    if (entries.has(token.key) && message !== undefined) {
+      issues.push(summaryTokenIssue(token.key, message, sourceMap, file));
+    }
+  }
+
+  if (
+    proceedProblem === undefined &&
+    cancelProblem === undefined &&
+    proceed.value === cancel.value
+  ) {
+    let key: typeof proceed.key | typeof cancel.key = proceed.key;
+    for (const candidate of entries.keys()) {
+      if (candidate === proceed.key || candidate === cancel.key) {
+        key = candidate;
+      }
+    }
+    const other = key === proceed.key ? cancel.key : proceed.key;
+    issues.push(
+      summaryTokenIssue(
+        key,
+        `${key} must differ from ${other} after trimming and case normalization`,
+        sourceMap,
+        file,
+      ),
+    );
+  }
+
+  return issues;
+}
+
+function summaryTokenProblem(
+  key: string,
+  token: string,
+  oppositeAlias: string,
+): string | undefined {
+  if (/[\r\n]/u.test(token)) {
+    return `${key} must be a single line`;
+  }
+  if (token.length === 0) {
+    return `${key} must not be empty or whitespace`;
+  }
+  if (/^[0-9]+$/u.test(token)) {
+    return `${key} must not be numeric because a number selects a value to change`;
+  }
+  if (token === oppositeAlias) {
+    return `${key} must not be "${oppositeAlias}" because it is the fixed alias for the ${oppositeAlias} action`;
+  }
+  return undefined;
+}
+
+function summaryTokenIssue(
+  key: string,
+  message: string,
+  sourceMap: SourceMap,
+  file: string,
+): RuneIssue {
+  return {
+    code: 'RUNE-104',
+    message,
+    location: sourceMap.best([key]) ?? startOfFile(file),
+  };
+}
+
+function createOverlay(
+  locale: string,
+  file: string,
+  entries: Readonly<Record<string, string>>,
+  manifest: ManifestV1,
+): LocaleOverlay {
+  const overlay: LocaleOverlay = Object.freeze({
+    locale,
+    file,
+    entries: Object.freeze({ ...entries }),
+  });
+  overlayManifests.set(overlay, manifest);
+  return overlay;
 }
 
 function keyProblem(key: string): string {

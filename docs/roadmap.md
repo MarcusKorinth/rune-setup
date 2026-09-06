@@ -1,8 +1,9 @@
 # Roadmap
 
-Current state: **repository bootstrap (Milestone 0) complete**. [architecture.md](architecture.md)
-is the binding architectural contract; only the package skeleton exists — engine and CLI
-functionality start with Milestone 1.
+Current state: **Milestones 0–2 / v0.1 core are complete and Milestone 3 is in progress**.
+The engine, CLI, `Session` facade, interactive prompting/editing, mode-parity contract suite,
+and Electron wizard shell are implemented. [architecture.md](architecture.md) is the binding
+architectural contract; shell distribution and CLI-to-shell launching remain planned.
 
 This roadmap orders the work so that the non-interactive driver — the mode-parity
 anchor — exists first, and every later frontend is verified against it.
@@ -25,22 +26,22 @@ committed core milestone beyond the MVP.
 - [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
   (no Electron in core jobs)
 
-## Milestone 1 — engine core and non-interactive execution (→ 0.1.0)
+## Milestone 1 — engine core and non-interactive execution (→ 0.1.0, complete)
 
 The complete pipeline behind `rune validate`, `rune schema` and
 `rune run --non-interactive` — the `@rune/engine` library plus the `rune` CLI binary:
 
-- manifest loader (`yaml` core schema, `uniqueKeys` duplicate-key detection,
-  SourceMap from node ranges) and zod v1 schema (`.strict()` objects, discriminated
-  unions) with located, understandable error messages
+- manifest loader (`yaml` core schema, a source-order-stable duplicate-key walk with
+  `uniqueKeys: false`, SourceMap from node ranges) and zod v1 schema (`.strict()` objects,
+  discriminated unions) with located, understandable error messages
 - `rune schema [--output] [--result]` — manifest and result-file JSON Schema generated
-  from the zod schemas via `zod-to-json-schema` (editor autocompletion, no drift)
+  from the zod schemas via built-in `z.toJSONSchema()` (editor autocompletion, no drift)
 - the seven input types behind the input-type registry; `pattern`/`patternHint` on
   `text`; select/multiselect options as plain strings or `{value, label}` pairs;
   multiselect comma-split with JSON-array escape hatch
-- five-layer value resolution with provenance (layers 1–4 here:
-  `defaults < values files < env < --set`; layer 5 = interactive answers lands with
-  Milestones 2 and 3)
+- five-layer value resolution with provenance (layers 1–4 delivered here:
+  `defaults < values files < env < --set`; layer 5 interactive answers use
+  `Session.setValue`; the GUI client is delivered by the Milestone 3 shell)
 - conditional inputs (`when:` on inputs, same typed grammar as steps, acyclicity rule,
   disabled ⇒ empty value, ignored supplied values with warning + provenance)
 - `${...}` interpolation and the typed `when:` condition language; `--platform`
@@ -62,7 +63,9 @@ The complete pipeline behind `rune validate`, `rune schema` and
 Exit criterion: a CI pipeline can run a fixture manifest end to end on Windows and
 Linux with correct exit codes, result file and masked logs.
 
-## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0)
+## Milestone 2 — interactive CLI and frozen frontend contract (→ 0.1.0, complete)
+
+The interactive CLI, frozen `Session` facade, and cross-client contract suite are delivered.
 
 - prompts for still-missing, enabled inputs (Node `readline`, muted-echo helper for
   secrets — no prompt library), re-prompt on validation/pattern error; option labels
@@ -70,12 +73,12 @@ Linux with correct exit codes, result file and masked logs.
 - plan summary with **edit loop** (`Proceed / Change value <n> / Cancel`), progress
   rendering off the event stream; localized chrome via `getStrings()`
 - cancellation via `Ctrl+C` (CancelToken; second `Ctrl+C` force-exits)
-- **`Session` facade frozen as the frontend contract**: the async facade
-  (`open/pendingInputs/allInputs/setValue/plan/execute/cancel/getStrings/getThemeConfig`)
+- **`Session` facade frozen as the frontend contract**: the facade methods
+  (`open/pendingInputs/allInputs/warnings/setValue/plan/describe/execute/cancel/getStrings/getThemeConfig`)
   plus `EngineObserver` events and the observer delivery contract — the surface every
-  frontend, including the Electron main process in M3, drives 1:1
+  frontend, including the Electron main process, drives 1:1
 - **in-process parity client**: a scripted client of the `Session` facade making
-  exactly the calls the GUI shell's main process will make (the GUI leg of the parity
+  exactly the calls the GUI shell's main process makes (the GUI leg of the parity
   suite)
 - **mode-parity contract suite** (non-interactive, scripted interactive CLI fed from a
   stream, in-process parity client) runs in core CI on Windows and Linux from here on —
@@ -83,7 +86,7 @@ Linux with correct exit codes, result file and masked logs.
 
 ## Milestone 3 — GUI wizard: Electron shell (→ 0.2.0)
 
-- Electron GUI shell (`packages/gui-shell/`, TypeScript + HTML/CSS): **main** hosts
+- [x] Electron GUI shell (`packages/gui-shell/`, TypeScript + HTML/CSS): **main** hosts
   `@rune/engine` in-process (owns the `Session`, IPC handlers, window, exit code);
   **preload** exposes the **IPC bridge** via `contextBridge` — a 1:1 projection of the
   `Session` facade and events, secrets masked towards the renderer; **renderer** is a
@@ -91,17 +94,17 @@ Linux with correct exit codes, result file and masked logs.
   generated input pages, Summary, Progress, Result; greyed-out disabled inputs flipping
   live, red pattern state, cancel flow, named `RuneError` display, shell-crash → exit
   70, exit-code forwarding through `rune run --gui`
-- **default theme**: modern, polished, animated, light/dark, built on CSS custom
+- [x] **default theme**: modern, polished, animated, light/dark, built on CSS custom
   properties
-- **theming layers**: manifest `gui:` block (`accentColor`, `logo`, `banner`, `theme`,
+- [x] **theming layers**: manifest `gui:` block (`accentColor`, `logo`, `banner`, `theme`,
   `windowTitle`) and author CSS loaded after the default theme
-- `rune gui install` — prebuilt shell per OS from GitHub Releases into the per-user
+- [ ] `rune gui install` — prebuilt shell per OS from GitHub Releases into the per-user
   cache (no admin; the CLI npm package contains no Electron); `rune run --gui`
   launches it or exits 2 with the hint
-- IPC-bridge unit test pinning the preload API as a 1:1 projection of the facade
-- dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
+- [x] IPC-bridge unit test pinning the preload API as a 1:1 projection of the facade
+- [x] dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
   cancel, crash handling, headless run)
-- **mode-parity suite as release gate**: identical plans, event sequences and results
+- [x] **mode-parity suite as release gate**: identical plans, event sequences and results
   across all three frontends (GUI leg = in-process parity client)
 
 ## Milestone 4 — `rune package`: self-contained end-user artifact (→ 0.3.0, core roadmap, beyond MVP)

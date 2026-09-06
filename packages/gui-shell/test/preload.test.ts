@@ -46,6 +46,7 @@ describe('the preload bridge', () => {
         'allInputs',
         'setValue',
         'plan',
+        'describe',
         'execute',
         'cancel',
         'getStrings',
@@ -67,6 +68,8 @@ describe('the preload bridge', () => {
     expect(ipc.invoke).toHaveBeenCalledWith('rune:execute');
     await api.plan();
     expect(ipc.invoke).toHaveBeenCalledWith('rune:plan');
+    await api.describe();
+    expect(ipc.invoke).toHaveBeenCalledWith('rune:describe');
 
     const seen: unknown[] = [];
     api.onEvent((event) => seen.push(event));
@@ -76,6 +79,7 @@ describe('the preload bridge', () => {
       kind: 'runStarted',
       plan: {
         manifestPath: 'installer.yaml',
+        locale: null,
         platform: 'linux',
         preview: false,
         failFast: true,

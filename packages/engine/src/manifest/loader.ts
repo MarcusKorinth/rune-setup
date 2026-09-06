@@ -6,6 +6,8 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 
 import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument, type Node } from 'yaml';
 
@@ -31,13 +33,21 @@ const MAX_ALIAS_COUNT = 100;
 export interface LoadedDocument {
   /** The file name as the caller supplied it — messages echo it verbatim. */
   readonly file: string;
+  /** SHA-256 of the exact source bytes supplied to the loader. */
+  readonly sha256: string;
   /** The document as plain JavaScript data. `null` for an empty document. */
   readonly value: unknown;
+  /** Whether the YAML document contains no authored value. */
+  readonly isEmpty: boolean;
   readonly sourceMap: SourceMap;
 }
 
 /** Parses YAML text that is already in memory. */
 export function loadYamlText(text: string, file: string): LoadedDocument {
+  return parseYamlText(text, file, sha256(Buffer.from(text, 'utf8')));
+}
+
+function parseYamlText(text: string, file: string, sourceSha256: string): LoadedDocument {
   const lineCounter = new LineCounter();
   const document = parseDocument(text, {
     lineCounter,
@@ -76,6 +86,7 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
   const builder = new SourceMapBuilder();
   const keyProblems: RuneIssue[] = [];
   const contents: unknown = document.contents;
+  const isEmpty = isEmptyDocument(contents);
   if (contents !== null && contents !== undefined) {
     walk(contents as Node, [], builder, file, lineCounter, undefined, keyProblems);
   }
@@ -93,7 +104,7 @@ export function loadYamlText(text: string, file: string): LoadedDocument {
     throw new ManifestError('RUNE-101', messageOf(cause), { cause, location: startOfFile(file) });
   }
 
-  return { file, value, sourceMap: builder.build() };
+  return { file, sha256: sourceSha256, value, isEmpty, sourceMap: builder.build() };
 }
 
 /** Reads and parses a YAML file. */
@@ -118,7 +129,39 @@ export function loadYamlFile(file: string, path: string = file): LoadedDocument 
     throw new ManifestError('RUNE-101', `${file} cannot be read: ${messageOf(cause)}`, { cause });
   }
 
-  return loadYamlText(decodeUtf8(bytes, file), file);
+  return parseYamlText(decodeUtf8(bytes, file), file, sha256(bytes));
+}
+
+/** Asynchronously reads and parses a YAML file with the same hardening as {@link loadYamlFile}. */
+export async function loadYamlFileAsync(
+  file: string,
+  path: string = file,
+): Promise<LoadedDocument> {
+  let bytes: Buffer;
+  try {
+    const stats = await stat(path);
+    if (!stats.isFile()) {
+      throw new ManifestError('RUNE-101', `${file} is not a file`);
+    }
+    if (stats.size > MAX_DOCUMENT_BYTES) {
+      throw new ManifestError(
+        'RUNE-101',
+        `${file} is larger than the ${Math.round(MAX_DOCUMENT_BYTES / 1024 / 1024)} MiB limit`,
+      );
+    }
+    bytes = await readFile(path);
+  } catch (cause) {
+    if (cause instanceof ManifestError) {
+      throw cause;
+    }
+    throw new ManifestError('RUNE-101', `${file} cannot be read: ${messageOf(cause)}`, { cause });
+  }
+
+  return parseYamlText(decodeUtf8(bytes, file), file, sha256(bytes));
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 /**
@@ -134,6 +177,18 @@ function decodeUtf8(bytes: Buffer, file: string): string {
   }
   // A byte-order mark is legal in UTF-8 but not part of the document.
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+function isEmptyDocument(contents: unknown): boolean {
+  if (contents === null || contents === undefined) {
+    return true;
+  }
+  if (!isScalar(contents) || contents.anchor !== undefined || contents.tag !== undefined) {
+    return false;
+  }
+
+  const range = contents.range;
+  return contents.value === null && range !== null && range !== undefined && range[0] === range[1];
 }
 
 function positionOf(

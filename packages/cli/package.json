@@ -1,7 +1,7 @@
 {
   "name": "@rune/cli",
   "version": "0.0.0",
-  "description": "rune — the RUNE command line (interactive and non-interactive runs, validate, schema)",
+  "description": "rune — the RUNE command line (guided and automated runs, validate, schema)",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -19,6 +19,9 @@
   "dependencies": {
     "@rune/engine": "0.0.0",
     "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "zod": "^4.4.3"
   },
   "scripts": {
     "build": "tsc -b",

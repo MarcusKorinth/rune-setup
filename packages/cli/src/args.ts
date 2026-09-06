@@ -3,15 +3,15 @@
 import { UsageError } from '@rune/engine';
 
 export function parseOverrides(pairs: readonly string[]): Record<string, string> {
-  const overrides = new Map<string, string>();
+  const overrides: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const pair of pairs) {
     const separator = pair.indexOf('=');
     if (separator <= 0) {
-      throw new UsageError(`--set expects key=value, got "${pair}"`);
+      throw new UsageError('--set expects key=value');
     }
-    overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
+    overrides[pair.slice(0, separator)] = pair.slice(separator + 1);
   }
-  return Object.fromEntries(overrides);
+  return overrides;
 }
 
 export function parsePlatform(raw: string | undefined): 'windows' | 'linux' | undefined {
@@ -19,7 +19,7 @@ export function parsePlatform(raw: string | undefined): 'windows' | 'linux' | un
     return undefined;
   }
   if (raw !== 'windows' && raw !== 'linux') {
-    throw new UsageError(`--platform must be windows or linux, got "${raw}"`);
+    throw new UsageError('--platform must be windows or linux');
   }
   return raw;
 }

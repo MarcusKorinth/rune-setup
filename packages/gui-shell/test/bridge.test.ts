@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { InputError, RuneError, Session } from '@rune/engine';
+import { InputError, RuneError, Session, type RunEvent, type RunResult } from '@rune/engine';
 
 vi.mock('electron', () => ({
   app: {},
@@ -126,7 +126,12 @@ describe('the IPC bridge', () => {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     registerBridge(
       session,
-      { events: { send: () => undefined }, onExecuteError: (error) => errors.push(error) },
+      {
+        events: { send: () => undefined },
+        onExecuteError: (error) => {
+          errors.push(error);
+        },
+      },
       (channel, handler) => handlers.set(channel, handler),
     );
 
@@ -140,8 +145,8 @@ describe('the IPC bridge', () => {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
-      runner: { run: async () => ({ kind: 'exited', exitCode: 0 }) },
     });
+    vi.spyOn(Session.prototype, 'execute').mockResolvedValue(session.describe());
     const deliveryError = new Error('writeResult failed for super-secret-value');
     const calls: string[] = [];
     const onExecuteStart = vi.fn(() => calls.push('start'));
@@ -215,7 +220,7 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify({ opened, strings, theme })).not.toContain('super-secret-value');
   });
 
-  it('masks theme asset paths before encoding them as file URLs', async () => {
+  it('keeps exact theme asset paths while encoding them as file URLs', async () => {
     const secret = 'theme assets #1';
     const session = await Session.open(fixture(), {
       environment: {},
@@ -243,11 +248,10 @@ describe('the IPC bridge', () => {
       }
       expect(existsSync(rawPath)).toBe(true);
       expect(rawPath).toContain(secret);
-      expect(url).toBe(pathToFileURL(session.mask(rawPath)).href);
+      expect(url).toBe(pathToFileURL(rawPath).href);
       expect(url).toContain('%20');
       expect(url).toContain('%23');
-      expect(url).not.toContain(secret);
-      expect(decodeURIComponent(url)).not.toContain(secret);
+      expect(decodeURIComponent(url)).toContain(secret);
     }
   });
 
@@ -293,7 +297,7 @@ describe('the IPC bridge', () => {
       enabled: true,
       rejection: {
         source: 'default',
-        problem: {
+        issue: {
           code: 'RUNE-202',
           message: 'code (from the manifest default): "prefix-***" does not match [A-Z]+',
         },
@@ -313,10 +317,10 @@ describe('the IPC bridge', () => {
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
-    vi.spyOn(session, 'warnings').mockImplementation(() => {
+    vi.spyOn(Session.prototype, 'warnings').mockImplementation(() => {
       throw new Error('generic failure contains super-secret-value');
     });
-    vi.spyOn(session, 'getThemeConfig').mockImplementation(() =>
+    vi.spyOn(Session.prototype, 'getThemeConfig').mockImplementation(() =>
       throwValue('non-Error failure contains super-secret-value'),
     );
     const bridge = await bridgeOver(session);
@@ -356,7 +360,7 @@ describe('the IPC bridge', () => {
         location: { file: 'answers.yaml', line: 8, column: 9 },
       },
     ]);
-    vi.spyOn(session, 'warnings')
+    vi.spyOn(Session.prototype, 'warnings')
       .mockImplementationOnce(() => {
         throw located;
       })
@@ -371,19 +375,20 @@ describe('the IPC bridge', () => {
     expect(locatedRejection.message).toBe('RUNE-202 (exit 4): answers.yaml:7:9: invalid value ***');
     expect(locatedRejection.message).not.toContain('super-secret-value');
     expect(aggregateRejection.message).toBe(
-      'RUNE-202 (exit 4): answers.yaml:7:9: first invalid value\n' +
+      'RUNE-202 (exit 4): answers.yaml:7:9: first invalid value\\n' +
         'answers.yaml:8:9: second invalid value',
     );
   });
 
   it('projects Session.plan exactly once as plain masked plan data', async () => {
-    const session = await Session.open(fixture(), {
+    const manifestPath = fixture();
+    const session = await Session.open(manifestPath, {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
     });
-    const planSpy = vi.spyOn(session, 'plan');
-    const describeSpy = vi.spyOn(session, 'describe');
+    const planSpy = vi.spyOn(Session.prototype, 'plan');
+    const describeSpy = vi.spyOn(Session.prototype, 'describe');
     const bridge = await bridgeOver(session);
 
     const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
@@ -394,7 +399,7 @@ describe('the IPC bridge', () => {
     expect(planSpy).toHaveBeenCalledTimes(1);
     expect(describeSpy).not.toHaveBeenCalled();
     expect(plan).toMatchObject({
-      manifestPath: session.manifestPath,
+      manifestPath,
       preview: false,
       failFast: true,
       steps: [
@@ -454,14 +459,45 @@ describe('the IPC bridge', () => {
       environment: {},
       mode: 'gui',
       overrides: { token: 'super-secret-value' },
-      runner: {
-        run: async (request) => {
-          request.onOutput('stdout', 'the token is super-secret-value');
-          return { kind: 'exited', exitCode: 0 };
-        },
-      },
     });
     session.setValue('installDatabase', false);
+    const rawPlan = session.plan();
+    const described = session.describe();
+    const executionResult = {
+      ...described,
+      status: 'succeeded',
+      exitCode: 0,
+      dryRun: false,
+      error: null,
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      nothingExecuted: false,
+      steps: described.steps.map((step) =>
+        step.state === 'PENDING'
+          ? { ...step, state: 'SUCCEEDED' as const, exitCode: 0, durationMs: 1 }
+          : step,
+      ),
+    } as RunResult;
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+      const events: RunEvent[] = [
+        { kind: 'runStarted', plan: rawPlan },
+        { kind: 'stepStarted', stepId: 'use', index: 0, total: 2, title: 'use' },
+        { kind: 'stepOutput', stepId: 'use', stream: 'stdout', line: 'the token is ***' },
+        { kind: 'stepFinished', stepId: 'use', state: 'SUCCEEDED', exitCode: 0, durationMs: 1 },
+        {
+          kind: 'stepFinished',
+          stepId: 'skipped',
+          state: 'SKIPPED',
+          exitCode: undefined,
+          durationMs: 0,
+        },
+        { kind: 'runFinished', result: executionResult },
+      ];
+      for (const event of events) {
+        observer?.(event);
+      }
+      return executionResult;
+    });
     const bridge = await bridgeOver(session);
     const plan = (await bridge.call('rune:plan')) as BridgePlan;
 
