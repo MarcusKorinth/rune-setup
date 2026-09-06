@@ -32,6 +32,7 @@ test('relates field descriptions and engine validation errors to their control',
     expect(errorId).not.toBeNull();
     await expect(control).toHaveAccessibleName('Access code');
     await expect(control).toHaveAttribute('aria-invalid', 'true');
+    await expect(error).toContainText('Use uppercase letters');
     await expect(control).toHaveAttribute('aria-describedby', `${descriptionId} ${errorId}`);
 
     await control.fill('VALID');

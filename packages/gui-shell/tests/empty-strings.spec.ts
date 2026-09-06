@@ -45,7 +45,10 @@ async function expectEmptyStrings(application: ElectronApplication): Promise<voi
   await textInput.fill('invalid');
   await textInput.dispatchEvent('change');
   await expect(textField).toHaveClass(/invalid/);
-  await expect(textField.locator('.error')).toHaveText('');
+  await expect(textField.locator('.error')).toHaveJSProperty(
+    'textContent',
+    'RUNE-202 (exit 4): textValue (from the answer): "invalid": ',
+  );
 }
 
 test('renders empty manifest strings without local fallbacks', async () => {

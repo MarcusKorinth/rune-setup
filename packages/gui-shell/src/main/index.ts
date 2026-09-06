@@ -579,8 +579,7 @@ export function registerBridge(
         ...input,
         editRejection: {
           ...candidate,
-          displayText:
-            strings.patternHint(input.id) ?? formatSessionTerminalLine(strings, rejected.safeError),
+          displayText: formatSessionTerminalLine(strings, rejected.safeError),
         },
       };
     });

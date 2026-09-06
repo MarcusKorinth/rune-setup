@@ -101,10 +101,6 @@ function text(key: string): string {
   return state.strings[key] ?? '';
 }
 
-function optionalText(key: string): string | undefined {
-  return state.strings[key];
-}
-
 function applyStrings(strings: BridgeStrings): void {
   state.strings = strings.entries;
   state.displayProduct = strings.displayProduct;
@@ -421,7 +417,7 @@ function inputProblem(input: BridgeInput): string | undefined {
   if (input.rejection === undefined) {
     return undefined;
   }
-  return optionalText(`inputs.${input.id}.patternHint`) ?? input.rejection.issue.message;
+  return input.rejection.issue.message;
 }
 
 function fieldIds(inputId: string): FieldIds {

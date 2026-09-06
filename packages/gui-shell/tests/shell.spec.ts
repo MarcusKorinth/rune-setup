@@ -853,37 +853,67 @@ test('disables conditional controls natively across input pages', async () => {
   }
 });
 
-test('prefills an invalid seed and blocks Next until the engine accepts a correction', async () => {
-  let application: ElectronApplication | undefined;
+for (const seededCase of [
+  {
+    name: 'pattern mismatch',
+    args: [] as readonly string[],
+    value: 'bad-value',
+    reason: 'Use uppercase letters',
+    excludesHint: false,
+  },
+  {
+    name: 'overlength value',
+    args: ['--set', `code=${'A'.repeat(4097)}`] as readonly string[],
+    value: 'A'.repeat(4097),
+    reason: 'the value is longer than the 4096 bytes a checked value may have',
+    excludesHint: true,
+  },
+] as const) {
+  test(`prefills an invalid ${seededCase.name} and blocks Next until correction`, async () => {
+    let application: ElectronApplication | undefined;
+    const longValue = 'A'.repeat(4097);
 
-  try {
-    application = await electron.launch({
-      executablePath: electronExecutable,
-      args: [launcherPath, invalidSeedFixturePath],
-      cwd: packageDirectory,
-    });
-    const page = await application.firstWindow();
-    const next = page.locator('#next');
+    try {
+      application = await electron.launch({
+        executablePath: electronExecutable,
+        args: [launcherPath, invalidSeedFixturePath, ...seededCase.args],
+        cwd: packageDirectory,
+      });
+      const page = await application.firstWindow();
+      const next = page.locator('#next');
 
-    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
-    await next.click();
+      await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+      await next.click();
 
-    const field = page.locator('.field[data-id="code"]');
-    const input = field.locator('input');
-    await expect(input).toHaveValue('bad-value');
-    await expect(field).toHaveClass(/invalid/);
-    await expect(field.locator('.error')).toHaveText('Use uppercase letters');
-    await expect(next).toBeDisabled();
+      const field = page.locator('.field[data-id="code"]');
+      const input = field.locator('input');
+      await expect(input).toHaveValue(seededCase.value);
+      await expect(field).toHaveClass(/invalid/);
+      await expect(field.locator('.error')).toContainText(seededCase.reason);
+      if (seededCase.excludesHint) {
+        await expect(field.locator('.error')).not.toContainText('Use uppercase letters');
+      }
+      await expect(next).toBeDisabled();
 
-    await input.fill('GOOD');
-    await input.dispatchEvent('change');
-    await expect(field).not.toHaveClass(/invalid/);
-    await expect(input).toHaveValue('GOOD');
-    await expect(next).toBeEnabled();
-  } finally {
-    await application?.close();
-  }
-});
+      await input.fill('GOOD');
+      await input.dispatchEvent('change');
+      await expect(field).not.toHaveClass(/invalid/);
+      await expect(input).toHaveValue('GOOD');
+      await expect(next).toBeEnabled();
+
+      await input.fill(longValue);
+      await input.dispatchEvent('change');
+      await expect(field).toHaveClass(/invalid/);
+      await expect(field.locator('.error')).toContainText(
+        'the value is longer than the 4096 bytes a checked value may have',
+      );
+      await expect(field.locator('.error')).not.toContainText('Use uppercase letters');
+      await expect(next).toBeDisabled();
+    } finally {
+      await application?.close();
+    }
+  });
+}
 
 test('remasks a rejected public edit after the same-page secret is accepted', async () => {
   let application: ElectronApplication | undefined;
@@ -908,7 +938,8 @@ test('remasks a rejected public edit after the same-page secret is accepted', as
     await expect(field).toHaveClass(/invalid/);
     await expect(field.locator('.error')).toHaveJSProperty(
       'textContent',
-      `Use ${rawCandidate}\nsecond line`,
+      `RUNE-202 (exit 4): code (from the answer): "${rawCandidate}": ` +
+        `Use ${rawCandidate}\\nsecond line`,
     );
     await expect(code).toHaveValue(rawCandidate);
     await expect(code).toHaveAttribute('aria-invalid', 'true');
@@ -917,7 +948,10 @@ test('remasks a rejected public edit after the same-page secret is accepted', as
     await token.fill(rawCandidate);
     await token.dispatchEvent('change');
     await expect(field).toHaveClass(/invalid/);
-    await expect(field.locator('.error')).toHaveJSProperty('textContent', 'Use ***\nsecond line');
+    await expect(field.locator('.error')).toHaveJSProperty(
+      'textContent',
+      'RUNE-202 (exit 4): code (from the answer): "***": Use ***\\nsecond line',
+    );
     await expect(code).toHaveValue('***');
     await expect(token).toHaveValue('');
     await expect(code).toHaveAttribute('aria-invalid', 'true');

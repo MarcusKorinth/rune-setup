@@ -842,7 +842,54 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify({ all, pending })).not.toContain('super-secret-value');
   });
 
-  it('remasks a rejected public edit and its live multiline hint after a secret answer', async () => {
+  it('retains the engine rejection cause for patterned text values', async () => {
+    const patternHint = 'Use the pattern instead';
+    const manifestPath = editRejectionFixture(patternHint);
+    const longValue = 'A'.repeat(4097);
+    const seeded = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      overrides: { code: longValue },
+    });
+    const seededBridge = await bridgeOver(seeded);
+    const seededInput = (
+      (await seededBridge.call('rune:allInputs')) as readonly BridgeInput[]
+    ).find((input) => input.id === 'code');
+
+    expect(seededInput?.rejection?.issue.message).toContain(
+      'the value is longer than the 4096 bytes a checked value may have',
+    );
+    expect(seededInput?.rejection?.issue.message).not.toContain(patternHint);
+
+    const live = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const liveBridge = await bridgeOver(live);
+    await expect(liveBridge.call('rune:setValue', 'code', longValue)).rejects.toThrow('RUNE-202');
+    const liveInput = ((await liveBridge.call('rune:allInputs')) as readonly BridgeInput[]).find(
+      (input) => input.id === 'code',
+    );
+
+    expect(liveInput?.editRejection?.displayText).toContain(
+      'the value is longer than the 4096 bytes a checked value may have',
+    );
+    expect(liveInput?.editRejection?.displayText).not.toContain(patternHint);
+
+    const valuesPath = join(dirname(manifestPath), 'values.yaml');
+    writeFileSync(valuesPath, 'code: true\n', 'utf8');
+    const native = await Session.open(manifestPath, {
+      environment: {},
+      mode: 'gui',
+      values: [valuesPath],
+    });
+    const nativeBridge = await bridgeOver(native);
+    const nativeInput = (
+      (await nativeBridge.call('rune:allInputs')) as readonly BridgeInput[]
+    ).find((input) => input.id === 'code');
+
+    expect(nativeInput?.rejection?.issue.message).toContain('true is not text');
+    expect(nativeInput?.rejection?.issue.message).not.toContain(patternHint);
+  });
+
+  it('remasks a rejected public edit and its engine diagnostic after a secret answer', async () => {
     const session = await Session.open(editRejectionFixture(), {
       environment: {},
       mode: 'gui',
@@ -856,7 +903,9 @@ describe('the IPC bridge', () => {
 
     expect(beforeRejected?.editRejection).toEqual({
       candidate: rawCandidate,
-      displayText: `Use ${rawCandidate}\nsecond line`,
+      displayText:
+        `RUNE-202 (exit 4): code (from the answer): "${rawCandidate}": ` +
+        `Use ${rawCandidate}\\nsecond line`,
     });
     expect(withoutEditRejections(beforeSecret)).toEqual(session.allInputs());
     expect(beforeRejected).toMatchObject({ value: 'GOOD', source: 'default' });
@@ -869,7 +918,7 @@ describe('the IPC bridge', () => {
 
     expect(afterRejected?.editRejection).toEqual({
       candidate: '***',
-      displayText: 'Use ***\nsecond line',
+      displayText: 'RUNE-202 (exit 4): code (from the answer): "***": Use ***\\nsecond line',
     });
     expect(JSON.stringify(afterSecret)).not.toContain(rawCandidate);
     expect(withoutEditRejections(afterSecret)).toEqual(session.allInputs());
@@ -902,12 +951,12 @@ describe('the IPC bridge', () => {
 
     expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
       candidate: '***',
-      displayText: 'Use ***\nsecond line',
+      displayText: 'RUNE-202 (exit 4): code (from the answer): "***": Use ***\\nsecond line',
     });
     expect(JSON.stringify(inputs)).not.toContain(rawCandidate);
   });
 
-  it('preserves an explicit empty pattern hint on a rejected live edit', async () => {
+  it('retains explicit empty hint semantics in the engine diagnostic', async () => {
     const session = await Session.open(editRejectionFixture(''), {
       environment: {},
       mode: 'gui',
@@ -919,7 +968,7 @@ describe('the IPC bridge', () => {
 
     expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
       candidate: 'invalid',
-      displayText: '',
+      displayText: 'RUNE-202 (exit 4): code (from the answer): "invalid": ',
     });
   });
 
