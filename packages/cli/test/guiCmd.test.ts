@@ -158,7 +158,7 @@ function downloadedArchive(): string {
 }
 
 function shellTemporaryDirectories(): readonly string[] {
-  return readdirSync(tmpdir()).filter((entry) => entry.startsWith('rune-shell-'));
+  return readdirSync(tmpdir()).filter((entry) => entry.startsWith('rune-gui-install-'));
 }
 
 describe('rune gui install temporary archive', () => {
@@ -170,7 +170,7 @@ describe('rune gui install temporary archive', () => {
       process.platform === 'win32' ? 'rune-gui-shell-windows.zip' : 'rune-gui-shell-linux.tar.gz';
     expect(archive).not.toBe(join(tmpdir(), `rune-shell-${process.pid}-${archiveName}`));
     expect(dirname(archive)).not.toBe(tmpdir());
-    expect(basename(dirname(archive))).toMatch(/^rune-shell-/u);
+    expect(basename(dirname(archive))).toMatch(/^rune-gui-install-/u);
     expect(basename(archive)).toBe(archiveName);
     expect(existsSync(dirname(archive))).toBe(false);
     expect(fetch).toHaveBeenCalledWith(

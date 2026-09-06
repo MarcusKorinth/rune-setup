@@ -83,7 +83,7 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     process.platform === 'win32' ? `rune-gui-shell-windows.zip` : `rune-gui-shell-linux.tar.gz`;
   const url = `${RELEASES}/v${RUNE_VERSION}/${archiveName}`;
   const target = shellCacheDir();
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-shell-'));
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-gui-install-'));
   const archive = join(temporaryDirectory, archiveName);
   let stagingDirectory: string | undefined;
 
