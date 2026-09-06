@@ -1,0 +1,30 @@
+schemaVersion: 1
+product:
+  name: Empty overlay strings smoke
+  version: 1.0.0
+  description: Manifest description
+inputs:
+  textValue:
+    type: text
+    required: false
+    title: Manifest text title
+    description: Manifest text description
+    pattern: '[A-Z]+'
+    patternHint: Use uppercase letters
+  selectValue:
+    type: select
+    required: false
+    title: Manifest select title
+    description: Manifest select description
+    options:
+      - value: select-value
+        label: Manifest select label
+  multiselectValue:
+    type: multiselect
+    required: false
+    title: Manifest multiselect title
+    description: Manifest multiselect description
+    options:
+      - value: multiselect-value
+        label: Manifest multiselect label
+steps: []

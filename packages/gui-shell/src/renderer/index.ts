@@ -95,6 +95,10 @@ function text(key: string): string {
   return state.strings[key] ?? '';
 }
 
+function optionalText(key: string): string | undefined {
+  return state.strings[key];
+}
+
 async function boot(): Promise<void> {
   const opened = await window.rune.open();
   const unknown = opened.inputTypes.filter((type) => !RENDERABLE_TYPES.has(type));
@@ -289,7 +293,7 @@ function renderWelcome(): void {
   heading.textContent = text('rune.page.welcome.title');
   const description = document.createElement('p');
   description.textContent =
-    text('product.description') || `${state.productName} ${state.productVersion}`;
+    optionalText('product.description') ?? `${state.productName} ${state.productVersion}`;
   container.append(heading, description);
   el.page.append(container);
 }
@@ -311,7 +315,7 @@ function renderField(input: BridgeInput): HTMLElement {
   }
 
   const label = document.createElement('label');
-  label.textContent = text(`inputs.${input.id}.title`) || input.id;
+  label.textContent = text(`inputs.${input.id}.title`);
   field.append(label);
 
   const description = text(`inputs.${input.id}.description`);
@@ -407,7 +411,7 @@ function selectBox(input: BridgeInput): HTMLElement {
   for (const value of options) {
     const item = document.createElement('option');
     item.value = value;
-    item.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
+    item.textContent = text(`inputs.${input.id}.options.${value}.label`);
     if (input.value === value) {
       item.selected = true;
     }
@@ -437,7 +441,7 @@ function multiselect(input: BridgeInput): HTMLElement {
       void submit(input.id, [...chosen]);
     });
     const label = document.createElement('span');
-    label.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
+    label.textContent = text(`inputs.${input.id}.options.${value}.label`);
     row.append(box, label);
     container.append(row);
   }
@@ -456,8 +460,8 @@ async function submit(id: string, raw: unknown): Promise<void> {
       state.invalid.delete(id);
       state.drafts.delete(id);
     } catch (error) {
-      const hint = text(`inputs.${id}.patternHint`);
-      state.invalid.set(id, hint !== '' ? hint : messageOf(error));
+      const hint = optionalText(`inputs.${id}.patternHint`);
+      state.invalid.set(id, hint ?? messageOf(error));
       if (typeof raw === 'string') {
         state.drafts.set(id, raw);
       }
@@ -510,8 +514,8 @@ async function refreshInputs(): Promise<void> {
       continue;
     }
     if (input.rejection !== undefined) {
-      const hint = text(`inputs.${input.id}.patternHint`);
-      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.issue.message);
+      const hint = optionalText(`inputs.${input.id}.patternHint`);
+      state.invalid.set(input.id, hint ?? input.rejection.issue.message);
     }
   }
 }
