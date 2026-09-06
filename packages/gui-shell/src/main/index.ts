@@ -280,7 +280,7 @@ async function executeHeadless(
       progress(event);
     }, cancel);
   } catch (error) {
-    return failWith(error, invocation, session, output, terminalResult, plan);
+    return (await failWith(error, invocation, session, output, terminalResult, plan)).exitCode;
   }
 
   for (const warning of session.warnings()) {
@@ -375,7 +375,7 @@ export async function windowedRun(
         window.close();
         return;
       }
-      fatalCode = await failWith(
+      const failure = await failWith(
         error,
         invocation,
         session,
@@ -384,7 +384,8 @@ export async function windowedRun(
         plan,
         deliverOutcome,
       );
-      displayFatal(error, session);
+      fatalCode = failure.exitCode;
+      displayFatal(failure.error, session);
       window.close();
     },
     onCancelRequested: () => window.close(),
@@ -667,7 +668,7 @@ async function failWith(
     result,
     target,
   ) => deliver(result, target, output),
-): Promise<number> {
+): Promise<{ readonly exitCode: number; readonly error: unknown }> {
   const failure =
     error instanceof RuneError
       ? error
@@ -687,9 +688,12 @@ async function failWith(
     await deliverResult(result, invocation);
   } catch (deliveryError) {
     writeDeliveryDiagnostic(session, deliveryError, output);
-    return deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70;
+    return {
+      exitCode: deliveryError instanceof RuneError ? exitCodeFor(deliveryError) : 70,
+      error: deliveryError,
+    };
   }
-  return exitCodeFor(failure);
+  return { exitCode: exitCodeFor(failure), error: failure };
 }
 
 function describeCancelled(session: Session, invocation: ShellInvocation): RunResult {

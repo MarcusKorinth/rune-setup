@@ -1137,6 +1137,79 @@ describe('windowed result delivery', () => {
     expect(existsSync(resultPath)).toBe(false);
   });
 
+  it('shows the effective masked result failure after log setup fails', async () => {
+    const { invocation, logPath, manifestPath, resultPath } = windowedLogAndResultFailureFixture();
+    const session = await Session.open(manifestPath, {
+      environment: {},
+      logFile: logPath,
+      mode: 'gui',
+      overrides: { resultDestination: resultPath },
+      resultDestination: resultPath,
+    });
+    const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+    const displayFatal = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-406');
+    };
+
+    await expect(
+      windowedRun(
+        session,
+        invocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
+    ).resolves.toBe(1);
+
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(existsSync(resultPath)).toBe(false);
+    expect(displayFatal).toHaveBeenCalledOnce();
+    expect(displayFatal).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RUNE-407' }),
+      session,
+    );
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(resultPath);
+  });
+
+  it('shows the masked effective result failure in the native dialog', async () => {
+    const { logPath, manifestPath, resultPath } = windowedLogAndResultFailureFixture();
+    vi.clearAllMocks();
+    vi.mocked(app.whenReady).mockResolvedValue();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-406');
+    };
+
+    await main(
+      [
+        manifestPath,
+        '--set',
+        `resultDestination=${resultPath}`,
+        '--result',
+        resultPath,
+        '--log-file',
+        logPath,
+      ],
+      new FakeSigtermSource(),
+    );
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      expect.stringContaining('RUNE-407 (exit 1):'),
+    );
+    const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
+    expect(dialogText).not.toContain('RUNE-406');
+    expect(dialogText).not.toContain(resultPath);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(resultPath);
+  });
+
   it('defers native close while writing an input-error result exactly once', async () => {
     const { invocation, resultPath, session } = await windowedFixture([
       'inputs:',
@@ -1275,5 +1348,50 @@ async function windowedFixture(inputLines: readonly string[] = ['inputs: {}']): 
     },
     resultPath,
     session,
+  };
+}
+
+function windowedLogAndResultFailureFixture(): {
+  invocation: ShellInvocation;
+  logPath: string;
+  manifestPath: string;
+  resultPath: string;
+} {
+  const directory = mkdtempSync(join(tmpdir(), 'rune-windowed-log-result-failure-'));
+  const manifestPath = join(directory, 'installer.yaml');
+  const blockedLogParent = join(directory, 'blocked-log-parent');
+  const blockedResultParent = join(directory, 'blocked-result-parent');
+  const logPath = join(blockedLogParent, 'run.log');
+  const resultPath = join(blockedResultParent, 'result.json');
+  writeFileSync(blockedLogParent, 'not a directory', 'utf8');
+  writeFileSync(blockedResultParent, 'not a directory', 'utf8');
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Windowed log failure',
+      '  version: 1.0.0',
+      'inputs:',
+      '  resultDestination:',
+      '    type: secret',
+      'steps: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return {
+    invocation: {
+      manifestPath,
+      values: [],
+      overrides: { resultDestination: resultPath },
+      locale: undefined,
+      result: resultPath,
+      logFile: logPath,
+      nonInteractive: false,
+    },
+    logPath,
+    manifestPath,
+    resultPath,
   };
 }
