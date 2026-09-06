@@ -62,11 +62,20 @@ test('submits every enabled input type through the real Electron shell', async (
     await token.dispatchEvent('change');
     await continueSelect.selectOption('false');
     await channel.selectOption('stable-value');
-    await components.getByText('Core component', { exact: true }).click();
-    await expect(components.getByRole('checkbox', { name: 'Core component' })).toBeChecked();
-    await components.getByText('Extra component', { exact: true }).click();
-    await expect(components.getByRole('checkbox', { name: 'Extra component' })).toBeChecked();
+
+    const coreComponent = components.getByRole('checkbox', { name: 'Core component' });
+    const extraComponent = components.getByRole('checkbox', { name: 'Extra component' });
+    await coreComponent.focus();
+    await page.keyboard.press('Space');
     await expect(next).toBeEnabled();
+    await expect(coreComponent).toBeChecked();
+    await expect(coreComponent).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(extraComponent).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(next).toBeEnabled();
+    await expect(extraComponent).toBeChecked();
+    await expect(extraComponent).toBeFocused();
     await next.click();
 
     const file = page.locator('.field[data-id="sourceFile"] input');
@@ -99,6 +108,41 @@ test('submits every enabled input type through the real Electron shell', async (
 
     await next.click();
     await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
+  } finally {
+    await application?.close();
+  }
+});
+
+test('preserves select focus after input refresh', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, fixturePath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    const release = page.locator('.field[data-id="releaseName"] input');
+    const token = page.locator('.field[data-id="accessToken"] input');
+    const continueSelect = page.locator('.field[data-id="continue"] select');
+    const channel = page.locator('.field[data-id="channel"] select');
+    const coreComponent = page.getByRole('checkbox', { name: 'Core component' });
+
+    await next.click();
+    await release.fill('release-42');
+    await release.dispatchEvent('change');
+    await token.fill('secret-token-42');
+    await token.dispatchEvent('change');
+    await continueSelect.selectOption('false');
+    await coreComponent.click();
+    await channel.focus();
+    await channel.selectOption('stable-value');
+
+    await expect(next).toBeEnabled();
+    await expect(channel).toHaveValue('stable-value');
+    await expect(channel).toBeFocused();
   } finally {
     await application?.close();
   }

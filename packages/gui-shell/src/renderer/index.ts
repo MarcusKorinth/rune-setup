@@ -239,6 +239,13 @@ async function navigate(direction: 1 | -1): Promise<void> {
 }
 
 function render(): void {
+  const focusedInputControlId =
+    state.page === 'inputs' &&
+    !closing &&
+    document.activeElement instanceof HTMLElement &&
+    el.page.contains(document.activeElement)
+      ? document.activeElement.id
+      : undefined;
   const version = ++renderVersion;
   el.page.classList.remove('page');
   void el.page.offsetWidth; // restart the page-in animation
@@ -265,6 +272,16 @@ function render(): void {
       break;
   }
   renderFooter();
+  if (focusedInputControlId !== undefined && state.page === 'inputs') {
+    const control = document.getElementById(focusedInputControlId);
+    if (
+      control instanceof HTMLElement &&
+      el.page.contains(control) &&
+      !control.matches(':disabled')
+    ) {
+      control.focus();
+    }
+  }
 }
 
 function renderFooter(): void {
