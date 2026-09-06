@@ -61,21 +61,28 @@ contextBridge.exposeInMainWorld('rune', {
   execute: async () => result(),
   cancel: async () => undefined,
   getStrings: async () => ({
-    'rune.page.welcome.title': 'Welcome',
-    'rune.page.summary.title': 'Summary',
-    'rune.button.back': 'Back',
-    'rune.button.cancel': 'Cancel',
-    'rune.button.next': 'Next',
-    'rune.button.install': 'Install',
-    'rune.button.finish': 'Finish',
-    'rune.progress.output': '  {line}',
-    'rune.progress.stepFinished': '  -> {state} (exit {exitCode}) after {durationMs}ms',
-    'rune.progress.stepFinishedWithoutExitCode': '  -> {state} after {durationMs}ms',
-    'rune.warning': 'warning: {message}',
-    'rune.result.succeeded': 'Setup completed successfully.',
-    'rune.result.summary':
-      '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
-      '{cancelled} cancelled, {notRun} not run (exit {exitCode})',
+    entries: {
+      'rune.page.welcome.title': 'Welcome',
+      'rune.page.summary.title': 'Summary',
+      'rune.button.back': 'Back',
+      'rune.button.cancel': 'Cancel',
+      'rune.button.next': 'Next',
+      'rune.button.install': 'Install',
+      'rune.button.finish': 'Finish',
+      'rune.progress.output': '  {line}',
+      'rune.progress.stepFinished': '  -> {state} (exit {exitCode}) after {durationMs}ms',
+      'rune.progress.stepFinishedWithoutExitCode': '  -> {state} after {durationMs}ms',
+      'rune.warning': 'warning: {message}',
+      'rune.result.succeeded': 'Setup completed successfully.',
+      'rune.result.summary':
+        '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
+        '{cancelled} cancelled, {notRun} not run (exit {exitCode})',
+    },
+    displayProduct: {
+      name: 'Summary test',
+      version: '1.0.0',
+      welcome: 'Summary test 1.0.0',
+    },
   }),
   getThemeConfig: async () => ({}),
   warnings: () =>

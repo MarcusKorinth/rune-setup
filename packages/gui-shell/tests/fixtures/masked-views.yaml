@@ -1,7 +1,7 @@
 schemaVersion: 1
 product:
-  name: Masked views smoke
-  version: 1.0.0
+  name: Secret details
+  version: display-only
 gui:
   windowTitle: Secret details
 inputs:

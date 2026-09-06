@@ -18,13 +18,23 @@ export interface RuneBridge {
   describe(): Promise<BridgeResult>;
   execute(): Promise<BridgeResult>;
   cancel(): Promise<void>;
-  getStrings(): Promise<Readonly<Record<string, string>>>;
+  getStrings(): Promise<BridgeStrings>;
   getThemeConfig(): Promise<BridgeTheme>;
   /** The §10 warnings the Result page surfaces — same run, same warnings, every mode. */
   warnings(): Promise<readonly BridgeWarning[]>;
   /** Signals that the result page is done and the shell may close with the run's code. */
   done(): Promise<void>;
   onEvent(listener: (event: BridgeEvent) => void): void;
+}
+
+/** One current renderer presentation snapshot composed by main from the session string table. */
+export interface BridgeStrings {
+  readonly entries: Readonly<Record<string, string>>;
+  readonly displayProduct: {
+    readonly name: string;
+    readonly version: string;
+    readonly welcome: string;
+  };
 }
 
 export type BridgeValueSource = 'default' | 'values' | 'environment' | 'set' | 'answer';

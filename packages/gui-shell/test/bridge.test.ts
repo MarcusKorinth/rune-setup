@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -21,7 +21,13 @@ vi.mock('electron', () => ({
 }));
 
 import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
-import type { BridgeEvent, BridgeInput, BridgePlan, BridgeResult } from '../src/preload/types.js';
+import type {
+  BridgeEvent,
+  BridgeInput,
+  BridgePlan,
+  BridgeResult,
+  BridgeStrings,
+} from '../src/preload/types.js';
 import { completeWrite } from './stream-fixture.js';
 
 function fixture(): string {
@@ -138,6 +144,37 @@ function structuredProjectionFixture(): string {
     'utf8',
   );
   return path;
+}
+
+function derivedProductFixture(): {
+  manifestPath: string;
+  productName: string;
+  relativeSecret: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-bridge-derived-product-'));
+  const manifestPath = join(dir, 'installer.yaml');
+  const relativeSecret = 'private/../secret-target';
+  const productName = resolve(dir, relativeSecret);
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${JSON.stringify(productName)}`,
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      'steps:',
+      '  - id: use',
+      '    run:',
+      '      command: echo',
+      '      cwd: "${workingDirectory}"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return { manifestPath, productName, relativeSecret };
 }
 
 function composedDisplayFixture(): string {
@@ -407,7 +444,7 @@ describe('the IPC bridge', () => {
     const opened = (await bridge.call('rune:open')) as {
       product: { name: string };
     };
-    const strings = (await bridge.call('rune:getStrings')) as Record<string, string>;
+    const strings = (await bridge.call('rune:getStrings')) as BridgeStrings;
     const theme = (await bridge.call('rune:getThemeConfig')) as {
       windowTitle: string;
       logo: string;
@@ -417,8 +454,13 @@ describe('the IPC bridge', () => {
     const assetDir = join(dirname(manifestPath), 'theme assets #1');
 
     expect(opened.product.name).toBe('Example super-secret-value');
-    expect(strings['product.description']).toBe('Description ***');
-    expect(strings['gui.windowTitle']).toBe('Window ***');
+    expect(strings.entries['product.description']).toBe('Description ***');
+    expect(strings.entries['gui.windowTitle']).toBe('Window ***');
+    expect(strings.displayProduct).toEqual({
+      name: 'Example ***',
+      version: '1.0.0',
+      welcome: 'Description ***',
+    });
     expect(theme.windowTitle).toBe('Window ***');
     expect(theme.logo).toBe(pathToFileURL(join(assetDir, 'logo #1.png')).href);
     expect(theme.banner).toBe(pathToFileURL(join(assetDir, 'banner #1.png')).href);
@@ -445,7 +487,7 @@ describe('the IPC bridge', () => {
     const opened = (await bridge.call('rune:open')) as {
       product: { name: string; version: string };
     };
-    const strings = (await bridge.call('rune:getStrings')) as Record<string, string>;
+    const strings = (await bridge.call('rune:getStrings')) as BridgeStrings;
     const theme = (await bridge.call('rune:getThemeConfig')) as {
       accentColor: string;
       windowTitle: string;
@@ -461,8 +503,13 @@ describe('the IPC bridge', () => {
     expect(result.product).toEqual(opened.product);
     expect(theme.accentColor).toBe('#123abc');
     expect(Object.keys(step.command.env)).toEqual(['COLLISION_ENV']);
-    expect(strings['product.description']).toBe('Description ***\nsecond\tline');
-    expect(strings['gui.windowTitle']).toBe('Window ***\nsecond\tline');
+    expect(strings.entries['product.description']).toBe('Description ***\nsecond\tline');
+    expect(strings.entries['gui.windowTitle']).toBe('Window ***\nsecond\tline');
+    expect(strings.displayProduct).toEqual({
+      name: '***',
+      version: '***',
+      welcome: 'Description ***\nsecond\tline',
+    });
     expect(theme.windowTitle).toBe('Window ***\nsecond\tline');
     expect(step.title).toBe('Step ***\nsecond\tline');
     expect(step.command.argv.at(-2)).toBe('Argument public\nsecond\tline');
@@ -504,6 +551,72 @@ describe('the IPC bridge', () => {
     ]) {
       expect(withoutExactExceptions).not.toContain(secret);
     }
+  });
+
+  it('refreshes product display masking after a secret answer while preserving identity', async () => {
+    const session = await Session.open(fixture(), { environment: {}, mode: 'gui' });
+    const bridge = await bridgeOver(session);
+
+    const opened = (await bridge.call('rune:open')) as {
+      product: { name: string; version: string };
+    };
+    const before = (await bridge.call('rune:getStrings')) as BridgeStrings;
+    await bridge.call('rune:setValue', 'token', 'super-secret-value');
+    const after = (await bridge.call('rune:getStrings')) as BridgeStrings;
+    await bridge.call('rune:plan');
+    const result = (await bridge.call('rune:describe')) as BridgeResult;
+
+    expect(before.displayProduct).toEqual({
+      name: 'Example super-secret-value',
+      version: '1.0.0',
+      welcome: 'Description super-secret-value',
+    });
+    expect(after.displayProduct).toEqual({
+      name: 'Example ***',
+      version: '1.0.0',
+      welcome: 'Description ***',
+    });
+    expect(opened.product).toEqual({ name: 'Example super-secret-value', version: '1.0.0' });
+    expect(result.product).toEqual(opened.product);
+  });
+
+  it('masks the complete product fallback after composing its exact identity fields', async () => {
+    const { manifestPath, productName } = derivedProductFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const bridge = await bridgeOver(session);
+
+    await bridge.call('rune:setValue', 'workingDirectory', `${productName} 1.0.0`);
+    const strings = (await bridge.call('rune:getStrings')) as BridgeStrings;
+
+    expect(strings.displayProduct).toEqual({
+      name: productName,
+      version: '1.0.0',
+      welcome: '***',
+    });
+  });
+
+  it('refreshes product display masking for a path secret derived by planning', async () => {
+    const { manifestPath, productName, relativeSecret } = derivedProductFixture();
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const bridge = await bridgeOver(session);
+
+    const opened = (await bridge.call('rune:open')) as {
+      product: { name: string; version: string };
+    };
+    await bridge.call('rune:setValue', 'workingDirectory', relativeSecret);
+    const beforePlan = (await bridge.call('rune:getStrings')) as BridgeStrings;
+    await bridge.call('rune:plan');
+    const afterPlan = (await bridge.call('rune:getStrings')) as BridgeStrings;
+    const result = (await bridge.call('rune:describe')) as BridgeResult;
+
+    expect(beforePlan.displayProduct.name).toBe(productName);
+    expect(afterPlan.displayProduct).toEqual({
+      name: '***',
+      version: '1.0.0',
+      welcome: '*** 1.0.0',
+    });
+    expect(opened.product).toEqual({ name: productName, version: '1.0.0' });
+    expect(result.product).toEqual(opened.product);
   });
 
   it('keeps exact theme asset paths while encoding them as file URLs', async () => {

@@ -12,6 +12,7 @@ import type {
   BridgeInput,
   BridgePlan,
   BridgeResult,
+  BridgeStrings,
   BridgeWarning,
   RuneBridge,
 } from '../preload/types.js';
@@ -60,8 +61,7 @@ interface State {
   result: BridgeResult | undefined;
   warnings: readonly BridgeWarning[];
   banner: string | undefined;
-  productName: string;
-  productVersion: string;
+  displayProduct: BridgeStrings['displayProduct'];
 }
 
 const state: State = {
@@ -77,8 +77,7 @@ const state: State = {
   result: undefined,
   warnings: [],
   banner: undefined,
-  productName: '',
-  productVersion: '',
+  displayProduct: { name: '', version: '', welcome: '' },
 };
 
 /** Advances on every page render so an async summary can only update its own page. */
@@ -108,6 +107,13 @@ function optionalText(key: string): string | undefined {
   return state.strings[key];
 }
 
+function applyStrings(strings: BridgeStrings): void {
+  state.strings = strings.entries;
+  state.displayProduct = strings.displayProduct;
+  el.productName.textContent = strings.displayProduct.name;
+  el.productVersion.textContent = strings.displayProduct.version;
+}
+
 async function boot(): Promise<void> {
   const opened = await window.rune.open();
   const unknown = opened.inputTypes.filter((type) => !RENDERABLE_TYPES.has(type));
@@ -117,7 +123,7 @@ async function boot(): Promise<void> {
     return;
   }
 
-  state.strings = await window.rune.getStrings();
+  applyStrings(await window.rune.getStrings());
   await refreshInputs();
   state.inputPages = Math.ceil(state.inputs.length / INPUTS_PER_PAGE);
 
@@ -143,11 +149,6 @@ async function boot(): Promise<void> {
   if (theme.windowTitle !== undefined) {
     document.title = theme.windowTitle;
   }
-
-  state.productName = opened.product.name;
-  state.productVersion = opened.product.version;
-  el.productName.textContent = state.productName;
-  el.productVersion.textContent = state.productVersion;
 
   el.back.addEventListener('click', () => {
     void navigate(-1);
@@ -312,8 +313,7 @@ function renderWelcome(): void {
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.welcome.title');
   const description = document.createElement('p');
-  description.textContent =
-    optionalText('product.description') ?? `${state.productName} ${state.productVersion}`;
+  description.textContent = state.displayProduct.welcome;
   container.append(heading, description);
   el.page.append(container);
 }
@@ -554,7 +554,7 @@ async function submit(id: string, raw: unknown): Promise<void> {
 }
 
 async function refreshStringsAndWindowTitle(): Promise<void> {
-  state.strings = await window.rune.getStrings();
+  applyStrings(await window.rune.getStrings());
   const theme = await window.rune.getThemeConfig();
   if (theme.windowTitle !== undefined) {
     document.title = theme.windowTitle;

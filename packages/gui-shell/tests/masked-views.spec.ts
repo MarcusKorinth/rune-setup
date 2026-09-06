@@ -1,4 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +18,32 @@ const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
 const relativeSecret = 'private/../secret-target';
 const derivedSecret = resolve(dirname(fixturePath), relativeSecret);
+
+function derivedProductFixture(): { manifestPath: string; productName: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'rune-gui-derived-product-'));
+  const manifestPath = join(dir, 'installer.yaml');
+  const productName = resolve(dir, relativeSecret);
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      `  name: ${JSON.stringify(productName)}`,
+      '  version: "1.0.0"',
+      'inputs:',
+      '  workingDirectory:',
+      '    type: secret',
+      'steps:',
+      '  - id: masked-path',
+      '    run:',
+      '      command: echo',
+      '      cwd: "${workingDirectory}"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return { manifestPath, productName };
+}
 
 async function answerMaskingInputs(page: Page): Promise<void> {
   const displaySecret = page.locator('.field[data-id="displaySecret"] input');
@@ -44,6 +72,9 @@ test('refreshes masked display strings after an accepted secret answer', async (
       cwd: packageDirectory,
     });
     const page = await application.firstWindow();
+    await expect(page.locator('#product-name')).toHaveText('Secret details');
+    await expect(page.locator('#product-version')).toHaveText('display-only');
+    await expect(page.locator('.welcome p')).toHaveText('Secret details display-only');
     await page.locator('#next').click();
 
     const field = page.locator('.field[data-id="displaySecret"]');
@@ -52,7 +83,114 @@ test('refreshes masked display strings after an accepted secret answer', async (
     await field.locator('input').dispatchEvent('change');
 
     await expect(field.locator('label')).toHaveText('***');
+    await expect(page.locator('#product-name')).toHaveText('***');
+    await expect(page.locator('#product-version')).toHaveText('display-only');
     await expect.poll(() => page.title()).toBe('***');
+    await page.locator('#back').click();
+    await expect(page.locator('.welcome p')).toHaveText('*** display-only');
+    await expect(page.locator('body')).not.toContainText('Secret details');
+  } finally {
+    await application?.close();
+  }
+});
+
+test('masks seeded product name and version in the persistent header and welcome page', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [
+        launcherPath,
+        fixturePath,
+        '--set',
+        'displaySecret=Secret details',
+        '--set',
+        'workingDirectory=display-only',
+      ],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+
+    await expect(page.locator('#product-name')).toHaveText('***');
+    await expect(page.locator('#product-version')).toHaveText('***');
+    await expect(page.locator('.welcome p')).toHaveText('*** ***');
+    await expect(page.locator('body')).not.toContainText('Secret details');
+    await expect(page.locator('body')).not.toContainText('display-only');
+  } finally {
+    await application?.close();
+  }
+});
+
+test('refreshes product display after planning derives a full-path secret', async () => {
+  const { manifestPath, productName } = derivedProductFixture();
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, manifestPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await expect(page.locator('#product-name')).toHaveText(productName);
+    await next.click();
+    const input = page.locator('.field[data-id="workingDirectory"] input');
+    await input.fill(relativeSecret);
+    await input.dispatchEvent('change');
+    await expect(input).toHaveValue('');
+    await expect(page.locator('#product-name')).toHaveText(productName);
+    await next.click();
+
+    await expect(page.locator('.result-heading')).toHaveText('Summary');
+    await expect(page.locator('#product-name')).toHaveText('***');
+    await expect(page.locator('body')).not.toContainText(productName);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('refreshes product display when Back overtakes the plan response', async () => {
+  const { manifestPath, productName } = derivedProductFixture();
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [launcherPath, manifestPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    const back = page.locator('#back');
+
+    await next.click();
+    const input = page.locator('.field[data-id="workingDirectory"] input');
+    await input.fill(relativeSecret);
+    await input.dispatchEvent('change');
+    await expect(input).toHaveValue('');
+    await expect(next).toBeEnabled();
+
+    await page.evaluate(() => {
+      const nextButton = document.querySelector('#next');
+      const backButton = document.querySelector('#back');
+      if (
+        !(nextButton instanceof HTMLButtonElement) ||
+        !(backButton instanceof HTMLButtonElement)
+      ) {
+        throw new Error('wizard navigation controls did not render');
+      }
+      nextButton.click();
+      backButton.click();
+    });
+
+    await expect(page.locator('.field[data-id="workingDirectory"]')).toBeVisible();
+    await expect(page.locator('#product-name')).toHaveText('***');
+    await back.click();
+    await expect(page.locator('.welcome p')).toHaveText('*** 1.0.0');
+    await expect(page.locator('body')).not.toContainText(productName);
   } finally {
     await application?.close();
   }

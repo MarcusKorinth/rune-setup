@@ -545,7 +545,20 @@ export function registerBridge(
   handle('rune:setValue', (id, raw) => session.setValue(String(id), raw));
   handle('rune:plan', () => projectPlan(session.plan(), session.getStrings()));
   handle('rune:describe', () => projectResult(session.describe(), session.getStrings()));
-  handle('rune:getStrings', () => session.getStrings().entries);
+  handle('rune:getStrings', () => {
+    const strings = session.getStrings();
+    const product = session.manifest.product;
+    return {
+      entries: strings.entries,
+      displayProduct: {
+        name: formatSessionTerminalLine(strings, product.name),
+        version: formatSessionTerminalLine(strings, product.version),
+        welcome:
+          strings.productDescription() ??
+          formatSessionTerminalLine(strings, `${product.name} ${product.version}`),
+      },
+    };
+  });
   handle('rune:getThemeConfig', () => projectTheme(session.getThemeConfig()));
   handle('rune:warnings', () => projectWarnings(session.warnings(), session.getStrings()));
   handle('rune:cancel', () => {
