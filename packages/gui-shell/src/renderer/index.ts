@@ -160,6 +160,9 @@ async function boot(): Promise<void> {
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
+  if (direction === -1) {
+    forwardRequested = false;
+  }
   if (state.page === 'inputs' && direction === 1) {
     if (pendingInputSubmissions > 0) {
       forwardRequested = true;

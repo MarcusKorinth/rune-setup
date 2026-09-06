@@ -354,6 +354,82 @@ test('blocks Next while the engine is validating an edited input', async () => {
   }
 });
 
+test('does not retain a pending Next request after navigating Back', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath, '--input-race'],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    const field = page.locator('.field[data-id="code"]');
+
+    await next.click();
+    await expect(field).toBeVisible();
+    await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      const nextButton = document.querySelector('#next');
+      if (!(input instanceof HTMLInputElement) || !(nextButton instanceof HTMLButtonElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'bad';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(1);
+
+    await page.locator('#back').click();
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.rejectSubmission(0),
+    );
+
+    await next.click();
+    await expect(field).toBeVisible();
+    await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'GOOD';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(2);
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.resolveSubmission(1),
+    );
+    await expect(next).toBeEnabled();
+    await expect(next).toHaveText('Next');
+    await expect(field).toBeVisible();
+    await expect(page.locator('.result-heading')).toHaveCount(0);
+  } finally {
+    await application?.close();
+  }
+});
+
 test('bounds the live Progress log while retaining its newest output', async () => {
   const liveLogCap = 20_000;
   let application: ElectronApplication | undefined;
