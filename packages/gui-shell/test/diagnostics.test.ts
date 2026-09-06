@@ -162,7 +162,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     const resultText = stdout.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toMatch(
-      /^running 1 steps on \w+\r?\n\[1\/1\] Report \*\*\*\r?\n {2}stdout \*\*\*\r?\n {2}stderr \*\*\*\r?\n {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n$/,
+      /^running 1 steps on \w+\r?\nStep 1 of 1: Report \*\*\*\r?\n {2}stdout \*\*\*\r?\n {2}stderr \*\*\*\r?\n {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n$/,
     );
     expect(diagnostics).not.toContain(secret);
     expect(JSON.parse(resultText)).toMatchObject({ status: 'succeeded', exitCode: 0 });

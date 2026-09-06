@@ -43,8 +43,13 @@ contextBridge.exposeInMainWorld('rune', {
     }),
   execute: async () => ({
     status: 'succeeded',
+    exitCode: 0,
     nothingExecuted: false,
     stepsSucceeded: 1,
+    stepsFailed: 0,
+    stepsCancelled: 0,
+    stepsSkipped: 0,
+    stepsNotRun: 0,
     stepsTotal: 1,
     steps: [],
   }),
@@ -57,7 +62,14 @@ contextBridge.exposeInMainWorld('rune', {
     'rune.button.next': 'Next',
     'rune.button.install': 'Install',
     'rune.button.finish': 'Finish',
+    'rune.progress.output': '  {line}',
+    'rune.progress.stepFinished': '  -> {state} (exit {exitCode}) after {durationMs}ms',
+    'rune.progress.stepFinishedWithoutExitCode': '  -> {state} after {durationMs}ms',
+    'rune.warning': 'warning: {message}',
     'rune.result.succeeded': 'Setup completed successfully.',
+    'rune.result.summary':
+      '{status}: {succeeded} succeeded, {failed} failed, {skipped} skipped, ' +
+      '{cancelled} cancelled, {notRun} not run (exit {exitCode})',
   }),
   getThemeConfig: async () => ({}),
   warnings: () =>

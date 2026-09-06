@@ -776,7 +776,7 @@ describe('the IPC bridge', () => {
     expect(JSON.stringify(bridge.sent)).toContain('***');
     const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toMatch(/^running 2 steps on \w+\r?\n/);
-    expect(diagnostics).toContain('[1/2] use\n');
+    expect(diagnostics).toContain('Step 1 of 2: use\n');
     expect(diagnostics).toContain('  the token is ***\n');
     expect(diagnostics).toMatch(/ {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n/);
     expect(diagnostics).toMatch(/ {2}-> SKIPPED after \d+ms\r?\n$/);

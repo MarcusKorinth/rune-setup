@@ -667,6 +667,12 @@ function onRunEvent(event: BridgeEvent): void {
   if (progress === undefined) {
     return;
   }
+  if (event.kind === 'runStarted') {
+    progress.title.textContent = chrome('rune.progress.runStarted', {
+      total: event.plan.steps.length,
+      platform: event.plan.platform,
+    });
+  }
   if (event.kind === 'stepStarted') {
     progress.title.textContent = chrome('rune.progress.step', {
       index: event.index + 1,
@@ -677,10 +683,21 @@ function onRunEvent(event: BridgeEvent): void {
     progress.bar.value = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
   }
   if (event.kind === 'stepOutput') {
-    appendLiveLog(event.line);
+    appendLiveLog(chrome('rune.progress.output', { line: event.line }));
   }
   if (event.kind === 'stepFinished') {
-    appendLiveLog(`-- ${event.stepId}: ${event.state}`);
+    appendLiveLog(
+      chrome(
+        event.exitCode === undefined
+          ? 'rune.progress.stepFinishedWithoutExitCode'
+          : 'rune.progress.stepFinished',
+        {
+          state: event.state,
+          durationMs: event.durationMs,
+          ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+        },
+      ),
+    );
   }
   if (event.kind === 'runFinished') {
     progress.bar.value = progress.bar.max;
@@ -709,14 +726,22 @@ function renderResult(): void {
   sub.textContent =
     result.nothingExecuted && ok
       ? text('rune.result.nothingExecuted')
-      : `${result.stepsSucceeded} / ${result.stepsTotal}`;
+      : chrome('rune.result.summary', {
+          status: result.status,
+          succeeded: result.stepsSucceeded,
+          failed: result.stepsFailed,
+          skipped: result.stepsSkipped,
+          cancelled: result.stepsCancelled,
+          notRun: result.stepsNotRun,
+          exitCode: result.exitCode,
+        });
   el.page.append(badge, heading, sub);
 
   // The §10 warnings: the same run never warns in one mode and stays silent in another.
   for (const warning of state.warnings) {
     const line = document.createElement('p');
     line.className = 'result-sub';
-    line.textContent = warning;
+    line.textContent = chrome('rune.warning', { message: warning });
     el.page.append(line);
   }
 

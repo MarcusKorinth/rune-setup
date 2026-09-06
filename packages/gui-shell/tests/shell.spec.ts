@@ -329,7 +329,10 @@ test('waits for Result warnings before allowing Finish', async () => {
       ).summaryTestControl.resolveWarnings(0, ['A required warning']),
     );
     await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
-    await expect(page.locator('.result-sub')).toContainText(['1 / 1', 'A required warning']);
+    await expect(page.locator('.result-sub')).toContainText([
+      'succeeded: 1 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 0)',
+      'warning: A required warning',
+    ]);
     await expect(next).toHaveText('Finish');
     await expect(next).toBeEnabled();
     await next.click();
@@ -570,7 +573,7 @@ test('bounds the live Progress log while retaining its newest output', async () 
     expect(logUpdates.beforeFrameText).toBe('');
     expect(logUpdates.mutationCount).toBe(1);
     expect(log).not.toContain('discard-this-old-head');
-    expect(log).toContain('-- test-step: SUCCEEDED');
+    expect(log).toContain('  -> SUCCEEDED after 1ms');
     expect(log.length).toBeLessThanOrEqual(liveLogCap);
   } finally {
     await application?.close();

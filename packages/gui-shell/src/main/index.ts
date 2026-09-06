@@ -31,6 +31,7 @@ import {
   formatSessionTerminalLine,
   serializeResult,
   writeResult,
+  type ChromeKey,
   type ExecutionPlan,
   type RunEvent,
   type RunResult,
@@ -265,10 +266,12 @@ async function executeHeadless(
   }
 
   for (const warning of session.warnings()) {
-    writeSessionDiagnostic(session, `warning: ${warning}`, output);
+    writeSessionChromeDiagnostic(session, output, 'rune.warning', { message: warning });
   }
   if (result.nothingExecuted) {
-    writeSessionDiagnostic(session, 'warning: nothing was executed', output);
+    writeSessionChromeDiagnostic(session, output, 'rune.warning', {
+      message: session.getStrings().chrome('rune.result.nothingExecuted'),
+    });
   }
   try {
     await deliver(result, invocation, output);
@@ -681,36 +684,52 @@ function writeSessionDiagnostic(session: Session, message: string, output: Shell
   output.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
 }
 
+function writeSessionChromeDiagnostic(
+  session: Session,
+  output: ShellStreams,
+  key: ChromeKey,
+  values?: Readonly<Record<string, string | number>>,
+): void {
+  const strings = session.getStrings();
+  output.stderr.write(`${formatSessionTerminalLine(strings, strings.chrome(key, values))}\n`);
+}
+
 /** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
 function shellProgressObserver(session: Session, output: ShellStreams): (event: RunEvent) => void {
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
-        writeSessionDiagnostic(
-          session,
-          `running ${event.plan.steps.length} steps on ${event.plan.platform}`,
-          output,
-        );
+        writeSessionChromeDiagnostic(session, output, 'rune.progress.runStarted', {
+          total: event.plan.steps.length,
+          platform: event.plan.platform,
+        });
         break;
       case 'stepStarted':
-        writeSessionDiagnostic(
-          session,
-          `[${event.index + 1}/${event.total}] ${event.title}`,
-          output,
-        );
+        writeSessionChromeDiagnostic(session, output, 'rune.progress.step', {
+          index: event.index + 1,
+          total: event.total,
+          title: event.title,
+        });
         break;
       case 'stepOutput':
-        writeSessionDiagnostic(session, `  ${event.line}`, output);
+        writeSessionChromeDiagnostic(session, output, 'rune.progress.output', { line: event.line });
         break;
-      case 'stepFinished':
-        writeSessionDiagnostic(
+      case 'stepFinished': {
+        const values = {
+          state: event.state,
+          durationMs: event.durationMs,
+          ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+        };
+        writeSessionChromeDiagnostic(
           session,
-          `  -> ${event.state}` +
-            (event.exitCode === undefined ? '' : ` (exit ${event.exitCode})`) +
-            ` after ${event.durationMs}ms`,
           output,
+          event.exitCode === undefined
+            ? 'rune.progress.stepFinishedWithoutExitCode'
+            : 'rune.progress.stepFinished',
+          values,
         );
         break;
+      }
       case 'runFinished':
         break;
     }

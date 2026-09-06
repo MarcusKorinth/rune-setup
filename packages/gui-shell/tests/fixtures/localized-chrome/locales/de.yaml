@@ -1,0 +1,8 @@
+rune.progress.runStarted: 'LOKAL START {total} {platform}'
+rune.progress.step: 'LOKAL SCHRITT {index}/{total}: {title}'
+rune.progress.output: 'LOKAL AUSGABE {line}'
+rune.progress.stepFinished: 'LOKAL ENDE {state} CODE {exitCode} ZEIT {durationMs}'
+rune.progress.stepFinishedWithoutExitCode: 'LOKAL ENDE {state} OHNE CODE ZEIT {durationMs}'
+rune.warning: 'LOKAL WARNUNG {message}'
+rune.result.succeeded: 'LOKAL ERFOLG'
+rune.result.summary: 'LOKAL BILANZ {status} {succeeded}/{failed}/{skipped}/{cancelled}/{notRun} CODE {exitCode}'
