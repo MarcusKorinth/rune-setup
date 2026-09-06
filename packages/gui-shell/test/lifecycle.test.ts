@@ -377,6 +377,28 @@ describe('the GUI shell main lifecycle', () => {
     },
   );
 
+  it.each([
+    [['--values', '']],
+    [['--values', 'base.yaml', '--values', '']],
+    [['--log-file', '']],
+  ] as const)('rejects empty file arguments before session opening: %j', async (flags) => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-shell-empty-argument-'));
+    const resultPath = join(directory, 'result.json');
+    const open = vi.spyOn(Session, 'open');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+    await main(['installer.yaml', '--result', resultPath, ...flags]);
+
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(app.exit).toHaveBeenCalledWith(2);
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toBe(
+      `${flags[0]} needs a non-empty path\n`,
+    );
+    expect(dialog.showErrorBox).not.toHaveBeenCalled();
+  });
+
   it('maps invalid argv to usage without waiting for Electron readiness', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-shell-usage-'));
     const resultPath = join(dir, 'result.json');

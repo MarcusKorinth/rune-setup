@@ -90,6 +90,12 @@ describe('parseShellArgv', () => {
     [['--locale'], '--locale expects a value'],
     [['--result'], '--result expects a value'],
     [['--log-file'], '--log-file expects a value'],
+    [['installer.yaml', '--log-file', ''], '--log-file needs a non-empty path'],
+    [['installer.yaml', '--values', ''], '--values needs a non-empty path'],
+    [
+      ['installer.yaml', '--values', 'base.yaml', '--values', ''],
+      '--values needs a non-empty path',
+    ],
     [['--set', 'port'], '--set expects key=value'],
     [[], 'the shell needs a manifest path'],
   ] as const)('reports %s as a RUNE usage error', (argv, message) => {

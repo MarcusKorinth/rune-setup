@@ -74,6 +74,12 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   if (manifestPath === undefined) {
     throw new UsageError('the shell needs a manifest path');
   }
+  if (logFile === '') {
+    throw new UsageError('--log-file needs a non-empty path');
+  }
+  if (values.includes('')) {
+    throw new UsageError('--values needs a non-empty path');
+  }
   if (result === '-' && !nonInteractive) {
     throw new UsageError('--result - requires --non-interactive in the GUI shell');
   }
