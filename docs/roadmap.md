@@ -93,14 +93,14 @@ The interactive CLI, frozen `Session` facade, and cross-client contract suite ar
   pure sandboxed renderer (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`): pages Welcome,
   generated input pages, Summary, Progress, Result; greyed-out disabled inputs flipping
   live, red pattern state, cancel flow, named `RuneError` display, shell-crash → exit
-  70, exit-code forwarding through `rune run --gui`
+  70
 - [x] **default theme**: modern, polished, animated, light/dark, built on CSS custom
   properties
 - [x] **theming layers**: manifest `gui:` block (`accentColor`, `logo`, `banner`, `theme`,
   `windowTitle`) and author CSS loaded after the default theme
 - [ ] `rune gui install` — prebuilt shell per OS from GitHub Releases into the per-user
   cache (no admin; the CLI npm package contains no Electron); `rune run --gui`
-  launches it or exits 2 with the hint
+  launches it and forwards its exit code, or exits 2 with the hint when unavailable
 - [x] IPC-bridge unit test pinning the preload API as a 1:1 projection of the facade
 - [x] dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
   cancel, crash handling, headless run)
