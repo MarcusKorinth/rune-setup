@@ -200,15 +200,18 @@ export async function main(
     } else if (
       openingSession &&
       invocation !== undefined &&
-      error instanceof RuneError &&
       !(error instanceof UsageError) &&
       !(error instanceof PlatformError)
     ) {
-      output.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
-      const deliveryError = await deliverOpenFailure(error, invocation, output);
+      const failure =
+        error instanceof RuneError
+          ? error
+          : new InternalError('the setup could not be started', { cause: error });
+      output.stderr.write(`${describeWindowedFatal(failure, undefined)}\n`);
+      const deliveryError = await deliverOpenFailure(failure, invocation, output);
       if (deliveryError === undefined) {
-        displayFatal(error);
-        exitCode = exitCodeFor(error);
+        displayFatal(failure);
+        exitCode = exitCodeFor(failure);
       } else {
         writeOpenDeliveryDiagnostic(deliveryError, output);
         displayFatal(deliveryError);

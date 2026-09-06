@@ -764,19 +764,123 @@ describe('the GUI shell main lifecycle', () => {
     expect(existsSync(resultPath)).toBe(false);
   });
 
-  it('does not turn a hard Session.open crash into a configured result', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'rune-crashed-open-'));
-    const resultPath = join(dir, 'result.json');
-    vi.spyOn(Session, 'open').mockRejectedValue(new Error('Session.open crashed'));
+  it.each([
+    { label: 'windowed', mode: 'gui', arguments: [] as string[], showsDialog: true },
+    {
+      label: 'non-interactive',
+      mode: 'non-interactive',
+      arguments: ['--non-interactive'],
+      showsDialog: false,
+    },
+  ] as const)(
+    'writes a configured internal result for a caught $label Session.open failure',
+    async ({ mode, arguments: modeArguments, showsDialog }) => {
+      const dir = mkdtempSync(join(tmpdir(), 'rune-caught-open-failure-'));
+      const manifestPath = join(dir, 'installer.yaml');
+      const resultPath = join(dir, 'result.json');
+      const rawFailure = 'raw Session.open exception marker';
+      vi.spyOn(Session, 'open').mockRejectedValue(new Error(rawFailure));
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+      await main([manifestPath, ...modeArguments, '--result', resultPath]);
+
+      expect(app.exit).toHaveBeenCalledOnce();
+      expect(app.exit).toHaveBeenCalledWith(70);
+      const result = deliveredResult(resultPath);
+      expect(result).toMatchObject({
+        status: 'internal_error',
+        exitCode: 70,
+        mode,
+        product: null,
+        manifest: { path: manifestPath, sha256: null, schemaVersion: null },
+        inputs: [],
+        steps: [],
+        error: {
+          code: 'RUNE-500',
+          message:
+            'the setup could not be started — this is a bug in RUNE, please report it with the manifest that triggered it',
+          location: null,
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(rawFailure);
+      const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+      expect(diagnostic).toBe('RUNE-500 (exit 70): The setup could not be started.\n');
+      expect(diagnostic).not.toContain(rawFailure);
+      if (showsDialog) {
+        expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+        expect(dialog.showErrorBox).toHaveBeenCalledWith(
+          'RUNE setup failed',
+          'RUNE-500 (exit 70): The setup could not be started.',
+        );
+      } else {
+        expect(dialog.showErrorBox).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('serializes a caught Session.open failure to the headless result stream', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-caught-open-stdout-'));
+    const manifestPath = join(dir, 'installer.yaml');
+    const rawFailure = 'raw streamed Session.open exception marker';
+    vi.spyOn(Session, 'open').mockRejectedValue(new Error(rawFailure));
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: unknown,
+      callback: () => void,
+    ) => {
+      callback();
+      return true;
+    }) as typeof process.stdout.write);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
-    await main(['installer.yaml', '--non-interactive', '--result', resultPath]);
+    await main([manifestPath, '--non-interactive', '--result', '-']);
 
+    expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(70);
+    expect(stdout).toHaveBeenCalledOnce();
+    const serializedResult = String(stdout.mock.calls[0]?.[0]);
+    const result = JSON.parse(serializedResult) as RunResult;
+    expect(resultValidator.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({
+      status: 'internal_error',
+      exitCode: 70,
+      mode: 'non-interactive',
+      product: null,
+      manifest: { path: manifestPath, sha256: null, schemaVersion: null },
+      error: { code: 'RUNE-500' },
+    });
+    expect(serializedResult).not.toContain(rawFailure);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(rawFailure);
+    expect(dialog.showErrorBox).not.toHaveBeenCalled();
+  });
+
+  it('lets one RUNE-407 failure override a caught Session.open failure safely', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rune-caught-open-delivery-failure-'));
+    const blockedDirectory = join(dir, 'secret-result-parent');
+    const resultPath = join(blockedDirectory, 'result.json');
+    const rawFailure = `raw Session.open exception exposed ${resultPath}`;
+    writeFileSync(blockedDirectory, 'occupied', 'utf8');
+    vi.spyOn(Session, 'open').mockRejectedValue(new Error(rawFailure));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+    await main(['installer.yaml', '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(1);
     expect(existsSync(resultPath)).toBe(false);
-    expect(stderr.mock.calls.map(([text]) => String(text))).toContain(
-      'RUNE-500 (exit 70): The setup could not be started.\n',
+    const diagnostic = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(diagnostic).toBe(
+      'RUNE-500 (exit 70): The setup could not be started.\ncould not write the result file\n',
     );
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(dialog.showErrorBox).toHaveBeenCalledWith(
+      'RUNE setup failed',
+      'RUNE-407 (exit 1): The setup could not be started.',
+    );
+    const dialogText = vi.mocked(dialog.showErrorBox).mock.calls.flat().join('');
+    const visibleOutput = `${diagnostic}${dialogText}`;
+    expect(visibleOutput.match(/RUNE-407/g)).toHaveLength(1);
+    expect(visibleOutput).not.toContain(rawFailure);
+    expect(visibleOutput).not.toContain(resultPath);
   });
 
   it('writes one serialized headless result to stdout for --result -', async () => {
