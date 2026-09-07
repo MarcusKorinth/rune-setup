@@ -564,17 +564,39 @@ startup process tree, and cancellation requested before the deadline retains exi
 The second Ctrl+C before transfer closes the pipe so the shell cannot start an orphaned
 workflow. No handshake bytes use stdout or stderr, and the token never enters step environments.
 
-*Cache publication.* Extracted shells are immutable generations beneath the engine-version
-cache directory. Installation creates a complete generation before atomically replacing a
-small current-generation pointer. Readers resolve that pointer once for probe and launch.
-Concurrent successful installers may choose the last published complete generation; an
-interrupted installer must not remove the previously selected shell. Existing direct-binary
-caches remain readable during migration. Failed pointer publication removes only that
-installer's unpublished files. Published generations are retained so an already located or
-running shell cannot lose its files; clearing an unused engine-version cache is an explicit
-user operation. This protects process interruption and concurrent publication without a
-stale-lock recovery protocol. An invalid pointer or a pointer to missing files produces an
-actionable cache error, never a path outside that version's cache directory.
+*Cache publication and recovery.* Extracted shells are immutable generations beneath the
+engine-version cache directory. Before publishing a `generation-v1-<uuid>` directory,
+installation flushes every extracted file and writes an exclusively created, flushed
+`.rune-complete.json` seal. It records the engine version and a SHA-256 digest covering
+the complete directory tree: entry names and types, file sizes and contents, and POSIX
+executable permission bits. Symlinks and special files are refused. POSIX directories
+are also flushed before publication and after each rename; Windows file flushing uses
+writable handles. A complete sealed generation becomes visible before an atomic replacement
+of the small `current` pointer. Once visible, it is retained even if pointer publication
+fails: a concurrent reader may already have recovered it.
+
+Readers verify the selected generation's seal and complete tree, then pin that directory
+for both probe and launch. A valid current selection wins. If the pointer is absent,
+unreadable, malformed, or selects damaged files, readers scan only `generation-v1-<uuid>`
+directories in descending basename order and use the first fully verified generation of
+the same engine version. Staging directories, temporary pointers, incomplete seals and
+damaged trees are never recovery candidates. Recovery is read-only, so it cannot overwrite
+a concurrent installer's newer selection. Concurrent successful installers may choose the
+last published complete generation.
+
+For compatibility, a valid pointer to an older `generation-<uuid>` still selects that
+directory; these older unsealed generations are not recovery candidates. An original
+direct-binary cache remains readable only when `current` is absent and no verified
+generation is available. Neither compatibility path creates an integrity guarantee for
+old caches. A damaged selection without a usable recovery generation produces an actionable
+cache error, never a path outside that version's cache directory.
+
+An interrupted publication, including power loss, can therefore recover from a surviving
+complete generation even if the pointer or newest files did not persist. No recovery is
+possible if storage loses or corrupts every complete copy; RUNE reports the reinstall hint
+instead of launching a damaged sealed installation. Flushes cannot override storage that
+does not honor them. Published generations are retained so located or running shells cannot
+lose their files; clearing an unused engine-version cache is an explicit user operation.
 
 *Native quit requests.* For a configured invocation, the shell intercepts Electron's
 `before-quit` event, prevents immediate shutdown, and routes it through the same

@@ -89,6 +89,21 @@ const ALLOWED: readonly { readonly file: string; readonly code: string; readonly
     why: "commander's own usage text, composed before any session or registry exists",
   },
   {
+    file: 'cli/guiCache.ts',
+    code: 'writeFileSync(sealFile, JSON.stringify({ format: 1, runeVersion: engineVersion, digest }), {',
+    why: 'installation metadata contains only the built-in engine version and a runtime-tree digest, no run inputs',
+  },
+  {
+    file: 'cli/guiCache.ts',
+    code: "tree.update(JSON.stringify([relative, 'directory', executable]) + '\\n');",
+    why: 'frames downloaded runtime metadata for hashing; this text is never rendered or stored',
+  },
+  {
+    file: 'cli/guiCache.ts',
+    code: "JSON.stringify([relative, 'file', size, executable, file.digest('hex')]) + '\\n',",
+    why: 'frames downloaded runtime metadata for hashing; this text is never rendered or stored',
+  },
+  {
     file: 'cli/io.ts',
     code: 'escaped += JSON.stringify(character).slice(1, -1);',
     why: 'inside escapeTerminalText: it spells one control character, never a supplied value',
