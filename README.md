@@ -118,10 +118,11 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm run depcruise
-npm test
+npm run test:coverage
 npm run test:packages
 ```
 
+Use `npm test` for local runs without coverage instrumentation.
 The shell also has a Playwright smoke suite:
 `npm run test:smoke --workspace @rune/gui-shell`.
 Linux CI runs it under `xvfb-run --auto-servernum`.

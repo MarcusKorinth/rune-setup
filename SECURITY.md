@@ -62,6 +62,9 @@ not a permanent absence of vulnerabilities. Follow the
 [release verification checks](docs/releasing.md#build-and-verification) for the exact
 candidate and its artifacts.
 
+The [security checks](scripts/security/README.md) document the current scanners,
+their scope, and how to review and update the pinned rules.
+
 Report masking bypasses outside the documented exceptions, violations of frontend
 isolation, or command/argument changes caused by input handling as security defects.
 An intentionally authored command's behavior and the documented lack of transactional
