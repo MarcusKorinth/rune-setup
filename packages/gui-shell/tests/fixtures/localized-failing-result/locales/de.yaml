@@ -1,0 +1,2 @@
+rune.result.failed: 'LOKAL FEHLER'
+rune.result.stepTitle: 'LOKAL ERGEBNIS {title} CODE {exitCode}'

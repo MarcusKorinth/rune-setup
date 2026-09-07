@@ -25,6 +25,10 @@ const alias = Object.entries(compilerOptions.paths).map(([specifier, [target]]) 
 
 export default defineConfig({
   resolve: { alias },
+  // Vite's default transform skips .cts, but the GUI shell's preload is deliberately
+  // CommonJS (a sandboxed Electron preload cannot be an ES module) and its unit test
+  // imports the source.
+  esbuild: { include: /\.(m|c)?ts$/ },
   test: {
     environment: 'node',
     include: ['packages/*/test/**/*.test.ts', 'tests/**/*.test.ts'],

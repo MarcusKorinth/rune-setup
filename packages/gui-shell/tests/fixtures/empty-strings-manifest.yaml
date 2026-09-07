@@ -1,0 +1,30 @@
+schemaVersion: 1
+product:
+  name: Empty manifest strings smoke
+  version: 1.0.0
+  description: ''
+inputs:
+  textValue:
+    type: text
+    required: false
+    title: ''
+    description: ''
+    pattern: '[A-Z]+'
+    patternHint: ''
+  selectValue:
+    type: select
+    required: false
+    title: ''
+    description: ''
+    options:
+      - value: select-value
+        label: ''
+  multiselectValue:
+    type: multiselect
+    required: false
+    title: ''
+    description: ''
+    options:
+      - value: multiselect-value
+        label: ''
+steps: []

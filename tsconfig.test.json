@@ -2,6 +2,7 @@
   "extends": ["./tsconfig.base.json", "./tsconfig.paths.json"],
   "compilerOptions": {
     "composite": false,
+    "verbatimModuleSyntax": false,
     "incremental": false,
     "declaration": false,
     "declarationMap": false,

@@ -1,0 +1,12 @@
+schemaVersion: 1
+product:
+  name: RUNE Shell Smoke
+  version: 1.0.0
+  description: Real Electron renderer smoke
+gui:
+  windowTitle: Custom shell window
+  accentColor: '#d946ef'
+  logo: 'logo #1.svg'
+  banner: 'banner #1.svg'
+  theme: 'custom #1.css'
+steps: []

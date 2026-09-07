@@ -1,0 +1,33 @@
+schemaVersion: 1
+product:
+  name: Accessibility smoke
+  version: 1.0.0
+inputs:
+  accessCode:
+    type: text
+    title: Access code
+    description: Enter uppercase letters.
+    default: invalid
+    pattern: '[A-Z]+'
+    patternHint: Use uppercase letters
+  first:
+    type: text
+    title: First
+    default: first
+  second:
+    type: text
+    title: Second
+    default: second
+  third:
+    type: text
+    title: Third
+    default: third
+  fourth:
+    type: text
+    title: Fourth
+    default: fourth
+  fifth:
+    type: text
+    title: Fifth
+    default: fifth
+steps: []

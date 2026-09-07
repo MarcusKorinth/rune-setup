@@ -1,0 +1,43 @@
+schemaVersion: 1
+product:
+  name: Conditional input smoke
+  version: 1.0.0
+inputs:
+  enableDetails:
+    type: boolean
+    title: Enable details
+    default: true
+  details:
+    type: text
+    title: Details
+    pattern: '[A-Z]+'
+    patternHint: Use uppercase letters
+    when: '${enableDetails}'
+  secretDetails:
+    type: secret
+    title: Secret details
+    when: '${enableDetails}'
+  booleanDetails:
+    type: boolean
+    title: Boolean details
+    when: '${enableDetails}'
+  selectDetails:
+    type: select
+    title: Select details
+    required: false
+    options: [one, two]
+    when: '${enableDetails}'
+  multiselectDetails:
+    type: multiselect
+    title: Multiselect details
+    options: [one, two]
+    when: '${enableDetails}'
+  fileDetails:
+    type: file
+    title: File details
+    when: '${enableDetails}'
+  directoryDetails:
+    type: directory
+    title: Directory details
+    when: '${enableDetails}'
+steps: []

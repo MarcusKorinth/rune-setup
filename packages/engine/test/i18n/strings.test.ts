@@ -78,6 +78,8 @@ describe('the resolved string table', () => {
     expect(strings.optionLabel('environment', 'production')).toBe('production');
     expect(strings.stepTitle('install')).toBe('Install');
     expect(strings.stepTitle('cleanup')).toBe('cleanup');
+    expect(strings.chrome('rune.window.title')).toBe('RUNE Setup');
+    expect(strings.chrome('rune.dialog.fatal.title')).toBe('RUNE setup failed');
     expect(strings.chrome('rune.button.next')).toBe('Next');
   });
 
@@ -91,6 +93,8 @@ describe('the resolved string table', () => {
         'gui.windowTitle: Beispiel-Setup',
         'steps.install.title: Installieren',
         'inputs.target.title: Installationsverzeichnis',
+        'rune.window.title: RUNE Einrichtung',
+        'rune.dialog.fatal.title: RUNE Einrichtung fehlgeschlagen',
         'rune.button.next: Weiter',
         '',
       ].join('\n'),
@@ -109,6 +113,8 @@ describe('the resolved string table', () => {
     expect(strings.optionLabel('environment', 'production')).toBe('Produktivumgebung');
     expect(strings.stepTitle('install')).toBe('Installieren');
     expect(strings.inputTitle('target')).toBe('Installationsverzeichnis');
+    expect(strings.chrome('rune.window.title')).toBe('RUNE Einrichtung');
+    expect(strings.chrome('rune.dialog.fatal.title')).toBe('RUNE Einrichtung fehlgeschlagen');
     expect(strings.chrome('rune.button.next')).toBe('Weiter');
     expect(strings.chrome('rune.button.back')).toBe('Back');
     expect(strings.stepTitle('cleanup')).toBe('cleanup');

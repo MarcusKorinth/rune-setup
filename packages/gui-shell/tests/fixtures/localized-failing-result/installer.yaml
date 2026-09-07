@@ -1,0 +1,10 @@
+schemaVersion: 1
+product:
+  name: Localized failing result
+  version: 1.0.0
+steps:
+  - id: localized-failing-step
+    title: Localized failing step
+    run:
+      command: node
+      args: [localized-failing-step.cjs]

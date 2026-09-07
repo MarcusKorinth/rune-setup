@@ -11,11 +11,12 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE's **v0.1 core (Milestones 0–2)** is implemented: the engine, validation and schema
-commands, non-interactive execution, the interactive CLI, the `Session` facade, and the
-mode-parity contract suite. The Electron GUI, `gui install`, and packaging remain planned
-in the [roadmap](docs/roadmap.md); the binding contract is documented in
-[docs/architecture.md](docs/architecture.md).
+RUNE's **v0.1 core (Milestones 0–2)** and the Milestone 3 Electron wizard shell are
+implemented: the engine, validation and schema commands, both CLI modes, the `Session`
+facade, mode-parity suite, sandboxed renderer, theme, and cross-platform shell smoke tests.
+Shell distribution through `rune gui install`, CLI launching through `rune run --gui`, and
+packaging remain planned in the [roadmap](docs/roadmap.md); the binding contract is documented
+in [docs/architecture.md](docs/architecture.md).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
@@ -25,7 +26,7 @@ users of a packaged installer need nothing installed.
 
 One configuration, three operating modes with identical execution semantics:
 
-1. a graphical installation wizard (planned)
+1. a graphical installation wizard
 2. an interactive command line installer
 3. a fully non-interactive run for CI/CD pipelines
 
@@ -81,7 +82,7 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways (the graphical mode is planned for Milestone 3):
+The same manifest, three ways (CLI launching of the shell is still being wired):
 
 ```bash
 # Guided on a TTY; non-interactive fallback when stdin is not a TTY
@@ -89,7 +90,7 @@ rune run installer.yaml
 ```
 
 ```bash
-# Planned with Milestone 3:
+# Planned CLI integration:
 # rune run installer.yaml --gui
 ```
 
@@ -97,21 +98,21 @@ rune run installer.yaml
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 
-## The planned graphical wizard (Milestone 3)
+## The graphical wizard shell (Milestone 3)
 
-The wizard is a bundled, self-contained, Electron-based app. It needs nothing installed
-on the target machine, runs without admin rights, and looks identical on every platform
-because it ships its own rendering engine. Its main process hosts the RUNE engine
-in-process; its window is a pure renderer that reaches the engine only through an IPC
-bridge — all planning, validation and execution happen in the engine, exactly as in the
-two CLI modes.
+The repository currently provides an Electron development shell for the wizard. Its main
+process hosts the RUNE engine in-process; its window is a pure renderer that reaches the
+engine only through an IPC bridge — all planning, validation and execution happen in the
+engine, exactly as in the two CLI modes. A planned packaging target is a self-contained
+end-user artifact that needs nothing installed, runs without admin rights, and renders
+identically on every platform because it ships its own rendering engine.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — planned Milestone 3 work includes `rune gui install`, which will
+- **Author tooling** — remaining Milestone 3 work includes `rune gui install`, which will
   fetch the prebuilt shell for your OS into a per-user cache; `rune package` (roadmap
   milestone 4) will bundle shell, engine and manifest into one portable end-user artifact
   that needs nothing installed
@@ -140,11 +141,14 @@ Requires Node 22 LTS. The repository is an npm-workspaces monorepo
 npm ci
 ```
 
-The local gate is exactly what CI runs (`npm run format` fixes formatting):
+The core local gate mirrors the core CI job (`npm run format` fixes formatting):
 
 ```bash
 npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test
 ```
+
+The Electron CI lane additionally runs `npm run build` and
+`npm run test:smoke --workspace @rune/gui-shell` on Windows and Linux.
 
 ## Contributing
 

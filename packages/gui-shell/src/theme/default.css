@@ -1,0 +1,344 @@
+/*
+ * RUNE default theme (docs/architecture.md §9.4, layer 1): what every installer looks
+ * like when the author does nothing. Built on CSS custom properties — the manifest's
+ * `gui:` block overrides variables (layer 2), an author stylesheet loaded after this file
+ * may override anything (layer 3). RUNE guarantees the variable names, not the DOM.
+ */
+
+:root {
+  --rune-accent: #4f6df5;
+  --rune-accent-contrast: #ffffff;
+  --rune-bg: #f6f7fb;
+  --rune-surface: #ffffff;
+  --rune-text: #1c2030;
+  --rune-text-muted: #6a7086;
+  --rune-danger: #d64550;
+  --rune-success: #2fa26a;
+  --rune-border: #dfe3ee;
+  --rune-radius: 10px;
+  --rune-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --rune-mono: 'Cascadia Code', Consolas, 'SF Mono', monospace;
+  --rune-shadow: 0 10px 30px rgb(28 32 48 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rune-bg: #14161f;
+    --rune-surface: #1d2029;
+    --rune-text: #e8eaf2;
+    --rune-text-muted: #9aa0b5;
+    --rune-border: #2c3040;
+    --rune-shadow: 0 10px 30px rgb(0 0 0 / 35%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--rune-font);
+  background: var(--rune-bg);
+  color: var(--rune-text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--rune-border);
+  background: var(--rune-surface);
+}
+
+.logo {
+  height: 40px;
+}
+
+.product-name {
+  margin: 0;
+  font-size: 18px;
+}
+
+.product-version {
+  margin: 0;
+  font-size: 12px;
+  color: var(--rune-text-muted);
+}
+
+.page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px;
+  animation: rune-page-in 240ms ease-out;
+}
+
+@keyframes rune-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.footer {
+  display: flex;
+  gap: 10px;
+  padding: 16px 28px;
+  border-top: 1px solid var(--rune-border);
+  background: var(--rune-surface);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.button {
+  font: inherit;
+  padding: 9px 22px;
+  border-radius: var(--rune-radius);
+  border: 1px solid var(--rune-border);
+  background: var(--rune-surface);
+  color: var(--rune-text);
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease;
+}
+
+.button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--rune-shadow);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.button.primary {
+  background: var(--rune-accent);
+  border-color: var(--rune-accent);
+  color: var(--rune-accent-contrast);
+}
+
+.welcome {
+  max-width: 560px;
+  margin: 8vh auto 0;
+  text-align: center;
+}
+
+.welcome .banner {
+  max-width: 100%;
+  border-radius: var(--rune-radius);
+  margin-bottom: 20px;
+}
+
+.welcome h2 {
+  font-size: 26px;
+}
+
+.welcome p {
+  color: var(--rune-text-muted);
+}
+
+.field {
+  max-width: 560px;
+  margin: 0 auto 18px;
+  padding: 16px 18px;
+  background: var(--rune-surface);
+  border: 1px solid var(--rune-border);
+  border-radius: var(--rune-radius);
+  transition:
+    opacity 180ms ease,
+    border-color 120ms ease;
+}
+
+.field.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.field.invalid {
+  border-color: var(--rune-danger);
+}
+
+.field label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.field .description {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--rune-text-muted);
+}
+
+.field input[type='text'],
+.field input[type='password'],
+.field select {
+  width: 100%;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rune-border);
+  border-radius: calc(var(--rune-radius) - 4px);
+  background: var(--rune-bg);
+  color: var(--rune-text);
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 2px solid var(--rune-accent);
+  outline-offset: 0;
+}
+
+.field .error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--rune-danger);
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.option-row > label {
+  display: inline;
+  font-weight: inherit;
+  margin-bottom: 0;
+}
+
+.summary-step,
+.result-step {
+  max-width: 640px;
+  margin: 0 auto 10px;
+  padding: 12px 16px;
+  background: var(--rune-surface);
+  border: 1px solid var(--rune-border);
+  border-radius: var(--rune-radius);
+}
+
+.summary-step .command,
+.result-step .tail {
+  font-family: var(--rune-mono);
+  font-size: 12px;
+  color: var(--rune-text-muted);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.summary-step.skipped {
+  opacity: 0.55;
+}
+
+.progress-track {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto 16px;
+  height: 8px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--rune-border);
+  overflow: hidden;
+  appearance: none;
+}
+
+.progress-track::-webkit-progress-bar {
+  background: var(--rune-border);
+  border-radius: 4px;
+}
+
+.progress-track::-webkit-progress-value {
+  background: var(--rune-accent);
+  border-radius: 4px;
+  transition: width 300ms ease;
+}
+
+.progress-track::-moz-progress-bar {
+  background: var(--rune-accent);
+  border-radius: 4px;
+  transition: width 300ms ease;
+}
+
+.progress-title {
+  max-width: 640px;
+  margin: 0 auto 10px;
+  font-weight: 600;
+}
+
+.log {
+  max-width: 640px;
+  margin: 0 auto;
+  height: 260px;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--rune-surface);
+  border: 1px solid var(--rune-border);
+  border-radius: var(--rune-radius);
+  font-family: var(--rune-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.result-badge {
+  width: 76px;
+  height: 76px;
+  margin: 4vh auto 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 38px;
+  color: #fff;
+  animation: rune-pop 420ms cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+@keyframes rune-pop {
+  from {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.result-badge.ok {
+  background: var(--rune-success);
+}
+
+.result-badge.bad {
+  background: var(--rune-danger);
+}
+
+.result-heading {
+  text-align: center;
+  margin: 0 0 6px;
+}
+
+.result-sub {
+  text-align: center;
+  color: var(--rune-text-muted);
+  margin: 0 0 22px;
+}

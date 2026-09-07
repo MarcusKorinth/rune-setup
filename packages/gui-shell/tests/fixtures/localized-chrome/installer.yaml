@@ -1,0 +1,23 @@
+schemaVersion: 1
+product:
+  name: Localized Chrome Smoke
+  version: 1.0.0
+  description: Real localized chrome smoke
+inputs:
+  token:
+    type: secret
+  enabled:
+    type: boolean
+    default: false
+steps:
+  - id: localized-step
+    title: Localized step title
+    run:
+      command: node
+      args: [localized-step.cjs, '${token}']
+  - id: skipped-step
+    title: Skipped step title
+    when: '${enabled}'
+    run:
+      command: node
+      args: [localized-step.cjs]

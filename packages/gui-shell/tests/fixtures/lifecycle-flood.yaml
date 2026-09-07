@@ -1,0 +1,16 @@
+schemaVersion: 1
+product:
+  name: RUNE Lifecycle Smoke
+  version: 1.0.0
+  description: Real Electron lifecycle coverage
+steps:
+  - id: output-flood
+    title: Produce observable output until cancelled
+    run:
+      command: node
+      args: [lifecycle-flood-step.cjs]
+  - id: after-cancel
+    title: Must not start after cancellation
+    run:
+      command: node
+      args: [execution-step.cjs]
