@@ -499,7 +499,7 @@ describe('the GUI shell main lifecycle', () => {
     vi.mocked(app.whenReady).mockResolvedValue();
   });
 
-  it.each([[SHELL_VERSION_PROBE_FLAG]])(
+  it.each([[SHELL_VERSION_PROBE_FLAG], ['--ozone-platform=headless', SHELL_VERSION_PROBE_FLAG]])(
     'answers the version probe without waiting for Electron readiness: %s',
     async (...argv) => {
       const stdout = new PassThrough();

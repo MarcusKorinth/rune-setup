@@ -1,163 +1,109 @@
 # RUNE
 
-*Declarative setup workflows for GUI, CLI and CI/CD*
+RUNE runs setup workflows described in YAML. A workflow defines inputs and commands;
+the engine executes it through an interactive terminal, a non-interactive command,
+or an Electron wizard. Authors provide the scripts and payload their setup needs.
 
-> **One manifest. Guided or automated.**
+## Project status
 
-**RUNE** ("Runtime for User Guided and Non Interactive Execution") is an open source
-declarative installer and setup workflow engine. Define inputs, conditions and
-executable steps in a single YAML file, then run the same workflow through a graphical
-installer, the command line or a CI/CD pipeline.
+The engine, CLI, and wizard run from a development checkout. Engine/CLI tarballs and
+GUI shell archives can be built locally. Registry publication, downloadable releases,
+and portable workflow packaging remain unfinished.
 
-## Status
+RUNE targets Windows and Linux. Development uses Node 24 LTS and
+Electron 44; use the checked-in `.nvmrc` for the current
+checkout. The public npm name `@rune/cli` belongs to another project, so RUNE's
+publication namespace must be settled before registry installation is documented.
 
-The RUNE source tree is at **v0.1.0** — the source-complete MVP application: the engine
-library, `rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and
-the graphical wizard via `rune run --gui`), locale overlays, the sandboxed Electron GUI
-shell, and its cross-platform smoke suite. [docs/architecture.md](docs/architecture.md) is
-the binding contract; [docs/roadmap.md](docs/roadmap.md) tracks what comes after (next:
-shell release engineering and `rune package`).
+See the [remaining work](docs/roadmap.md) and [release acceptance criteria](docs/releasing.md).
 
-Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 24 LTS** and
-install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`). The
-future packaged installer produced by `rune package` needs nothing installed.
+## Try the example
 
-## The idea
-
-One configuration, three operating modes with identical execution semantics:
-
-1. a graphical installation wizard
-2. an interactive command line installer
-3. a fully non-interactive run for CI/CD pipelines
-
-```yaml
-schemaVersion: 1
-
-product:
-  name: Example Application
-  version: 1.0.0
-
-inputs:
-  installDirectory:
-    type: directory
-    title: Installation directory
-    default: "${home}/example"
-
-  installDatabase:
-    type: boolean
-    title: Install local database
-    default: true
-
-  databasePort:
-    type: text
-    title: Database port
-    default: "5432"
-    pattern: "[0-9]{2,5}"
-    when: "${installDatabase}"      # greyed out / skipped unless the database is installed
-
-steps:
-  - id: install-application
-    title: Install application
-    run:
-      windows:
-        command: pwsh
-        args: [-File, scripts/install.ps1, -Directory, "${installDirectory}"]
-      linux:
-        command: bash
-        args: [scripts/install.sh, "${installDirectory}"]
-
-  - id: install-database
-    title: Install database
-    when: "${installDatabase}"
-    run:
-      windows:
-        command: pwsh
-        args: [-File, scripts/install-database.ps1, -Port, "${databasePort}"]
-      linux:
-        command: bash
-        args: [scripts/install-database.sh, "${databasePort}"]
-```
-
-Text `pattern` values are manifest-authored ECMAScript regular expressions. Values checked
-against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
-quantifiers such as `(a+)+`.
-
-The same manifest, three ways. In the v0.1.0 source tree, shell developers point
-`RUNE_GUI_SHELL` at `packages/gui-shell`; `rune gui install` consumes the prebuilt shell
-artifacts that arrive with M4 release engineering:
+From the repository root:
 
 ```bash
-# Guided on a TTY; non-interactive fallback when stdin is not a TTY
-rune run installer.yaml
+npm ci
+npm run build
+node packages/cli/dist/main.js validate examples/basic/installer.yaml
+node packages/cli/dist/main.js run examples/basic/installer.yaml --dry-run
+node packages/cli/dist/main.js run examples/basic/installer.yaml --non-interactive --set profile=production --result examples/basic/output/result.json
 ```
+
+The [basic example](examples/basic/README.md) writes a configuration file and optional
+notes under `examples/basic/output/`. It also produces a setup log; the command above
+writes a structured result beside it. It performs no system installation.
+
+For an interactive run, omit `--non-interactive`. The terminal shows the plan and lets
+you change inputs before executing it. [CLI usage](packages/cli/README.md) covers values
+files, environment inputs, validation, and result output.
+
+## Try the wizard
+
+Prepare the Electron binary after the build:
 
 ```bash
-rune run installer.yaml --gui
+npm run prepare:electron --workspace @rune/gui-shell
 ```
+
+Point the development launcher at the shell package.
+On PowerShell:
+
+```powershell
+$env:RUNE_GUI_SHELL = (Resolve-Path packages/gui-shell).Path
+```
+
+On Linux:
 
 ```bash
-rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
+export RUNE_GUI_SHELL="$PWD/packages/gui-shell"
 ```
 
-## The graphical wizard
+Then run:
 
-The wizard shell is an Electron-based app whose main process hosts the RUNE engine
-in-process. Its window is a pure renderer that reaches the engine only through an IPC
-bridge — all planning, validation and execution happen in the engine, exactly as in the
-two CLI modes. Source checkouts launch it through `RUNE_GUI_SHELL`; M4 publishes the
-prebuilt author shell and the self-contained end-user artifact.
+```bash
+node packages/cli/dist/main.js run examples/basic/installer.yaml --gui
+```
 
-- **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
-  in the manifest, or point `gui.theme` at your own CSS file
-- **Multi-language** — every user-visible text (titles, descriptions, option labels,
-  wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
-  with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — once M4 release artifacts are available, `rune gui install` fetches
-  the prebuilt shell for your OS into a per-user cache without admin rights
-- **End-user delivery** — `rune package` (roadmap milestone 4) bundles shell, engine and
-  manifest into one portable artifact that needs nothing installed
+The wizard supports conditional inputs, localized text, and themes. `rune gui install`
+expects published release archives; these are not yet available. `rune package` is not
+implemented.
 
-## Design principles
+## Build a GUI archive
 
-- **Declarative** — one YAML manifest describes inputs, conditions and steps;
-  installer authors write no code
-- **Mode parity** — GUI, interactive CLI and CI/CD share one planner and one executor;
-  frontends render, they never decide
-- **Safe by default** — commands run as argv arrays, never through an implicit shell;
-  no code evaluation; secrets are masked end-to-end
-- **Automation-first** — every interactive input is also settable via `--set`,
-  `RUNE_INPUT_*` environment variables or `--values` files; stable exit codes and a
-  machine-readable result file
-- **Extensible** — input types and runners sit behind small, defined seams; new
-  capabilities land as new schema versions, never as silent reinterpretation
+After preparing Electron, build on the target Windows or Linux x64 host:
+
+```bash
+npm run build:shell
+npm run test:shell:package
+```
+
+The builder writes a ZIP or tar.gz beneath `output/shell/`, including Electron, the
+engine, and the interface resources. The check extracts a fresh copy and exercises
+the packaged application. Linux graphical checks require a display. These are local,
+unsigned builds; they do not package a workflow or publish a release.
+See the [runtime prerequisites](docs/releasing.md#runtime-prerequisites) before running
+an archive; Linux still needs Electron's system libraries and sandbox support.
 
 ## Development
 
-Requires Node 24 LTS. The repository is an npm-workspaces monorepo
-(`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package suites in
-`tests/`).
+The npm workspace contains `packages/engine`, `packages/cli`, and `packages/gui-shell`.
+For core work without the Electron binary, install with `npm ci --ignore-scripts`.
+GUI work also requires the explicit `prepare:electron` command above.
 
 ```bash
-npm ci --ignore-scripts
+npm run typecheck
+npm run lint
+npm run format:check
+npm run depcruise
+npm test
+npm run test:packages
 ```
 
-The core local gate mirrors the core CI job (`npm run format` fixes formatting):
+The shell also has a Playwright smoke suite:
+`npm run test:smoke --workspace @rune/gui-shell`.
+Linux CI runs it under `xvfb-run --auto-servernum`.
 
-```bash
-npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test
-```
-
-Shell development and the Electron CI lane additionally run
-`npm run prepare:electron --workspace @rune/gui-shell`, `npm run build`, and
-`npm run test:smoke --workspace @rune/gui-shell` on Windows and Linux. Core
-installation and tests do not prepare an Electron binary.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Start with
-[docs/architecture.md](docs/architecture.md) — it is the canonical contract for
-semantics and invariants.
-
-## License
-
-[MIT](LICENSE)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributions,
+[architecture](docs/architecture.md) for engine and frontend contracts, and
+[release checks and known limitations](docs/releasing.md) before distributing a build.
+RUNE is licensed under [MIT](LICENSE).

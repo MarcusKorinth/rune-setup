@@ -2,51 +2,46 @@
 
 This document is the canonical architectural contract for **RUNE** ("Runtime for User Guided and Non Interactive Execution") — a declarative installer and setup-workflow engine written in TypeScript.
 
-It is written current-state: decisions, boundaries, and invariants. Engine, CLI, and GUI shell: **TypeScript 5.x in strict mode** (`"strict": true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) on **Node 24 LTS**; one **npm workspaces** monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package `tests/`); vitest, eslint (+ `@typescript-eslint`), prettier. The GUI shell (§9.4) is an Electron application whose main process hosts the engine in-process — one language, one runtime. MIT license.
+It defines decisions, boundaries, and invariants. Engine, CLI, and GUI shell: **TypeScript 5.x in strict mode** (`"strict": true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) on **Node 24 LTS**; one **npm workspaces** monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package `tests/`); vitest, eslint (+ `@typescript-eslint`), prettier. The GUI shell (§9.4) is an Electron application whose main process hosts the engine in-process — one language, one runtime. MIT license.
 
 ## 1) Purpose and boundary
 
-RUNE executes a single YAML manifest describing inputs and executable steps through three frontends — GUI wizard, interactive CLI, and non-interactive CI/CD driver — with **identical execution semantics** in all three (mode parity).
+RUNE executes YAML setup workflows through an interactive CLI, a non-interactive CLI,
+and an Electron wizard. Workflow authors supply the commands, scripts, and payload.
+The engine owns input resolution, validation, planning, execution, and results.
 
-Core principle: **the engine is the single source of truth; frontends render, they never decide**.
+This document specifies behavior and boundaries. It is not evidence that a release
+is complete. Distribution and verification requirements are listed in
+[releasing.md](releasing.md).
 
-### In scope (MVP)
+The implementation includes the seven input types, conditional inputs and steps,
+safe interpolation, localization, argv execution, logs and results, and the three
+frontends. Public npm installation and downloadable GUI archives still require a
+working delivery path. Portable workflow packaging is specified in §9.5 but is not
+implemented.
 
-- YAML manifest with versioned schema (`schemaVersion: 1`), validation with source-located, understandable error messages; `rune schema` emits the manifest and result-file JSON Schemas for editor integration
-- Input types: `text`, `secret`, `boolean`, `select`, `multiselect`, `file`, `directory`; conditional inputs (`when:` on inputs); `pattern`/`patternHint` on `text`; select/multiselect options as plain strings or `{value, label}` pairs
-- Steps executing argv commands (PowerShell, bash/shell, executables, arbitrary CLI programs) with args, env, cwd, timeout, and exit-code success criteria
-- `${...}` interpolation, safe `when:` conditions, platform-specific run blocks (`windows` / `linux`)
-- Localization (i18n): every user-visible manifest text and RUNE's own UI strings are overridable per locale through `locales/<lang>.yaml` overlay files; the engine resolves text for all frontends (§6.3)
-- Fail-fast (default) or continue-on-error execution; log file; structured `result.json` (with step counters and a masked output tail for failed steps); deterministic cross-platform exit codes
-- `rune validate` (incl. an environment-variable audit report) and `rune run --dry-run` reusing the one execution pipeline
-- Secret masking in all logs, previews, and results; no shell interpretation; no code eval
-- GUI wizard as an Electron shell with a bundled rendering engine (pixel-identical everywhere, no system webview, no admin rights), whose main process hosts the engine in-process and whose renderer drives it exclusively through the IPC bridge (§9.2); manifest `gui:` theming block (milestone 3, §9.4)
+The current manifest schema excludes rollback, uninstall, repair, elevation, retries,
+parallel steps, dependencies between steps, step outputs, custom pages, and plugins.
+Reserved keys are rejected with a later-schema-version diagnostic. RUNE does not
+produce MSI/NSIS/system packages or promise transactional rollback or code signing.
 
-### Core roadmap milestone (not MVP, not out of scope)
+Manifest schema version (1), result schema version (2), and product SemVer are
+independent. The current package version is a development value; readiness is
+determined by the delivered artifacts and acceptance checks, not a milestone number.
 
-- **`rune package`** (milestone 4): a self-contained, portable, per-user-runnable end-user artifact containing the GUI shell with the engine as plain JavaScript inside the app bundle, the manifest, `scripts/`, `payload/`, `assets/`, and `locales/` — nothing to install first, no admin rights, identical look on every supported machine. The contract is fixed in §9.5; the internals are designed when the milestone starts (§16).
+## 2) Core principles
 
-### Out of scope (MVP — seams are left, nothing is built)
-
-Rollback/undo, uninstall, repair, update, downloads/checksums, restart management, elevation, retries, parallel steps, inter-step dependencies, step outputs feeding later steps, custom wizard pages, license pages, plugin system, script/payload embedding beyond what `rune package` copies, MSI/EXE installers, config-editor GUI.
-
-The v1 schema **rejects** these keys — including `execution.elevation` — with an explicit *"reserved; accepted in a later schemaVersion"* error rather than silently ignoring them. Consequence: the spec's own §5 example manifest (`elevation: auto`) fails v1 validation; the published example is amended in the same release. Loud rejection is deliberate: silently tolerated keys today would change meaning when the feature lands.
-
-### Non-goals
-
-RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framework. No MSI/EXE installer generation, no system integration, no transactional rollback, no OS package formats, no code signing, no app-store publishing. `rune package` produces a portable folder/archive, never a system-installed package.
-
-### Versioning
-
-`schemaVersion` (manifest, currently `1`), `resultSchemaVersion` (result file, currently `2`), and the **product version** (SemVer, starting at 0.1.0) are independent. Roadmap milestones map to indicative product versions: M0–M3 → 0.1.0 — the source-complete application: engine library, `validate`/`schema`, non-interactive, interactive CLI, the frozen `Session` facade, i18n resolution, and the Electron GUI shell with theming — and M4 → 0.2.0 (`rune package` self-contained end-user artifact plus shell release engineering). **The MVP is milestones 0–3 (product 0.1.0)** — the spec's success criteria include the graphical wizard; milestone 4 is a committed core milestone beyond the MVP. The manifest stays `schemaVersion: 1` throughout.
-
-## 2) Core principles (short contracts)
-
-1. **Declarative.** One YAML file describes inputs, conditions, and steps. RUNE interprets it; installer authors write no code.
-2. **Mode parity.** GUI, interactive CLI, and CI/CD share one Planner and one Executor. Frontends can only (a) supply input values and (b) render engine events and engine-resolved strings. Behavior not expressible through those two channels does not ship. The GUI shell hosts the engine in its Electron main process; its renderer reaches the engine only through the IPC bridge — a 1:1 projection of the same `Session` facade every other frontend uses.
-3. **Safe by default.** argv arrays only, never `shell: true`; YAML parsed with the core schema only (no custom tags, no code execution); interpolation is single-pass string substitution, never evaluation; conditions use a closed hand-written grammar, never `eval` or `new Function`; secrets are wrapped and masked end-to-end.
-4. **Automation-first.** Every interactive input is settable via `--set`, `RUNE_INPUT_*` env vars, or `--values` files. RUNE never prompts without a TTY: no TTY means non-interactive behavior. Exit codes and the result file are stable machine contracts.
-5. **Extensible via defined seams.** Input types and the runner sit behind small registries/interfaces. New capabilities land as new `schemaVersion`s, never as silent reinterpretation of v1 manifests.
+1. One engine decides execution behavior in every frontend. Frontends supply values
+   and render engine projections; the GUI renderer communicates through IPC.
+2. Commands are argv arrays. Implicit shells, code evaluation, and repeated
+   interpolation are forbidden.
+3. Inputs follow one precedence chain. Conditions are typed and checked before any
+   step executes; unknown manifest and value keys are rejected.
+4. Non-interactive operation never prompts. Process and stream lifetime behavior is
+   specified separately in §8; non-interactive does not imply a universal deadline.
+5. Declared secrets are masked at sink boundaries, with the exact machine-field
+   exceptions and transformation limitations documented in §10.
+6. Schema changes must not silently reinterpret existing manifests.
 
 ## 3) System overview
 
@@ -79,7 +74,7 @@ Engine, CLI, and GUI shell live in one repository and one language: `@rune/engin
 
 ### 4.1 Canonical CLI verbs
 
-The spec conflicts between §6 (`rune install`) and §13 (`rune run`). Decision: **`run` is canonical; there is no `install` alias.** RUNE's own subtitle promises setup workflows, not only installation; `run` is truthful for dev-env bootstrap and CI jobs. One spelling in docs, scripts, and CI. The manifest path is positional.
+**`run` is canonical; there is no `install` alias.** The manifest path is positional.
 
 ```
 rune validate installer.yaml [--locale TAG]
@@ -89,13 +84,13 @@ rune run installer.yaml [--gui] [--non-interactive] [--dry-run]
                         [--platform windows|linux]     # dry-run only
 rune schema [--output FILE] [--result]   # manifest JSON Schema (v1); --result: result-file schema
 rune gui install                         # author-time: fetch the prebuilt GUI shell into the per-user cache
-rune package installer.yaml              # milestone 4: self-contained end-user artifact (§9.5)
+rune package installer.yaml              # planned packaging: self-contained end-user artifact (§9.5)
 rune --version
 ```
 
 The current CLI implements `validate`, `schema`, and both the interactive and
 non-interactive forms of `run`, including dry-run, plus `--gui` and `gui install`.
-`package` remains planned for its roadmap milestone.
+`package` is not implemented.
 
 Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
@@ -338,12 +333,12 @@ RuneError
 
 ## 8) Runner layer
 
-Exactly **one runner** in MVP: `runners/spawnRunner.ts` behind a minimal engine-internal
+The engine currently has **one runner**: `runners/spawnRunner.ts` behind a minimal engine-internal
 `Runner` interface (`run(SpawnRequest): Promise<SpawnOutcome>`). The interface and its
 injection point are implementation/test seams inside the engine, not part of the package-root
-API or `SessionOptions`. No public trusted-runner or secret-reveal capability ships in MVP;
+API or `SessionOptions`. There is no public trusted-runner or secret-reveal capability;
 that contract is decided only when the first real alternative runner is designed. No
-per-interpreter runner classes (powershell/shell/cmd modules) — every MVP step is one argv
+per-interpreter runner classes (powershell/shell/cmd modules) — each step is one argv
 spawn, and interpreter-selection magic would reintroduce implicit command interpretation
 against the spec's own security rule.
 
@@ -533,19 +528,19 @@ Every frontend asserts at session open that it can render every input type the m
 
 ### 9.4 GUI shell (Electron)
 
-**Why Electron.** The end user of a RUNE-built installer must be able to run it out of the box on any supported machine — nothing to install first, no admin rights (portable, per-user), pixel-identical everywhere (a *bundled* rendering engine, never a system webview), and with a genuinely modern, polished, animated default look. A bundled Chromium is the one widely deployed rendering engine that meets all four; the installer *author* may install tooling (Node 24 LTS, `npm install -g @rune/cli`) — the end user never does. Because engine, CLI, and shell are one language, the shell needs no second runtime, no second bundler, and no sidecar process.
+**Why Electron.** The end user of a RUNE-built installer must be able to run it out of the box on any supported machine — nothing to install first, no admin rights (portable, per-user), pixel-identical everywhere (a *bundled* rendering engine, never a system webview), and with a genuinely modern, polished, animated default look. A bundled Chromium is the one widely deployed rendering engine that meets all four; the installer *author* may install tooling (Node 24 LTS and the RUNE source checkout) — the end user never does. Because engine, CLI, and shell are one language, the shell needs no second runtime, no second bundler, and no sidecar process.
 
-**Shape.** The wizard UI is an Electron application ("GUI shell") written in TypeScript + HTML/CSS in `packages/gui-shell/`, three parts with three roles: **main** (`src/main/`) imports `@rune/engine` and **hosts the engine in-process** — it owns the `Session`, registers the IPC handlers, creates the window, and exits with the engine's exit code; because the engine is async, it never blocks the main process. **preload** (`src/preload/`) exposes the IPC bridge (§9.2) through `contextBridge`. **renderer** (`src/renderer/`) is a **pure renderer**: no execution, planning, interpolation, condition, or validation logic; it never reads the manifest, `locales/`, or values files and never imports the engine — it renders pages from what the bridge returns. From milestone 3 on the shell also accepts `--non-interactive`: main then runs the engine without opening a window — the headless path the packaged artifact reuses (§9.5).
+**Shape.** The wizard UI is an Electron application ("GUI shell") written in TypeScript + HTML/CSS in `packages/gui-shell/`, three parts with three roles: **main** (`src/main/`) imports `@rune/engine` and **hosts the engine in-process** — it owns the `Session`, registers the IPC handlers, creates the window, and exits with the engine's exit code; because the engine is async, it never blocks the main process. **preload** (`src/preload/`) exposes the IPC bridge (§9.2) through `contextBridge`. **renderer** (`src/renderer/`) is a **pure renderer**: no execution, planning, interpolation, condition, or validation logic; it never reads the manifest, `locales/`, or values files and never imports the engine — it renders pages from what the bridge returns. The shell also accepts `--non-interactive`: main then runs the engine without opening a window — the headless path the packaged artifact reuses (§9.5).
 
 **Process model of `rune run --gui`.** The CLI locates the shell in the per-user cache (exit 2 with the `rune gui install` hint if absent), launches it with the invocation (manifest path, `--set`, `--values`, `--result path`, `--log-file`, `--locale`), and waits. The shell's main process opens the `Session` from that invocation, runs the engine itself, and drives the wizard; the engine writes the result file and the log exactly as the CLI would in any other mode. `--result -` is rejected by the CLI before the shell is launched (usage error, exit 2, §4.1): there is no stdout contract under a GUI. The shell exits with the engine's exit code; `rune run --gui` forwards it **only if the shell terminated normally with a code from §10's table** — signal death or any other code (a Chromium-level crash code, for instance) is mapped to 70 — so `--gui` has the same exit-code contract as every other mode. A first `Ctrl+C`/SIGTERM received by the CLI is forwarded to the shell as a cancel request (POSIX: SIGTERM to the shell pid, which main treats as `Session.cancel()`; Windows: `taskkill /PID <shell>` without `/F`, i.e. a close request → the close-window path of §7); the CLI keeps waiting and forwards the resulting exit code (6); a second `Ctrl+C` force-exits the CLI while the shell finishes its own cancel. An engine failure inside the shell is an ordinary `RuneError`: the shell shows it as a named error and exits with that error's exit code, result file written as always. Renderer loss before main claims result delivery is a shell failure: main requests cooperative cancellation of a live run, exits 70, and writes no result. Once main synchronously claims the sole memoized result-delivery attempt, that attempt owns the terminal outcome across later renderer loss; renderer loss then only records that the renderer is gone and requests guarded window close, while main waits for the same delivery and exits with its result or delivery-failure code (§10). A hard crash of the main process hosting the engine remains an abnormal shell termination surfaced by `rune run --gui` as exit 70. A crash before the atomic result-file commit leaves no result; a crash after that commit cannot undo the file, which stays untouched even though the shell termination maps to 70.
 
 **Theming model (three layers):**
 
-1. **RUNE default theme** — polished, modern, animated: page transitions, animated progress, success/failure micro-animations, light and dark variants; built on CSS custom properties (`--rune-accent`, `--rune-radius`, `--rune-font`, …). This is what every installer looks like when the author does nothing.
+1. **RUNE default theme** — page transitions, progress and result states, and light/dark variants; built on CSS custom properties (`--rune-accent`, `--rune-radius`, `--rune-font`, …). This is what every installer looks like when the author does nothing.
 2. **Manifest `gui:` block** (schema v1, §4.2) — `gui.accentColor`, `gui.logo` (window/taskbar icon and header logo), `gui.banner`, `gui.theme` (path to a CSS file), optional `gui.windowTitle`. The engine returns each `getThemeConfig` call as a fresh frozen snapshot: the localized `windowTitle` is sink-masked against current secrets, while `accentColor` and the absolutized asset/CSS paths remain exact. The renderer applies it as variable overrides; presentation-only, ignored by CLI and non-interactive — no parity impact.
 3. **Author CSS** — the `gui.theme` file is loaded **after** the default theme and may override variables or any rule. Advanced tier, documented as *your CSS, your support*: RUNE guarantees the custom-property names, not the internal DOM.
 
-**Author-time delivery.** Authors and CI need Node 24 LTS only — `npm install -g @rune/cli` or `npx @rune/cli …`; nothing else is installed for engine/CLI use. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. The CLI npm package (`@rune/cli`) contains no Electron; the shell is a separate prebuilt artifact, and core/CI never see Electron. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are present in the 0.1.0 source milestone; the first published shell artifacts and their release lane arrive with M4, so source checkouts use the development override until then. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
+**Author-time delivery.** Authors and CI use Node 24 LTS and build the source checkout; `node packages/cli/dist/main.js` is its CLI entry point. The workspace name `@rune/cli` is not a public installation instruction: that npm name currently belongs to a different project. Public npm delivery requires an owner-controlled namespace decision and corresponding package/import updates before publication. The local CLI package contains no Electron; core/CLI development uses `npm ci --ignore-scripts` to skip the separate shell binary download. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are implemented, but no shell archives are currently published. Source checkouts therefore use the development override until archive delivery is implemented and verified. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
 
 *Version coupling.* The shell bundles its own copy of `@rune/engine`; `@rune/cli` ships another. To keep mode parity real rather than nominal, **`rune gui install` fetches the shell release whose engine version equals the installed CLI's**; the per-user cache is keyed by that version; `rune run --gui` refuses a cached shell whose engine version differs from its own (exit 2, hint: re-run `rune gui install`). The result file's `runeVersion` under `--gui` is the shell engine's version — by construction equal to the CLI's.
 
@@ -578,8 +573,8 @@ caches remain readable during migration. Failed pointer publication removes only
 installer's unpublished files. Published generations are retained so an already located or
 running shell cannot lose its files; clearing an unused engine-version cache is an explicit
 user operation. This protects process interruption and concurrent publication without a
-stale-lock recovery protocol. An invalid pointer or a pointer to missing files produces an actionable cache
-error, never a path outside that version's cache directory.
+stale-lock recovery protocol. An invalid pointer or a pointer to missing files produces an
+actionable cache error, never a path outside that version's cache directory.
 
 *Native quit requests.* For a configured invocation, the shell intercepts Electron's
 `before-quit` event, prevents immediate shutdown, and routes it through the same
@@ -603,11 +598,36 @@ pre-launch error/result ownership; the probe never opens a Session or writes a r
 
 *Archive format.* Shell artifacts are `.tar.gz` on Linux and `.zip` on Windows; `rune gui install` fetches with Node's built-in `fetch` and unpacks by spawning the OS `tar` as argv (`tar -xf`; bsdtar ships with Windows 10+/11 and handles both formats) — no archive library, in line with §12's runtime dependency list.
 
-### 9.5 End-user artifact (`rune package`, milestone 4)
+The Linux archive exposes `rune-gui-shell` as a POSIX launcher and keeps the Electron
+executable beside it as `rune-gui-shell-bin`. The launcher preserves argv, cwd, inherited
+descriptors, and PID through `exec`. For a real `--non-interactive` option or the exact
+standalone `--rune-version-probe` invocation, it adds the native `--ozone-platform=headless`
+switch before starting Electron; option values and
+the literal manifest operand are never interpreted as mode switches. Electron chooses
+its display backend before application JavaScript can change it. The shell consumes
+that exact leading runtime switch only for a non-interactive invocation or the standalone
+version probe. No display
+server or Node executable is needed by this packaged entry, and Chromium sandboxing
+remains enabled. The graphical invocation and Windows executable keep their normal
+runtime startup.
+
+Ordinary application environment variables pass through the launcher without scan-variable
+collisions. As with other `/bin/sh` entry scripts, the operating system shell can initialize
+its reserved variables such as `IFS`, `OPTIND`, `PWD`, and `PPID`; workflows must not use those
+names as a portable application-input channel.
+
+*Runtime instrumentation.* The shell accepts Electron's explicit
+`--remote-debugging-port=<port>` before the literal `--` manifest marker, with a decimal
+port from 0 to 65535. Electron owns that switch; it is removed before parsing the RUNE
+invocation. This allows inspection of the unchanged distributed application. Without
+the switch the shell does not enable remote debugging. The marker remains mandatory
+for this form, and a switch after it is subject to normal RUNE argument validation.
+
+### 9.5 End-user artifact (`rune package`, planned packaging)
 
 `rune package installer.yaml` produces a **self-contained, portable, per-user-runnable** folder or archive — Windows: portable `.exe` + folder or a single zip; Linux: AppImage or tar.gz (the choice per platform is deferred, §16) — containing the Electron shell with the **engine as plain JavaScript inside the app bundle** (one language, one bundler: **electron-builder** — no second bundler, no engine binary), the manifest, `scripts/`, `payload/`, `assets/`, and `locales/`. No installation, no admin rights, identical look. The end user double-clicks and sees the same wizard the author saw with `rune run --gui`; the same packaged app supports the headless `--non-interactive` mode — Electron started with CLI arguments runs the engine in main without opening a window, exit codes and result file as in every other mode — so pipelines can use the artifact too.
 
-The portability basis is **`${manifestDir}` anchoring** (§6.1, invariant 13): inside the artifact the manifest sits in a folder with its relative resources exactly as in the author's project tree, so nothing in the manifest changes between `rune run` on the author's machine and the packaged run on the end user's. Exact `rune package` internals (layout, electron-builder configuration, archive formats) are designed when the milestone starts; the contract above — the *what*, not the *how* — is fixed now.
+The portability basis is **`${manifestDir}` anchoring** (§6.1, invariant 13): inside the artifact the manifest sits in a folder with its relative resources exactly as in the author's project tree, so nothing in the manifest changes between `rune run` on the author's machine and the packaged run on the end user's. The artifact layout, builder configuration, and archive formats still need an explicit decision before implementation (§16).
 
 ## 10) Automation contract
 
@@ -628,7 +648,7 @@ Fixed, identical on Windows and Linux — no `128+signal` arithmetic, so one pip
 
 Codes 7–19 reserved for future features.
 
-### Never-block contract
+### Non-interactive input handling
 
 Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a prompt would be needed): layers 1–4 resolve; any required **enabled** input still missing → exit 4, stderr lists **each** missing input with its accepted sources (`--set id=... | RUNE_INPUT_<ID> | values-file key 'id'`); a result file with `status: "input_error"` is still written if `--result` was given; **no step executes** — resolution is all-or-nothing. Optional and disabled inputs resolve to their type's empty value (§4.2, §5).
 
@@ -685,7 +705,7 @@ step state. A successful dry-run uses `status: "planned"`, enabling plan diffing
 
 ### Logging and secret masking
 
-Two sinks off the one event stream (the same stream frontends render — GUI progress, CLI output, and logs tell one story): stderr console (plain-text progress, diagnostics, and warnings) and the log file (`--log-file` / `execution.logFile`; DEBUG-level, timestamped, step output prefixed `[stepId:stdout]`). A relative `logFile` resolves against `${manifestDir}`. A Windows drive-relative spelling (`C:run.log`) is rejected at validate time (RUNE-104), like a drive-relative command (§8): it cannot be anchored to `${manifestDir}` deterministically, and anchoring it as a literal component would address an NTFS alternate data stream. The field is deliberately non-interpolable in v1; when both are given, `--log-file` overrides `execution.logFile`. A dry-run plan preview names that path as the operator spelled it (`--log-file`, else `execution.logFile`) rather than in its anchored form, so no path anchoring or normalization can rewrite the bytes a secret registry holds. Failure to prepare its directory or to open, write, or close the configured log file is an operational `ExecutionError` (RUNE-406, exit 1), never an `InternalError`: its message names that same spelling and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally. Under the GUI shell the engine runs in the shell's main process: the console sink writes to the shell process's stderr, which `rune run --gui` passes through to the caller's terminal, and the warnings that are part of the automation contract (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) are additionally surfaced on the shell's Result page — warning state and provenance remain engine-owned and identical across modes, while human delivery follows the masking rules in §10, including the CLI's no-completed-plan exception; the log file is written by the engine as in every other mode. A structured JSONL event log is a clean post-MVP addition off the existing event stream and is deliberately **not** in MVP — no second machine contract ships unversioned.
+Two sinks off the one event stream (the same stream frontends render — GUI progress, CLI output, and logs tell one story): stderr console (plain-text progress, diagnostics, and warnings) and the log file (`--log-file` / `execution.logFile`; DEBUG-level, timestamped, step output prefixed `[stepId:stdout]`). A relative `logFile` resolves against `${manifestDir}`. A Windows drive-relative spelling (`C:run.log`) is rejected at validate time (RUNE-104), like a drive-relative command (§8): it cannot be anchored to `${manifestDir}` deterministically, and anchoring it as a literal component would address an NTFS alternate data stream. The field is deliberately non-interpolable in v1; when both are given, `--log-file` overrides `execution.logFile`. A dry-run plan preview names that path as the operator spelled it (`--log-file`, else `execution.logFile`) rather than in its anchored form, so no path anchoring or normalization can rewrite the bytes a secret registry holds. Failure to prepare its directory or to open, write, or close the configured log file is an operational `ExecutionError` (RUNE-406, exit 1), never an `InternalError`: its message names that same spelling and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally. Under the GUI shell the engine runs in the shell's main process: the console sink writes to the shell process's stderr, which `rune run --gui` passes through to the caller's terminal, and the warnings that are part of the automation contract (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) are additionally surfaced on the shell's Result page — warning state and provenance remain engine-owned and identical across modes, while human delivery follows the masking rules in §10, including the CLI's no-completed-plan exception; the log file is written by the engine as in every other mode. Structured JSONL event logs are not implemented. A future event format needs its own versioned contract.
 
 **Path spellings.** Wherever a line or a field can meet a secret registry, RUNE names a path only in the spelling its supplier wrote — the operator's manifest argument, `--log-file`, `--result` or `--values` value, the manifest's own `execution.logFile`, or, for a file RUNE discovered itself such as a locale overlay, the spelling RUNE discovered — and never in a spelling RUNE derived from that one by anchoring, resolving, normalizing, or escaping. RUNE derives such spellings constantly, because only they can address the filesystem; but a registry holds exactly the bytes the operator supplied, so a derived spelling reaching a sink meets masks that cannot match it and prints in the clear a value the same run masks everywhere else. A host that derives a spelling therefore keeps it internal and hands the sink the supplied one beside it: `writeResult`'s and the log sink's `announcement`, the plan preview's manifest and log paths, and the `file` a located diagnostic points at. Five consequences are deliberate. The rule moves the unmaskable spelling rather than removing it: a sink that names the supplied spelling cannot be masked by a registry that holds a derived one instead, so an operator who declares the anchored path as the secret and then spells the flag for that same file differently reads their flag spelling in the clear. Naming the supplied spelling is still the better trade, because a declared secret normally holds exactly the bytes the same operator passed to the flag. A RUNE-406 diagnostic and a plan preview name a manifest-relative `execution.logFile` exactly as the manifest spells it, so a reader whose working directory is not the manifest's anchors it themselves — naming a maskable spelling outranks saving that step, and the same trade already governs every values-file diagnostic. The structured `manifest.path` of a plan or a result stays RUNE's resolved spelling, because it is machine identity this section keeps exact by contract: a located diagnostic and the `manifest.path` of one result may therefore spell one file two ways, and a declared secret equal to the operator's spelling of the manifest is masked in every human line but not in that one field. A step's `command` and `cwd` likewise keep the resolved spelling the runner will use, because §3 makes the dry-run plan what `run` would execute; a preview naming the manifest's own spelling would no longer be that plan. Both spellings still meet the registry — the planner checks the manifest spelling before anchoring and the anchored one after — so a declared secret equal to either renders `***` in the preview and in the result while the runner receives the authentic bytes. The plan then shows a value it does not name, which is the price of masking a spelling RUNE derived. And the authoring commands (`validate`, `schema`) resolve their argument before reading it, so their located diagnostics name that resolved spelling; they open no session and register no secret, so nothing they print is maskable and nothing there can leak.
 
@@ -723,167 +743,128 @@ Documented limitations: the registry registers every maskable content line of a 
 
 ## 11) Package layout
 
-One npm-workspaces monorepo; root `package.json` (workspaces), `tsconfig.base.json` (strict), eslint and prettier config, dependency-cruiser config. No other monorepo tooling.
+The repository uses npm workspaces without another monorepo layer:
 
-This is the target layout across the roadmap milestones; entries not present in the current repository are planned.
+- `packages/engine`: manifest loading, inputs, localization, planning, execution,
+  runner, logs, results, errors, and the public Session API.
+- `packages/cli`: argument parsing, prompts, terminal rendering, process-stream
+  ownership, and GUI installation/launch.
+- `packages/gui-shell`: Electron main process, isolated preload bridge, renderer,
+  and theme resources.
+- `packages/*/test`: unit and package integration tests under Vitest.
+- `packages/gui-shell/tests`: real Electron tests under Playwright.
+- `tests`: cross-package contracts and tests of the documented example.
+- `examples`: runnable author workflows.
+- `scripts`: repository build and distribution checks.
 
-```
-packages/
-├── engine/                        # @rune/engine — the library; no CLI parsing, no Electron
-│   ├── package.json
-│   └── src/
-│       ├── index.ts               # curated public API: Session, events, errors, value types, version,
-│       │                          #   schemas, validation, createFailureResult, writeResult
-│       ├── errors.ts              # RuneError hierarchy, RUNE-xxx codes, exitCodeFor() — the single owner of the error -> exit-code map
-│       ├── diagnostics.ts         # safe diagnostic escaping and JSON-style quoting
-│       ├── suggest.ts             # "did you mean …?" for every name RUNE refuses
-│       ├── environment.ts         # one immutable invocation-environment snapshot; host name semantics
-│       ├── manifest/
-│       │   ├── index.ts           # parseManifest()/validateManifest() facade, schemaVersion registry dispatch
-│       │   ├── loader.ts          # `yaml` core schema, key checks, SourceMap build (also overlays/values)
-│       │   ├── source.ts          # Location(file,line,col), SourceMap(jsonPath -> Location)
-│       │   ├── provenance.ts      # private source identity (path, digest, schemaVersion, manifestDir)
-│       │   └── v1/
-│       │       ├── schema.ts      # zod schemas: Manifest, InputSpec union, OptionSpec, Step,
-│       │       │                  #   CommandSpec, GuiConfig; source of `rune schema` (z.toJSONSchema)
-│       │       ├── rules.ts       # cross-field semantic checks, static ref/type checks, input-when acyclicity
-│       │       └── present.ts     # zod issue path -> file:line:col error presenter
-│       ├── inputs/
-│       │   ├── base.ts            # InputTypeHandler: name, secret, empty/isAbsent, fromString/fromNative, render/compare
-│       │   ├── registry.ts        # name -> InputTypeHandler map; duplicate registration is an error
-│       │   ├── builtin.ts         # the seven MVP types (text incl. pattern; select/multiselect by value)
-│       │   └── snapshot.ts        # safe immutable snapshots of native string arrays
-│       ├── i18n/
-│       │   ├── catalog.ts         # built-in English chrome strings (`rune.*` keys) — the key authority
-│       │   ├── locale.ts           # locale selection, normalization, and overlay discovery/matching
-│       │   ├── overlay.ts          # hardened YAML loading and localizable-key validation
-│       │   └── strings.ts          # per-key fallback resolution into the engine-owned StringTable
-│       ├── engine/
-│       │   ├── session.ts         # Session facade — the ONLY frontend entry point (async); InputStateChanged
-│       │   ├── context.ts         # built-in names/reference resolution and runtime platform/preview values
-│       │   ├── inputs.ts          # 5-layer merge, provenance, coercion via inputs/registry, input when:
-│       │   ├── interpolate.ts     # ${...} scanner/renderer; single-pass, no eval
-│       │   ├── conditions.ts      # when: lexer, parser, AST, typed evaluator (steps and inputs)
-│       │   ├── secrets.ts         # SecretString wrapper + SecretRegistry + mask()
-│       │   ├── plan.ts            # Planner -> frozen ExecutionPlan / PlannedStep / ResolvedCommand
-│       │   ├── state.ts           # StepState + legal-transition table
-│       │   ├── events.ts          # frozen run-event types + EngineObserver interface
-│       │   ├── cancel.ts          # CancelToken (flag + listener list)
-│       │   └── executor.ts        # sequential async step loop, failFast, timeout, kill path, output-tail ring buffer
-│       ├── runners/
-│       │   ├── base.ts            # Runner interface
-│       │   └── spawnRunner.ts     # child_process.spawn (shell:false), stream splitting, POSIX group/Windows tree kill
-│       ├── results/
-│       │   ├── model.ts           # RunResult/ResultStep (resultSchemaVersion 2): counters, outputTail, provenance
-│       │   ├── schema.ts          # JSON Schema and runtime correlations for resultSchemaVersion 2
-│       │   └── writer.ts          # atomic write, always-on-outcome
-│       └── logs/
-│           └── logFile.ts         # append-only event-log sink; receives already-masked output
-├── cli/                           # `rune` — bin "rune"; depends on @rune/engine only through its public API
-│   ├── package.json
-│   └── src/
-│       ├── args.ts                # shared flag parsing and validation
-│       ├── bootstrap.ts           # process-stream wiring: guarded writers, effective exit code
-│       ├── cli.ts                 # commander wiring, CLI execution and error-to-exit-code mapping
-│       ├── io.ts                  # I/O and process-control seams
-│       ├── main.ts                # executable entry point and the single process.exit site
-│       ├── runCmd.ts              # interactive/non-interactive execution and dry-run orchestration
-│       ├── schemaCmd.ts           # `rune schema [--output] [--result]` from the zod schemas
-│       ├── signals.ts             # cooperative first signal, forced cancellation on the second
-│       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, silent only for a consumer that went away
-│       ├── validateCmd.ts         # validation and environment-variable audit report
-│       ├── guiCmd.ts              # `gui install` + --gui launch/exit-code forwarding
-│       ├── prompt.ts              # readline prompts and summary edit loop
-│       └── render.ts              # shared plan/progress/result rendering (also dry-run)
-└── gui-shell/                     # Electron GUI shell — separate prebuilt artifact; never inside the CLI npm package
-    ├── package.json               # electron (shell lane only); M4 adds electron-builder
-    ├── src/main/                  # Electron main: hosts @rune/engine in-process, Session lifecycle, IPC handlers,
-    │                              #   window, headless (--non-interactive) entry, exit code
-    ├── src/preload/               # contextBridge API `window.rune` — Session facade + events, plus shell-only done
-    ├── src/renderer/              # pages (Welcome, inputs, Summary, Progress, Result), field renderers per input type;
-    │                              #   imports only the bridge's type declarations
-    ├── src/theme/                 # default theme: CSS custom properties, light/dark, animations
-    └── tests/                     # Playwright-for-Electron smoke suite (§14)
-tests/                             # cross-package suites: mode-parity contract suite, exit-code reachability, masking
-```
-
-Each package additionally has a `test/` directory of vitest unit tests (collected by the root `vitest.config.ts`); `packages/gui-shell/tests/` is reserved for the Playwright smoke suite so that vitest never collects Playwright specs. Cross-package suites live in the root `tests/`.
+The root TypeScript configuration enables strict checking, unchecked-index checks,
+and exact optional properties. Dependency-cruiser checks the boundaries in §3.
+Generated build output is excluded from source control and package contents are
+checked after packing.
 
 ## 12) Dependency policy
 
-**Runtime (engine + CLI) — kept tiny:** `yaml` (eemeli: plain-YAML parsing with the core schema, no code execution, node ranges for the SourceMap), `zod` (schema validation, and `rune schema` generation through its built-in `z.toJSONSchema()` — no separate converter package), and `commander` (CLI parsing with `exitOverride()` and custom error output, so RUNE owns exit codes and stderr formatting, which are published contract). Rationale for zod: discriminated unions fit the input/run schema exactly, `.strict()` gives the reject-unknown-keys posture for free, one typed schema is one source of truth — a hand-rolled validator would be hundreds of drift-prone lines — and its JSON Schema export makes `rune schema` a non-feature to maintain. All three are small, stable, pure JavaScript with **zero native code**, so they bundle trivially with electron-builder (§9.5) and install anywhere Node 24 LTS runs. Nothing else at runtime: prompts are Node `readline` with a muted-echo helper, process execution is `child_process.spawn`, locale overlays are plain YAML, and `rune gui install` downloads with Node's built-in `fetch` and unpacks the shell archive (`.tar.gz` on Linux, `.zip` on Windows) by spawning the OS `tar` as argv — bsdtar ships with Windows 10+/11 — so no archive library is needed (§9.4). **The CLI npm package contains no Electron; the shell is a separate prebuilt artifact** (§9.4).
+Engine and CLI runtime dependencies are `yaml`, `zod`, and `commander`. Prompts,
+process execution, downloads, and filesystem operations use Node APIs. Runtime
+dependencies need an explicit purpose; they must preserve argv-only execution,
+strict validation, and the engine/frontend boundary.
 
-**GUI shell:** `electron` is a dev dependency of `packages/gui-shell` only — required for working on the shell, never for engine or CLI development, never in CI core jobs. M4 adds `electron-builder`, publishes prebuilt per-OS artifacts on GitHub Releases (`rune gui install`), and produces `rune package` outputs. Electron is pinned to the upstream-supported Electron 44 release line that embeds Node 24 — the engine's declared runtime — and is bumped only together with the Node LTS target; the smoke suite asserts `process.versions.node` major 24 inside the shell.
+The supported development and execution target is Node 24 LTS. Electron is a shell
+development dependency and must remain on an upstream-supported release line
+embedding the same Node major (currently Electron 44). Review Node, Electron, and
+tool support before each release; an unsupported Chromium shell is a release issue.
+The real shell smoke suite checks the embedded Node major.
 
-**Packaging (milestone 4):** electron-builder bundles shell + engine (plain JavaScript) for `rune package`; a packaging-time tool, never a runtime dependency.
+Core installation uses `npm ci --ignore-scripts` and never prepares an Electron
+binary. Shell development and CI additionally run
+`npm run prepare:electron --workspace @rune/gui-shell` before launching Electron.
+Electron is absent from the installed engine/CLI dependency tree.
 
-Core installation uses `npm ci --ignore-scripts` and never prepares an Electron binary. Shell development and CI additionally run `npm run prepare:electron --workspace @rune/gui-shell` before launching Electron. Development launch resolves only that prepared binary; importing the preload bridge from plain Node does not load or install Electron.
-
-**Dev:** `typescript` 5.x, `eslint` + `@typescript-eslint`, `prettier`, `vitest` (unit + integration), `dependency-cruiser` for the import-boundary test, and `@playwright/test` for the Electron smoke suite (shell lane only).
+Development tools are TypeScript, ESLint with typescript-eslint, Prettier, Vitest,
+dependency-cruiser, and Playwright. Upgrade them within their supported compatibility
+ranges and run the complete gates. Packaging tools belong to build-time dependencies,
+not the engine runtime.
 
 ## 13) Extension points
 
-**Now (MVP):** plain name→object registries — `inputs/registry.ts` for the seven `InputTypeHandler`s, which own empty/absence behavior, text/native coercion and validation, rendering, and condition comparison (including `pattern` and option membership — the engine-side authority), with mirrored presentation registries per frontend (`cli/prompt` prompters; the shell's field renderers keyed by input-type name in `gui-shell/src/renderer/`). Duplicate registration is an error. Adding an input type = register an `InputTypeHandler`, a prompter, and a renderer field component; frontends fail fast on types they cannot render. The zod schema validates *shape*; the registry owns type behavior, so a later plugin system is additive, not a core refactor. The MVP runner has only the engine-internal implementation/test seam described in §8; `Session.open` always selects the built-in spawn runner in production.
+Input handlers are registered by type. They own coercion, empty/missing-value rules,
+validation, and comparison. Frontends have presentation registries for the same
+types and reject types they cannot render. Duplicate registrations are errors.
 
-**Theming seam:** the CSS custom-property contract of the default theme plus `gui.theme` (§9.4). New looks are CSS, not code; RUNE guarantees the property names.
+The runner interface is an engine-internal implementation/test seam. A public runner
+extension would first need a trusted-runner and secret-materialization contract.
+No plugin discovery or external runner injection is currently supported.
 
-**i18n seam:** the `locales/<lang>.yaml` overlay mechanism and the reserved `rune.` key namespace (§6.3). A new language for a manifest is a new overlay file, zero code; a new chrome string in RUNE is a new catalogue key with an English default, which overlays may immediately override.
+Themes use documented CSS custom properties and optional author CSS. Localization
+uses manifest-adjacent overlay files and the engine's chrome-key catalogue.
+Third-party frontends may use the public Session API; no out-of-process RPC server
+is implemented.
 
-**Packaging seam:** `rune package` (§9.5) depends on exactly two contracts already in force — `${manifestDir}` anchoring and electron-builder bundling of the shell with the engine as plain JavaScript (the packaged engine is the same `@rune/engine` the CLI uses, hosted by the same main process).
-
-**Later (documented reservation only — zero code now):** a plugin discovery mechanism for `input types`, `runners`, and `frontends` (npm packages declared by a naming convention or a `package.json` field) is reserved by this document. No discovery code ships in MVP; the spec lists plugins as explicitly non-MVP.
-
-**How spec §8 features slot in without being built:**
-
-- *Elevation, retries, rollback, step dependencies*: new `Step`/`execution` keys under a `schemaVersion` bump; v1 rejects them today with a "reserved" error, so adoption can never silently reinterpret v1 manifests. New versions land as `manifest/vN/` modules with pure object → object migration functions; the engine always consumes the newest internal model.
-- *Step outputs* (`${steps.*}`) and engine variables (`${rune.*}`): namespaces syntactically reserved and rejected in v1. This feature will re-open the static-plan invariant (§6.1) and require a re-planning or two-phase design — the plan object and result schema are versioned now precisely so consumers survive that change.
-- *New runners* (e.g. elevated, remote): the first real alternative reopens the internal
-  interface and defines an explicit trusted-runner and secret-materialization contract before
-  any runner injection becomes public. The MVP deliberately freezes no such backend API.
-- *Other frontends*: in-process frontends are further clients of the `Session` facade (§9.1) — exactly what the CLI and the shell's main process are today. Out-of-process frontends (third-party UIs in other languages) would be served by a future stdio JSON-RPC server that projects the same facade and event stream 1:1 — zero code now; the facade being frozen as the frontend contract is the seam.
-- *JSONL event log, macOS, custom pages*: new sink off the existing event stream (with a version field); a new platform key; a new page kind in the shell driven by new schema keys — all deferred wholesale.
+Future elevation, retries, dependencies, and step outputs require explicit schema
+changes. Step outputs would also require revisiting the static-plan contract.
+Relative-resource anchoring and the shared engine are the existing seams for the
+proposed packaging feature (§9.5); they do not constitute a packaging implementation.
 
 ## 14) Testing strategy
 
-All suites run under **vitest** unless stated otherwise; core CI runs them on Windows and Linux with Node 24 LTS and no Electron.
+Core CI runs on Windows and Linux with the supported Node LTS target. Its gates are
+typecheck, lint, formatting, dependency boundaries, Vitest, and installed-package
+verification. The separate shell lane prepares Electron and runs Playwright on both
+platforms. [releasing.md](releasing.md) defines the artifact acceptance checks.
 
-- **Unit**: interpolation grammar (escaping, single-pass, placeholder tokens under `--platform`), condition parser/typechecker (golden good/bad expression tables, shared by step and input conditions), coercion per input type (incl. `pattern`, option values vs labels, comma-split vs JSON-array multiselect with malformed-JSON failure), precedence-chain merge with provenance, input-`when` evaluation (disabled ⇒ empty value, ignored-value provenance), state-transition legality, output-tail ring buffer bounds, counters (`stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun`, `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled` — incl. a cancelled run) / `nothingExecuted` (warned only for real runs, never for `planned` results).
-- **Manifest golden files**: invalid manifests → exact expected `file:line:col` messages, exercising the zod-issue→SourceMap presenter (the acknowledged fiddliest component — budgeted, not assumed); includes input-`when` acyclicity violations, `pattern` on `secret`/non-compiling patterns, `gui:` asset paths, and unknown overlay keys located in the overlay file.
-- **Schema tests**: the output of `rune schema` validates every fixture manifest that `validate` accepts and rejects every one it rejects (no drift by construction, checked anyway); `rune schema --result` validates every result file the suites produce.
-- **i18n tests**: locale selection precedence (`--locale` > `RUNE_LOCALE` > system, with region→language fallback), per-key fallback chain for manifest and `rune.` strings, identical resolved strings through CLI rendering and `getStrings()` via the in-process parity client, golden assertion that ids/values/commands/args/env are byte-identical across locales in plans and result files.
-- **Mode-parity contract suite** (release gate): fixture manifests — including conditional inputs, pattern inputs, labeled options, and locale overlays — run through the non-interactive driver, a scripted interactive CLI (`readline` fed from a stream: prompts **and** the summary edit loop), and a **scripted in-process client of the `Session` facade** making exactly the calls the Electron main process makes (the GUI leg); asserts byte-identical `ExecutionPlan` JSON, event sequences plus the `InputStateChanged` lists returned by `setValue` where values change, and result files (modulo timestamps, run ids, the `mode` field, and per-input `source` provenance, which necessarily differ between legs). Because the GUI leg drives the facade, not pixels, it runs in core CI on Windows and Linux with no Electron — cheaper and more deterministic than driving a window, and it tests precisely the surface the shell depends on. An **IPC-bridge unit test** in the shell package pins the engine-facing facade projection (same method set, same event set, secrets masked towards the renderer) and the sole shell-lifecycle method `rune.done`; it also asserts that every payload is a bridge projection — a raw `SecretString` never reaches `webContents.send` or an invoke return (§9.2). It runs under vitest in core CI with `electron` stubbed (`contextBridge`/`ipcMain`/`ipcRenderer` mocked — no Electron binary), so the projection and the masking towards the renderer are enforced on every PR.
-- **Static-safety lint test**: ESLint `no-restricted-syntax` / `no-restricted-properties` rules (AST-level, stronger than grep) banning `eval`, `new Function`, `child_process.exec`/`execSync`/`execFile` with a shell, and any `spawn` with `shell: true`; the lint run is part of the test gate. The shell-based `child_process` APIs are banned in **every** module form — named, namespace and default `import`, dynamic `import()`, and `require()` — because a single unguarded form (`import cp from 'node:child_process'`) would hand out `cp.exec` unchecked.
-- **Import-boundary test**: dependency-cruiser enforces §3's dependency directions — `@rune/engine` (`manifest`/`inputs`/`i18n`/`engine`/`runners`/`results`/`logs`/`errors`) never imports `cli` or `gui-shell`; `cli` imports the engine only through its public API; `gui-shell/src/renderer` never imports the engine (only the preload bridge's type declarations). Every workspace package name is mapped to its sources in the root `tsconfig.paths.json` (the single source of truth shared by the cruise, `tsconfig.test.json` and the vitest aliases), and a suite asserts that mapping is complete: an unmapped name would resolve into that package's `dist/` output, be dropped as excluded, and silently make the rules above vacuous.
-- **Version-constant test**: the version constants exported by the packages (`RUNE_VERSION`, `RUNE_CLI_VERSION`) are asserted equal to their own `package.json` version, so a release bump cannot leave the CLI banner, `rune --version` or result-file provenance reporting a stale number.
-- **Exit-code reachability**: every code in §10's table produced by at least one test (incl. RUNE-002 / exit 2 for an unsupported host platform, exit 2 for `--gui` without the shell, for a cached shell whose engine version differs from the CLI's (§9.4), and for `--gui --result -`, and exit 0 with `nothingExecuted: true`); the result-file status↔exit-code mapping of §10 (including the `dryRun` disambiguation of exit 0, and both overrides that step outside it: RUNE-407 and a lost stdout sink) checked case by case against the generated result JSON Schema.
-- **Masking suite**: secrets absent from console, log file, result file (incl. `outputTail`), dry-run output — apart from the `manifest.path` §10 exempts, which the path-spelling suite asserts is written exactly and scans everything else for, main→renderer IPC payloads (via the bridge unit test), and child-stdout echo scenarios; terminal output also covers registered literals created only by visible control escaping in dry-run titles and live step output.
-- **Runner integration on real Windows and Linux CI**: argv quoting, `.bat`/`.cmd` refusal, the exact 64 KiB UTF-8 logical-line limit (single placeholder, discard through newline, recovery, CRLF/EOF and independent-stream behavior), a real default-runner-to-Executor masking regression with a secret crossing the omission boundary, and timeout/cancel process-tree kill — `taskkill /T /F` on Windows, SIGTERM then SIGKILL on the process group on Linux (the flakiest platform surface — tested, not hoped).
-- **Electron smoke suite** (dedicated Windows/Linux shell lane, Node 24 LTS + Playwright for Electron, required on pull requests): field renderer per input type, greyed-out disabled fields flipping on the `InputStateChanged` list resolved by `rune.setValue`, red pattern state with `patternHint` and disabled `Next`, label display vs value submission, the three theming layers (default, `gui:` overrides, author CSS), light/dark, cancel-during-output-flood, close-window-during-run, a `RuneError` inside the shell shown as a named error with its exit code, renderer crash before result-delivery ownership → exit 70 without a result file (covering the pre-delivery renderer-loss branch), headless `--non-interactive` run of the same artifact, and exit-code forwarding through `rune run --gui`; the separate hard main-process crash contract remains in §9.4.
+Required coverage:
 
-## 15) Invariants (must never break)
+- Manifest and schema tests pin located errors, unknown/reserved keys, static
+  reference/condition checks, localization keys, and schema/runtime agreement.
+- Input, interpolation, and planner tests cover precedence, conditional enabling,
+  one-pass resolution, immutable projections, preview refusal, and masking.
+- Runner tests use real processes for quoting, output splitting, timeouts,
+  cancellation, and platform-specific process-tree termination.
+- Result and sink tests cover every documented status/exit combination, counters,
+  output tails, atomic delivery failures, and stream errors.
+- The mode-parity suite compares plans, events, and results from non-interactive,
+  scripted interactive, and in-process Session clients. Only documented timestamps,
+  run ids, frontend mode, and source provenance may differ.
+- Bridge tests cover every projected method/event, structured errors, plain data,
+  masking, and the shell-only completion signal. Real Electron tests exercise the
+  context bridge as well as rendering, editing, themes, cancellation, result delivery,
+  crashes, and the CLI launcher.
+- Package checks install the packed engine and CLI together in an isolated consumer,
+  then verify versions, schemas, actual execution, results, logs, and absence of Electron.
+- Static lint rules forbid code evaluation and implicit-shell APIs in every supported
+  module form. Import-boundary checks resolve workspace names to source and reject
+  engine/frontend dependency inversions.
 
-1. One Planner, one Executor: GUI, interactive CLI, and CI share them; no frontend-specific execution or planning path exists. Anything not expressible as "supply values" + "render events and engine-resolved strings" does not ship.
-2. Commands are argv arrays end to end; `shell: true`, `exec`/`execSync`, `eval`, and `new Function` never appear in the codebase (ESLint AST-rule-enforced); `.bat`/`.cmd` are refused, not silently shelled.
-3. Interpolation of `command`/`args`/`cwd`/`env` and step-condition evaluation happen exactly once, at plan time; input conditions and input `default` interpolation (built-ins and `${env.*}` only, no input references) happen once in the resolution stage, before prompting, and are final when the input set is frozen for planning; resolved values are never re-scanned for `${...}`; the plan is fully static.
-4. Dry-run renders the identical plan object that execution consumes — no fake runner, no second interpolation pass.
-5. Only declared `boolean` inputs may stand bare in `when:`; conditions are strictly typed and fully checkable at `validate` time; an input's `when:` references only earlier-declared inputs.
-6. Secrets are wrapped at resolution, registered for masking before any step can launch, and masked in every maskable human or dynamic field at every current sink (console, log file, result file incl. output tails, plan previews, child output, and main→renderer IPC payloads). Immutable facade input snapshots are masked against the spellings known in their resolution or completed-plan phase and are replaced, never mutated, when the first successful plan discovers derived spellings. Structured machine projections preserve the exhaustive field-level exception list in §10 exactly by contract, including when carried over IPC or written to machine results; human presentation derived from any such exact machine field is still composed and masked at its sink. The renderer→main `rune.setValue` call is the only IPC call intentionally carrying a user-entered clear-text secret and is never logged. Supplied-vs-derived path limitations remain as §10 specifies: a line naming a supplied path spelling can stay clear when the declared secret holds a derived one instead, including a located diagnostic, the RUNE-406 and RUNE-407 announcements of the log and result sinks, the `result written to` success line, and the plan preview's manifest and log paths. Secrets are revealed only at spawn inside the runner.
-7. Every value affecting execution passes through the one resolution chain with recorded provenance; all authoritative input validation — type coercion, option membership by `value`, `pattern` full-match, JSON-array parsing — lives in the engine's input-type registry; frontend checks (CLI re-prompts, GUI red fields) are presentation sugar that may only re-ask, never accept.
-8. RUNE never prompts without a TTY: no TTY ⇒ non-interactive behavior; missing inputs ⇒ exit 4 with the complete list and accepted sources; resolution is all-or-nothing before any side effect.
-9. Exit codes are fixed, cross-platform identical, free of `128+signal` arithmetic. Configured-run result delivery and `status`/exit-code correspondence follow §10, including its usage, unsupported-host, failed-delivery, and lost-stdout exceptions and the renderer/main-process-loss boundaries of §9.4. Normally terminating configured runs preserve the mapped result outcome once delivery is claimed; abnormal host termination cannot undo an already committed result file.
-10. stdout carries only requested machine output; everything else goes to stderr.
-11. The GUI renderer contains no engine logic and reaches the engine only through the IPC bridge, a 1:1 projection of the `Session` facade and events; the engine package (`@rune/engine`: `manifest`/`inputs`/`i18n`/`engine`/`runners`/`results`/`logs`/`errors`) never depends on `cli` or `gui-shell`.
-12. Unknown manifest keys are rejected with located errors (reserved keys with a "later schemaVersion" message); unknown locale-overlay keys are located errors; unknown `--set`/values keys are hard input errors — nothing silently no-ops.
-13. Relative `command`/`cwd`/script/asset paths resolve against the manifest's directory, never the caller's cwd — in the author's tree and inside a packaged artifact alike.
-14. Step state transitions follow the legal-transition table, monotonic, exactly one terminal state per step, at most one step `RUNNING`.
-15. `RunStarted`/`RunFinished` bracket every execution exactly once; run events are serial and awaited; observer errors and rejections are contained; no run event is delivered after the `execute()` promise settles.
-16. A disabled input (false `when:`) has identical semantics in all three modes — not required, never prompted, resolves to its type's empty value, supplied values ignored with engine-owned warning state and recorded provenance; frontends differ only in how they show it (greyed field, skipped prompt, nothing), and additional human warning lines follow the masking and delivery rules in §10.
-17. The engine owns locale selection and text resolution; every frontend renders the strings the engine resolved; ids, option values, commands, args, env, cwd, paths, and every machine contract are never localized.
+A test of a source checkout is not a substitute for testing the shipped package or
+GUI archive. Release evidence must identify the exact candidate and platforms tested.
 
-## 16) Deferred decisions
+## 15) Invariants
 
-Everything previously listed here has been decided and folded into the sections above. Genuinely open, to be decided when the respective milestone starts:
+1. All frontends share one Planner and Executor (§3, §7, §9).
+2. Process execution is argv-only; implicit shells and code evaluation are forbidden (§8).
+3. Resolution and interpolation follow the single-pass timing in §5–6.
+4. Dry-run presents the plan used for execution; a foreign-platform preview cannot run.
+5. Conditions are statically typed; input conditions reference only earlier inputs.
+6. Secret projections follow §10, including its exhaustive machine-field exceptions,
+   historical snapshot semantics, and supplied/derived spelling limitations.
+7. Input validation is engine-owned; every effective value has provenance (§5).
+8. No-TTY execution never prompts; missing enabled inputs fail before steps run.
+9. Exit codes, result delivery ownership, and abnormal-termination exceptions follow §10.
+10. stdout contains only requested machine output; human diagnostics use stderr.
+11. The GUI renderer uses only the preload bridge and contains no engine behavior.
+12. Unknown manifest, overlay, and supplied-input keys fail loudly.
+13. Relative workflow resources anchor to the manifest directory, never the caller's cwd.
+14. Step transitions are monotonic, exactly one terminal state, at most one running step.
+15. Run events are serial and awaited, bracketed exactly once by RunStarted and
+    RunFinished; no event follows settlement of execute (§9.1).
+16. Disabled inputs have identical value, requirement, warning, and provenance semantics
+    across modes; only their presentation differs (§5, §10).
+17. Locale selection and text resolution are engine-owned; machine identities are not localized.
 
-1. **`rune package` internals** (milestone 4) — electron-builder configuration and artifact layout; the contract of §9.5 is fixed, the mechanics are not.
-2. **Per-platform artifact formats** — Windows: portable `.exe` + folder vs. single zip; Linux: AppImage vs. tar.gz.
-3. **GUI shell auto-update** — whether `rune run --gui` ever checks GitHub Releases for a newer shell, or updates stay explicit `rune gui install` re-runs.
+## 16) Open design decisions
+
+- Portable artifact layout, builder configuration, and target architectures (§9.5).
+- Public package namespace and release ownership.
+
+These require explicit decisions and corresponding tests. Their presence in an old
+roadmap or prior deferral does not establish that they are acceptable for a release.

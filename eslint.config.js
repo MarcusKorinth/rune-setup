@@ -16,10 +16,23 @@ const shellOptionMessage = `the shell option must be the literal false — ${arg
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/build/**', '**/out/**', '**/node_modules/**', '**/coverage/**'],
+    ignores: [
+      '**/dist/**',
+      '**/build/**',
+      '**/out/**',
+      '**/node_modules/**',
+      '**/coverage/**',
+      'output/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['examples/**/*.mjs', 'scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', Buffer: 'readonly', console: 'readonly' },
+    },
+  },
   {
     // CommonJS tool configuration (.dependency-cruiser.cjs today). Linted like everything else
     // so the static-safety rules below cover it too, instead of being excluded from the gate.

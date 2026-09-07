@@ -35,12 +35,13 @@ jobs:
       - run: npm run format:check
       - run: npm run depcruise
       - run: npm test
+      - run: npm run test:packages
 
   shell:
     name: shell (${{ matrix.os }})
     needs: core
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -60,3 +61,24 @@ jobs:
         run: xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
       - if: runner.os == 'Windows'
         run: npm run test:smoke --workspace @rune/gui-shell
+      - run: npm run build:shell
+      - name: Enable the Chromium user namespace sandbox on the Linux runner
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run test:shell:package
+      - if: runner.os == 'Windows'
+        run: npm run test:shell:package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gui-shell-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            output/shell/*/rune-gui-shell-*.zip
+            output/shell/*/rune-gui-shell-*.tar.gz
+            output/shell/*/build-metadata.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
