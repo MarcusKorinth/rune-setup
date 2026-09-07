@@ -189,8 +189,21 @@ test('runs the real windowed shell through Result and exits successfully', async
     const exited = new Promise<number | null>((resolve) => {
       application?.process().once('exit', resolve);
     });
-    await next.click();
-    expect(await exited).toBe(0);
+    // Finish may destroy its CDP target before Playwright receives the click response.
+    // Native exit and the delivered result still decide whether the run succeeded.
+    const finishClick = next.click().catch((error: unknown) => {
+      if (
+        !(error instanceof Error) ||
+        !error.message.startsWith(
+          'locator.click: Target page, context or browser has been closed',
+        ) ||
+        !error.message.includes('performing click action')
+      ) {
+        throw error;
+      }
+    });
+    const [exitCode] = await Promise.all([exited, finishClick]);
+    expect(exitCode).toBe(0);
     const result = await readSmokeResult(resultPath);
     expect(result).toMatchObject({ exitCode: 0, mode: 'gui', status: 'succeeded' });
     expect(result.steps).toMatchObject([{ id: 'execution-smoke', state: 'SUCCEEDED' }]);
