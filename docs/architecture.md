@@ -901,6 +901,7 @@ GUI archive. Release evidence must identify the exact candidate and platforms te
 
 - Portable artifact layout, builder configuration, and target architectures (§9.5).
 - Public package namespace and release ownership.
+- GUI shell auto-update policy: whether `rune run --gui` ever checks for newer shells or updates remain explicit `rune gui install` re-runs (§9.4).
 
 These require explicit decisions and corresponding tests. Their presence in an old
 roadmap or prior deferral does not establish that they are acceptable for a release.
