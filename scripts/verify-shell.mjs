@@ -535,8 +535,22 @@ try {
   await next.click();
   await expect(next).toHaveText('Finish');
   assert(!(await page.locator('body').innerText()).includes(secret));
-  await next.click();
-  assert.deepEqual(await within(wizard.closed, 15_000, 'The packaged wizard did not finish'), {
+  // Finish destroys its own CDP target, possibly before the click response arrives.
+  // Only that transport closure is expected; process status and delivered files still decide success.
+  const finishClick = next.click().catch((error) => {
+    if (
+      !(error instanceof Error) ||
+      !error.message.startsWith('locator.click: Target page, context or browser has been closed') ||
+      !error.message.includes('performing click action')
+    ) {
+      throw error;
+    }
+  });
+  const [wizardExit] = await Promise.all([
+    within(wizard.closed, 15_000, 'The packaged wizard did not finish'),
+    finishClick,
+  ]);
+  assert.deepEqual(wizardExit, {
     code: 0,
     signal: null,
   });
