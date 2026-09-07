@@ -143,7 +143,6 @@ export async function runCommand(
           logFile: flags.logFile,
           ...(resultDestination === undefined ? {} : { resultDestination: resultDestination.path }),
         });
-        strings = session.getStrings();
         if (resultDestination !== undefined) {
           const result = createFailureResult({
             error,
@@ -153,7 +152,7 @@ export async function runCommand(
             session,
           });
           deliveryStarted = true;
-          await deliverResult(result, resultDestination, io, strings);
+          await deliverResult(result, resultDestination, io, undefined, false);
         }
         throw new ExitWithCode(6);
       }

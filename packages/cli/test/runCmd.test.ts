@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, normalize, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +46,30 @@ function manifestFixture(directory: string): string {
   return manifestPath;
 }
 
+function derivedSecretManifestFixture(directory: string): string {
+  const manifestPath = join(directory, 'installer.yaml');
+  writeFileSync(
+    manifestPath,
+    [
+      'schemaVersion: 1',
+      'product:',
+      '  name: Example',
+      '  version: "1.0.0"',
+      'inputs:',
+      '  token:',
+      '    type: secret',
+      'steps:',
+      '  - id: install',
+      '    run:',
+      '      command: node',
+      '      cwd: "${token}"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return manifestPath;
+}
+
 afterEach(() => {
   gui.launchGui.mockReset();
   vi.restoreAllMocks();
@@ -54,8 +78,11 @@ afterEach(() => {
 describe('GUI result ownership before shell launch', () => {
   it('writes one zero-counter cancelled result when pre-shell cancellation owns the run', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-gui-prelaunch-result-'));
-    const manifestPath = manifestFixture(directory);
+    const manifestPath = derivedSecretManifestFixture(directory);
     const resultPath = join(directory, 'result.json');
+    const secret = `${directory}${sep}unused${sep}..${sep}result.json`;
+    expect(secret).not.toBe(normalize(secret));
+    expect(normalize(secret)).toBe(resultPath);
     const io = capture();
     const cancel = new CancelToken();
     cancel.cancel();
@@ -68,7 +95,7 @@ describe('GUI result ownership before shell launch', () => {
     try {
       expect(
         await run(
-          ['run', manifestPath, '--gui', '--result', resultPath],
+          ['run', manifestPath, '--gui', '--set', `token=${secret}`, '--result', resultPath],
           io,
           { cancel },
           interaction(),
@@ -84,8 +111,8 @@ describe('GUI result ownership before shell launch', () => {
         stepsExecuted: 0,
         nothingExecuted: true,
       });
-      expect(io.stderr).toHaveBeenCalledTimes(1);
-      expect(io.stderr).toHaveBeenCalledWith(`result written to ${resultPath}`);
+      expect(io.stderr).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(normalize(secret));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -174,19 +201,28 @@ describe('GUI result ownership before shell launch', () => {
 
   it('maps a pre-shell cancellation result writer failure to exit 1', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-gui-result-writer-error-'));
-    const manifestPath = manifestFixture(directory);
+    const manifestPath = derivedSecretManifestFixture(directory);
+    const resultPath = join(directory, 'transformed-result.json');
+    const secret = `${directory}${sep}unused${sep}..${sep}transformed-result.json`;
+    expect(secret).not.toBe(normalize(secret));
+    expect(normalize(secret)).toBe(resultPath);
     const io = capture();
+    mkdirSync(resultPath);
     gui.launchGui.mockRejectedValueOnce(
       new CancelledError('cancelled before the GUI shell started'),
     );
 
     try {
       expect(
-        await run(['run', manifestPath, '--gui', '--result', directory], io, interaction()),
+        await run(
+          ['run', manifestPath, '--gui', '--set', `token=${secret}`, '--result', resultPath],
+          io,
+          interaction(),
+        ),
       ).toBe(1);
-      expect(io.stderr).toHaveBeenCalledWith(
-        expect.stringContaining('could not finalize result file'),
-      );
+      expect(io.stderr).toHaveBeenCalledTimes(1);
+      expect(io.stderr).toHaveBeenCalledWith('could not write the result file');
+      expect(io.stderr).not.toHaveBeenCalledWith(expect.stringContaining(normalize(secret)));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
