@@ -16,7 +16,7 @@ node packages/cli/dist/main.js run examples/basic/installer.yaml
 node packages/cli/dist/main.js run examples/basic/installer.yaml --non-interactive --set profile=production --result examples/basic/output/result.json
 ```
 
-The [basic example](../../examples/basic/README.md) explains its inputs and output.
+The [basic example](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/examples/basic/README.md) explains its inputs and output.
 Interactive runs show the plan and allow input changes before execution. Without a
 TTY, the CLI does not prompt; missing required inputs cause an input error.
 
@@ -37,7 +37,7 @@ includeNotes: false
 Pass it with `--values path/to/values.yaml`; later values files override earlier ones.
 Use declared `secret` inputs for sensitive values, preferably supplied through the
 environment or values files. Arguments can be visible in process listings. Masking
-boundaries and limitations are described in the [architecture](../../docs/architecture.md).
+boundaries and limitations are described in the [architecture](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/docs/architecture.md).
 
 ## Inspect results and schemas
 
@@ -62,10 +62,10 @@ node packages/cli/dist/main.js schema --result --output result.schema.json
 | 6 | Cancelled |
 | 70 | Internal or host failure |
 
-For GUI development, follow the [wizard instructions](../../README.md#try-the-wizard).
+For GUI development, follow the [wizard instructions](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/README.md#try-the-wizard).
 With `--gui`, the optional `--result` accepts a file path; `--result -` is unavailable.
 Local shell archives can be built from the repository. Published archives and portable
-workflow packaging remain unfinished. See the [release checklist](../../docs/releasing.md).
+workflow packaging remain unfinished. See the [release checklist](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/docs/releasing.md).
 
 ## Process output and background services
 
