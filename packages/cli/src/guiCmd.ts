@@ -6,19 +6,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import {
-  closeSync,
   createWriteStream,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
@@ -29,6 +25,7 @@ import { pipeline } from 'node:stream/promises';
 import { CancelledError, PlatformError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
+import { locateCachedShell, publishCachedShell } from './guiCache.js';
 import { createGuiStartupGate, type GuiStartupGate } from './guiStartup.js';
 import { ExitWithCode, humanStderr, type CliControl, type CliIo } from './io.js';
 import type { Interaction } from './prompt.js';
@@ -37,8 +34,6 @@ import type { Interaction } from './prompt.js';
 const RELEASES = 'https://github.com/MarcusKorinth/rune-setup/releases/download';
 
 const SHELL_BINARY = process.platform === 'win32' ? 'rune-gui-shell.exe' : 'rune-gui-shell';
-const CURRENT_GENERATION = 'current';
-const GENERATION_NAME = /^generation-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n?$/u;
 
 const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
 const SHELL_PROBE_TIMEOUT_MS = 10_000;
@@ -92,30 +87,11 @@ export function locateShell(
   }
   const cache = shellCacheDir();
   try {
-    const pointer = join(cache, CURRENT_GENERATION);
-    const pointerStat = lstatSync(pointer, { throwIfNoEntry: false });
-    if (pointerStat === undefined) {
-      // Existing direct-binary caches remain usable until their first generation is published.
-      const legacy = join(cache, SHELL_BINARY);
-      return lstatSync(legacy, { throwIfNoEntry: false })?.isFile() === true
-        ? { kind: 'binary', path: legacy }
-        : undefined;
-    }
-    if (!pointerStat.isFile() || pointerStat.size > 128) throw new Error('invalid pointer file');
-    const selection = readFileSync(pointer, 'utf8');
-    if (!GENERATION_NAME.test(selection)) throw new Error('invalid generation name');
-    const generation = join(cache, selection.replace(/\n$/u, ''));
-    const binary = join(generation, SHELL_BINARY);
-    if (
-      lstatSync(generation, { throwIfNoEntry: false })?.isDirectory() !== true ||
-      lstatSync(binary, { throwIfNoEntry: false })?.isFile() !== true
-    ) {
-      throw new Error('missing or linked generation');
-    }
-    return { kind: 'binary', path: binary };
+    const binary = locateCachedShell(cache, SHELL_BINARY, RUNE_VERSION);
+    return binary === undefined ? undefined : { kind: 'binary', path: binary };
   } catch {
     throw new UsageError(
-      `the GUI shell cache at "${cache}" has an invalid or unreadable current selection — run: rune gui install`,
+      `the GUI shell cache at "${cache}" has no readable complete selection — run: rune gui install`,
     );
   }
 }
@@ -242,36 +218,16 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
 }
 
 function promoteStagedDirectory(stagingDirectory: string, target: string, io: CliIo): void {
-  const generationName = `generation-${randomUUID()}`;
-  const generation = join(target, generationName);
-  const pointer = join(target, `.current-${randomUUID()}.tmp`);
-  let generationCreated = false;
-  let pointerCreated = false;
-  let published = false;
   try {
-    renameSync(stagingDirectory, generation);
-    generationCreated = true;
-    const pointerFile = openSync(pointer, 'wx', 0o600);
-    pointerCreated = true;
-    try {
-      writeFileSync(pointerFile, `${generationName}\n`, { encoding: 'utf8', flush: true });
-    } finally {
-      closeSync(pointerFile);
-    }
-    // No reader observes an incomplete generation or a partially written selection.
-    renameSync(pointer, join(target, CURRENT_GENERATION));
-    published = true;
+    publishCachedShell(stagingDirectory, target, SHELL_BINARY, RUNE_VERSION, (path) => {
+      humanStderr(io, `warning: could not remove temporary GUI shell files at ${path}`);
+    });
   } catch {
     humanStderr(
       io,
       `could not publish the GUI shell in ${target} — check cache permissions and available disk space; run: rune gui install`,
     );
     throw new ExitWithCode(1);
-  } finally {
-    if (!published) {
-      if (pointerCreated) removeBestEffort(pointer, io);
-      if (generationCreated) removeBestEffort(generation, io);
-    }
   }
 }
 

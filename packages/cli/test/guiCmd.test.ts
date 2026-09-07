@@ -261,6 +261,10 @@ function selectedBinary(): string {
   return location.path;
 }
 
+function isTemporaryPointer(path: unknown): path is string {
+  return typeof path === 'string' && /^\.current-[a-f0-9-]{36}\.tmp$/u.test(basename(path));
+}
+
 describe('rune gui install temporary archive', () => {
   it('refuses an unsupported host before creating temporary storage, fetching, or caching', async () => {
     const temporaryDirectories = shellTemporaryDirectories();
@@ -521,7 +525,7 @@ describe('rune gui install atomic cache promotion', () => {
 
     const installedShell = selectedBinary();
     const generationName = basename(dirname(installedShell));
-    expect(generationName).toMatch(/^generation-[a-f0-9-]{36}$/u);
+    expect(generationName).toMatch(/^generation-v1-[a-f0-9-]{36}$/u);
     expect(dirname(dirname(installedShell))).toBe(shellCacheDir());
     expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${generationName}\n`);
     expect(writeFileSyncMock).toHaveBeenCalledWith(expect.any(Number), `${generationName}\n`, {
@@ -586,71 +590,130 @@ describe('rune gui install atomic cache promotion', () => {
   ])('keeps the current generation intact when %s fails', async (failure) => {
     const previous = cachedGeneration();
     const realRenameSync = renameSyncMock.getMockImplementation()!;
+    const realOpenSync = openSyncMock.getMockImplementation()!;
     const realWriteFileSync = writeFileSyncMock.getMockImplementation()!;
+    const realCloseSync = closeSyncMock.getMockImplementation()!;
+    let pointerDescriptor: number | undefined;
     const fail = (): never => {
       throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
     };
-    if (failure === 'generation rename') renameSyncMock.mockImplementationOnce(fail);
-    else if (failure === 'pointer creation') openSyncMock.mockImplementationOnce(fail);
-    else if (failure === 'pointer write or flush') {
-      writeFileSyncMock.mockImplementationOnce(realWriteFileSync).mockImplementationOnce((file) => {
+    openSyncMock.mockImplementation((path, flags, mode) => {
+      if (isTemporaryPointer(path) && failure === 'pointer creation') fail();
+      const descriptor = realOpenSync(path, flags, mode);
+      if (isTemporaryPointer(path)) pointerDescriptor = descriptor;
+      return descriptor;
+    });
+    renameSyncMock.mockImplementation((from, to) => {
+      if (
+        (failure === 'generation rename' && basename(String(to)).startsWith('generation-v1-')) ||
+        (failure === 'pointer rename' && isTemporaryPointer(from))
+      ) {
+        fail();
+      }
+      return realRenameSync(from, to);
+    });
+    writeFileSyncMock.mockImplementation((file, data, options) => {
+      if (file === pointerDescriptor && failure === 'pointer write or flush') {
         realWriteFileSync(file, 'partial pointer');
         return fail();
-      });
-    } else if (failure === 'pointer close') {
-      const realCloseSync = closeSyncMock.getMockImplementation()!;
-      closeSyncMock.mockImplementationOnce((file) => {
-        realCloseSync(file);
-        return fail();
-      });
-    } else {
-      renameSyncMock.mockImplementationOnce(realRenameSync).mockImplementationOnce(fail);
-    }
+      }
+      return realWriteFileSync(file, data, options);
+    });
+    closeSyncMock.mockImplementation((file) => {
+      realCloseSync(file);
+      if (file === pointerDescriptor && failure === 'pointer close') fail();
+    });
     const io = capture();
 
-    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+    try {
+      await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
 
-    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
-    expect(selectedBinary()).toBe(previous.binary);
-    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
-    expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
-    expect(readdirSync(shellCacheDir()).sort()).toEqual(['current', previous.name].sort());
-    expect(existsSync(dirname(downloadedArchive()))).toBe(false);
+      expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      const generations = readdirSync(shellCacheDir()).filter((name) =>
+        name.startsWith('generation-v1-'),
+      );
+      expect(generations).toHaveLength(failure === 'generation rename' ? 0 : 1);
+      expect(readdirSync(shellCacheDir()).sort()).toEqual(
+        ['current', previous.name, ...generations].sort(),
+      );
+      for (const generation of generations) {
+        expect(readFileSync(join(shellCacheDir(), generation, shellBinary), 'utf8')).toBe(
+          'new shell',
+        );
+        expect(existsSync(join(shellCacheDir(), generation, '.rune-complete.json'))).toBe(true);
+      }
+      expect(existsSync(dirname(downloadedArchive()))).toBe(false);
+    } finally {
+      openSyncMock.mockImplementation(realOpenSync);
+      renameSyncMock.mockImplementation(realRenameSync);
+      writeFileSyncMock.mockImplementation(realWriteFileSync);
+      closeSyncMock.mockImplementation(realCloseSync);
+    }
   });
 
   it('keeps the current generation intact when failed publication cleanup also fails', async () => {
     const previous = cachedGeneration();
     const realRenameSync = renameSyncMock.getMockImplementation()!;
-    renameSyncMock.mockImplementationOnce(realRenameSync).mockImplementationOnce(() => {
-      throw new Error('pointer publication denied');
+    const realRmSync = rmSyncMock.getMockImplementation()!;
+    renameSyncMock.mockImplementation((from, to) => {
+      if (isTemporaryPointer(from)) throw new Error('pointer publication denied');
+      return realRenameSync(from, to);
     });
-    rmSyncMock.mockImplementationOnce(() => {
-      throw new Error('pointer cleanup denied');
+    rmSyncMock.mockImplementation((path, options) => {
+      if (isTemporaryPointer(path)) throw new Error('pointer cleanup denied');
+      return realRmSync(path, options);
     });
     const io = capture();
 
-    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+    try {
+      await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
 
-    expect(selectedBinary()).toBe(previous.binary);
-    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
-    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
-    expect(io.stderr).toHaveBeenCalledWith(
-      expect.stringContaining('warning: could not remove temporary GUI shell files'),
-    );
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
+      expect(io.stderr).toHaveBeenCalledWith(
+        expect.stringContaining('warning: could not remove temporary GUI shell files'),
+      );
+      expect(
+        readdirSync(shellCacheDir()).filter((name) => name.startsWith('generation-v1-')),
+      ).toHaveLength(1);
+      expect(readdirSync(shellCacheDir()).filter(isTemporaryPointer)).toHaveLength(1);
+    } finally {
+      renameSyncMock.mockImplementation(realRenameSync);
+      rmSyncMock.mockImplementation(realRmSync);
+    }
   });
 
   it('does not remove a pointer temporary file it could not create exclusively', async () => {
     const previous = cachedGeneration();
-    openSyncMock.mockImplementationOnce((path) => {
-      writeFileSync(path, 'another installer owns this file');
-      throw Object.assign(new Error('already exists'), { code: 'EEXIST' });
+    const realOpenSync = openSyncMock.getMockImplementation()!;
+    let pointer: string | undefined;
+    openSyncMock.mockImplementation((path, flags, mode) => {
+      if (isTemporaryPointer(path)) {
+        pointer = path;
+        writeFileSync(path, 'another installer owns this file');
+        throw Object.assign(new Error('already exists'), { code: 'EEXIST' });
+      }
+      return realOpenSync(path, flags, mode);
     });
 
-    await expect(guiInstallCommand(capture())).rejects.toMatchObject({ code: 1 });
+    try {
+      await expect(guiInstallCommand(capture())).rejects.toMatchObject({ code: 1 });
 
-    const pointer = openSyncMock.mock.calls[0]![0];
-    expect(readFileSync(pointer, 'utf8')).toBe('another installer owns this file');
-    expect(selectedBinary()).toBe(previous.binary);
+      expect(pointer).toBeDefined();
+      expect(readFileSync(pointer!, 'utf8')).toBe('another installer owns this file');
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      expect(
+        readdirSync(shellCacheDir()).filter((name) => name.startsWith('generation-v1-')),
+      ).toHaveLength(1);
+    } finally {
+      openSyncMock.mockImplementation(realOpenSync);
+    }
   });
 
   it('keeps a successful installation when archive cleanup fails', async () => {
@@ -718,6 +781,27 @@ describe('rune gui install atomic cache promotion', () => {
 });
 
 describe('GUI shell cache selection', () => {
+  it('reports an actionable usage error when every sealed generation is damaged', async () => {
+    await guiInstallCommand(capture());
+    const first = selectedBinary();
+    await guiInstallCommand(capture());
+    const second = selectedBinary();
+    expect(second).not.toBe(first);
+    writeFileSync(first, 'damaged first shell');
+    writeFileSync(second, 'damaged second shell');
+
+    let failure: unknown;
+    try {
+      locateShell({});
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(UsageError);
+    expect(exitCodeFor(failure)).toBe(2);
+    expect((failure as UsageError).message).toContain('run: rune gui install');
+  });
+
   it.each(['', '\n'])('accepts the exact generation basename with terminator %j', (terminator) => {
     const previous = cachedGeneration();
     writeFileSync(join(shellCacheDir(), 'current'), previous.name + terminator);
