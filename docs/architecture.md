@@ -94,8 +94,8 @@ rune --version
 ```
 
 The current CLI implements `validate`, `schema`, and both the interactive and
-non-interactive forms of `run`, including dry-run. `--gui`, `gui install`, and `package`
-remain planned at their roadmap milestones.
+non-interactive forms of `run`, including dry-run, plus `--gui` and `gui install`.
+`package` remains planned for its roadmap milestone.
 
 Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
@@ -710,7 +710,7 @@ packages/
 │       ├── signals.ts             # cooperative first signal, forced cancellation on the second
 │       ├── streams.ts             # guarded stdout/stderr writers: one `error` owner per stream, silent only for a consumer that went away
 │       ├── validateCmd.ts         # validation and environment-variable audit report
-│       ├── guiCmd.ts              # planned `gui install` + --gui launch/exit-code forwarding
+│       ├── guiCmd.ts              # `gui install` + --gui launch/exit-code forwarding
 │       ├── prompt.ts              # readline prompts and summary edit loop
 │       └── render.ts              # shared plan/progress/result rendering (also dry-run)
 └── gui-shell/                     # Electron GUI shell — separate prebuilt artifact; never inside the CLI npm package
@@ -721,7 +721,7 @@ packages/
     ├── src/renderer/              # pages (Welcome, inputs, Summary, Progress, Result), field renderers per input type;
     │                              #   imports only the bridge's type declarations
     ├── src/theme/                 # default theme: CSS custom properties, light/dark, animations
-    └── tests/                     # reserved for the M4 Playwright-for-Electron smoke suite (§14)
+    └── tests/                     # Playwright-for-Electron smoke suite (§14)
 tests/                             # cross-package suites: mode-parity contract suite, exit-code reachability, masking
 ```
 
@@ -731,11 +731,11 @@ Each package additionally has a `test/` directory of vitest unit tests (collecte
 
 **Runtime (engine + CLI) — kept tiny:** `yaml` (eemeli: plain-YAML parsing with the core schema, no code execution, node ranges for the SourceMap), `zod` (schema validation, and `rune schema` generation through its built-in `z.toJSONSchema()` — no separate converter package), and `commander` (CLI parsing with `exitOverride()` and custom error output, so RUNE owns exit codes and stderr formatting, which are published contract). Rationale for zod: discriminated unions fit the input/run schema exactly, `.strict()` gives the reject-unknown-keys posture for free, one typed schema is one source of truth — a hand-rolled validator would be hundreds of drift-prone lines — and its JSON Schema export makes `rune schema` a non-feature to maintain. All three are small, stable, pure JavaScript with **zero native code**, so they bundle trivially with electron-builder (§9.5) and install anywhere Node 22 LTS runs. Nothing else at runtime: prompts are Node `readline` with a muted-echo helper, process execution is `child_process.spawn`, locale overlays are plain YAML, and `rune gui install` downloads with Node's built-in `fetch` and unpacks the shell archive (`.tar.gz` on Linux, `.zip` on Windows) by spawning the OS `tar` as argv — bsdtar ships with Windows 10+/11 — so no archive library is needed (§9.4). **The CLI npm package contains no Electron; the shell is a separate prebuilt artifact** (§9.4).
 
-**GUI shell:** `electron` is a dev dependency of `packages/gui-shell` only — required for working on the shell, never for engine or CLI development, never in CI core jobs. M4 adds `electron-builder`, publishes prebuilt per-OS artifacts on GitHub Releases (`rune gui install`), and produces `rune package` outputs. Electron is pinned to a release line that embeds Node 22 — the engine's declared runtime — and is bumped only together with the Node LTS target; the M4 smoke suite asserts `process.versions.node` major 22 inside the shell.
+**GUI shell:** `electron` is a dev dependency of `packages/gui-shell` only — required for working on the shell, never for engine or CLI development, never in CI core jobs. M4 adds `electron-builder`, publishes prebuilt per-OS artifacts on GitHub Releases (`rune gui install`), and produces `rune package` outputs. Electron is pinned to a release line that embeds Node 22 — the engine's declared runtime — and is bumped only together with the Node LTS target; the smoke suite asserts `process.versions.node` major 22 inside the shell.
 
 **Packaging (milestone 4):** electron-builder bundles shell + engine (plain JavaScript) for `rune package`; a packaging-time tool, never a runtime dependency.
 
-**Dev:** `typescript` 5.x, `eslint` + `@typescript-eslint`, `prettier`, `vitest` (unit + integration), and `dependency-cruiser` for the import-boundary test. M4 adds `@playwright/test` for the Electron smoke suite (shell lane only).
+**Dev:** `typescript` 5.x, `eslint` + `@typescript-eslint`, `prettier`, `vitest` (unit + integration), `dependency-cruiser` for the import-boundary test, and `@playwright/test` for the Electron smoke suite (shell lane only).
 
 ## 13) Extension points
 
