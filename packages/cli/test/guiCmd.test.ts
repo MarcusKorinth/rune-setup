@@ -7,7 +7,9 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,7 +37,15 @@ import type { Interaction } from '../src/prompt.js';
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof Fs>();
-  return { ...fs, createWriteStream: vi.fn(fs.createWriteStream) };
+  return {
+    ...fs,
+    createWriteStream: vi.fn(fs.createWriteStream),
+    mkdirSync: vi.fn(fs.mkdirSync),
+    mkdtempSync: vi.fn(fs.mkdtempSync),
+    renameSync: vi.fn(fs.renameSync),
+    rmSync: vi.fn(fs.rmSync),
+    statSync: vi.fn(fs.statSync),
+  };
 });
 
 const savedLocalAppData = process.env['LOCALAPPDATA'];
@@ -43,6 +53,11 @@ const savedXdgCacheHome = process.env['XDG_CACHE_HOME'];
 const savedGuiShell = process.env['RUNE_GUI_SHELL'];
 const spawnMock = vi.mocked(spawn);
 const createWriteStreamMock = vi.mocked(createWriteStream);
+const mkdirSyncMock = vi.mocked(mkdirSync);
+const mkdtempSyncMock = vi.mocked(mkdtempSync);
+const renameSyncMock = vi.mocked(renameSync);
+const rmSyncMock = vi.mocked(rmSync);
+const statSyncMock = vi.mocked(statSync);
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 let testDirectory: string;
@@ -241,6 +256,22 @@ describe('rune gui install temporary archive', () => {
 
     expect(existsSync(dirname(downloadedArchive()))).toBe(false);
   });
+
+  it('reports a temporary-directory creation failure as an installation failure', async () => {
+    const before = shellTemporaryDirectories();
+    mkdtempSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      expect.stringContaining('could not create temporary storage'),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(shellTemporaryDirectories()).toEqual(before);
+  });
 });
 
 describe('rune gui install download failures', () => {
@@ -315,9 +346,50 @@ describe('rune gui install download failures', () => {
     expect(shellTemporaryDirectories()).toEqual(before);
     expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
   });
+
+  it('preserves the download failure when temporary cleanup also fails', async () => {
+    const before = new Set(shellTemporaryDirectories());
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Promise.reject(new Error('offline'))),
+    );
+    rmSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const io = capture();
+
+    try {
+      await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+      expect(io.stderr).toHaveBeenCalledWith(
+        expect.stringContaining('check your network connection'),
+      );
+      expect(io.stderr).toHaveBeenCalledWith(
+        expect.stringContaining('warning: could not remove temporary GUI shell files'),
+      );
+    } finally {
+      for (const entry of shellTemporaryDirectories()) {
+        if (!before.has(entry)) {
+          rmSync(join(tmpdir(), entry), { recursive: true, force: true });
+        }
+      }
+    }
+  });
 });
 
 describe('rune gui install atomic cache promotion', () => {
+  it('reports cache-directory setup failures as installation failures', async () => {
+    mkdirSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not prepare'));
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('does not make a partially extracted shell locatable when tar fails', async () => {
     tarExit = 2;
 
@@ -360,6 +432,81 @@ describe('rune gui install atomic cache promotion', () => {
 
     expect(locateShell({})).toEqual({ kind: 'binary', path: existingShell });
     expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+  });
+
+  it('reports a staged-shell inspection failure without replacing the existing cache', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    statSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not inspect'));
+    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+  });
+
+  it('restores the existing cache when promotion fails', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    const realRenameSync = renameSyncMock.getMockImplementation()!;
+    renameSyncMock
+      .mockImplementationOnce((oldPath, newPath) => realRenameSync(oldPath, newPath))
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not install'));
+    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+  });
+
+  it('retains a recoverable backup when cache restoration fails', async () => {
+    const existingShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(existingShell), { recursive: true });
+    writeFileSync(existingShell, 'existing shell');
+    const realRenameSync = renameSyncMock.getMockImplementation()!;
+    renameSyncMock
+      .mockImplementationOnce((oldPath, newPath) => realRenameSync(oldPath, newPath))
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('promotion denied'), { code: 'EACCES' });
+      })
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('restoration denied'), { code: 'EACCES' });
+      });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    const backup = renameSyncMock.mock.calls[0]?.[1];
+    expect(typeof backup).toBe('string');
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining(String(backup)));
+    expect(readFileSync(join(String(backup), shellBinary), 'utf8')).toBe('existing shell');
+    expect(existsSync(existingShell)).toBe(false);
+  });
+
+  it('keeps a successful installation when old-cache cleanup fails', async () => {
+    const installedShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(installedShell), { recursive: true });
+    writeFileSync(installedShell, 'existing shell');
+    rmSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    const io = capture();
+
+    await guiInstallCommand(io);
+
+    expect(readFileSync(installedShell, 'utf8')).toBe('new shell');
+    expect(io.stderr).toHaveBeenCalledWith(
+      expect.stringContaining('warning: could not remove temporary GUI shell files'),
+    );
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('installed to'));
   });
 });
 

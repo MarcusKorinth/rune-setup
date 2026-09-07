@@ -91,7 +91,15 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     process.platform === 'win32' ? `rune-gui-shell-windows.zip` : `rune-gui-shell-linux.tar.gz`;
   const url = `${RELEASES}/v${RUNE_VERSION}/${archiveName}`;
   const target = shellCacheDir();
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-gui-install-'));
+  let temporaryDirectory: string;
+  try {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-gui-install-'));
+  } catch {
+    io.stderr(
+      'could not create temporary storage for the GUI shell — check temporary-directory permissions and available disk space',
+    );
+    throw new ExitWithCode(1);
+  }
   const archive = join(temporaryDirectory, archiveName);
   let stagingDirectory: string | undefined;
 
@@ -141,8 +149,15 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     }
 
     const cacheParent = dirname(target);
-    mkdirSync(cacheParent, { recursive: true });
-    stagingDirectory = mkdtempSync(join(cacheParent, '.rune-shell-stage-'));
+    try {
+      mkdirSync(cacheParent, { recursive: true });
+      stagingDirectory = mkdtempSync(join(cacheParent, '.rune-shell-stage-'));
+    } catch {
+      io.stderr(
+        `could not prepare the GUI shell cache at ${cacheParent} — check directory permissions and available disk space`,
+      );
+      throw new ExitWithCode(1);
+    }
     const extractionDirectory = stagingDirectory;
     // bsdtar ships with Windows 10+ and handles both formats; argv only, never a shell (§12).
     const code = await new Promise<number>((resolve) => {
@@ -159,40 +174,70 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     }
 
     const stagedShell = join(stagingDirectory, SHELL_BINARY);
-    if (statSync(stagedShell, { throwIfNoEntry: false })?.isFile() !== true) {
+    let stagedShellIsFile: boolean;
+    try {
+      stagedShellIsFile = statSync(stagedShell, { throwIfNoEntry: false })?.isFile() === true;
+    } catch {
+      io.stderr(
+        `could not inspect the unpacked GUI shell at ${stagedShell} — check cache permissions`,
+      );
+      throw new ExitWithCode(1);
+    }
+    if (!stagedShellIsFile) {
       io.stderr(`unpacked shell is missing the expected binary ${SHELL_BINARY}`);
       throw new ExitWithCode(1);
     }
 
-    promoteStagedDirectory(stagingDirectory, target);
+    promoteStagedDirectory(stagingDirectory, target, io);
     stagingDirectory = undefined;
     io.stderr(`GUI shell ${RUNE_VERSION} installed to ${target}`);
   } finally {
     if (stagingDirectory !== undefined) {
-      rmSync(stagingDirectory, { recursive: true, force: true });
+      removeBestEffort(stagingDirectory, io);
     }
-    rmSync(temporaryDirectory, { recursive: true, force: true });
+    removeBestEffort(temporaryDirectory, io);
   }
 }
 
-function promoteStagedDirectory(stagingDirectory: string, target: string): void {
+function promoteStagedDirectory(stagingDirectory: string, target: string, io: CliIo): void {
   const backup = `${stagingDirectory}-backup`;
   const hadExistingTarget = existsSync(target);
   if (hadExistingTarget) {
-    renameSync(target, backup);
+    try {
+      renameSync(target, backup);
+    } catch {
+      io.stderr(`could not preserve the existing GUI shell cache at ${target} — check permissions`);
+      throw new ExitWithCode(1);
+    }
   }
 
   try {
     renameSync(stagingDirectory, target);
-  } catch (cause) {
+  } catch {
     if (hadExistingTarget) {
-      renameSync(backup, target);
+      try {
+        renameSync(backup, target);
+      } catch {
+        io.stderr(
+          `could not install the GUI shell or restore the previous cache; the recoverable backup remains at ${backup}`,
+        );
+        throw new ExitWithCode(1);
+      }
     }
-    throw cause;
+    io.stderr(`could not install the GUI shell to ${target} — check cache permissions`);
+    throw new ExitWithCode(1);
   }
 
   if (hadExistingTarget) {
-    rmSync(backup, { recursive: true, force: true });
+    removeBestEffort(backup, io);
+  }
+}
+
+function removeBestEffort(path: string, io: CliIo): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    io.stderr(`warning: could not remove temporary GUI shell files at ${path}`);
   }
 }
 
