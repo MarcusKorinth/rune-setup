@@ -841,8 +841,8 @@ describe('SecretRegistry', () => {
     });
     const charCodeAtBefore = charCodeAt.mock.calls.length;
     let allUnchanged = true;
-    let indexOfCalls = 0;
-    let charCodeAtCalls = 0;
+    let indexOfCalls: number;
+    let charCodeAtCalls: number;
 
     try {
       for (const diagnostic of diagnostics) {

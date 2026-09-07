@@ -18,7 +18,7 @@ shell, and its cross-platform smoke suite. [docs/architecture.md](docs/architect
 the binding contract; [docs/roadmap.md](docs/roadmap.md) tracks what comes after (next:
 shell release engineering and `rune package`).
 
-Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
+Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 24 LTS** and
 install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`). The
 future packaged installer produced by `rune package` needs nothing installed.
 
@@ -133,12 +133,12 @@ prebuilt author shell and the self-contained end-user artifact.
 
 ## Development
 
-Requires Node 22 LTS. The repository is an npm-workspaces monorepo
+Requires Node 24 LTS. The repository is an npm-workspaces monorepo
 (`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package suites in
 `tests/`).
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 ```
 
 The core local gate mirrors the core CI job (`npm run format` fixes formatting):
@@ -147,8 +147,10 @@ The core local gate mirrors the core CI job (`npm run format` fixes formatting):
 npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test
 ```
 
-The Electron CI lane additionally runs `npm run build` and
-`npm run test:smoke --workspace @rune/gui-shell` on Windows and Linux.
+Shell development and the Electron CI lane additionally run
+`npm run prepare:electron --workspace @rune/gui-shell`, `npm run build`, and
+`npm run test:smoke --workspace @rune/gui-shell` on Windows and Linux. Core
+installation and tests do not prepare an Electron binary.
 
 ## Contributing
 

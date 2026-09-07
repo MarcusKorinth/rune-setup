@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -477,12 +478,20 @@ async function verifyShellVersion(
 /** Development launch: the electron binary resolved from the shell package's own tree. */
 function devElectron(shellDir: string): string {
   try {
-    const resolve = createRequire(join(shellDir, 'package.json'));
-    // The electron npm package's export IS the path to the binary.
-    return resolve('electron') as string;
+    const require = createRequire(join(shellDir, 'package.json'));
+    const moduleDirectory = dirname(require.resolve('electron'));
+    // Electron's Node entry may download a missing runtime synchronously. Resolve the
+    // prepared binary without executing that entry, so startup never installs software.
+    const executableName = readFileSync(join(moduleDirectory, 'path.txt'), 'utf8').trim();
+    const executable = join(
+      process.env['ELECTRON_OVERRIDE_DIST_PATH'] ?? join(moduleDirectory, 'dist'),
+      executableName,
+    );
+    if (executableName === '' || !statSync(executable).isFile()) throw new Error();
+    return executable;
   } catch {
     throw new UsageError(
-      `RUNE_GUI_SHELL directory "${shellDir}" has no usable electron; point it to a shell package directory with electron installed, or unset it to use the cached shell`,
+      `RUNE_GUI_SHELL directory "${shellDir}" has no prepared Electron runtime; run npm run prepare:electron in that shell package, or unset RUNE_GUI_SHELL to use the cached shell`,
     );
   }
 }

@@ -262,7 +262,7 @@ describe('conditions', () => {
     ]).flat();
     const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
     let messages: string[];
-    let inputCandidateReads = 0;
+    let inputCandidateReads: number;
 
     try {
       messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);
@@ -295,7 +295,7 @@ describe('conditions', () => {
     ]).flat();
     const lowercase = vi.spyOn(String.prototype, 'toLowerCase');
     let messages: string[];
-    let inputCandidateReads = 0;
+    let inputCandidateReads: number;
 
     try {
       messages = messagesOf(['inputs:', ...inputs, 'steps:', ...steps]);

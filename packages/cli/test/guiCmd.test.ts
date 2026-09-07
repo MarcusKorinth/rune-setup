@@ -181,8 +181,10 @@ function waitingProcess(
 function developmentShell(): { readonly directory: string; readonly electron: string } {
   const directory = join(testDirectory, 'development-shell');
   const electronPackage = join(directory, 'node_modules', 'electron');
-  const electron = join(testDirectory, 'fake-electron');
-  mkdirSync(electronPackage, { recursive: true });
+  const electron = join(electronPackage, 'dist', 'electron');
+  mkdirSync(dirname(electron), { recursive: true });
+  writeFileSync(electron, 'prepared binary');
+  writeFileSync(join(electronPackage, 'path.txt'), 'electron');
   writeFileSync(join(directory, 'package.json'), JSON.stringify({ private: true }), 'utf8');
   writeFileSync(
     join(electronPackage, 'package.json'),
@@ -191,7 +193,7 @@ function developmentShell(): { readonly directory: string; readonly electron: st
   );
   writeFileSync(
     join(electronPackage, 'index.cjs'),
-    `module.exports = ${JSON.stringify(electron)};\n`,
+    'throw new Error("the Electron Node entry must never run");\n',
     'utf8',
   );
   return { directory, electron };

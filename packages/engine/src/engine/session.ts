@@ -534,7 +534,6 @@ export class Session {
       return completed;
     } catch (error) {
       if (log !== undefined && !closeAttempted) {
-        closeAttempted = true;
         try {
           await log.close();
         } catch {

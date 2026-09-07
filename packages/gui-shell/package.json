@@ -7,17 +7,18 @@
   "type": "module",
   "main": "./dist/main/index.js",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "dependencies": {
     "@rune/engine": "0.1.0"
   },
   "scripts": {
     "build": "tsc -b",
+    "prepare:electron": "install-electron",
     "test:smoke": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "electron": "^39.8.10"
+    "@playwright/test": "~1.63.0",
+    "electron": "^44.2.0"
   }
 }

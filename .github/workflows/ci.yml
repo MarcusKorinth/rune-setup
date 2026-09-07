@@ -27,8 +27,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      # Core CI deliberately skips lifecycle scripts so Electron's binary download
-      # never runs; tests that touch the bridge mock the electron module.
+      # Core CI skips lifecycle scripts and never prepares Electron's binary;
+      # bridge helpers load without initializing the Electron runtime.
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
@@ -53,7 +53,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm run prepare:electron --workspace @rune/gui-shell
       - run: npm run build
       - if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell

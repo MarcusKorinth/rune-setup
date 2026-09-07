@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, normalize, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { CancelToken, CancelledError, UsageError } from '@rune/engine';
 
@@ -15,8 +15,8 @@ import { runCommand } from '../src/runCmd.js';
 const gui = vi.hoisted(() => ({ launchGui: vi.fn() }));
 vi.mock('../src/guiCmd.js', () => ({ launchGui: gui.launchGui }));
 
-function capture(): CliIo & { readonly stderr: ReturnType<typeof vi.fn> } {
-  return { stdout: vi.fn(), stderr: vi.fn() };
+function capture(): CliIo & { readonly stderr: Mock<CliIo['stderr']> } {
+  return { stdout: vi.fn(), stderr: vi.fn<CliIo['stderr']>() };
 }
 
 function interaction(forceExit = vi.fn()): Interaction {

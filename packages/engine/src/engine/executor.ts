@@ -261,7 +261,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const runStartedAt = performance.now();
   const steps: ResultStep[] = [];
   let failed = false;
-  let wasCancelled = false;
+  let wasCancelled: boolean;
   let fatalTerminationFailure = false;
   let fatalInternalError: InternalError | undefined;
 
