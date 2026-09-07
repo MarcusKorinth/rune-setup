@@ -1,0 +1,13 @@
+schemaVersion: 1
+product:
+  name: RUNE CLI shell smoke
+  version: 1.0.0
+inputs:
+  endpoint:
+    type: text
+steps:
+  - id: cli-shell-success
+    title: Preserve CLI arguments
+    run:
+      command: node
+      args: [success-step.cjs, '${endpoint}', following-argument]
