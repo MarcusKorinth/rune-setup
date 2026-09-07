@@ -32,7 +32,8 @@ log path; the host still calls `writeResult` to deliver the returned result.
 For a preview, call `session.describe()` instead of `execute()`. Interactive hosts
 read `allInputs()` or `pendingInputs()`, submit answers with `setValue()`, and then
 plan and execute. An observer passed to `execute()` receives ordered run events;
-it must return promptly. `session.cancel()` requests cooperative cancellation.
+avoid blocking the event loop and return a native Promise when a sink needs to wait.
+`session.cancel()` requests cooperative cancellation.
 
 `manifestJsonSchema()` and `resultJsonSchema()` provide schemas for editor integration
 and result consumers. Manifest paths and command paths resolve according to the

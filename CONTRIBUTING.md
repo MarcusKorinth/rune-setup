@@ -39,7 +39,8 @@ These rules are critical and must be preserved:
     share identical engine semantics
 - keep the engine boundary strict:
   - no execution, interpolation, or condition logic in frontend code
-- never write unmasked secret values to logs, result files, or console output
+- preserve the [secret projection contract](docs/architecture.md#logging-and-secret-masking),
+  including its explicit machine-field exceptions; never bypass a masking sink
 - commands are executed as argv arrays, never through an implicit shell
 - add or update tests when behavior changes
 - update documentation when user-visible behavior or guarantees change
@@ -231,11 +232,26 @@ affected project area).
 - add tests for new behavior
 - add regression tests for bug fixes
 - ensure the relevant test slice passes before opening a pull request
-- run the full gate before opening a pull request — exactly what CI runs:
-  `npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test`
-  (`npm run format` fixes formatting)
 - unit tests live in `packages/<pkg>/test/` (vitest), cross-package suites in `tests/`;
   `packages/gui-shell/tests/` is reserved for the Playwright smoke suite
+
+Install once with `npm ci --ignore-scripts`, then run the core checks:
+
+```bash
+npm run typecheck
+npm run lint
+npm run format:check
+npm run depcruise
+npm run test:coverage
+npm run test:packages
+```
+
+`npm test` runs the same test suite without coverage instrumentation for local
+iteration. `npm run format` fixes formatting. CI runs the core checks on Windows
+and Linux and separately prepares Electron, runs the real shell tests, and verifies
+the built GUI archive. Follow [the shell verification commands](docs/releasing.md#build-and-verification)
+for GUI or packaging changes. Security workflows also check source and dependency
+findings; review their results alongside the core and shell jobs.
 
 ## Documentation
 
