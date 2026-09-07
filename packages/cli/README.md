@@ -43,7 +43,8 @@ boundaries and limitations are described in the [architecture](../../docs/archit
 
 Use `--result path/to/result.json` for a structured result, or `--result -` to send
 only result JSON to stdout. Human progress and diagnostics go to stderr. `--log-file`
-overrides the manifest's log destination; result and log paths must differ.
+overrides the manifest's log destination; for a real run, result and log paths must differ.
+A dry-run may write its result to the configured log path because it opens no log.
 
 ```bash
 node packages/cli/dist/main.js schema --output manifest.schema.json
