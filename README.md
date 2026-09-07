@@ -78,15 +78,13 @@ steps:
         args: [scripts/install-database.sh, "${databasePort}"]
 ```
 
-The same manifest, three ways. In the v0.1.0 source tree, shell developers point
-`RUNE_GUI_SHELL` at `packages/gui-shell`; `rune gui install` consumes the prebuilt shell
-artifacts that arrive with M4 release engineering:
-
 Text `pattern` values are manifest-authored ECMAScript regular expressions. Values checked
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways:
+The same manifest, three ways. In the v0.1.0 source tree, shell developers point
+`RUNE_GUI_SHELL` at `packages/gui-shell`; `rune gui install` consumes the prebuilt shell
+artifacts that arrive with M4 release engineering:
 
 ```bash
 # Guided on a TTY; non-interactive fallback when stdin is not a TTY
