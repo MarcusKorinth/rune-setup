@@ -683,6 +683,15 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 
 stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination. With `--dry-run --result -` stdout carries only the result JSON and the human plan is not rendered; `--result <path>` keeps the plan on stdout. A consumer that closes stdout or stderr early (`| head -1`, a viewer quit mid-stream) ends RUNE's output on that stream but never changes the exit code: the CLI owns the stream's `error` event, writes nothing further to the closed pipe, and prints no stack trace. Only that early-closing consumer (EPIPE, ECONNRESET) is silent: any other write error on stdout (a full disk, an I/O error) has lost requested machine output, so the CLI prints one fixed line on stderr — never the stream error itself — and exits 70; stderr diagnostics are best-effort, and a write error there never changes the exit code.
 
+Windows Electron 44.2.0 currently adds a native CRLF before application stdout in subprocess
+and headless invocations, including before the JSON emitted by `--result -`; even an
+Electron-only app reproduces it. This is an unresolved deviation from the exact stdout
+requirement above. Existing archive smoke checks compare against native whitespace and
+parse JSON, so their success does not establish byte-exact Windows stdout compliance.
+Result-file delivery and Node CLI output are unaffected; use `--result PATH` for exact
+serialized bytes. The strict stdout release requirement remains open before publication.
+See the [historical upstream issue](https://github.com/electron/electron/issues/12578).
+
 Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged. Lines rendered from a session use its authenticated `StringTable` and `formatSessionTerminalLine`: raw mask → control escape → final live mask. The second mask prevents an actual control from becoming a registered literal such as `\u001b` only after presentation. Authoring commands with no runtime secret registry (`validate`, `schema`) and pre-session fallback text use ordinary control escaping; requested JSON output bypasses human rendering entirely.
 
 ### Result file (`--result`)
