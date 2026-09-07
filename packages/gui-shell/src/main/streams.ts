@@ -25,7 +25,7 @@ export interface GuardedShellStream {
 export interface ShellStreams {
   readonly stdout: GuardedShellStream;
   readonly stderr: GuardedShellStream;
-  /** Stops new writes and removes listeners after callbacks for issued writes have drained. */
+  /** Stops new writes; listeners remain until issued callbacks drain or the stream closes. */
   readonly dispose: () => void;
 }
 
@@ -93,7 +93,19 @@ function guardStream(stream: Writable, onFailure?: () => void): DisposableGuarde
     }
   };
   const errorListener = (error: unknown): void => markBroken(error);
+  const closeListener = (): void => {
+    acceptingWrites = false;
+    if (classification === undefined) {
+      classification = 'consumer-gone';
+    }
+    settlePending();
+    // A destroyed Writable can close without settling its outstanding write callbacks.
+    // Those callbacks cannot be awaited for listener cleanup once the consumer is gone.
+    pendingCallbacks = 0;
+    scheduleCleanup();
+  };
   stream.on('error', errorListener);
+  stream.on('close', closeListener);
 
   const scheduleCleanup = (): void => {
     if (acceptingWrites || pendingCallbacks !== 0 || cleanupScheduled || !listenerAttached) {
@@ -106,6 +118,7 @@ function guardStream(stream: Writable, onFailure?: () => void): DisposableGuarde
         return;
       }
       stream.off('error', errorListener);
+      stream.off('close', closeListener);
       listenerAttached = false;
     });
   };
@@ -113,7 +126,9 @@ function guardStream(stream: Writable, onFailure?: () => void): DisposableGuarde
     pendingCallbacks += 1;
   };
   const completeWrite = (): void => {
-    pendingCallbacks -= 1;
+    if (pendingCallbacks !== 0) {
+      pendingCallbacks -= 1;
+    }
     scheduleCleanup();
   };
 

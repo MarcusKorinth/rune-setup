@@ -15,6 +15,12 @@ import {
 
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const lifecycleFixturePath = join(packageDirectory, 'tests', 'fixtures', 'lifecycle-flood.yaml');
+const finiteOutputFixturePath = join(
+  packageDirectory,
+  'tests',
+  'fixtures',
+  'lifecycle-finite-output.yaml',
+);
 const lifecycleLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'lifecycle-launch.cjs');
 const missingFixturePath = join(packageDirectory, 'tests', 'fixtures', 'missing-lifecycle.yaml');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
@@ -40,10 +46,12 @@ function appExit(application: ElectronApplication): Promise<number> {
 async function launchRunningLifecycle(
   resultPath: string,
   dialogCapturePath?: string,
+  fixturePath: string = lifecycleFixturePath,
+  expectedOutput = 'lifecycle-flood-',
 ): Promise<{ readonly application: ElectronApplication; readonly page: Page }> {
   const application = await electron.launch({
     executablePath: electronExecutable,
-    args: [lifecycleLauncherPath, lifecycleFixturePath, '--result', resultPath],
+    args: [lifecycleLauncherPath, fixturePath, '--result', resultPath],
     cwd: packageDirectory,
     ...(dialogCapturePath === undefined
       ? {}
@@ -56,7 +64,7 @@ async function launchRunningLifecycle(
   await expect(page.locator('.result-heading')).toHaveText('Summary');
   await expect(next).toBeEnabled();
   await next.click();
-  await expect(page.locator('.log')).toContainText('lifecycle-flood-');
+  await expect(page.locator('.log')).toContainText(expectedOutput);
 
   return { application, page };
 }
@@ -176,6 +184,36 @@ test('maps an unexpected renderer exit during execution to exit 70 without a res
     expect(Number.isInteger(rendererPid)).toBe(true);
     expect(rendererPid).toBeGreaterThan(0);
     process.kill(rendererPid, 'SIGKILL');
+    expect(await exited).toBe(70);
+    await expect(access(resultPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const dialog = JSON.parse(await readFile(dialogCapturePath, 'utf8')) as { content: string };
+    expect(dialog.content).toContain('RUNE-500 (exit 70)');
+    application = undefined;
+  } finally {
+    await application?.close().catch(() => undefined);
+    await rm(resultDirectory, { force: true, recursive: true });
+  }
+});
+
+test('maps a top-level renderer reload during finite output to exit 70 without a result', async () => {
+  const resultDirectory = await mkdtemp(join(tmpdir(), 'rune-lifecycle-renderer-reload-'));
+  const resultPath = join(resultDirectory, 'result.json');
+  const dialogCapturePath = join(resultDirectory, 'fatal-dialog.json');
+  let application: ElectronApplication | undefined;
+
+  try {
+    const running = await launchRunningLifecycle(
+      resultPath,
+      dialogCapturePath,
+      finiteOutputFixturePath,
+      'finite-output-',
+    );
+    application = running.application;
+    const exited = appExit(application);
+
+    await application.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.webContents.reload(),
+    );
     expect(await exited).toBe(70);
     await expect(access(resultPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const dialog = JSON.parse(await readFile(dialogCapturePath, 'utf8')) as { content: string };
