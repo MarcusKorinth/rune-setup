@@ -17,7 +17,14 @@ import type * as Fs from 'node:fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CancelToken, CancelledError, RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
+import {
+  CancelToken,
+  CancelledError,
+  PlatformError,
+  RUNE_VERSION,
+  UsageError,
+  exitCodeFor,
+} from '@rune/engine';
 
 import { guiInstallCommand, launchGui, locateShell, shellCacheDir } from '../src/guiCmd.js';
 import { createSignalController } from '../src/signals.js';
@@ -36,6 +43,7 @@ const savedXdgCacheHome = process.env['XDG_CACHE_HOME'];
 const savedGuiShell = process.env['RUNE_GUI_SHELL'];
 const spawnMock = vi.mocked(spawn);
 const createWriteStreamMock = vi.mocked(createWriteStream);
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 let testDirectory: string;
 let tarExit: number;
@@ -78,7 +86,12 @@ afterEach(() => {
   else process.env['RUNE_GUI_SHELL'] = savedGuiShell;
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  Object.defineProperty(process, 'platform', platformDescriptor);
 });
+
+function stubHostPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: platform });
+}
 
 function capture(): CliIo {
   return { stdout: vi.fn(), stderr: vi.fn() };
@@ -182,6 +195,25 @@ function shellTemporaryDirectories(): readonly string[] {
 }
 
 describe('rune gui install temporary archive', () => {
+  it('refuses an unsupported host before creating temporary storage, fetching, or caching', async () => {
+    const temporaryDirectories = shellTemporaryDirectories();
+    const io = capture();
+    stubHostPlatform('darwin');
+
+    const error = await guiInstallCommand(io).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PlatformError);
+    expect(exitCodeFor(error)).toBe(2);
+    expect((error as PlatformError).message).toBe(
+      'host platform "darwin" is not supported; supported Node platforms are win32 and linux',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(existsSync(shellCacheDir())).toBe(false);
+    expect(shellTemporaryDirectories()).toEqual(temporaryDirectories);
+    expect(io.stderr).not.toHaveBeenCalled();
+  });
+
   it('uses a private random directory and removes it after success', async () => {
     await guiInstallCommand(capture());
 
@@ -332,6 +364,26 @@ describe('rune gui install atomic cache promotion', () => {
 });
 
 describe('rune run --gui shell version handshake', () => {
+  it('refuses an unsupported host before resolving a development override or spawning', async () => {
+    const { directory } = developmentShell();
+    process.env['RUNE_GUI_SHELL'] = directory;
+    const io = capture();
+    stubHostPlatform('darwin');
+
+    const error = await launchGui('installer.yaml', {}, io, interaction).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(PlatformError);
+    expect(exitCodeFor(error)).toBe(2);
+    expect((error as PlatformError).message).toBe(
+      'host platform "darwin" is not supported; supported Node platforms are win32 and linux',
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(existsSync(shellCacheDir())).toBe(false);
+    expect(io.stderr).not.toHaveBeenCalled();
+  });
+
   it('launches a matching packaged shell with every run flag and safe spawn options', async () => {
     spawnMock
       .mockImplementationOnce(() =>

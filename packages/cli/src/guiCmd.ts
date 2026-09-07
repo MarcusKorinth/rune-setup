@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { CancelledError, RUNE_VERSION, UsageError } from '@rune/engine';
+import { CancelledError, PlatformError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
 import { ExitWithCode, type CliControl, type CliIo } from './io.js';
@@ -49,6 +49,13 @@ export function shellCacheDir(engineVersion: string = RUNE_VERSION): string {
 type ShellLocation =
   | { readonly kind: 'binary'; readonly path: string }
   | { readonly kind: 'dev'; readonly dir: string };
+
+function requireSupportedHost(): void {
+  if (process.platform === 'win32' || process.platform === 'linux') return;
+  throw new PlatformError(
+    `host platform "${process.platform}" is not supported; supported Node platforms are win32 and linux`,
+  );
+}
 
 function shellCommand(
   location: ShellLocation,
@@ -79,6 +86,7 @@ export function locateShell(
 
 /** `rune gui install`: fetch the release matching this engine version, unpack via OS tar. */
 export async function guiInstallCommand(io: CliIo): Promise<void> {
+  requireSupportedHost();
   const archiveName =
     process.platform === 'win32' ? `rune-gui-shell-windows.zip` : `rune-gui-shell-linux.tar.gz`;
   const url = `${RELEASES}/v${RUNE_VERSION}/${archiveName}`;
@@ -196,6 +204,7 @@ export async function launchGui(
   interaction: Interaction,
   control: CliControl = {},
 ): Promise<void> {
+  requireSupportedHost();
   const location = locateShell();
   if (location === undefined) {
     throw new UsageError(
