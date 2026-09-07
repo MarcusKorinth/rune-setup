@@ -5,9 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -37,7 +37,8 @@ it('terminates a real hung version probe and its descendant before rejecting sta
   const electronPackage = join(directory, 'node_modules', 'electron');
   mkdirSync(join(electronPackage, 'dist'), { recursive: true });
   const binaryName = process.platform === 'win32' ? 'electron.exe' : 'electron';
-  copyFileSync(process.execPath, join(electronPackage, 'dist', binaryName));
+  const executable = join(electronPackage, 'dist', binaryName);
+  copyFileSync(process.execPath, executable);
   writeFileSync(join(electronPackage, 'path.txt'), binaryName);
   writeFileSync(
     join(electronPackage, 'index.js'),
@@ -90,13 +91,14 @@ it('terminates a real hung version probe and its descendant before rejecting sta
     }
     await pending;
     vi.unstubAllEnvs();
-    // Windows can retain filesystem locks after process exit. Retry cleanup only;
-    // the process-tree assertions above and persistent removal failures remain strict.
-    rmSync(directory, {
+    // Async removal retries Windows EPERM that the sync remover may not retry.
+    // Remove the mapped executable separately so retries cannot multiply across directories.
+    await rm(executable, {
       recursive: true,
       force: true,
       maxRetries: process.platform === 'win32' ? 5 : 0,
       retryDelay: 100,
     });
+    await rm(directory, { recursive: true, force: true });
   }
 }, 25000);
