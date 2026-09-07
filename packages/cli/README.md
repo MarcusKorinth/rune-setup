@@ -5,7 +5,7 @@ the current package name `@rune/cli` is occupied by an unrelated public package.
 
 ## Development usage
 
-Build from the repository root with `npm ci` and `npm run build`. Until release
+Build from the repository root with `npm ci --ignore-scripts` and `npm run build`. Until release
 installation is available, invoke `node packages/cli/dist/main.js` as shown below.
 An installed CLI uses the command name `rune`.
 

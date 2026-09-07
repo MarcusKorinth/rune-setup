@@ -29,7 +29,7 @@ Both paths prevent obsolete files in `dist` from entering their archives.
 Run the core gate on Windows and Linux:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 npm run typecheck
 npm run lint
 npm run format:check
