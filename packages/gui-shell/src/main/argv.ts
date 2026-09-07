@@ -14,7 +14,12 @@ export function shellVersionProbeOutput(): string {
 }
 
 export function isShellVersionProbe(argv: readonly string[]): boolean {
-  return argv.length === 1 && argv[0] === SHELL_VERSION_PROBE_FLAG;
+  return (
+    (argv.length === 1 && argv[0] === SHELL_VERSION_PROBE_FLAG) ||
+    (argv.length === 2 &&
+      argv[0] === '--ozone-platform=headless' &&
+      argv[1] === SHELL_VERSION_PROBE_FLAG)
+  );
 }
 
 export interface ShellInvocation {
@@ -28,6 +33,10 @@ export interface ShellInvocation {
 }
 
 export function parseShellArgv(argv: readonly string[]): ShellInvocation {
+  // The Linux launcher selects Ozone before Electron starts. Consume only its exact
+  // leading switch, then require a fully parsed non-interactive invocation below.
+  const headlessRuntime = argv[0] === '--ozone-platform=headless';
+  const manifestMarker = argv.indexOf('--');
   let manifestPath: string | undefined;
   const values: string[] = [];
   const overrides = new Map<string, string>();
@@ -36,7 +45,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   let logFile: string | undefined;
   let nonInteractive = false;
 
-  for (let index = 0; index < argv.length; index += 1) {
+  for (let index = headlessRuntime ? 1 : 0; index < argv.length; index += 1) {
     const argument = argv[index] as string;
     const next = (): string => {
       index += 1;
@@ -79,6 +88,15 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         nonInteractive = true;
         break;
       default:
+        // Electron consumes this inspection switch; only its position before the literal
+        // manifest marker distinguishes it from a RUNE argument or a literal path.
+        if (
+          index < manifestMarker &&
+          /^--remote-debugging-port=\d+$/.test(argument) &&
+          Number(argument.slice('--remote-debugging-port='.length)) <= 65535
+        ) {
+          break;
+        }
         if (argument.startsWith('--')) {
           throw new UsageError('unknown flag');
         }
@@ -100,6 +118,9 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
   }
   if (result === '-' && !nonInteractive) {
     throw new UsageError('--result - requires --non-interactive in the GUI shell');
+  }
+  if (headlessRuntime && !nonInteractive) {
+    throw new UsageError('unknown flag');
   }
   return {
     manifestPath,

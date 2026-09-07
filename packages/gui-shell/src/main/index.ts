@@ -158,6 +158,8 @@ export async function main(
   const output = guardShellStreams(processStreams);
   if (isShellVersionProbe(argv)) {
     await output.stdout.writeAndWait(shellVersionProbeOutput());
+    // Use Electron's initialized message-loop exit path on Windows.
+    if (process.platform === 'win32') await app.whenReady();
     const exitCode = output.stdout.failed() ? 70 : 0;
     output.dispose();
     app.exit(exitCode);

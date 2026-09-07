@@ -528,9 +528,10 @@ describe('the GUI shell main lifecycle', () => {
     vi.mocked(app.whenReady).mockResolvedValue();
   });
 
-  it.each([[SHELL_VERSION_PROBE_FLAG]])(
-    'answers the version probe without waiting for Electron readiness: %s',
+  it.each([[SHELL_VERSION_PROBE_FLAG], ['--ozone-platform=headless', SHELL_VERSION_PROBE_FLAG]])(
+    'answers the version probe without opening a Session or window: %s',
     async (...argv) => {
+      const open = vi.spyOn(Session, 'open');
       const stdout = new PassThrough();
       const chunks: string[] = [];
       stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
@@ -540,7 +541,7 @@ describe('the GUI shell main lifecycle', () => {
         stderr: new PassThrough(),
       });
 
-      expect(app.whenReady).not.toHaveBeenCalled();
+      expect(app.whenReady).toHaveBeenCalledTimes(process.platform === 'win32' ? 1 : 0);
       expect(app.exit).toHaveBeenCalledOnce();
       expect(app.exit).toHaveBeenCalledWith(0);
       expect(JSON.parse(chunks.join(''))).toEqual({
@@ -549,6 +550,63 @@ describe('the GUI shell main lifecycle', () => {
       });
       expect(app.on).not.toHaveBeenCalled();
       expect(app.off).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+      expect(electronHarness.window).toBeUndefined();
+    },
+  );
+
+  it.each(['win32', 'linux'] as const)(
+    'flushes probe output before the platform-specific shutdown on %s',
+    async (platform) => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+      const open = vi.spyOn(Session, 'open');
+      const ready = deferred<void>();
+      const writing = deferred<void>();
+      vi.mocked(app.whenReady).mockReturnValue(ready.promise);
+      let releaseWrite: (() => void) | undefined;
+      const chunks: string[] = [];
+      const stdout = new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          chunks.push(chunk.toString());
+          releaseWrite = callback;
+          writing.resolve();
+        },
+      });
+      const run = main([SHELL_VERSION_PROBE_FLAG], new FakeSigtermSource(), {
+        stdout,
+        stderr: new PassThrough(),
+      });
+      try {
+        await writing.promise;
+        expect(app.whenReady).not.toHaveBeenCalled();
+        expect(app.exit).not.toHaveBeenCalled();
+        releaseWrite?.();
+        releaseWrite = undefined;
+        if (platform === 'win32') {
+          await vi.waitFor(() => expect(app.whenReady).toHaveBeenCalledOnce());
+          expect(app.exit).not.toHaveBeenCalled();
+          expect(open).not.toHaveBeenCalled();
+          expect(electronHarness.window).toBeUndefined();
+          ready.resolve();
+        }
+        await run;
+        expect(app.whenReady).toHaveBeenCalledTimes(platform === 'win32' ? 1 : 0);
+        expect(app.exit).toHaveBeenCalledExactlyOnceWith(0);
+        expect(JSON.parse(chunks.join(''))).toEqual({
+          protocolVersion: 1,
+          runeVersion: RUNE_VERSION,
+        });
+        expect(open).not.toHaveBeenCalled();
+        expect(electronHarness.window).toBeUndefined();
+        expect(app.on).not.toHaveBeenCalled();
+        expect(app.off).not.toHaveBeenCalled();
+      } finally {
+        releaseWrite?.();
+        ready.resolve();
+        await run;
+        Object.defineProperty(process, 'platform', descriptor);
+      }
     },
   );
 
@@ -601,7 +659,8 @@ describe('the GUI shell main lifecycle', () => {
     expect(app.off).toHaveBeenCalledExactlyOnceWith('before-quit', nativeQuitHandler());
   });
 
-  it('reports a guarded probe stdout failure without entering Electron', async () => {
+  it('reports a guarded probe stdout failure without opening a Session or window', async () => {
+    const open = vi.spyOn(Session, 'open');
     const stdout = new Writable({
       write(_chunk, _encoding, callback) {
         callback(Object.assign(new Error('private write failure'), { code: 'EIO' }));
@@ -613,9 +672,11 @@ describe('the GUI shell main lifecycle', () => {
 
     await main([SHELL_VERSION_PROBE_FLAG], new FakeSigtermSource(), { stdout, stderr });
 
-    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.whenReady).toHaveBeenCalledTimes(process.platform === 'win32' ? 1 : 0);
     expect(app.exit).toHaveBeenCalledOnce();
     expect(app.exit).toHaveBeenCalledWith(70);
+    expect(open).not.toHaveBeenCalled();
+    expect(electronHarness.window).toBeUndefined();
     expect(diagnostics.join('')).toBe('could not write the requested machine output to stdout\n');
   });
 

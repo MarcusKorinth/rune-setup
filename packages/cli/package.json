@@ -25,6 +25,6 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "prepack": "npm run build"
+    "prepack": "node ../../scripts/clean-package.mjs && npm run build"
   }
 }

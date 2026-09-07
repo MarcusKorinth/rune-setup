@@ -1,0 +1,47 @@
+schemaVersion: 1
+product:
+  name: Local workspace example
+  version: 1.0.0
+  description: Write a small configuration and optional notes in a directory you choose.
+
+inputs:
+  outputDirectory:
+    type: directory
+    title: Output directory
+    default: '${manifestDir}/output'
+  profile:
+    type: select
+    title: Configuration profile
+    options:
+      - development
+      - production
+    default: development
+  includeNotes:
+    type: boolean
+    title: Include a notes file
+    default: true
+  note:
+    type: text
+    title: Note to write
+    when: '${includeNotes}'
+    default: This workspace was configured with RUNE.
+
+execution:
+  logFile: output/setup.log
+
+steps:
+  - id: write-configuration
+    title: Write configuration
+    run:
+      command: node
+      args: [scripts/setup.mjs, configure, '${outputDirectory}']
+      env:
+        RUNE_EXAMPLE_PROFILE: '${profile}'
+  - id: write-notes
+    title: Write notes
+    when: '${includeNotes}'
+    run:
+      command: node
+      args: [scripts/setup.mjs, notes, '${outputDirectory}']
+      env:
+        RUNE_EXAMPLE_NOTE: '${note}'
