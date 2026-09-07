@@ -295,6 +295,8 @@ function describeIssue(
         return `${where} is required (one of: ${values.map((value) => JSON.stringify(value)).join(', ')})`;
       }
       if (values.length === 1) {
+        // This formats a schema-owned literal for a diagnostic, not a key or canonical hash.
+        // nosemgrep: no-stringify-keys
         return `${where} must be ${JSON.stringify(values[0])}`;
       }
       return `${where} must be one of: ${values.map((value) => JSON.stringify(value)).join(', ')}`;
@@ -509,10 +511,13 @@ export function valueAt(raw: unknown, path: readonly PathSegment[]): unknown {
   let current: unknown = raw;
   for (const segment of path) {
     if (Array.isArray(current) && typeof segment === 'number') {
+      // Read an array element into a local variable; no property or prototype is modified.
+      // nosemgrep: prototype-pollution-loop
       current = current[segment];
     } else if (isRecord(current) && Object.hasOwn(current, String(segment))) {
       // Own properties only: an inherited member such as `toString` is not document content,
       // and treating it as one would turn "this key is missing" into a wrong-type complaint.
+      // nosemgrep: prototype-pollution-loop
       current = current[String(segment)];
     } else {
       return undefined;

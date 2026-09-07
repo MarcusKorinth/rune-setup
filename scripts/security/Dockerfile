@@ -1,0 +1,4 @@
+FROM semgrep/semgrep:1.176.0@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e
+
+COPY javascript /rules/javascript
+COPY typescript /rules/typescript

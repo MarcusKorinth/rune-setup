@@ -234,6 +234,8 @@ function basePresentation(
   const description = strings.inputDescription(state.id);
   return {
     lines: description === undefined ? typeLines : [description, ...typeLines],
+    // The object literal is inside an existing template substitution.
+    // nosemgrep: missing-template-string-indicator
     question: `${strings.chrome('rune.prompt.value', { title: strings.inputTitle(state.id) })}: `,
     muted,
   };
@@ -329,6 +331,8 @@ export async function summaryLoop(
         formatSessionTerminalLine(
           strings,
           `${strings.chrome('rune.summary.proceed')} (${proceedToken}) / ` +
+            // Terminal text with a numeric-choice placeholder; never parsed as HTML.
+            // nosemgrep: html-in-template-string
             `${strings.chrome('rune.summary.change')} <n> / ` +
             `${strings.chrome('rune.summary.cancel')} (${cancelToken}): `,
         ),

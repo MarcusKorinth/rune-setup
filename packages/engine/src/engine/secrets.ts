@@ -168,6 +168,8 @@ export function resolveSecretPathFrom(
 
 /** Tests an opaque value without returning its text. */
 export function secretMatches(secret: SecretString, pattern: RegExp): boolean {
+  // Callers supply fixed internal path patterns; cloning prevents shared RegExp state.
+  // nosemgrep: detect-non-literal-regexp
   return new RegExp(pattern.source, pattern.flags).test(resolveSecret(secret));
 }
 

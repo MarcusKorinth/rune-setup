@@ -1,0 +1,74 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Audit the complete locked dependency tree
+        run: npm audit --audit-level=high
+
+  static-analysis:
+    name: Static security analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the reviewed JavaScript and TypeScript rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: semgrep/semgrep-rules
+          ref: 40b8c63f75dc7c22c8a77482d73bfb864b146f7e
+          path: output/security/rules
+          persist-credentials: false
+          sparse-checkout: |
+            javascript
+            typescript
+      - name: Prepare the pinned scanner and rules
+        run: docker build --file scripts/security/Dockerfile --tag rune-security-scan output/security/rules
+      - name: Scan source without network access
+        run: |
+          mkdir -p output/security/report
+          docker run --rm --network none \
+            --mount type=bind,source="$PWD",target=/src,readonly \
+            --mount type=bind,source="$PWD/output/security/report",target=/report \
+            --workdir /src rune-security-scan \
+            semgrep scan --config /rules/javascript --config /rules/typescript \
+            --oss-only --metrics off --disable-version-check --strict --error \
+            --no-git-ignore --scan-unknown-extensions --exclude '**/output/**' \
+            --json-output /report/semgrep.json \
+            packages/engine/src packages/cli/src packages/gui-shell/src scripts examples
+      - name: Retain the scan report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: static-security-report
+          path: output/security/report/semgrep.json
+          if-no-files-found: error
+          retention-days: 14
