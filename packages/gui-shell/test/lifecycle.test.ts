@@ -148,6 +148,7 @@ import {
   type SigtermSource,
 } from '../src/main/index.js';
 import { SHELL_VERSION_PROBE_FLAG, type ShellInvocation } from '../src/main/argv.js';
+import { guardShellStreams } from '../src/main/streams.js';
 import { completeWrite } from './stream-fixture.js';
 
 class FakeSigtermSource implements SigtermSource {
@@ -235,7 +236,7 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     expect(signals.listener).toBeUndefined();
   });
 
-  it('cancels a headless Session, delivers its ordinary result, and returns exit 6', async () => {
+  it.each([false, true])('cancels headless with closed stderr: %s', async (closeStderr) => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-headless-sigterm-'));
     const manifestPath = join(dir, 'installer.yaml');
     const resultPath = join(dir, 'result.json');
@@ -298,7 +299,16 @@ describe('the GUI shell SIGTERM lifecycle', () => {
       return result;
     });
     const cancel = vi.spyOn(Session.prototype, 'cancel');
-    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    const stderr = new Writable({
+      write(_chunk, _encoding, callback) {
+        if (closeStderr) stderr.destroy();
+        else callback();
+      },
+    });
+    const output = guardShellStreams({
+      stdout: new Writable({ write: completeWrite }),
+      stderr,
+    });
     const signals = new FakeSigtermSource();
     const invocation: ShellInvocation = {
       manifestPath,
@@ -310,20 +320,24 @@ describe('the GUI shell SIGTERM lifecycle', () => {
       nonInteractive: true,
     };
 
-    const run = headlessRun(session, invocation, signals);
-    await started.promise;
-    signals.emit();
+    try {
+      const run = headlessRun(session, invocation, signals, output);
+      await started.promise;
+      signals.emit();
 
-    await expect(run).resolves.toBe(6);
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
-      status: 'cancelled',
-      exitCode: 6,
-      mode: 'non-interactive',
-      stepsCancelled: 1,
-    });
-    expect(signals.removed).toEqual(signals.added);
-    expect(signals.listener).toBeUndefined();
+      await expect(run).resolves.toBe(6);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+        status: 'cancelled',
+        exitCode: 6,
+        mode: 'non-interactive',
+        stepsCancelled: 1,
+      });
+      expect(signals.removed).toEqual(signals.added);
+      expect(signals.listener).toBeUndefined();
+    } finally {
+      output.dispose();
+    }
   });
 
   it('latches SIGTERM during readiness and completes the headless cancellation flow', async () => {
