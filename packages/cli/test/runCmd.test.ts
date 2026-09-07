@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CancelledError, UsageError } from '@rune/engine';
+import { CancelToken, CancelledError, UsageError } from '@rune/engine';
 
 import { run } from '../src/cli.js';
 import { ExitWithCode, type CliIo } from '../src/io.js';
@@ -57,14 +57,23 @@ describe('GUI result ownership before shell launch', () => {
     const manifestPath = manifestFixture(directory);
     const resultPath = join(directory, 'result.json');
     const io = capture();
-    gui.launchGui.mockRejectedValueOnce(
-      new CancelledError('cancelled before the GUI shell started'),
-    );
+    const cancel = new CancelToken();
+    cancel.cancel();
+    gui.launchGui.mockImplementationOnce(async (_manifest, _flags, _io, _interaction, control) => {
+      expect(control.cancel).toBe(cancel);
+      expect(control.cancel.isCancelled).toBe(true);
+      throw new CancelledError('cancelled before the GUI shell started');
+    });
 
     try {
-      await expect(
-        runCommand(manifestPath, { gui: true, result: resultPath }, io, interaction()),
-      ).rejects.toMatchObject({ code: 6 });
+      expect(
+        await run(
+          ['run', manifestPath, '--gui', '--result', resultPath],
+          io,
+          { cancel },
+          interaction(),
+        ),
+      ).toBe(6);
 
       const result = JSON.parse(readFileSync(resultPath, 'utf8')) as Record<string, unknown>;
       expect(result).toMatchObject({

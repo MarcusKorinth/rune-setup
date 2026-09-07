@@ -127,7 +127,7 @@ export async function runCommand(
       }
       const overrides = parseOverrides(flags.set ?? []);
       try {
-        await launchGui(manifestPath, flags, io, interaction);
+        await launchGui(manifestPath, flags, io, interaction, control);
       } catch (error) {
         if (!(error instanceof CancelledError)) {
           throw error;

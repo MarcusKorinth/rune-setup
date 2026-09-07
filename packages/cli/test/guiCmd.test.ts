@@ -17,7 +17,7 @@ import type * as Fs from 'node:fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CancelledError, RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
+import { CancelToken, CancelledError, RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
 
 import { guiInstallCommand, launchGui, locateShell, shellCacheDir } from '../src/guiCmd.js';
 
@@ -448,6 +448,100 @@ describe('rune run --gui shell version handshake', () => {
     await launchGui('--installer.yaml', { locale: 'de' }, capture(), interaction);
 
     expect(spawnMock.mock.calls[1]?.[1]).toEqual(['--', '--installer.yaml', '--locale', 'de']);
+  });
+
+  it('does not start the version probe when the host token is already cancelled', async () => {
+    const cancel = new CancelToken();
+    cancel.cancel();
+
+    await expect(
+      launchGui('installer.yaml', {}, capture(), interaction, { cancel }),
+    ).rejects.toBeInstanceOf(CancelledError);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('terminates an active version probe when the host token is cancelled', async () => {
+    const probe = waitingProbe(3131);
+    const cancel = new CancelToken();
+    const processKill =
+      process.platform === 'win32'
+        ? undefined
+        : vi.spyOn(process, 'kill').mockImplementation(() => true);
+    spawnMock.mockImplementationOnce(() => probe.child);
+    if (process.platform === 'win32') {
+      spawnMock.mockImplementationOnce(() => runProcess());
+    }
+
+    const launch = launchGui('installer.yaml', {}, capture(), interaction, { cancel });
+    let probeClosed = false;
+    try {
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+      cancel.cancel();
+
+      if (process.platform === 'win32') {
+        expect(spawnMock.mock.calls[1]).toEqual([
+          'taskkill',
+          ['/PID', '3131', '/T', '/F'],
+          { stdio: 'ignore', shell: false },
+        ]);
+      } else {
+        expect(processKill).toHaveBeenCalledWith(-3131, 'SIGTERM');
+      }
+
+      probe.close('', null);
+      probeClosed = true;
+      await expect(launch).rejects.toBeInstanceOf(CancelledError);
+      expect(spawnMock.mock.calls.filter(([command]) => command !== 'taskkill')).toHaveLength(1);
+    } finally {
+      if (!probeClosed) {
+        probe.close('', null);
+      }
+      await launch.catch(() => undefined);
+      processKill?.mockRestore();
+    }
+  });
+
+  it('forwards host-token cancellation to the workflow and removes its subscription', async () => {
+    const shell = waitingProcess(4242);
+    const cancel = new CancelToken();
+    const dispose = vi.fn();
+    const subscribe = vi.spyOn(cancel, 'onCancel').mockImplementation((listener) => {
+      const unsubscribe = CancelToken.prototype.onCancel.call(cancel, listener);
+      return () => {
+        dispose();
+        unsubscribe();
+      };
+    });
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => shell as unknown as ReturnType<typeof spawn>);
+
+    const launch = launchGui('installer.yaml', {}, capture(), interaction, { cancel });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+
+    cancel.cancel();
+    if (process.platform === 'win32') {
+      expect(spawnMock.mock.calls[2]).toEqual([
+        'taskkill',
+        ['/PID', '4242'],
+        { stdio: 'ignore', shell: false },
+      ]);
+    } else {
+      expect(shell.kill).toHaveBeenCalledTimes(1);
+      expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
+    }
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+
+    shell.emit('close', 6);
+    await expect(launch).rejects.toMatchObject({ code: 6 });
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it.each([

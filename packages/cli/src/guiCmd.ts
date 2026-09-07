@@ -24,7 +24,7 @@ import { pipeline } from 'node:stream/promises';
 import { CancelledError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
-import { ExitWithCode, type CliIo } from './io.js';
+import { ExitWithCode, type CliControl, type CliIo } from './io.js';
 import type { Interaction } from './prompt.js';
 
 /** GitHub coordinates of the shell releases — one release per engine version (§9.4). */
@@ -194,6 +194,7 @@ export async function launchGui(
   flags: RunFlags,
   io: CliIo,
   interaction: Interaction,
+  control: CliControl = {},
 ): Promise<void> {
   const location = locateShell();
   if (location === undefined) {
@@ -279,10 +280,17 @@ export async function launchGui(
     requestCancel();
   };
   const onSigterm = (): void => requestCancel();
-  process.on('SIGINT', onSigint);
-  process.on('SIGTERM', onSigterm);
+  const ownsSignals = control.cancel === undefined;
+  if (ownsSignals) {
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
+  }
+  const disposeCancel = control.cancel?.onCancel(requestCancel);
 
   try {
+    if (cancelRequested) {
+      throw new CancelledError('cancelled before the GUI shell started');
+    }
     try {
       await verifyShellVersion(location, (probe) => {
         probeChild = probe;
@@ -330,8 +338,11 @@ export async function launchGui(
       throw new ExitWithCode(exit);
     }
   } finally {
-    process.removeListener('SIGINT', onSigint);
-    process.removeListener('SIGTERM', onSigterm);
+    disposeCancel?.();
+    if (ownsSignals) {
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+    }
   }
 }
 
