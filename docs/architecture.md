@@ -714,7 +714,7 @@ packages/
 │       ├── prompt.ts              # readline prompts and summary edit loop
 │       └── render.ts              # shared plan/progress/result rendering (also dry-run)
 └── gui-shell/                     # Electron GUI shell — separate prebuilt artifact; never inside the CLI npm package
-    ├── package.json               # electron, electron-builder (shell lane only)
+    ├── package.json               # electron (shell lane only); M4 adds electron-builder
     ├── src/main/                  # Electron main: hosts @rune/engine in-process, Session lifecycle, IPC handlers,
     │                              #   window, headless (--non-interactive) entry, exit code
     ├── src/preload/               # contextBridge API `window.rune` — Session facade + events, plus shell-only done
