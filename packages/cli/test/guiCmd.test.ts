@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CancelToken, CancelledError, RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
 
 import { guiInstallCommand, launchGui, locateShell, shellCacheDir } from '../src/guiCmd.js';
+import { createSignalController } from '../src/signals.js';
 
 import type { CliIo } from '../src/io.js';
 import type { Interaction } from '../src/prompt.js';
@@ -502,9 +503,11 @@ describe('rune run --gui shell version handshake', () => {
     }
   });
 
-  it('forwards host-token cancellation to the workflow and removes its subscription', async () => {
+  it('forwards host SIGTERM cancellation and waits for the workflow result', async () => {
     const shell = waitingProcess(4242);
     const cancel = new CancelToken();
+    const forceExit = vi.fn<(code: number) => void>();
+    const signals = createSignalController(cancel, forceExit);
     const dispose = vi.fn();
     const subscribe = vi.spyOn(cancel, 'onCancel').mockImplementation((listener) => {
       const unsubscribe = CancelToken.prototype.onCancel.call(cancel, listener);
@@ -524,7 +527,7 @@ describe('rune run --gui shell version handshake', () => {
     const launch = launchGui('installer.yaml', {}, capture(), interaction, { cancel });
     await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
 
-    cancel.cancel();
+    signals.handle('SIGTERM');
     if (process.platform === 'win32') {
       expect(spawnMock.mock.calls[2]).toEqual([
         'taskkill',
@@ -535,11 +538,30 @@ describe('rune run --gui shell version handshake', () => {
       expect(shell.kill).toHaveBeenCalledTimes(1);
       expect(shell.kill).toHaveBeenCalledWith('SIGTERM');
     }
+    signals.handle('SIGTERM');
+    expect(forceExit).not.toHaveBeenCalled();
+    if (process.platform === 'win32') {
+      expect(spawnMock.mock.calls.filter(([command]) => command === 'taskkill')).toHaveLength(1);
+    } else {
+      expect(shell.kill).toHaveBeenCalledTimes(1);
+    }
+    let settled = false;
+    const settlement = launch.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
     expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
 
     shell.emit('close', 6);
     await expect(launch).rejects.toMatchObject({ code: 6 });
+    await settlement;
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(dispose).toHaveBeenCalledTimes(1);
   });

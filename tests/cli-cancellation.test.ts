@@ -15,20 +15,46 @@ interface Capture extends CliIo {
 }
 
 describe('CLI cancellation control', () => {
-  it('cancels cooperatively on the first signal and force-exits once on the second', () => {
+  it('cancels cooperatively and force-exits once on the second SIGINT', () => {
     const cancel = new CancelToken();
     const forceExit = vi.fn<(code: number) => void>();
     const controller = createSignalController(cancel, forceExit);
 
     expect(CLI_CANCELLATION_SIGNALS).toEqual(['SIGINT', 'SIGTERM']);
-    controller.handle();
+    controller.handle('SIGINT');
     expect(cancel.isCancelled).toBe(true);
     expect(forceExit).not.toHaveBeenCalled();
 
-    controller.handle();
-    controller.handle();
+    controller.handle('SIGINT');
+    controller.handle('SIGINT');
     expect(forceExit).toHaveBeenCalledTimes(1);
     expect(forceExit).toHaveBeenCalledWith(6);
+  });
+
+  it('keeps repeated SIGTERM cancellation idempotent', () => {
+    const cancel = new CancelToken();
+    const forceExit = vi.fn<(code: number) => void>();
+    const controller = createSignalController(cancel, forceExit);
+
+    controller.handle('SIGTERM');
+    controller.handle('SIGTERM');
+    controller.handle('SIGTERM');
+
+    expect(cancel.isCancelled).toBe(true);
+    expect(forceExit).not.toHaveBeenCalled();
+  });
+
+  it('counts SIGINT independently after SIGTERM', () => {
+    const cancel = new CancelToken();
+    const forceExit = vi.fn<(code: number) => void>();
+    const controller = createSignalController(cancel, forceExit);
+
+    controller.handle('SIGTERM');
+    controller.handle('SIGINT');
+    expect(forceExit).not.toHaveBeenCalled();
+
+    controller.handle('SIGINT');
+    expect(forceExit).toHaveBeenCalledExactlyOnceWith(6);
   });
 
   it('cancels a running child through the engine and writes the completed topology', async () => {

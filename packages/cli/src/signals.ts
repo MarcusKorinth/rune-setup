@@ -4,32 +4,35 @@ import { CancelledError, exitCodeFor, type CancelToken } from '@rune/engine';
 
 /** The two process signals the CLI main entry point handles cooperatively. */
 export const CLI_CANCELLATION_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+export type CliCancellationSignal = (typeof CLI_CANCELLATION_SIGNALS)[number];
 
 export interface SignalController {
-  readonly handle: () => void;
+  /** Defaults to SIGINT for readline's signal-free `onInterrupt` callback. */
+  readonly handle: (signal?: CliCancellationSignal) => void;
 }
 
 /**
- * First signal requests cooperative cancellation; the second forces the fixed cancellation
- * exit. The injected exit function keeps process.exit owned exclusively by main.ts.
+ * Either signal requests cooperative cancellation. Only a second SIGINT forces the fixed
+ * cancellation exit; repeated SIGTERM remains idempotent. The injected exit function keeps
+ * process.exit owned exclusively by main.ts.
  */
 export function createSignalController(
   cancel: CancelToken,
   forceExit: (code: number) => void,
 ): SignalController {
-  let received = false;
+  let receivedSigint = false;
   let forced = false;
   return {
-    handle: () => {
-      if (!received) {
-        received = true;
-        cancel.cancel();
+    handle: (signal = 'SIGINT') => {
+      cancel.cancel();
+      if (signal === 'SIGTERM') {
         return;
       }
-      if (!forced) {
+      if (receivedSigint && !forced) {
         forced = true;
         forceExit(exitCodeFor(new CancelledError()));
       }
+      receivedSigint = true;
     },
   };
 }
