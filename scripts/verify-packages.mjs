@@ -75,6 +75,16 @@ try {
   }
 
   const [enginePackage, cliPackage] = packages;
+  for (const declaredTypeTarget of [
+    enginePackage.manifest.types,
+    enginePackage.manifest.exports['.'].types,
+  ]) {
+    const typeTarget = declaredTypeTarget.replace(/^\.\//u, '');
+    assert(
+      enginePackage.report.files.some((file) => file.path === typeTarget),
+      `${enginePackage.report.name} is missing declared type target ${declaredTypeTarget}`,
+    );
+  }
   assert.equal(
     cliPackage.manifest.dependencies[enginePackage.manifest.name],
     enginePackage.manifest.version,
