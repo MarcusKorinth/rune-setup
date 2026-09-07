@@ -20,20 +20,6 @@
 - **Recommended next step:** Update the lockfile to a compatible fixed release (3.1.6 or
   newer) in a separate dependency change, then run the standard Windows/Linux checks.
 
-## PR11-O001 — Gate `rune.done` on a terminal outcome
-
-- **Priority:** P1 (GUI lifecycle)
-- **Affected components:** `packages/gui-shell/src/main/index.ts`, `rune:done` bridge lifecycle
-- **Description:** The inherited `rune:done` handler closes the window without verifying that an
-  execution outcome exists.
-- **Reason for separate work:** Correcting the renderer trust boundary changes the base GUI
-  lifecycle contract and needs coordinated main/renderer state tests outside PR #11's launch
-  scope.
-- **Risk:** A premature or compromised renderer can close the window and return 0 without a result
-  while execution is absent or still active.
-- **Recommended next step:** Gate `rune:done` on a delivered terminal outcome and add
-  premature-done tests.
-
 ## PR11-O004 — Preserve structured errors across the GUI bridge
 
 - **Priority:** P2 (bridge contract)
