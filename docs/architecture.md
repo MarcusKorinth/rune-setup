@@ -617,6 +617,10 @@ workflow shell. Cancellation requested before the deadline remains cancellation
 Electron's automatic-download entry point. Probe output is
 limited to 4096 characters and is never included in the diagnostic. The CLI retains
 pre-launch error/result ownership; the probe never opens a Session or writes a result.
+The probe flushes its JSON response before exiting. On Windows, it waits for Electron
+readiness after that flush so shutdown uses the initialized message loop; it creates
+no window and remains subject to the CLI's probe deadline. Linux retains the early
+exit path without waiting for display initialization.
 
 *Archive format.* Shell artifacts are `.tar.gz` on Linux and `.zip` on Windows; `rune gui install` fetches with Node's built-in `fetch` and unpacks by spawning the OS `tar` as argv (`tar -xf`; bsdtar ships with Windows 10+/11 and handles both formats) — no archive library, in line with §12's runtime dependency list.
 
