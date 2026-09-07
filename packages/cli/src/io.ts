@@ -17,6 +17,8 @@ export interface CliIo {
   stdout(line: string): void;
   /** Progress, prompts, diagnostics, warnings. */
   stderr(line: string): void;
+  /** Optional acknowledgement of progress writes, allowing execution to follow sink capacity. */
+  drainStderr?(): Promise<void>;
 }
 
 /** Optional process control supplied by the executable host. */

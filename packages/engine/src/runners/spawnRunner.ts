@@ -9,6 +9,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { win32 } from 'node:path';
+import type { Readable } from 'node:stream';
 
 import { isFullyQualifiedWindowsPath } from '../engine/paths.js';
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
@@ -160,6 +161,12 @@ export class SpawnRunner implements Runner {
         return;
       }
 
+      const deliverOutput = (stream: 'stdout' | 'stderr', line: string): unknown => {
+        const returned = request.onOutput(stream, line);
+        if (!(returned instanceof Promise)) return undefined;
+        return returned;
+      };
+      const outputCutoff = new AbortController();
       let settled = false;
       let startupFailureClaimed = false;
       let terminationCause: TerminationCause | undefined;
@@ -206,11 +213,18 @@ export class SpawnRunner implements Runner {
         terminationTask = (async () => {
           const terminationConfirmed = await terminateTree(child, request.parentEnv);
           if (!childClosed) {
-            await waitForCompletion(childClosePromise, CHILD_CLOSE_TIMEOUT_MS);
+            const childCloseCompleted = await waitForCompletion(
+              childClosePromise,
+              CHILD_CLOSE_TIMEOUT_MS,
+            );
+            if (!childCloseCompleted && !childClosed) {
+              // Snapshot each bounded readable buffer before closing the pipe. The line readers
+              // finish their current chunks and those snapshots, but accept nothing newer.
+              outputCutoff.abort();
+              releaseChildStdio(child);
+            }
           }
-          if (!childClosed) {
-            releaseChildStdio(child);
-          }
+          await outputCompletion;
           settle(terminationConfirmed ? cause : { kind: 'terminationFailed' });
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
@@ -232,24 +246,29 @@ export class SpawnRunner implements Runner {
         );
       });
 
-      forwardLines(
+      const stdoutCompletion = forwardLines(
         child.stdout,
-        (line) => request.onOutput('stdout', line),
+        (line) => deliverOutput('stdout', line),
         () => requestTermination({ kind: 'streamFailed', stream: 'stdout' }),
+        outputCutoff.signal,
       );
-      forwardLines(
+      const stderrCompletion = forwardLines(
         child.stderr,
-        (line) => request.onOutput('stderr', line),
+        (line) => deliverOutput('stderr', line),
         () => requestTermination({ kind: 'streamFailed', stream: 'stderr' }),
+        outputCutoff.signal,
       );
 
+      const outputCompletion = Promise.all([stdoutCompletion, stderrCompletion]);
       child.once('close', (code) => {
         completeChildClose();
-        if (!startupFailureClaimed && terminationCause === undefined) {
-          settle(
-            typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
-          );
-        }
+        void outputCompletion.then(() => {
+          if (!startupFailureClaimed && terminationCause === undefined) {
+            settle(
+              typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
+            );
+          }
+        });
       });
 
       if (command.timeoutSeconds !== null) {
@@ -689,12 +708,13 @@ export const spawnRunnerTestSeam = Object.freeze({
  * @internal Exported for deterministic stream-framing tests; not part of the package API.
  */
 export function forwardLines(
-  stream: NodeJS.ReadableStream | null,
-  onLine: (line: string) => void,
+  stream: Readable | null,
+  onLine: (line: string) => unknown,
   onError: () => void,
-): void {
+  cutoffSignal?: AbortSignal,
+): Promise<void> {
   if (stream === null) {
-    return;
+    return Promise.resolve();
   }
 
   let parts: string[] = [];
@@ -702,6 +722,8 @@ export function forwardLines(
   let endsWithCarriageReturn = false;
   let discarding = false;
   let failed = false;
+  let cutoff = false;
+  let bufferedAtCutoff = '';
 
   const resetLine = (): void => {
     parts = [];
@@ -710,15 +732,15 @@ export function forwardLines(
     discarding = false;
   };
 
-  const omitLine = (): void => {
+  const omitLine = async (): Promise<void> => {
     parts = [];
     byteLength = 0;
     endsWithCarriageReturn = false;
     discarding = true;
-    onLine(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+    await onLine(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
   };
 
-  const append = (text: string, terminated: boolean): void => {
+  const append = async (text: string, terminated: boolean): Promise<void> => {
     if (discarding || text === '') {
       return;
     }
@@ -731,7 +753,7 @@ export function forwardLines(
       !terminated && nextByteLength === MAX_OUTPUT_LINE_BYTES + 1 && nextEndsWithCarriageReturn;
 
     if (payloadByteLength > MAX_OUTPUT_LINE_BYTES && !mayBecomeCrLf) {
-      omitLine();
+      await omitLine();
       return;
     }
 
@@ -740,59 +762,96 @@ export function forwardLines(
     endsWithCarriageReturn = nextEndsWithCarriageReturn;
   };
 
-  const finishLine = (text: string): void => {
+  const finishLine = async (text: string): Promise<void> => {
     if (discarding) {
       resetLine();
       return;
     }
 
-    append(text, true);
+    await append(text, true);
     if (discarding) {
       resetLine();
       return;
     }
 
     const line = parts.join('');
-    onLine(endsWithCarriageReturn ? line.slice(0, -1) : line);
+    await onLine(endsWithCarriageReturn ? line.slice(0, -1) : line);
     resetLine();
   };
 
-  // Keep one listener installed after the first error so a broken stream cannot emit a later
-  // unhandled `error`. The callback is deliberately value-free and runs at most once.
-  stream.on('error', () => {
-    if (failed) {
-      return;
-    }
+  const fail = (): void => {
+    if (failed || cutoff) return;
     failed = true;
     onError();
-  });
-  stream.setEncoding('utf8');
-  stream.on('data', (chunk: string) => {
-    if (failed) {
-      return;
-    }
-    let start = 0;
-    let newline = chunk.indexOf('\n');
-    while (newline !== -1) {
-      finishLine(chunk.slice(start, newline));
-      if (failed) {
-        return;
+  };
+
+  const cutoffOutput = (): void => {
+    if (cutoff) return;
+    cutoff = true;
+
+    if (!failed) {
+      try {
+        // Read exactly the content buffered at this instant. A loop or an unbounded read could
+        // ask the source for newer bytes and move the acceptance boundary past the cutoff.
+        const bufferedLength = stream.readableLength;
+        if (bufferedLength > 0) {
+          const buffered = stream.read(bufferedLength) as unknown;
+          if (typeof buffered === 'string') bufferedAtCutoff = buffered;
+        }
+      } catch {
+        // The fixed cutoff remains authoritative when a stream refuses its final snapshot.
       }
+    }
+
+    try {
+      stream.destroy();
+    } catch {
+      // The caller also releases the child stdio handles after firing the cutoff.
+    }
+  };
+
+  // Readable-mode iteration remains serial even when ChildProcess.flushStdio calls
+  // resume() at process exit. A flowing data listener plus pause() cannot guarantee that.
+  stream.on('error', fail);
+  stream.setEncoding('utf8');
+  cutoffSignal?.addEventListener('abort', cutoffOutput, { once: true });
+  if (cutoffSignal?.aborted === true) cutoffOutput();
+
+  const consumeChunk = async (text: string): Promise<void> => {
+    let start = 0;
+    let newline = text.indexOf('\n');
+    while (newline !== -1) {
+      await finishLine(text.slice(start, newline));
       start = newline + 1;
-      newline = chunk.indexOf('\n', start);
+      newline = text.indexOf('\n', start);
     }
-    append(chunk.slice(start), false);
-  });
-  stream.on('end', () => {
-    if (failed || discarding) {
-      return;
+    await append(text.slice(start), false);
+  };
+
+  const completion = (async () => {
+    try {
+      for await (const chunk of stream) {
+        if (failed) break;
+        await consumeChunk(chunk as string);
+        if (cutoff) break;
+      }
+    } catch {
+      fail();
     }
-    if (byteLength > MAX_OUTPUT_LINE_BYTES) {
-      omitLine();
-      return;
+
+    // A deliberate destroy may make an implementation reject its pending iterator read. The
+    // cutoff snapshot remains accepted and must drain after that iterator has stopped.
+    try {
+      if (!failed && bufferedAtCutoff !== '') await consumeChunk(bufferedAtCutoff);
+
+      if (!failed && !cutoff && !discarding) {
+        if (byteLength > MAX_OUTPUT_LINE_BYTES) await omitLine();
+        else if (byteLength !== 0) await onLine(parts.join(''));
+      }
+    } catch {
+      fail();
     }
-    if (byteLength !== 0) {
-      onLine(parts.join(''));
-    }
-  });
+  })();
+
+  return completion.finally(() => cutoffSignal?.removeEventListener('abort', cutoffOutput));
 }

@@ -16,6 +16,7 @@ function fakeIpc() {
   return {
     invoke: vi.fn<BridgeIpc['invoke']>().mockResolvedValue(undefined),
     on: vi.fn<BridgeIpc['on']>(),
+    send: vi.fn<BridgeIpc['send']>(),
   };
 }
 
@@ -101,7 +102,45 @@ describe('the preload bridge', () => {
       },
       displayText: 'running 0 steps on linux',
     } satisfies BridgeEvent;
-    listener(undefined, runStarted);
+    listener(undefined, { sequence: 1, event: runStarted });
     expect(seen).toEqual([runStarted]);
+    expect(ipc.send).toHaveBeenCalledWith('rune:eventAck', 1);
+  });
+
+  it('acknowledges only after synchronous renderer processing, including a thrown listener', () => {
+    const ipc = fakeIpc();
+    const calls: string[] = [];
+    ipc.send.mockImplementation(() => {
+      calls.push('ack');
+    });
+    buildBridge(ipc).onEvent(() => {
+      calls.push('render');
+      throw new Error('renderer failed');
+    });
+    const listener = ipc.on.mock.calls[0]![1];
+    expect(() => listener(undefined, { sequence: 4, event: { kind: 'stepOutput' } })).toThrow(
+      'renderer failed',
+    );
+    expect(calls).toEqual(['render', 'ack']);
+    expect(ipc.send).toHaveBeenCalledWith('rune:eventAck', 4);
+  });
+
+  it('sends one acknowledgement after every synchronous subscriber has processed the event', () => {
+    const ipc = fakeIpc();
+    const calls: string[] = [];
+    ipc.send.mockImplementation(() => {
+      calls.push('ack');
+    });
+    const bridge = buildBridge(ipc);
+    bridge.onEvent(() => {
+      calls.push('first');
+    });
+    bridge.onEvent(() => {
+      calls.push('second');
+    });
+    expect(ipc.on).toHaveBeenCalledOnce();
+    ipc.on.mock.calls[0]![1](undefined, { sequence: 1, event: { kind: 'stepOutput' } });
+    expect(calls).toEqual(['first', 'second', 'ack']);
+    expect(ipc.send).toHaveBeenCalledOnce();
   });
 });

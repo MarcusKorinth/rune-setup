@@ -37,13 +37,14 @@ describe('log-file sink', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     const sink = await createLogFileSink(path);
 
-    sink.observer({
+    const written = sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stdout',
       line: 'complete',
     });
     await sink.close();
+    await written;
     await sink.close();
 
     expect(readFileSync(path, 'utf8')).toContain('[install:stdout] complete');
@@ -53,20 +54,20 @@ describe('log-file sink', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     const sink = await createLogFileSink(path);
 
-    sink.observer({
+    await sink.observer({
       kind: 'stepStarted',
       stepId: 'install',
       index: 0,
       total: 1,
       title: 'Install\r\nforged\u2028record\u0001',
     });
-    sink.observer({
+    await sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stdout',
       line: 'ordinary output',
     });
-    sink.observer({
+    await sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stderr',
@@ -87,7 +88,7 @@ describe('log-file sink', () => {
     const marker = 'install:stdout';
     const sink = await createLogFileSink(path, (line) => line.replaceAll(marker, '***'));
 
-    sink.observer({
+    await sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stdout',
@@ -107,7 +108,7 @@ describe('log-file sink', () => {
     expect(registry.register(renderedSecret)).toBe(true);
     const sink = await createLogFileSink(path, registry.mask.bind(registry));
 
-    sink.observer({
+    await sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stdout',
@@ -133,7 +134,7 @@ describe('log-file sink', () => {
       expect(registry.register(secret)).toBe(true);
       const sink = await createLogFileSink(path, registry.mask.bind(registry));
 
-      sink.observer({
+      await sink.observer({
         kind: 'stepOutput',
         stepId: 'hello',
         stream: 'stdout',

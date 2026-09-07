@@ -1,6 +1,6 @@
 import { PassThrough, Writable } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { guardStream } from '../src/streams.js';
 
@@ -37,6 +37,76 @@ function collector(): { readonly stream: PassThrough; readonly received: string[
 const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('guarded process streams', () => {
+  it('shares one drain waiter until every queued write callback finishes', async () => {
+    const callbacks: Array<(error?: Error | null) => void> = [];
+    const received: string[] = [];
+    const stream = new Writable({
+      highWaterMark: 1,
+      write(chunk: Buffer, _encoding, callback) {
+        received.push(chunk.toString());
+        callbacks.push(callback);
+      },
+    });
+    const guard = guardStream(stream);
+    guard.writeLine('first');
+    guard.writeLine('second');
+    const drained = vi.fn();
+    const pending = guard.drain();
+    void pending.then(drained);
+
+    for (let index = 0; index < 1_000; index += 1) {
+      expect(guard.drain()).toBe(pending);
+    }
+    expect(stream.listenerCount('error')).toBe(1);
+    expect(stream.listenerCount('close')).toBe(1);
+    expect(stream.listenerCount('drain')).toBe(0);
+    await settled();
+    expect(drained).not.toHaveBeenCalled();
+    expect(received).toEqual(['first\n']);
+
+    callbacks.shift()!();
+    await settled();
+    expect(drained).not.toHaveBeenCalled();
+    expect(received).toEqual(['first\n', 'second\n']);
+
+    callbacks.shift()!();
+    await pending;
+    expect(drained).toHaveBeenCalledOnce();
+    await expect(guard.drain()).resolves.toBeUndefined();
+  });
+
+  it.each(['EPIPE', 'ENOSPC'])(
+    'releases a drain waiter on %s and keeps error ownership',
+    async (code) => {
+      const stream = new Writable({ write() {} });
+      const onFailure = vi.fn();
+      const guard = guardStream(stream, onFailure);
+      guard.writeLine('queued');
+      const pending = guard.drain();
+      const error = Object.assign(new Error('sink failure'), { code });
+
+      stream.emit('error', error);
+      await expect(pending).resolves.toBeUndefined();
+      guard.writeLine('ignored');
+      await expect(guard.drain()).resolves.toBeUndefined();
+      expect(guard.failure()).toBe(code === 'EPIPE' ? undefined : error);
+      expect(onFailure).toHaveBeenCalledTimes(code === 'EPIPE' ? 0 : 1);
+      stream.destroy();
+    },
+  );
+
+  it('releases a drain waiter when the stream closes without completing its write', async () => {
+    const stream = new Writable({ write() {} });
+    const guard = guardStream(stream);
+    guard.writeLine('queued');
+    const pending = guard.drain();
+
+    stream.destroy();
+    await expect(pending).resolves.toBeUndefined();
+    expect(guard.isBroken()).toBe(true);
+    expect(guard.failure()).toBeUndefined();
+  });
+
   it('writes raw prompt fragments without adding a line break', async () => {
     const { stream, received } = collector();
     const guard = guardStream(stream);

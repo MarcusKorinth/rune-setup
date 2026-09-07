@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { constants, createContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -2311,92 +2312,98 @@ describe('planning and executing', () => {
     expect(log).toContain('run finished: succeeded (exit 0)');
   });
 
-  it('contains rejected Promise observers without awaiting them or changing the event bracket', async () => {
+  it('waits for a rejected observer without changing the event bracket', async () => {
     const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
     let rejectObserver!: (reason?: unknown) => void;
-    const returned = new Promise<never>((_resolve, reject) => {
+    const held = new Promise<never>((_resolve, reject) => {
       rejectObserver = reject;
     });
-    const then = vi.spyOn(returned, 'then');
     const events: RunEvent[] = [];
-    const unhandledRejections: unknown[] = [];
-    const onUnhandledRejection = (reason: unknown): void => {
-      unhandledRejections.push(reason);
-    };
-    process.on('unhandledRejection', onUnhandledRejection);
-
-    try {
-      const result = await session.execute((event) => {
-        events.push(event);
-        return returned;
-      });
-
-      expect(result.status).toBe('succeeded');
-      expect(events.map((event) => event.kind)).toEqual([
-        'runStarted',
-        'stepStarted',
-        'stepFinished',
-        'runFinished',
-      ]);
-      expect(then).toHaveBeenCalledTimes(4);
-      expect(then.mock.calls.every(([, onRejected]) => typeof onRejected === 'function')).toBe(
-        true,
-      );
-
-      rejectObserver(new Error('observer rejection'));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(unhandledRejections).toEqual([]);
-    } finally {
-      process.off('unhandledRejection', onUnhandledRejection);
-    }
+    const pending = session.execute((event) => {
+      events.push(event);
+      return event.kind === 'runStarted' ? held : undefined;
+    });
+    await vi.waitFor(() => expect(events.map((event) => event.kind)).toEqual(['runStarted']));
+    rejectObserver(new Error('observer rejection'));
+    expect((await pending).status).toBe('succeeded');
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepFinished',
+      'runFinished',
+    ]);
   });
 
-  it('contains a rejected terminal observer Promise after log finalization without awaiting it', async () => {
+  it('awaits terminal observation after log finalization and contains its rejection', async () => {
     const path = fixture(BASE);
     const logFile = join(path, '..', 'logs', 'run.log');
     const session = await openSessionWithRunner(path, { environment: {}, logFile }, okRunner);
     let rejectObserver!: (reason?: unknown) => void;
-    const returned = new Promise<never>((_resolve, reject) => {
+    const held = new Promise<never>((_resolve, reject) => {
       rejectObserver = reject;
     });
-    const then = vi.spyOn(returned, 'then');
     const events: RunEvent[] = [];
-    const unhandledRejections: unknown[] = [];
-    let terminalSawFinalizedLog = false;
-    const onUnhandledRejection = (reason: unknown): void => {
-      unhandledRejections.push(reason);
-    };
-    process.on('unhandledRejection', onUnhandledRejection);
-
-    try {
-      const result = await session.execute((event) => {
+    let settled = false;
+    const pending = session
+      .execute((event) => {
         events.push(event);
-        if (event.kind === 'runFinished') {
-          terminalSawFinalizedLog = readFileSync(logFile, 'utf8').includes(
-            'run finished: succeeded (exit 0)',
-          );
-          return returned;
-        }
+        return event.kind === 'runFinished' ? held : undefined;
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.waitFor(() => expect(events.at(-1)?.kind).toBe('runFinished'));
+    expect(readFileSync(logFile, 'utf8')).toContain('run finished: succeeded (exit 0)');
+    expect(settled).toBe(false);
+    rejectObserver(new Error('terminal observer rejection'));
+    expect((await pending).status).toBe('succeeded');
+    expect(events.map((event) => event.kind)).toEqual([
+      'runStarted',
+      'stepStarted',
+      'stepFinished',
+      'runFinished',
+    ]);
+  });
+
+  it('awaits and contains a foreign-realm native terminal observer rejection', async () => {
+    const { Promise: ForeignPromise } = createContext(constants.DONT_CONTEXTIFY) as {
+      readonly Promise: PromiseConstructor;
+    };
+    let rejectObserver!: (reason?: unknown) => void;
+    const held = new ForeignPromise<never>((_resolve, reject) => {
+      rejectObserver = reject;
+    });
+    expect(held instanceof Promise).toBe(false);
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pending = session
+      .execute((event) => {
+        events.push(event);
+        return event.kind === 'runFinished' ? held : undefined;
+      })
+      .then((result) => {
+        settled = true;
+        return result;
       });
 
-      expect(result.status).toBe('succeeded');
-      expect(events.map((event) => event.kind)).toEqual([
-        'runStarted',
-        'stepStarted',
-        'stepFinished',
-        'runFinished',
-      ]);
-      expect(events.filter((event) => event.kind === 'runFinished')).toHaveLength(1);
-      expect(terminalSawFinalizedLog).toBe(true);
-      expect(then).toHaveBeenCalledOnce();
-      expect(then.mock.calls[0]?.[1]).toEqual(expect.any(Function));
+    await vi.waitFor(() => expect(events.at(-1)?.kind).toBe('runFinished'));
+    expect(settled).toBe(false);
+    rejectObserver(new Error('foreign terminal observer rejection'));
+    expect((await pending).status).toBe('succeeded');
+  });
 
-      rejectObserver(new Error('terminal observer rejection'));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(unhandledRejections).toEqual([]);
-    } finally {
-      process.off('unhandledRejection', onUnhandledRejection);
-    }
+  it('does not inspect an arbitrary terminal observer then method', async () => {
+    const then = vi.fn(() => {
+      throw new Error('untrusted then method');
+    });
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
+
+    await expect(
+      session.execute((event) => (event.kind === 'runFinished' ? { then } : undefined)),
+    ).resolves.toMatchObject({ status: 'succeeded' });
+    expect(then).not.toHaveBeenCalled();
   });
 
   it('publishes a runner contract failure only after finalization, then rejects', async () => {

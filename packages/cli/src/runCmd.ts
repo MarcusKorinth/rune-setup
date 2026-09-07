@@ -218,7 +218,7 @@ export async function runCommand(
             if (event.kind === 'runFinished') {
               executionFailureResult = event.result;
             }
-            progress(event);
+            return progress(event);
           }, control.cancel);
     // A returned execution owns its normal result path. The captured terminal result is
     // retained only while execute() is in flight, for a finalization failure that rejects.

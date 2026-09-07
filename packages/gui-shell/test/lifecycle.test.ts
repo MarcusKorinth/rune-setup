@@ -22,14 +22,25 @@ import { z } from 'zod';
 
 interface FakeWindow {
   close(): void;
+  readonly webContents: unknown;
+}
+
+interface FakeNavigationDetails {
+  readonly url: string;
+  readonly isMainFrame: boolean;
+  readonly isSameDocument: boolean;
 }
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  eventAck: undefined as ((event: { sender: unknown }, sequence: unknown) => void) | undefined,
+  acknowledgeEvents: true,
+  eventCount: 0,
   constructionError: undefined as Error | undefined,
   duringLoad: undefined as (() => void | Promise<void>) | undefined,
   loadError: undefined as Error | undefined,
   emitRendererGone: undefined as (() => void) | undefined,
+  emitNavigation: undefined as ((details: FakeNavigationDetails) => void) | undefined,
   window: undefined as FakeWindow | undefined,
   windowOptions: undefined as { readonly title?: string | undefined } | undefined,
   closed: false,
@@ -39,12 +50,21 @@ const electronHarness = vi.hoisted(() => ({
 vi.mock('electron', () => {
   class FakeBrowserWindow implements FakeWindow {
     readonly webContents = {
-      send: vi.fn(),
+      send: vi.fn((_channel: string, payload: unknown) => {
+        electronHarness.eventCount += 1;
+        if (!electronHarness.acknowledgeEvents) return;
+        electronHarness.eventAck?.(
+          { sender: electronHarness.window?.webContents },
+          (payload as { sequence: number }).sequence,
+        );
+      }),
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
         if (event === 'render-process-gone') {
           electronHarness.emitRendererGone = () => {
             listener({}, { reason: 'crashed', exitCode: 1 });
           };
+        } else if (event === 'did-start-navigation') {
+          electronHarness.emitNavigation = (details) => listener(details);
         }
       }),
     };
@@ -88,6 +108,11 @@ vi.mock('electron', () => {
       if (electronHarness.loadError !== undefined) {
         throw electronHarness.loadError;
       }
+      electronHarness.emitNavigation?.({
+        url: 'file:///C:/rune-shell/src/renderer/index.html',
+        isMainFrame: true,
+        isSameDocument: false,
+      });
       await electronHarness.duringLoad?.();
     }
 
@@ -108,6 +133,16 @@ vi.mock('electron', () => {
     BrowserWindow: FakeBrowserWindow,
     dialog: { showErrorBox: vi.fn() },
     ipcMain: {
+      on: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          electronHarness.eventAck = listener;
+        },
+      ),
+      off: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          if (electronHarness.eventAck === listener) electronHarness.eventAck = undefined;
+        },
+      ),
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
         electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
       }),
@@ -127,6 +162,7 @@ import {
   type SigtermSource,
 } from '../src/main/index.js';
 import { SHELL_VERSION_PROBE_FLAG, type ShellInvocation } from '../src/main/argv.js';
+import { guardShellStreams } from '../src/main/streams.js';
 import { completeWrite } from './stream-fixture.js';
 
 class FakeSigtermSource implements SigtermSource {
@@ -159,11 +195,14 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  electronHarness.acknowledgeEvents = true;
+  electronHarness.eventCount = 0;
   electronHarness.handlers.clear();
   electronHarness.constructionError = undefined;
   electronHarness.duringLoad = undefined;
   electronHarness.loadError = undefined;
   electronHarness.emitRendererGone = undefined;
+  electronHarness.emitNavigation = undefined;
   electronHarness.window = undefined;
   electronHarness.windowOptions = undefined;
   electronHarness.closed = false;
@@ -212,7 +251,7 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     expect(signals.listener).toBeUndefined();
   });
 
-  it('cancels a headless Session, delivers its ordinary result, and returns exit 6', async () => {
+  it.each([false, true])('cancels headless with closed stderr: %s', async (closeStderr) => {
     const dir = mkdtempSync(join(tmpdir(), 'rune-headless-sigterm-'));
     const manifestPath = join(dir, 'installer.yaml');
     const resultPath = join(dir, 'result.json');
@@ -239,8 +278,8 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     });
     const plan = session.plan();
     vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer, cancelToken) => {
-      observer?.({ kind: 'runStarted', plan });
-      observer?.({
+      await observer?.({ kind: 'runStarted', plan });
+      await observer?.({
         kind: 'stepStarted',
         stepId: 'wait',
         index: 0,
@@ -264,18 +303,27 @@ describe('the GUI shell SIGTERM lifecycle', () => {
         stepsNotRun: 0,
         nothingExecuted: false,
       } as RunResult;
-      observer?.({
+      await observer?.({
         kind: 'stepFinished',
         stepId: 'wait',
         state: 'CANCELLED',
         exitCode: undefined,
         durationMs: 0,
       });
-      observer?.({ kind: 'runFinished', result });
+      await observer?.({ kind: 'runFinished', result });
       return result;
     });
     const cancel = vi.spyOn(Session.prototype, 'cancel');
-    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    const stderr = new Writable({
+      write(_chunk, _encoding, callback) {
+        if (closeStderr) stderr.destroy();
+        else callback();
+      },
+    });
+    const output = guardShellStreams({
+      stdout: new Writable({ write: completeWrite }),
+      stderr,
+    });
     const signals = new FakeSigtermSource();
     const invocation: ShellInvocation = {
       manifestPath,
@@ -287,20 +335,24 @@ describe('the GUI shell SIGTERM lifecycle', () => {
       nonInteractive: true,
     };
 
-    const run = headlessRun(session, invocation, signals);
-    await started.promise;
-    signals.emit();
+    try {
+      const run = headlessRun(session, invocation, signals, output);
+      await started.promise;
+      signals.emit();
 
-    await expect(run).resolves.toBe(6);
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
-      status: 'cancelled',
-      exitCode: 6,
-      mode: 'non-interactive',
-      stepsCancelled: 1,
-    });
-    expect(signals.removed).toEqual(signals.added);
-    expect(signals.listener).toBeUndefined();
+      await expect(run).resolves.toBe(6);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+        status: 'cancelled',
+        exitCode: 6,
+        mode: 'non-interactive',
+        stepsCancelled: 1,
+      });
+      expect(signals.removed).toEqual(signals.added);
+      expect(signals.listener).toBeUndefined();
+    } finally {
+      output.dispose();
+    }
   });
 
   it('latches SIGTERM during readiness and completes the headless cancellation flow', async () => {
@@ -1119,6 +1171,105 @@ describe('the GUI shell native window', () => {
 });
 
 describe('windowed result delivery', () => {
+  it.each(['renderer-gone', 'receiver-replaced', 'close'] as const)(
+    'releases a pending event on %s without blocking finalization',
+    async (action) => {
+      const { invocation, resultPath, session } = await windowedFixture();
+      const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+      const displayFatal = vi.fn();
+      const cancel = vi.spyOn(Session.prototype, 'cancel');
+      vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+      electronHarness.acknowledgeEvents = false;
+      electronHarness.duringLoad = async () => {
+        const execution = Promise.resolve(bridgeHandler('rune:execute')());
+        await vi.waitFor(() => expect(electronHarness.eventCount).toBe(1));
+        if (action === 'renderer-gone') {
+          electronHarness.emitRendererGone?.();
+        } else if (action === 'receiver-replaced') {
+          electronHarness.emitNavigation?.({
+            url: 'file:///C:/rune-shell/src/renderer/index.html',
+            isMainFrame: true,
+            isSameDocument: false,
+          });
+        } else {
+          electronHarness.window?.close();
+        }
+        await execution;
+      };
+      await expect(
+        windowedRun(
+          session,
+          invocation,
+          new FakeSigtermSource(),
+          displayFatal,
+          undefined,
+          deliverResult,
+        ),
+      ).resolves.toBe(action === 'close' ? 6 : 70);
+      expect(electronHarness.eventAck).toBeUndefined();
+      expect(electronHarness.eventCount).toBe(1);
+      expect(cancel).toHaveBeenCalledOnce();
+      if (action !== 'close') {
+        expect(deliverResult).not.toHaveBeenCalled();
+        expect(existsSync(resultPath)).toBe(false);
+      } else {
+        expect(deliverResult).toHaveBeenCalledOnce();
+        expect(deliveredResult(resultPath)).toMatchObject({ status: 'cancelled', exitCode: 6 });
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: 'same-document main-frame navigation',
+      details: {
+        url: 'file:///C:/rune-shell/src/renderer/index.html#progress',
+        isMainFrame: true,
+        isSameDocument: true,
+      },
+    },
+    {
+      name: 'cross-document subframe navigation',
+      details: {
+        url: 'file:///C:/rune-shell/src/renderer/frame.html',
+        isMainFrame: false,
+        isSameDocument: false,
+      },
+    },
+  ] as const)('keeps the receiver for $name', async ({ details }) => {
+    const { invocation, resultPath, session } = await windowedFixture();
+    const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+    const displayFatal = vi.fn();
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.acknowledgeEvents = false;
+    electronHarness.duringLoad = async () => {
+      const execution = Promise.resolve(bridgeHandler('rune:execute')());
+      await vi.waitFor(() => expect(electronHarness.eventCount).toBe(1));
+      electronHarness.emitNavigation?.(details);
+      expect(electronHarness.eventAck).toBeDefined();
+      expect(displayFatal).not.toHaveBeenCalled();
+      expect(electronHarness.closed).toBe(false);
+
+      electronHarness.acknowledgeEvents = true;
+      electronHarness.eventAck?.({ sender: electronHarness.window?.webContents }, 1);
+      await execution;
+      electronHarness.window?.close();
+    };
+
+    await expect(
+      windowedRun(
+        session,
+        invocation,
+        new FakeSigtermSource(),
+        displayFatal,
+        undefined,
+        deliverResult,
+      ),
+    ).resolves.toBe(0);
+    expect(deliverResult).toHaveBeenCalledOnce();
+    expect(deliveredResult(resultPath)).toMatchObject({ status: 'succeeded', exitCode: 0 });
+  });
+
   it('writes one cancelled outcome and uses safe fallback after failed pre-Proceed planning', async () => {
     const { derivedPath, invocation, resultPath, session } = await failedPlanningFixture('gui');
     const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
@@ -1395,50 +1546,61 @@ describe('windowed result delivery', () => {
     });
   });
 
-  it('keeps successful delivery ownership when the renderer is lost before the write', async () => {
-    const { invocation, resultPath, session } = await windowedFixture();
-    const deliveryStarted = deferred<void>();
-    const releaseDelivery = deferred<void>();
-    const deliverResult = vi.fn(async (result: RunResult) => {
-      deliveryStarted.resolve();
-      await releaseDelivery.promise;
-      await writeResult(result, resultPath);
-    });
-    const cancel = vi.spyOn(Session.prototype, 'cancel');
-    const displayFatal = vi.fn();
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
-    electronHarness.duringLoad = async () => {
-      const execution = Promise.resolve(bridgeHandler('rune:execute')());
-      await deliveryStarted.promise;
+  it.each(['renderer-gone', 'receiver-replaced'] as const)(
+    'keeps successful delivery ownership on %s before the write',
+    async (action) => {
+      const { invocation, resultPath, session } = await windowedFixture();
+      const deliveryStarted = deferred<void>();
+      const releaseDelivery = deferred<void>();
+      const deliverResult = vi.fn(async (result: RunResult) => {
+        deliveryStarted.resolve();
+        await releaseDelivery.promise;
+        await writeResult(result, resultPath);
+      });
+      const cancel = vi.spyOn(Session.prototype, 'cancel');
+      const displayFatal = vi.fn();
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+      electronHarness.duringLoad = async () => {
+        const execution = Promise.resolve(bridgeHandler('rune:execute')());
+        await deliveryStarted.promise;
 
-      electronHarness.emitRendererGone?.();
-      expect(electronHarness.closed).toBe(false);
-      expect(existsSync(resultPath)).toBe(false);
+        if (action === 'renderer-gone') {
+          electronHarness.emitRendererGone?.();
+        } else {
+          electronHarness.emitNavigation?.({
+            url: 'file:///C:/rune-shell/src/renderer/index.html',
+            isMainFrame: true,
+            isSameDocument: false,
+          });
+        }
+        expect(electronHarness.closed).toBe(false);
+        expect(existsSync(resultPath)).toBe(false);
 
-      releaseDelivery.resolve();
-      await execution;
-    };
+        releaseDelivery.resolve();
+        await execution;
+      };
 
-    await expect(
-      windowedRun(
-        session,
-        invocation,
-        new FakeSigtermSource(),
-        displayFatal,
-        undefined,
-        deliverResult,
-      ),
-    ).resolves.toBe(0);
-    expect(cancel).not.toHaveBeenCalled();
-    expect(deliverResult).toHaveBeenCalledOnce();
-    expect(displayFatal).not.toHaveBeenCalled();
-    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain('RUNE-500');
-    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
-      status: 'succeeded',
-      exitCode: 0,
-      mode: 'gui',
-    });
-  });
+      await expect(
+        windowedRun(
+          session,
+          invocation,
+          new FakeSigtermSource(),
+          displayFatal,
+          undefined,
+          deliverResult,
+        ),
+      ).resolves.toBe(0);
+      expect(cancel).not.toHaveBeenCalled();
+      expect(deliverResult).toHaveBeenCalledOnce();
+      expect(displayFatal).not.toHaveBeenCalled();
+      expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain('RUNE-500');
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+        status: 'succeeded',
+        exitCode: 0,
+        mode: 'gui',
+      });
+    },
+  );
 
   it('keeps successful delivery ownership after the result file is committed', async () => {
     const { invocation, resultPath, session } = await windowedFixture();

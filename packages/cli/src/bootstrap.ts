@@ -57,7 +57,7 @@ export async function bootstrap(
   });
   const code = await run(
     argv,
-    { stdout: stdout.writeLine, stderr: stderr.writeLine },
+    { stdout: stdout.writeLine, stderr: stderr.writeLine, drainStderr: stderr.drain },
     options.control,
     {
       input: process.stdin,

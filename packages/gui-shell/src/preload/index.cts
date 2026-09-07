@@ -29,10 +29,16 @@ export type { RuneBridge } from './types.js';
 export interface BridgeIpc {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
   on(channel: string, listener: (event: unknown, payload: unknown) => void): unknown;
+  send(channel: string, ...args: unknown[]): void;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Builds `window.rune` over one ipcRenderer — exactly one channel per facade method. */
 export function buildBridge(ipc: BridgeIpc): RuneBridge {
+  const listeners: Array<(event: BridgeEvent) => void> = [];
   return {
     open: () =>
       ipc.invoke('rune:open') as Promise<{
@@ -55,7 +61,20 @@ export function buildBridge(ipc: BridgeIpc): RuneBridge {
     warnings: () => ipc.invoke('rune:warnings') as Promise<readonly BridgeWarning[]>,
     done: () => ipc.invoke('rune:done') as Promise<void>,
     onEvent: (listener) => {
-      ipc.on('rune:event', (_event, payload) => listener(payload as BridgeEvent));
+      listeners.push(listener);
+      if (listeners.length !== 1) return;
+      ipc.on('rune:event', (_event, payload) => {
+        if (!isRecord(payload) || !Number.isSafeInteger(payload.sequence)) return;
+        try {
+          for (const receive of [...listeners]) {
+            receive(payload.event as BridgeEvent);
+          }
+        } finally {
+          // Receipt follows synchronous renderer processing, not an animation frame. This
+          // private transport acknowledgement exposes no additional facade operation.
+          ipc.send('rune:eventAck', payload.sequence);
+        }
+      });
     },
   };
 }

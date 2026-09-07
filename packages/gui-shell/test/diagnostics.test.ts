@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Writable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,7 @@ import { ExecutionError, Session, type RunEvent, type RunResult } from '@rune/en
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  eventAck: undefined as ((event: { sender: unknown }, sequence: unknown) => void) | undefined,
   sent: [] as Array<{ channel: string; payload: unknown }>,
   duringLoad: undefined as (() => Promise<void>) | undefined,
   closeDuringLoad: false,
@@ -19,7 +21,9 @@ const electronHarness = vi.hoisted(() => ({
 vi.mock('electron', () => {
   class FakeWebContents {
     readonly send = vi.fn((channel: string, payload: unknown) => {
-      electronHarness.sent.push({ channel, payload });
+      const envelope = payload as { sequence: number; event: unknown };
+      electronHarness.sent.push({ channel, payload: envelope.event });
+      electronHarness.eventAck?.({ sender: this }, envelope.sequence);
     });
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
@@ -96,6 +100,16 @@ vi.mock('electron', () => {
     BrowserWindow: FakeBrowserWindow,
     dialog: { showErrorBox: vi.fn() },
     ipcMain: {
+      on: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          electronHarness.eventAck = listener;
+        },
+      ),
+      off: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          if (electronHarness.eventAck === listener) electronHarness.eventAck = undefined;
+        },
+      ),
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
         electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
       }),
@@ -108,6 +122,7 @@ import { app, dialog } from 'electron';
 import { headlessRun, main } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
 import { completeWrite } from './stream-fixture.js';
+import { guardShellStreams } from '../src/main/streams.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -125,6 +140,51 @@ beforeEach(() => {
 });
 
 describe('the GUI shell stderr diagnostics', () => {
+  it('backpressures headless progress on a slow stderr sink and retains every line', async () => {
+    const manifestPath = manifest([
+      'inputs: {}',
+      'steps:',
+      '  - id: report',
+      '    run:',
+      '      command: report',
+    ]);
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'non-interactive' });
+    mockSuccessfulExecution(session, [
+      { stream: 'stdout', line: 'first retained line' },
+      { stream: 'stderr', line: 'second retained line' },
+    ]);
+    const chunks: string[] = [];
+    let release: (() => void) | undefined;
+    const stderr = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        chunks.push(chunk.toString());
+        if (chunks.length === 1) release = callback;
+        else callback();
+      },
+    });
+    const output = guardShellStreams({
+      stderr,
+      stdout: new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }),
+    });
+    const running = headlessRun(session, invocation(manifestPath), undefined, output);
+    try {
+      await vi.waitFor(() => expect(chunks).toHaveLength(1));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      // A producer that only queues writes would already have buffered all later events.
+      expect(stderr.writableLength).toBe(Buffer.byteLength(chunks[0]!));
+      release?.();
+      await expect(running).resolves.toBe(0);
+      expect(chunks.join('')).toContain('  first retained line\n  second retained line\n');
+      expect(stderr.writableLength).toBe(0);
+    } finally {
+      output.dispose();
+    }
+  });
+
   it('renders masked headless progress without contaminating result stdout', async () => {
     const secret = 'console-secret';
     const manifestPath = manifest([
@@ -392,22 +452,22 @@ describe('the GUI shell stderr diagnostics', () => {
     } satisfies RunResult;
     vi.spyOn(Session, 'open').mockResolvedValue(session);
     vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
-      observer?.({ kind: 'runStarted', plan });
-      observer?.({
+      await observer?.({ kind: 'runStarted', plan });
+      await observer?.({
         kind: 'stepStarted',
         stepId: 'completed',
         index: 0,
         total: 1,
         title: 'completed',
       });
-      observer?.({
+      await observer?.({
         kind: 'stepFinished',
         stepId: 'completed',
         state: 'SUCCEEDED',
         exitCode: 0,
         durationMs: 1,
       });
-      observer?.({ kind: 'runFinished', result: terminalResult });
+      await observer?.({ kind: 'runFinished', result: terminalResult });
       throw new ExecutionError('RUNE-406', 'the log close failed');
     });
     vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
@@ -689,10 +749,10 @@ function mockSuccessfulExecution(
   } as RunResult;
 
   vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
-    observer?.({ kind: 'runStarted', plan });
+    await observer?.({ kind: 'runStarted', plan });
     for (const [index, step] of plan.steps.entries()) {
       if (step.state === 'SKIPPED') {
-        observer?.({
+        await observer?.({
           kind: 'stepFinished',
           stepId: step.id,
           state: step.state,
@@ -701,7 +761,7 @@ function mockSuccessfulExecution(
         });
         continue;
       }
-      observer?.({
+      await observer?.({
         kind: 'stepStarted',
         stepId: step.id,
         index,
@@ -709,9 +769,9 @@ function mockSuccessfulExecution(
         title: step.title,
       });
       for (const line of output) {
-        observer?.({ kind: 'stepOutput', stepId: step.id, ...line } as RunEvent);
+        await observer?.({ kind: 'stepOutput', stepId: step.id, ...line } as RunEvent);
       }
-      observer?.({
+      await observer?.({
         kind: 'stepFinished',
         stepId: step.id,
         state: 'SUCCEEDED',
@@ -719,7 +779,7 @@ function mockSuccessfulExecution(
         durationMs: 1,
       });
     }
-    observer?.({ kind: 'runFinished', result });
+    await observer?.({ kind: 'runFinished', result });
     return result;
   });
 }

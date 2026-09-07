@@ -3,7 +3,7 @@
  *
  * Engine events are in-process objects consumed by frontends and downstream sinks. A
  * transport such as the Electron IPC bridge projects them at its own serialization boundary.
- * Delivery is synchronous and in order; `RunStarted` is first, `RunFinished` is last,
+ * Delivery is serial and awaited; `RunStarted` is first, `RunFinished` is last,
  * exactly once each.
  */
 
@@ -61,7 +61,7 @@ export interface RunFinished {
 export type RunEvent = RunStarted | StepStarted | StepOutput | StepFinished | RunFinished;
 
 /**
- * What a frontend implements to watch a run. Observers must return quickly and must not
- * throw; an exception is caught and swallowed — a broken renderer cannot corrupt a run.
+ * A returned native Promise delays the next event and applies backpressure to child
+ * output. Other return values are ignored. Throws and rejections are contained per sink.
  */
-export type EngineObserver = (event: RunEvent) => void;
+export type EngineObserver = (event: RunEvent) => unknown;
