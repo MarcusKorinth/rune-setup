@@ -51,6 +51,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const savedLocalAppData = process.env['LOCALAPPDATA'];
 const savedXdgCacheHome = process.env['XDG_CACHE_HOME'];
 const savedGuiShell = process.env['RUNE_GUI_SHELL'];
+const savedElectronOverrideDistPath = process.env['ELECTRON_OVERRIDE_DIST_PATH'];
 const spawnMock = vi.mocked(spawn);
 const createWriteStreamMock = vi.mocked(createWriteStream);
 const mkdirSyncMock = vi.mocked(mkdirSync);
@@ -71,6 +72,7 @@ beforeEach(() => {
   process.env['LOCALAPPDATA'] = testDirectory;
   process.env['XDG_CACHE_HOME'] = testDirectory;
   process.env['RUNE_GUI_SHELL'] = join(testDirectory, shellBinary);
+  delete process.env['ELECTRON_OVERRIDE_DIST_PATH'];
   tarExit = 0;
   tarCreatesShell = true;
   spawnMock.mockReset();
@@ -99,6 +101,11 @@ afterEach(() => {
   else process.env['XDG_CACHE_HOME'] = savedXdgCacheHome;
   if (savedGuiShell === undefined) delete process.env['RUNE_GUI_SHELL'];
   else process.env['RUNE_GUI_SHELL'] = savedGuiShell;
+  if (savedElectronOverrideDistPath === undefined) {
+    delete process.env['ELECTRON_OVERRIDE_DIST_PATH'];
+  } else {
+    process.env['ELECTRON_OVERRIDE_DIST_PATH'] = savedElectronOverrideDistPath;
+  }
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   Object.defineProperty(process, 'platform', platformDescriptor);
@@ -178,11 +185,18 @@ function waitingProcess(
   return child;
 }
 
-function developmentShell(): { readonly directory: string; readonly electron: string } {
+function developmentShell(
+  executableName = 'electron',
+  pathMetadata: string | null = executableName,
+): { readonly directory: string; readonly electron: string } {
   const directory = join(testDirectory, 'development-shell');
   const electronPackage = join(directory, 'node_modules', 'electron');
-  const electron = join(testDirectory, 'fake-electron');
-  mkdirSync(electronPackage, { recursive: true });
+  const electron = join(electronPackage, 'dist', executableName);
+  mkdirSync(dirname(electron), { recursive: true });
+  writeFileSync(electron, 'prepared binary');
+  if (pathMetadata !== null) {
+    writeFileSync(join(electronPackage, 'path.txt'), pathMetadata);
+  }
   writeFileSync(join(directory, 'package.json'), JSON.stringify({ private: true }), 'utf8');
   writeFileSync(
     join(electronPackage, 'package.json'),
@@ -191,7 +205,7 @@ function developmentShell(): { readonly directory: string; readonly electron: st
   );
   writeFileSync(
     join(electronPackage, 'index.cjs'),
-    `module.exports = ${JSON.stringify(electron)};\n`,
+    'throw new Error("the Electron Node entry must never run");\n',
     'utf8',
   );
   return { directory, electron };
@@ -651,6 +665,97 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, '--', 'installer.yaml']);
   });
+
+  it('uses the prepared distribution when the Electron override is empty', async () => {
+    const { directory: shellDirectory, electron } = developmentShell();
+    process.env['RUNE_GUI_SHELL'] = shellDirectory;
+    process.env['ELECTRON_OVERRIDE_DIST_PATH'] = '';
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('installer.yaml', {}, capture(), interaction);
+
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(electron);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
+  });
+
+  it('uses an explicit Electron override with path metadata', async () => {
+    const executableName = 'custom-electron';
+    const { directory: shellDirectory } = developmentShell(executableName);
+    const overrideDirectory = join(testDirectory, 'electron-override');
+    const overrideElectron = join(overrideDirectory, executableName);
+    mkdirSync(overrideDirectory, { recursive: true });
+    writeFileSync(overrideElectron, 'prepared binary');
+    process.env['RUNE_GUI_SHELL'] = shellDirectory;
+    process.env['ELECTRON_OVERRIDE_DIST_PATH'] = overrideDirectory;
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('installer.yaml', {}, capture(), interaction);
+
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(overrideElectron);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(overrideElectron);
+  });
+
+  it('uses Electron’s fallback name for an override without path metadata', async () => {
+    const { directory: shellDirectory } = developmentShell('unused', null);
+    const overrideDirectory = join(testDirectory, 'electron-override');
+    const overrideElectron = join(overrideDirectory, 'electron');
+    mkdirSync(overrideDirectory, { recursive: true });
+    writeFileSync(overrideElectron, 'prepared binary');
+    process.env['RUNE_GUI_SHELL'] = shellDirectory;
+    process.env['ELECTRON_OVERRIDE_DIST_PATH'] = overrideDirectory;
+    spawnMock
+      .mockImplementationOnce(() =>
+        probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
+      )
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('installer.yaml', {}, capture(), interaction);
+
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(overrideElectron);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(overrideElectron);
+  });
+
+  it('rejects a missing prepared Electron runtime before spawning', async () => {
+    const { directory: shellDirectory, electron } = developmentShell();
+    rmSync(electron);
+    process.env['RUNE_GUI_SHELL'] = shellDirectory;
+
+    const error = await launchGui('installer.yaml', {}, capture(), interaction).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(UsageError);
+    expect(exitCodeFor(error as UsageError)).toBe(2);
+    expect((error as UsageError).message).toContain('prepared Electron runtime');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['absent', null],
+    ['empty', ''],
+  ])(
+    'rejects %s Electron path metadata without an override before spawning',
+    async (_case, pathMetadata) => {
+      const { directory: shellDirectory } = developmentShell('electron', pathMetadata);
+      process.env['RUNE_GUI_SHELL'] = shellDirectory;
+
+      const error = await launchGui('installer.yaml', {}, capture(), interaction).catch(
+        (cause: unknown) => cause,
+      );
+
+      expect(error).toBeInstanceOf(UsageError);
+      expect(exitCodeFor(error as UsageError)).toBe(2);
+      expect(spawnMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a development-directory override without electron before spawning', async () => {
     const shellDirectory = join(testDirectory, 'missing-electron');

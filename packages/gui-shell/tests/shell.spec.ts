@@ -102,7 +102,7 @@ async function runHeadlessShell(resultPath: string): Promise<{
   return { exitCode, stderr, stdout };
 }
 
-test('launches the real Node 22 shell and renders Welcome', async () => {
+test('launches the real Node 24 shell and renders Welcome', async () => {
   let application: ElectronApplication | undefined;
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
@@ -119,7 +119,7 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
       node: process.versions.node,
     }));
     console.log(`[shell-smoke] Electron ${runtime.electron}, embedded Node ${runtime.node}`);
-    expect(runtime.node.split('.')[0]).toBe('22');
+    expect(runtime.node.split('.')[0]).toBe('24');
 
     const page = await application.firstWindow();
     page.on('pageerror', (error) => pageErrors.push(error.message));

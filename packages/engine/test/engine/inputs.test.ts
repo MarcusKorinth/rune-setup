@@ -792,7 +792,7 @@ describe('conditional inputs', () => {
     const chained = manifestOf(...lines);
     const includes = vi.spyOn(Array.prototype, 'includes');
     let resolution: Resolution;
-    let visiblePrefixScans = 0;
+    let visiblePrefixScans: number;
 
     try {
       resolution = resolve(chained);
@@ -953,7 +953,7 @@ describe('keys that name no input', () => {
       },
     });
     const includes = vi.spyOn(Array.prototype, 'includes');
-    let includesCalls = 0;
+    let includesCalls: number;
     let resolution: Resolution | undefined;
 
     try {
@@ -1980,7 +1980,7 @@ describe('secrets', () => {
           value.every((item) => typeof item === 'string'),
       ).length;
     let thrown: unknown;
-    let matcherSorts = 0;
+    let matcherSorts: number;
 
     try {
       resolveInputsWithRegistry(

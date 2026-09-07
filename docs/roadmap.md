@@ -24,7 +24,7 @@ the MVP.
   `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`), eslint
   (+ `@typescript-eslint`, static-safety rules), prettier, vitest,
   dependency-cruiser import boundaries
-- [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 22 LTS
+- [x] CI skeleton: typecheck, eslint, vitest on Windows and Linux with Node 24 LTS
   (no Electron in core jobs)
 
 ## Milestone 1 — engine core and non-interactive execution (part of 0.1.0, complete)

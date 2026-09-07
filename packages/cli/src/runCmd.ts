@@ -282,7 +282,6 @@ export async function runCommand(
       const renderFallback =
         plan !== undefined || (result.status === 'config_error' && result.product === null);
       if (resultDestination !== undefined) {
-        deliveryStarted = true;
         await deliverResult(
           result,
           resultDestination,

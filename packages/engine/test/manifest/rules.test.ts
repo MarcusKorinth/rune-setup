@@ -226,8 +226,8 @@ describe('input rules', () => {
     }).flat();
     const includes = vi.spyOn(Array.prototype, 'includes');
     const slice = vi.spyOn(Array.prototype, 'slice');
-    let inputMembershipScans = 0;
-    let inputPrefixCopies = 0;
+    let inputMembershipScans: number;
+    let inputPrefixCopies: number;
 
     try {
       expect(() =>

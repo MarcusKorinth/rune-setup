@@ -1475,7 +1475,7 @@ async function rejectedBy(promise: Promise<unknown>): Promise<Error> {
     if (error instanceof Error) {
       return error;
     }
-    throw new Error('bridge rejection was not normalized to Error');
+    throw new Error('bridge rejection was not normalized to Error', { cause: error });
   }
   throw new Error('bridge call unexpectedly resolved');
 }

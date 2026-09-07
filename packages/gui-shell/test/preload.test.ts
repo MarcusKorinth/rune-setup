@@ -1,42 +1,53 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { BridgeIpc } from '../src/preload/index.cts';
 import type { BridgeEvent } from '../src/preload/types.js';
-
-const { electron, restoreElectronRequire } = vi.hoisted(() => {
-  const electron = {
-    contextBridge: { exposeInMainWorld: vi.fn() },
-    ipcRenderer: { invoke: vi.fn(), on: vi.fn() },
-  };
-  const moduleApi = process.getBuiltinModule('node:module') as unknown as {
-    _load: (request: string, parent: unknown, isMain: boolean) => unknown;
-  };
-  const originalLoad = moduleApi._load;
-  moduleApi._load = (request, parent, isMain) =>
-    request === 'electron' ? electron : originalLoad(request, parent, isMain);
-
-  return {
-    electron,
-    restoreElectronRequire: () => {
-      moduleApi._load = originalLoad;
-    },
-  };
-});
-
-vi.mock('electron', () => electron);
 
 // @ts-expect-error tsc addresses the compiled file as .cjs; vitest resolves the source
 import { buildBridge } from '../src/preload/index.cts';
 
-restoreElectronRequire();
-
-function fakeIpc(): {
-  invoke: ReturnType<typeof vi.fn>;
-  on: ReturnType<typeof vi.fn>;
-} {
-  return { invoke: vi.fn().mockResolvedValue(undefined), on: vi.fn() };
+function fakeIpc() {
+  return {
+    invoke: vi.fn<BridgeIpc['invoke']>().mockResolvedValue(undefined),
+    on: vi.fn<BridgeIpc['on']>(),
+  };
 }
 
 describe('the preload bridge', () => {
+  it('loads in plain Node without an installed Electron package', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-preload-'));
+    try {
+      const entry = join(directory, 'preload.cjs');
+      const source = readFileSync(new URL('../src/preload/index.cts', import.meta.url), 'utf8');
+      const compiled = ts.transpileModule(source, {
+        compilerOptions: {
+          module: ts.ModuleKind.NodeNext,
+          target: ts.ScriptTarget.ES2022,
+          verbatimModuleSyntax: false,
+        },
+        fileName: 'preload.cts',
+      });
+      writeFileSync(entry, compiled.outputText);
+      const result = spawnSync(process.execPath, [entry], {
+        cwd: directory,
+        encoding: 'utf8',
+        timeout: 5000,
+        shell: false,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('exposes exactly the facade projection - no method more, none less', () => {
     const api = buildBridge(fakeIpc());
     expect(Object.keys(api).sort()).toEqual(
