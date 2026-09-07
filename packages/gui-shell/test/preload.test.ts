@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeIpc } from '../src/preload/index.cts';
@@ -23,7 +24,16 @@ describe('the preload bridge', () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-preload-'));
     try {
       const entry = join(directory, 'preload.cjs');
-      copyFileSync(new URL('../dist/preload/index.cjs', import.meta.url), entry);
+      const source = readFileSync(new URL('../src/preload/index.cts', import.meta.url), 'utf8');
+      const compiled = ts.transpileModule(source, {
+        compilerOptions: {
+          module: ts.ModuleKind.NodeNext,
+          target: ts.ScriptTarget.ES2022,
+          verbatimModuleSyntax: false,
+        },
+        fileName: 'preload.cts',
+      });
+      writeFileSync(entry, compiled.outputText);
       const result = spawnSync(process.execPath, [entry], {
         cwd: directory,
         encoding: 'utf8',
