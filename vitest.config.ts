@@ -35,5 +35,46 @@ export default defineConfig({
     passWithNoTests: false,
     // Several integration tests spawn real Node children; Windows CI contention can exceed Vitest's 5s default.
     testTimeout: 15_000,
+    coverage: {
+      provider: 'v8',
+      // Include unimported runtime files too. Child processes and native Electron
+      // tests run outside this collector; their execution is not credited here.
+      include: ['packages/*/src/**/*.{ts,cts}'],
+      exclude: ['**/*.d.ts'],
+      reporter: ['text', 'json', 'json-summary', 'html'],
+      reportOnFailure: true,
+      thresholds: {
+        // Floors are the lower Windows/Linux baseline rounded down. The global
+        // report includes the renderer, even though only native tests execute it.
+        statements: 87,
+        branches: 84,
+        functions: 92,
+        lines: 87,
+        'packages/engine/src/**/*.ts': {
+          statements: 95,
+          branches: 90,
+          functions: 96,
+          lines: 95,
+        },
+        'packages/cli/src/**/*.ts': {
+          statements: 94,
+          branches: 90,
+          functions: 90,
+          lines: 96,
+        },
+        'packages/gui-shell/src/main/**/*.ts': {
+          statements: 97,
+          branches: 91,
+          functions: 99,
+          lines: 97,
+        },
+        'packages/gui-shell/src/preload/**/*.{ts,cts}': {
+          statements: 92,
+          branches: 94,
+          functions: 100,
+          lines: 95,
+        },
+      },
+    },
   },
 });
