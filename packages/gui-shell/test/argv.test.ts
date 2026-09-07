@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import { UsageError, exitCodeFor } from '@rune/engine';
+import { RUNE_VERSION, UsageError, exitCodeFor } from '@rune/engine';
 
-import { parseShellArgv } from '../src/main/argv.js';
+import {
+  SHELL_VERSION_PROBE_FLAG,
+  isShellVersionProbe,
+  parseShellArgv,
+  shellVersionProbeOutput,
+} from '../src/main/argv.js';
+
+describe('the shell version probe', () => {
+  it('is a standalone argv mode that reports the bundled engine version', () => {
+    expect(isShellVersionProbe([SHELL_VERSION_PROBE_FLAG])).toBe(true);
+    expect(isShellVersionProbe([SHELL_VERSION_PROBE_FLAG, 'installer.yaml'])).toBe(false);
+    expect(JSON.parse(shellVersionProbeOutput())).toEqual({
+      protocolVersion: 1,
+      runeVersion: RUNE_VERSION,
+    });
+  });
+});
 
 describe('parseShellArgv', () => {
   it('parses a valid shell invocation', () => {
@@ -43,6 +59,13 @@ describe('parseShellArgv', () => {
 
     expect(Object.entries(invocation.overrides)).toEqual([['__proto__', 'last']]);
     expect(Object.hasOwn(invocation.overrides, '__proto__')).toBe(true);
+  });
+
+  it('accepts a literal manifest path beginning with -- before launcher options', () => {
+    expect(parseShellArgv(['--', '--installer.yaml', '--locale', 'de'])).toMatchObject({
+      manifestPath: '--installer.yaml',
+      locale: 'de',
+    });
   });
 
   it.each([

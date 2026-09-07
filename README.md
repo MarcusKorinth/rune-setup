@@ -11,16 +11,16 @@ installer, the command line or a CI/CD pipeline.
 
 ## Status
 
-RUNE's **v0.1 core (Milestones 0–2)** and the Milestone 3 Electron wizard shell are
-implemented: the engine, validation and schema commands, both CLI modes, the `Session`
-facade, mode-parity suite, sandboxed renderer, theme, and cross-platform shell smoke tests.
-Shell distribution through `rune gui install`, CLI launching through `rune run --gui`, and
-packaging remain planned in the [roadmap](docs/roadmap.md); the binding contract is documented
-in [docs/architecture.md](docs/architecture.md).
+The RUNE source tree is at **v0.1.0** — the source-complete MVP application: the engine
+library, `rune validate` / `rune schema` / `rune run` (non-interactive, interactive, and
+the graphical wizard via `rune run --gui`), locale overlays, the sandboxed Electron GUI
+shell, and its cross-platform smoke suite. [docs/architecture.md](docs/architecture.md) is
+the binding contract; [docs/roadmap.md](docs/roadmap.md) tracks what comes after (next:
+shell release engineering and `rune package`).
 
 Engine, CLI and GUI shell are TypeScript. Authors and CI need **Node 22 LTS** and
-install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`); end
-users of a packaged installer need nothing installed.
+install the CLI with `npm install -g @rune/cli` (or run it via `npx @rune/cli`). The
+future packaged installer produced by `rune package` needs nothing installed.
 
 ## The idea
 
@@ -82,7 +82,9 @@ Text `pattern` values are manifest-authored ECMAScript regular expressions. Valu
 against them are capped at 4 KiB, but regex execution has no timeout; avoid ambiguous or nested
 quantifiers such as `(a+)+`.
 
-The same manifest, three ways (CLI launching of the shell is still being wired):
+The same manifest, three ways. In the v0.1.0 source tree, shell developers point
+`RUNE_GUI_SHELL` at `packages/gui-shell`; `rune gui install` consumes the prebuilt shell
+artifacts that arrive with M4 release engineering:
 
 ```bash
 # Guided on a TTY; non-interactive fallback when stdin is not a TTY
@@ -90,32 +92,30 @@ rune run installer.yaml
 ```
 
 ```bash
-# Planned CLI integration:
-# rune run installer.yaml --gui
+rune run installer.yaml --gui
 ```
 
 ```bash
 rune run installer.yaml --non-interactive --values pipeline-values.yaml --result result.json
 ```
 
-## The graphical wizard shell (Milestone 3)
+## The graphical wizard
 
-The repository currently provides an Electron development shell for the wizard. Its main
-process hosts the RUNE engine in-process; its window is a pure renderer that reaches the
-engine only through an IPC bridge — all planning, validation and execution happen in the
-engine, exactly as in the two CLI modes. A planned packaging target is a self-contained
-end-user artifact that needs nothing installed, runs without admin rights, and renders
-identically on every platform because it ships its own rendering engine.
+The wizard shell is an Electron-based app whose main process hosts the RUNE engine
+in-process. Its window is a pure renderer that reaches the engine only through an IPC
+bridge — all planning, validation and execution happen in the engine, exactly as in the
+two CLI modes. Source checkouts launch it through `RUNE_GUI_SHELL`; M4 publishes the
+prebuilt author shell and the self-contained end-user artifact.
 
 - **Themeable** — set `gui.accentColor`, `gui.logo`, `gui.banner` or `gui.windowTitle`
   in the manifest, or point `gui.theme` at your own CSS file
 - **Multi-language** — every user-visible text (titles, descriptions, option labels,
   wizard buttons) is overridable per locale via `locales/<lang>.yaml` files, selected
   with `--locale` / `RUNE_LOCALE`
-- **Author tooling** — remaining Milestone 3 work includes `rune gui install`, which will
-  fetch the prebuilt shell for your OS into a per-user cache; `rune package` (roadmap
-  milestone 4) will bundle shell, engine and manifest into one portable end-user artifact
-  that needs nothing installed
+- **Author tooling** — once M4 release artifacts are available, `rune gui install` fetches
+  the prebuilt shell for your OS into a per-user cache without admin rights
+- **End-user delivery** — `rune package` (roadmap milestone 4) bundles shell, engine and
+  manifest into one portable artifact that needs nothing installed
 
 ## Design principles
 

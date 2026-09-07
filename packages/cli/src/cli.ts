@@ -10,6 +10,7 @@ import { Command, CommanderError } from 'commander';
 
 import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
 
+import { guiInstallCommand } from './guiCmd.js';
 import {
   escapeTerminalText,
   ExitWithCode,
@@ -28,7 +29,7 @@ import { validateCommand } from './validateCmd.js';
  * must not borrow the engine's number. Pinned to `packages/cli/package.json` by
  * `tests/package-versions.test.ts`.
  */
-export const RUNE_CLI_VERSION = '0.0.0';
+export const RUNE_CLI_VERSION = '0.1.0';
 
 export { ExitWithCode } from './io.js';
 export type { CliControl, CliIo } from './io.js';
@@ -108,9 +109,19 @@ export async function run(
     });
 
   program
+    .command('gui')
+    .description('manage the GUI shell')
+    .command('install')
+    .description('fetch the prebuilt GUI shell for this engine version into the per-user cache')
+    .action(async () => {
+      await guiInstallCommand(io);
+    });
+
+  program
     .command('run')
     .description('run a manifest — guided or automated')
     .argument('<manifest>', 'path to the manifest file')
+    .option('--gui', 'run the graphical wizard from the installed GUI shell')
     .option('--non-interactive', 'never prompt; missing required inputs fail')
     .option('--dry-run', 'render the plan and execute nothing')
     .option('--set <key=value>', 'set an input (layer 4)', collect, [])

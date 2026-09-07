@@ -1,6 +1,6 @@
 {
   "name": "@rune/engine",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "RUNE engine — manifest, value resolution, planning and execution (library)",
   "license": "MIT",
   "type": "module",

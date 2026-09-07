@@ -45,3 +45,47 @@
   when that period expires. Then implement it once in the runner beside the existing termination
   release, with tests covering a descendant that inherits the pipes on both platforms and a case
   that proves no complete line is lost.
+
+## PR11-D001 — Define a deadline for the GUI shell version probe
+
+- **Priority:** P2 (startup availability)
+- **Affected components:** `packages/cli/src/guiCmd.ts`, GUI shell version handshake
+- **Description:** A shell that starts but never closes can leave the version probe waiting
+  indefinitely.
+- **Reason for deferral:** A correct fix needs a documented timeout policy, child-tree cleanup,
+  and deterministic error/result ownership. No timeout is part of the current §9.4 contract, and
+  adding an arbitrary value in PR #11 would be hardening rather than completing its launch flow.
+- **Risk:** `rune run --gui` can hang during startup when a corrupt shell override never answers
+  the probe.
+- **Recommended next step:** Define the handshake deadline and timeout exit/result contract, then
+  add deterministic probe-timeout and cleanup tests on Windows and Linux.
+
+## PR11-D002 — Make GUI cache promotion crash-consistent
+
+- **Priority:** P2 (installation recovery)
+- **Affected components:** `packages/cli/src/guiCmd.ts`, per-user GUI shell cache
+- **Description:** A hard process or power failure between moving the current cache to its backup
+  and promoting staging can leave no live target, although the backup still exists.
+- **Reason for deferral:** Crash recovery requires a transaction/recovery policy or immutable
+  versioned targets plus a pointer. That is broader than the PR's atomic error-path fix and belongs
+  with M4 release engineering.
+- **Risk:** An interrupted replacement can make a previously working cached shell appear
+  uninstalled until repaired.
+- **Recommended next step:** Choose a recovery model, recover orphaned backups at install/launch,
+  and test injected crashes plus concurrent installers.
+
+## PR11-D003 — Add GUI shell cancellation readiness signaling
+
+- **Priority:** P2 (startup cancellation)
+- **Affected components:** `packages/cli/src/guiCmd.ts`, `packages/gui-shell/src/main/index.ts`
+- **Description:** On POSIX, a forwarded SIGTERM can arrive after the workflow shell process is
+  spawned but before its JavaScript SIGTERM relay is installed, allowing default process
+  termination and a resultless exit 70.
+- **Reason for deferral:** Closing the race reliably needs an explicit parent/child readiness
+  handshake; a delay or earlier listener merely narrows it. Introducing that protocol now would
+  be disproportionate hardening for PR #11.
+- **Risk:** A cancellation issued in the narrow startup window can be reported as an internal
+  shell crash instead of cancellation 6.
+- **Recommended next step:** Add a private readiness token or channel, buffer parent cancellation
+  until the shell acknowledges its relay, and test the pre-ack and post-ack paths on Windows and
+  Linux.

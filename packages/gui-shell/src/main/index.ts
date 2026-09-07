@@ -40,7 +40,12 @@ import {
   type ThemeConfig,
 } from '@rune/engine';
 
-import { parseShellArgv, type ShellInvocation } from './argv.js';
+import {
+  isShellVersionProbe,
+  parseShellArgv,
+  shellVersionProbeOutput,
+  type ShellInvocation,
+} from './argv.js';
 import {
   project,
   projectEvent,
@@ -147,6 +152,14 @@ export async function main(
 ): Promise<void> {
   // Install both error owners before argv parsing or Electron readiness can emit a diagnostic.
   const output = guardShellStreams(processStreams);
+  if (isShellVersionProbe(argv)) {
+    await output.stdout.writeAndWait(shellVersionProbeOutput());
+    const exitCode = output.stdout.failed() ? 70 : 0;
+    output.dispose();
+    app.exit(exitCode);
+    return;
+  }
+
   let exitCode: number;
   let invocation: ShellInvocation | undefined;
   let openingSession = false;

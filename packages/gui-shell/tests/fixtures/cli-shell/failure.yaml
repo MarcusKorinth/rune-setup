@@ -1,0 +1,10 @@
+schemaVersion: 1
+product:
+  name: RUNE CLI shell failure smoke
+  version: 1.0.0
+steps:
+  - id: cli-shell-failure
+    title: Report a real step failure
+    run:
+      command: node
+      args: [failure-step.cjs]

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,7 @@ import {
   CancelledError,
   ExecutionError,
   ManifestError,
+  RUNE_VERSION,
   PlatformError,
   RESULT_LOG_COLLISION_MESSAGE,
   Session,
@@ -124,7 +126,7 @@ import {
   windowOptions,
   type SigtermSource,
 } from '../src/main/index.js';
-import type { ShellInvocation } from '../src/main/argv.js';
+import { SHELL_VERSION_PROBE_FLAG, type ShellInvocation } from '../src/main/argv.js';
 import { completeWrite } from './stream-fixture.js';
 
 class FakeSigtermSource implements SigtermSource {
@@ -383,6 +385,43 @@ describe('the GUI shell main lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(app.whenReady).mockResolvedValue();
+  });
+
+  it('answers the version probe without waiting for Electron readiness', async () => {
+    const stdout = new PassThrough();
+    const chunks: string[] = [];
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+
+    await main([SHELL_VERSION_PROBE_FLAG], new FakeSigtermSource(), {
+      stdout,
+      stderr: new PassThrough(),
+    });
+
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(0);
+    expect(JSON.parse(chunks.join(''))).toEqual({
+      protocolVersion: 1,
+      runeVersion: RUNE_VERSION,
+    });
+  });
+
+  it('reports a guarded probe stdout failure without entering Electron', async () => {
+    const stdout = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback(Object.assign(new Error('private write failure'), { code: 'EIO' }));
+      },
+    });
+    const stderr = new PassThrough();
+    const diagnostics: string[] = [];
+    stderr.on('data', (chunk: Buffer) => diagnostics.push(chunk.toString()));
+
+    await main([SHELL_VERSION_PROBE_FLAG], new FakeSigtermSource(), { stdout, stderr });
+
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.exit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledWith(70);
+    expect(diagnostics.join('')).toBe('could not write the requested machine output to stdout\n');
   });
 
   it.each(['exact', 'normalized'] as const)(

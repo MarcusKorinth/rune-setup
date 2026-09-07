@@ -1,0 +1,5 @@
+{
+  "name": "rune-cli-shell-smoke-fixture",
+  "private": true,
+  "main": "./main.cjs"
+}

@@ -20,25 +20,14 @@
 - **Recommended next step:** Update the lockfile to a compatible fixed release (3.1.6 or
   newer) in a separate dependency change, then run the standard Windows/Linux checks.
 
-## PR10-O001 — Preserve arbitrary values through the Windows Electron launcher
+## PR11-O004 — Preserve structured errors across the GUI bridge
 
-- **Priority:** P2 (future launcher compatibility)
-- **Affected components:** Planned `rune run --gui` invocation construction and packaged
-  shell/headless entry points; Electron's native Windows bootstrap.
-- **Description:** Electron 39.8.10 rejects a URL-like argument followed by other arguments
-  before application JavaScript starts. A value such as `summaryBoundary=failed: 0` triggers
-  this rule and can terminate with Windows code `4294967295`, without a RUNE diagnostic or
-  result. This was reproduced while constructing a direct Electron smoke invocation.
-  See the versioned [argument guard](https://github.com/electron/electron/blob/v39.8.10/shell/app/command_line_args.cc#L18-L49)
-  and [Windows entry point](https://github.com/electron/electron/blob/v39.8.10/shell/app/electron_main_win.cc#L209-L218).
-- **Reason for separate work:** CLI-to-shell argument forwarding and packaged entry points
-  are explicitly outside PR #10's wizard implementation. The runtime guard executes before
-  the shell can handle an error; changing or disabling it is not appropriate here. The GUI
-  accepts these values through ordinary answers, and values files avoid this native argument
-  interpretation.
-- **Risk:** A future launcher that forwards arbitrary input values without a supported
-  argument boundary can fail before the engine opens, violating expected exit/result handling.
-- **Recommended next step:** When implementing the launcher, place application arguments
-  behind Electron's supported `--` boundary and account for it at each entry point. Add a
-  real Windows test with colon-bearing values followed by further arguments, for windowed
-  and headless launches. Retain Electron's native security checks.
+- **Priority:** P2 (bridge contract)
+- **Affected components:** GUI main/preload bridge and renderer error handling
+- **Description:** The bridge currently flattens a `RuneError` into an ordinary error message even
+  though the architecture calls for code, message, location, and exit code.
+- **Reason for separate work:** A tagged error envelope requires a coordinated main, preload, and
+  renderer API change beyond PR #11's launch integration.
+- **Risk:** Error code, exit code, and source location are lost or coupled to message parsing.
+- **Recommended next step:** Define a JSON-safe tagged error envelope and test every `RuneError`
+  class plus masking and unknown errors.

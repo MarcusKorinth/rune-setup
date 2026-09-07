@@ -39,6 +39,8 @@ export interface Interaction {
   readonly isTTY: boolean;
   /** Raw prompt text, no implied newline — stderr in the real process. */
   write(text: string): void;
+  /** Legacy test seam; the executable host owns forced signal exits in `main.ts`. */
+  readonly forceExit?: ((code: number) => void) | undefined;
 }
 
 /** Everything the readline layer needs to render and ask one input question. */

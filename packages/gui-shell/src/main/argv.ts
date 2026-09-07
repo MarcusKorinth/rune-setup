@@ -1,10 +1,21 @@
-import { UsageError } from '@rune/engine';
+import { RUNE_VERSION, UsageError } from '@rune/engine';
 
 /**
  * The shell's invocation (docs/architecture.md §9.4): `rune run --gui` launches the shell
  * with the run's own flags, and main opens the Session from them — the renderer never
  * supplies a manifest path or any layer value.
  */
+
+export const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
+
+/** The probe is intentionally produced from the engine actually bundled with this shell. */
+export function shellVersionProbeOutput(): string {
+  return JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }) + '\n';
+}
+
+export function isShellVersionProbe(argv: readonly string[]): boolean {
+  return argv.length === 1 && argv[0] === SHELL_VERSION_PROBE_FLAG;
+}
 
 export interface ShellInvocation {
   readonly manifestPath: string;
@@ -36,6 +47,13 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
       return value;
     };
     switch (argument) {
+      case '--':
+        if (manifestPath !== undefined) {
+          throw new UsageError('the shell accepts exactly one manifest path');
+        }
+        // Launcher protocol: the literal manifest path comes first, then RUNE options.
+        manifestPath = next();
+        break;
       case '--set': {
         const pair = next();
         const separator = pair.indexOf('=');

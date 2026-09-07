@@ -6,8 +6,11 @@ import { CLI_CANCELLATION_SIGNALS, createSignalController } from './signals.js';
 
 const cancel = new CancelToken();
 const signals = createSignalController(cancel, (code) => process.exit(code));
-for (const signal of CLI_CANCELLATION_SIGNALS) {
-  process.on(signal, signals.handle);
+const signalHandlers = CLI_CANCELLATION_SIGNALS.map(
+  (signal) => [signal, () => signals.handle(signal)] as const,
+);
+for (const [signal, handler] of signalHandlers) {
+  process.on(signal, handler);
 }
 
 try {
@@ -22,7 +25,7 @@ try {
     },
   );
 } finally {
-  for (const signal of CLI_CANCELLATION_SIGNALS) {
-    process.off(signal, signals.handle);
+  for (const [signal, handler] of signalHandlers) {
+    process.off(signal, handler);
   }
 }

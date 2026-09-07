@@ -446,9 +446,15 @@ export function secretArgumentWarnings(manifest: ManifestV1): readonly string[] 
   const warnings: string[] = [];
 
   for (const { path, command } of commandFields(manifest)) {
-    for (const [position, argument] of command.args.entries()) {
-      const argumentPath = [...path, 'args', position];
-      const scan = scanTemplate(argument);
+    const argvFields = [
+      { path: [...path, 'command'] as const, text: command.command },
+      ...command.args.map((text, position) => ({
+        path: [...path, 'args', position] as const,
+        text,
+      })),
+    ];
+    for (const field of argvFields) {
+      const scan = scanTemplate(field.text);
       if (!scan.ok) {
         continue;
       }
@@ -473,7 +479,7 @@ export function secretArgumentWarnings(manifest: ManifestV1): readonly string[] 
         }
         warned.add(resolved.reference.id);
         warnings.push(
-          `${formatPath(argumentPath)} interpolates secret input "${resolved.reference.id}" into argv, which may be visible in OS process listings — use env: instead`,
+          `${formatPath(field.path)} interpolates secret input "${resolved.reference.id}" into argv, which may be visible in OS process listings — use env: instead`,
         );
       }
     }

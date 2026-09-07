@@ -25,7 +25,8 @@ import {
 } from '@rune/engine';
 import type { ExecutionPlan, RunMode, RunResult, StringTable } from '@rune/engine';
 
-import { parseOverrides, parsePlatform } from './args.js';
+import { parseOverrides, parsePlatform, type RunFlags } from './args.js';
+import { launchGui } from './guiCmd.js';
 import {
   ExitWithCode,
   humanStderr,
@@ -43,24 +44,21 @@ import {
   type Interaction,
 } from './prompt.js';
 
-export interface RunFlags {
-  readonly nonInteractive?: boolean | undefined;
-  readonly dryRun?: boolean | undefined;
-  readonly set?: readonly string[] | undefined;
-  readonly values?: readonly string[] | undefined;
-  readonly result?: string | undefined;
-  readonly logFile?: string | undefined;
-  readonly locale?: string | undefined;
-  readonly platform?: string | undefined;
-}
+export type { RunFlags } from './args.js';
 
 export async function runCommand(
   manifestPath: string,
   flags: RunFlags,
   io: CliIo,
-  control: CliControl,
-  interaction: Interaction,
+  controlOrInteraction: CliControl | Interaction,
+  suppliedInteraction?: Interaction,
 ): Promise<void> {
+  const legacyInteraction = isInteraction(controlOrInteraction) ? controlOrInteraction : undefined;
+  const control: CliControl = isInteraction(controlOrInteraction) ? {} : controlOrInteraction;
+  const interaction = suppliedInteraction ?? legacyInteraction;
+  if (interaction === undefined) {
+    throw new InternalError('the run driver requires an interaction boundary');
+  }
   // Session.open anchors relative manifest paths to the invocation cwd, against the same cwd
   // this reads: nothing awaits in between. Preserve that identity for an early open failure,
   // while the session itself keeps the operator's spelling for the lines that name it (§10).
@@ -75,8 +73,9 @@ export async function runCommand(
           path: resultOption === '-' ? '-' : resolve(resultOption),
           announcement: resultOption,
         };
-  const interactive = flags.nonInteractive !== true && interaction.isTTY;
-  const mode: RunMode = interactive ? 'interactive' : 'non-interactive';
+  const interactive = flags.gui !== true && flags.nonInteractive !== true && interaction.isTTY;
+  const mode: RunMode =
+    flags.gui === true ? 'gui' : interactive ? 'interactive' : 'non-interactive';
   let platform: ReturnType<typeof parsePlatform> = undefined;
   let session: Session | undefined;
   let strings: StringTable | undefined;
@@ -117,6 +116,47 @@ export async function runCommand(
       sameSinkPath(deliveredPath, resolve(flags.logFile))
     ) {
       throw new UsageError(RESULT_LOG_COLLISION_MESSAGE);
+    }
+
+    if (flags.gui === true) {
+      if (flags.nonInteractive === true || flags.dryRun === true) {
+        throw new UsageError('--gui combines with neither --non-interactive nor --dry-run');
+      }
+      if (resultOption === '-') {
+        throw new UsageError('--gui has no stdout contract; use --result <path>');
+      }
+      const overrides = parseOverrides(flags.set ?? []);
+      try {
+        await launchGui(manifestPath, flags, io, interaction, control);
+      } catch (error) {
+        if (!(error instanceof CancelledError)) {
+          throw error;
+        }
+        // The shell has not started, so the CLI validates the invocation before it owns the
+        // cancellation outcome. Execution remains exclusively in the shell on ordinary GUI
+        // launches.
+        session = await Session.open(manifestPath, {
+          mode: 'gui',
+          values: flags.values ?? [],
+          overrides,
+          locale: flags.locale,
+          logFile: flags.logFile,
+          ...(resultDestination === undefined ? {} : { resultDestination: resultDestination.path }),
+        });
+        if (resultDestination !== undefined) {
+          const result = createFailureResult({
+            error,
+            manifestPath: absoluteManifestPath,
+            dryRun: false,
+            mode: 'gui',
+            session,
+          });
+          deliveryStarted = true;
+          await deliverResult(result, resultDestination, io, undefined, false);
+        }
+        throw new ExitWithCode(6);
+      }
+      return;
     }
 
     session = await Session.open(manifestPath, {
@@ -260,6 +300,10 @@ export async function runCommand(
   } finally {
     prompter?.close();
   }
+}
+
+function isInteraction(value: CliControl | Interaction): value is Interaction {
+  return 'input' in value && 'isTTY' in value && 'write' in value;
 }
 
 /** `--result -` prints to stdout; anything else is a path the engine writes atomically. */

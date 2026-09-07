@@ -1,10 +1,8 @@
 # @rune/cli
 
-The `rune` command line supports `rune validate`, `rune schema`, and `rune run`
-(interactive on a TTY or explicit/TTY-degraded non-interactive, including `--dry-run`) —
-see [docs/architecture.md](../../docs/architecture.md) §4.1. Install with
-`npm install -g @rune/cli` (Node 22 LTS). The Milestone 3 commands `rune gui install`
-and `rune run --gui` remain planned.
+The `rune` command line: `rune validate`, `rune run` (non-interactive, interactive, or
+`--gui`, with TTY-degraded non-interactive behavior), `rune schema`, and
+`rune gui install` — see [docs/architecture.md](../../docs/architecture.md) §4.1.
+Install with `npm install -g @rune/cli` (Node 22 LTS).
 
-Milestones 0–2 / v0.1 core are implemented, including the interactive CLI and mode-parity
-contract suite. See [docs/roadmap.md](../../docs/roadmap.md) for the remaining plan.
+MVP (v0.1.0): milestones 0–3 complete. See [docs/roadmap.md](../../docs/roadmap.md).

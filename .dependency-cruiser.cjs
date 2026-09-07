@@ -27,7 +27,7 @@ module.exports = {
       comment:
         'docs/architecture.md §9.4: the shell main process imports the engine like the CLI does',
       severity: 'error',
-      from: { path: '^packages/gui-shell/' },
+      from: { path: '^packages/gui-shell/src/' },
       to: { path: '^packages/engine/src/', pathNot: '^packages/engine/src/index\\.ts$' },
     },
     {

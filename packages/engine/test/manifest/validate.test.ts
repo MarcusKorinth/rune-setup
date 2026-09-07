@@ -120,6 +120,7 @@ describe('validateManifest', () => {
     );
 
     expect(report.warnings).toEqual([
+      'steps[0].run.command interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
       'steps[0].run.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
       'steps[0].run.args[1] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
       'steps[1].run.windows.args[0] interpolates secret input "token" into argv, which may be visible in OS process listings — use env: instead',
