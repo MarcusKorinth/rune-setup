@@ -90,6 +90,13 @@ it('terminates a real hung version probe and its descendant before rejecting sta
     }
     await pending;
     vi.unstubAllEnvs();
-    rmSync(directory, { recursive: true, force: true });
+    // Windows can retain filesystem locks after process exit. Retry cleanup only;
+    // the process-tree assertions above and persistent removal failures remain strict.
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === 'win32' ? 5 : 0,
+      retryDelay: 100,
+    });
   }
 }, 25000);
