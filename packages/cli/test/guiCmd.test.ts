@@ -275,6 +275,25 @@ describe('rune gui install temporary archive', () => {
 });
 
 describe('rune gui install download failures', () => {
+  it('escapes control characters in a release status diagnostic', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        body: null,
+        status: 503,
+        statusText: 'unavailable\nFORGED',
+      })),
+    );
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      `no shell release for engine ${RUNE_VERSION} (503 unavailable\\nFORGED)`,
+    );
+  });
+
   it('reports a rejected fetch as an installation failure without invoking tar', async () => {
     const existingShell = join(shellCacheDir(), shellBinary);
     mkdirSync(dirname(existingShell), { recursive: true });
@@ -378,6 +397,18 @@ describe('rune gui install download failures', () => {
 });
 
 describe('rune gui install atomic cache promotion', () => {
+  it('escapes control characters in the installed cache path', async () => {
+    process.env['LOCALAPPDATA'] = join(testDirectory, 'cache\u2028FORGED');
+    process.env['XDG_CACHE_HOME'] = join(testDirectory, 'cache\u2028FORGED');
+    const io = capture();
+
+    await guiInstallCommand(io);
+
+    expect(io.stderr).toHaveBeenCalledWith(
+      `GUI shell ${RUNE_VERSION} installed to ${shellCacheDir().replace('\u2028', '\\u2028')}`,
+    );
+  });
+
   it('reports cache-directory setup failures as installation failures', async () => {
     mkdirSyncMock.mockImplementationOnce(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
@@ -827,14 +858,16 @@ describe('rune run --gui shell version handshake', () => {
       .mockImplementationOnce(() =>
         probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION })),
       )
-      .mockImplementationOnce(() => errorProcess('permission denied'));
+      .mockImplementationOnce(() => errorProcess('permission denied\nFORGED'));
     const io = capture();
 
     await expect(launchGui('installer.yaml', {}, io, interaction)).rejects.toMatchObject({
       code: 70,
     });
 
-    expect(io.stderr).toHaveBeenCalledWith('could not launch the GUI shell: permission denied');
+    expect(io.stderr).toHaveBeenCalledWith(
+      'could not launch the GUI shell: permission denied\\nFORGED',
+    );
     expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });

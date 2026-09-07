@@ -24,7 +24,7 @@ import { pipeline } from 'node:stream/promises';
 import { CancelledError, PlatformError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
-import { ExitWithCode, type CliControl, type CliIo } from './io.js';
+import { ExitWithCode, humanStderr, type CliControl, type CliIo } from './io.js';
 import type { Interaction } from './prompt.js';
 
 /** GitHub coordinates of the shell releases — one release per engine version (§9.4). */
@@ -95,7 +95,8 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
   try {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'rune-gui-install-'));
   } catch {
-    io.stderr(
+    humanStderr(
+      io,
       'could not create temporary storage for the GUI shell — check temporary-directory permissions and available disk space',
     );
     throw new ExitWithCode(1);
@@ -104,18 +105,20 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
   let stagingDirectory: string | undefined;
 
   try {
-    io.stderr(`fetching ${url}`);
+    humanStderr(io, `fetching ${url}`);
     let response: Response;
     try {
       response = await fetch(url);
     } catch {
-      io.stderr(
+      humanStderr(
+        io,
         'could not fetch the GUI shell release — check your network connection and try again',
       );
       throw new ExitWithCode(1);
     }
     if (!response.ok || response.body === null) {
-      io.stderr(
+      humanStderr(
+        io,
         `no shell release for engine ${RUNE_VERSION} (${response.status} ${response.statusText})`,
       );
       throw new ExitWithCode(1);
@@ -134,13 +137,15 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
       await pipeline(download, output);
     } catch (cause) {
       if (firstDownloadError === 'source') {
-        io.stderr(
+        humanStderr(
+          io,
           'downloading the GUI shell release failed — check your network connection and try again',
         );
         throw new ExitWithCode(1);
       }
       if (firstDownloadError === 'output') {
-        io.stderr(
+        humanStderr(
+          io,
           'could not write the GUI shell archive to temporary storage — check temporary-directory permissions and available disk space',
         );
         throw new ExitWithCode(1);
@@ -153,7 +158,8 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
       mkdirSync(cacheParent, { recursive: true });
       stagingDirectory = mkdtempSync(join(cacheParent, '.rune-shell-stage-'));
     } catch {
-      io.stderr(
+      humanStderr(
+        io,
         `could not prepare the GUI shell cache at ${cacheParent} — check directory permissions and available disk space`,
       );
       throw new ExitWithCode(1);
@@ -169,7 +175,7 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
       child.on('close', (exit) => resolve(exit ?? 70));
     });
     if (code !== 0) {
-      io.stderr(`unpacking ${archive} failed (tar exit ${code})`);
+      humanStderr(io, `unpacking ${archive} failed (tar exit ${code})`);
       throw new ExitWithCode(1);
     }
 
@@ -178,19 +184,20 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     try {
       stagedShellIsFile = statSync(stagedShell, { throwIfNoEntry: false })?.isFile() === true;
     } catch {
-      io.stderr(
+      humanStderr(
+        io,
         `could not inspect the unpacked GUI shell at ${stagedShell} — check cache permissions`,
       );
       throw new ExitWithCode(1);
     }
     if (!stagedShellIsFile) {
-      io.stderr(`unpacked shell is missing the expected binary ${SHELL_BINARY}`);
+      humanStderr(io, `unpacked shell is missing the expected binary ${SHELL_BINARY}`);
       throw new ExitWithCode(1);
     }
 
     promoteStagedDirectory(stagingDirectory, target, io);
     stagingDirectory = undefined;
-    io.stderr(`GUI shell ${RUNE_VERSION} installed to ${target}`);
+    humanStderr(io, `GUI shell ${RUNE_VERSION} installed to ${target}`);
   } finally {
     if (stagingDirectory !== undefined) {
       removeBestEffort(stagingDirectory, io);
@@ -206,7 +213,10 @@ function promoteStagedDirectory(stagingDirectory: string, target: string, io: Cl
     try {
       renameSync(target, backup);
     } catch {
-      io.stderr(`could not preserve the existing GUI shell cache at ${target} — check permissions`);
+      humanStderr(
+        io,
+        `could not preserve the existing GUI shell cache at ${target} — check permissions`,
+      );
       throw new ExitWithCode(1);
     }
   }
@@ -218,13 +228,14 @@ function promoteStagedDirectory(stagingDirectory: string, target: string, io: Cl
       try {
         renameSync(backup, target);
       } catch {
-        io.stderr(
+        humanStderr(
+          io,
           `could not install the GUI shell or restore the previous cache; the recoverable backup remains at ${backup}`,
         );
         throw new ExitWithCode(1);
       }
     }
-    io.stderr(`could not install the GUI shell to ${target} — check cache permissions`);
+    humanStderr(io, `could not install the GUI shell to ${target} — check cache permissions`);
     throw new ExitWithCode(1);
   }
 
@@ -237,7 +248,7 @@ function removeBestEffort(path: string, io: CliIo): void {
   try {
     rmSync(path, { recursive: true, force: true });
   } catch {
-    io.stderr(`warning: could not remove temporary GUI shell files at ${path}`);
+    humanStderr(io, `warning: could not remove temporary GUI shell files at ${path}`);
   }
 }
 
@@ -379,7 +390,7 @@ export async function launchGui(
 
     const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
       launchedChild.on('error', (cause) => {
-        io.stderr(`could not launch the GUI shell: ${cause.message}`);
+        humanStderr(io, `could not launch the GUI shell: ${cause.message}`);
         resolve({ code: null, failed: true });
       });
       launchedChild.on('close', (code) => resolve({ code, failed: false }));
