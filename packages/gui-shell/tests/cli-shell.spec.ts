@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,10 @@ import { chromium, expect, test, type Browser } from '@playwright/test';
 const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliMain = join(packageDirectory, '..', 'cli', 'dist', 'main.js');
 const shellFixtureDirectory = join(packageDirectory, 'tests', 'fixtures', 'cli-shell');
+const linuxLauncher = join(shellFixtureDirectory, 'launch-linux.sh');
+const electronExecutable = createRequire(join(packageDirectory, 'package.json'))(
+  'electron',
+) as string;
 const endpoint = 'https://example.test:8443/a:b';
 
 interface GuiResult {
@@ -83,9 +88,18 @@ async function launchCliShell(
     resultPath,
     ...(manifest === 'success.yaml' ? ['--set', `endpoint=${endpoint}`] : []),
   ];
+  const environment = {
+    ...process.env,
+    RUNE_GUI_SHELL: process.platform === 'linux' ? linuxLauncher : shellFixtureDirectory,
+    RUNE_TEST_USER_DATA: userData,
+  };
+  if (process.platform === 'linux') {
+    environment.RUNE_TEST_ELECTRON = electronExecutable;
+    environment.RUNE_TEST_SHELL = shellFixtureDirectory;
+  }
   const child = spawn(process.execPath, args, {
     cwd: packageDirectory,
-    env: { ...process.env, RUNE_GUI_SHELL: shellFixtureDirectory, RUNE_TEST_USER_DATA: userData },
+    env: environment,
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   });
@@ -124,6 +138,10 @@ async function launchCliShell(
     return { child, browser, exitCode };
   } catch (error) {
     await stopCli(child, exitCode);
+    if (stderr.length > 0) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message}\nCLI shell stderr:\n${stderr.slice(-4_096)}`, { cause: error });
+    }
     throw error;
   }
 }
