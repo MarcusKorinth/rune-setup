@@ -18,13 +18,25 @@ export interface RuneBridge {
   describe(): Promise<BridgeResult>;
   execute(): Promise<BridgeResult>;
   cancel(): Promise<void>;
-  getStrings(): Promise<Readonly<Record<string, string>>>;
+  getStrings(): Promise<BridgeStrings>;
   getThemeConfig(): Promise<BridgeTheme>;
   /** The §10 warnings the Result page surfaces — same run, same warnings, every mode. */
-  warnings(): Promise<readonly string[]>;
+  warnings(): Promise<readonly BridgeWarning[]>;
   /** Signals that the result page is done and the shell may close with the run's code. */
   done(): Promise<void>;
   onEvent(listener: (event: BridgeEvent) => void): void;
+}
+
+/** One current renderer presentation snapshot composed by main from the session string table. */
+export interface BridgeStrings {
+  /** The engine-selected locale, or built-in English defaults. */
+  readonly locale: string | null;
+  readonly entries: Readonly<Record<string, string>>;
+  readonly displayProduct: {
+    readonly name: string;
+    readonly version: string;
+    readonly welcome: string;
+  };
 }
 
 export type BridgeValueSource = 'default' | 'values' | 'environment' | 'set' | 'answer';
@@ -38,6 +50,13 @@ export interface BridgeInputRejection {
   };
   /** Plain non-secret data only; rejected secret candidates are never projected. */
   readonly candidate?: string | boolean | readonly string[];
+}
+
+/** Human-only state for a value rejected through the live GUI edit path. */
+export interface BridgeInputEditRejection {
+  /** Retained only for public freeform string controls; never present for secrets. */
+  readonly candidate?: string;
+  readonly displayText: string;
 }
 
 export type BridgeInputType =
@@ -84,6 +103,8 @@ interface BridgeInputBase {
   readonly ignored?: BridgeValueSource;
   /** Present when a recoverable layers 1–4 value failed engine validation. */
   readonly rejection?: BridgeInputRejection;
+  /** Present when the latest layer-5 edit was rejected by the engine. */
+  readonly editRejection?: BridgeInputEditRejection;
 }
 
 /**
@@ -113,13 +134,35 @@ export type BridgeInput =
 
 /** JSON-safe projection of the frozen ExecutionPlan returned by Session.plan(). */
 export interface BridgePlan {
+  readonly planSchemaVersion: 1;
   readonly manifestPath: string;
+  readonly manifestSha256: string;
   readonly locale: string | null;
   readonly platform: 'windows' | 'linux';
   readonly preview: boolean;
-  readonly failFast: boolean;
-  readonly logFile?: string;
+  readonly resolvedInputs: readonly BridgePlanInput[];
+  readonly executionOptions: BridgePlanExecutionOptions;
   readonly steps: readonly BridgePlannedStep[];
+}
+
+/** JSON-safe final input state from the static execution plan. */
+export interface BridgePlanInput {
+  readonly id: string;
+  /** SecretString serializes to the literal mask `***`. */
+  readonly value: string | boolean | readonly string[];
+  /** Omitted when no source supplied the input. */
+  readonly source?: BridgeValueSource;
+  readonly secret: boolean;
+  readonly enabled: boolean;
+  /** Omitted unless a supplied value was discarded for a disabled input. */
+  readonly ignored?: BridgeValueSource;
+}
+
+/** JSON-safe execution settings captured in the static plan. */
+export interface BridgePlanExecutionOptions {
+  readonly failFast: boolean;
+  /** Omitted when the manifest and invocation specify no log file. */
+  readonly logFile?: string;
 }
 
 export type BridgePlannedStep =
@@ -128,6 +171,7 @@ export type BridgePlannedStep =
       readonly title: string;
       readonly state: 'PENDING';
       readonly command: BridgePlannedCommand;
+      readonly displayCommand: string;
     }
   | {
       readonly id: string;
@@ -158,7 +202,13 @@ export interface BridgeStep {
   readonly durationMs: number;
   readonly command: readonly string[] | null;
   readonly skipReason: string | null;
-  readonly outputTail: readonly { readonly stream: BridgeStream; readonly line: string }[] | null;
+  readonly outputTail?: readonly { readonly stream: BridgeStream; readonly line: string }[];
+  readonly displayTitle: string;
+}
+
+export interface BridgeWarning {
+  readonly message: string;
+  readonly displayText: string;
 }
 
 export interface BridgeResultInput {
@@ -168,7 +218,7 @@ export interface BridgeResultInput {
   readonly source: BridgeValueSource | null;
   readonly secret: boolean;
   readonly enabled: boolean;
-  readonly ignored: 'input disabled' | null;
+  readonly ignored?: 'input disabled';
 }
 
 export type BridgeRunStatus =
@@ -223,6 +273,7 @@ export interface BridgeResult {
   readonly nothingExecuted: boolean;
   readonly inputs: readonly BridgeResultInput[];
   readonly steps: readonly BridgeStep[];
+  readonly displaySummary: string;
 }
 
 export interface BridgeTheme {
@@ -237,19 +288,21 @@ export interface BridgeTheme {
 }
 
 export type BridgeEvent =
-  | { readonly kind: 'runStarted'; readonly plan: BridgePlan }
+  | { readonly kind: 'runStarted'; readonly plan: BridgePlan; readonly displayText: string }
   | {
       readonly kind: 'stepStarted';
       readonly stepId: string;
       readonly index: number;
       readonly total: number;
       readonly title: string;
+      readonly displayText: string;
     }
   | {
       readonly kind: 'stepOutput';
       readonly stepId: string;
       readonly stream: BridgeStream;
       readonly line: string;
+      readonly displayText: string;
     }
   | {
       readonly kind: 'stepFinished';
@@ -258,5 +311,6 @@ export type BridgeEvent =
       /** Absent when the step has no exit code. */
       readonly exitCode?: number;
       readonly durationMs: number;
+      readonly displayText: string;
     }
   | { readonly kind: 'runFinished'; readonly result: BridgeResult };

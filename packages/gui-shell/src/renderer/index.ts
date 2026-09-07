@@ -12,6 +12,8 @@ import type {
   BridgeInput,
   BridgePlan,
   BridgeResult,
+  BridgeStrings,
+  BridgeWarning,
   RuneBridge,
 } from '../preload/types.js';
 
@@ -24,6 +26,13 @@ declare global {
 const INPUTS_PER_PAGE = 5;
 const LIVE_LOG_MAX_CHARACTERS = 20_000;
 const LIVE_LOG_PENDING_MAX_CHARACTERS = LIVE_LOG_MAX_CHARACTERS * 2;
+
+interface FieldIds {
+  readonly control: string;
+  readonly label: string;
+  readonly description: string;
+  readonly error: string;
+}
 
 /** The renderer's field registry — asserted against the manifest's types at open (§9.3). */
 const RENDERABLE_TYPES = new Set([
@@ -41,34 +50,30 @@ type PageName = 'welcome' | 'inputs' | 'summary' | 'progress' | 'result';
 interface State {
   strings: Readonly<Record<string, string>>;
   inputs: readonly BridgeInput[];
-  /** Ids the engine still needs — the ONLY completeness authority the renderer trusts. */
+  /** Ids the engine still needs, combined with projected rejection state for completeness. */
   pending: ReadonlySet<string>;
-  invalid: Map<string, string>;
-  drafts: Map<string, string>;
   planFailed: boolean;
   pageIndex: number;
   inputPages: number;
   page: PageName;
   result: BridgeResult | undefined;
+  warnings: readonly BridgeWarning[];
   banner: string | undefined;
-  productName: string;
-  productVersion: string;
+  displayProduct: BridgeStrings['displayProduct'];
 }
 
 const state: State = {
   strings: {},
   inputs: [],
   pending: new Set(),
-  invalid: new Map(),
-  drafts: new Map(),
   planFailed: false,
   pageIndex: 0,
   inputPages: 0,
   page: 'welcome',
   result: undefined,
+  warnings: [],
   banner: undefined,
-  productName: '',
-  productVersion: '',
+  displayProduct: { name: '', version: '', welcome: '' },
 };
 
 /** Advances on every page render so an async summary can only update its own page. */
@@ -77,6 +82,10 @@ let renderVersion = 0;
 let pendingInputSubmissions = 0;
 /** Remembers a forward click whose blur-triggered validation is still in flight. */
 let forwardRequested = false;
+/** Keeps Summary navigation closed while Back refreshes plan-masked renderer state. */
+let summaryBackPending = false;
+/** Latches the renderer closed to navigation as soon as Cancel is accepted locally. */
+let closing = false;
 
 const el = {
   page: document.getElementById('page') as HTMLElement,
@@ -88,15 +97,16 @@ const el = {
   productVersion: document.getElementById('product-version') as HTMLElement,
 };
 
-function chrome(key: string, values: Record<string, string | number> = {}): string {
-  const template = state.strings[key] ?? key;
-  return template.replace(/\{([A-Za-z]+)\}/g, (match, name: string) =>
-    values[name] === undefined ? match : String(values[name]),
-  );
-}
-
 function text(key: string): string {
   return state.strings[key] ?? '';
+}
+
+function applyStrings(strings: BridgeStrings): void {
+  state.strings = strings.entries;
+  state.displayProduct = strings.displayProduct;
+  document.documentElement.lang = strings.locale ?? 'en';
+  el.productName.textContent = strings.displayProduct.name;
+  el.productVersion.textContent = strings.displayProduct.version;
 }
 
 async function boot(): Promise<void> {
@@ -108,7 +118,7 @@ async function boot(): Promise<void> {
     return;
   }
 
-  state.strings = await window.rune.getStrings();
+  applyStrings(await window.rune.getStrings());
   await refreshInputs();
   state.inputPages = Math.ceil(state.inputs.length / INPUTS_PER_PAGE);
 
@@ -135,11 +145,6 @@ async function boot(): Promise<void> {
     document.title = theme.windowTitle;
   }
 
-  state.productName = opened.product.name;
-  state.productVersion = opened.product.version;
-  el.productName.textContent = text('gui.windowTitle') || state.productName;
-  el.productVersion.textContent = state.productVersion;
-
   el.back.addEventListener('click', () => {
     void navigate(-1);
   });
@@ -152,14 +157,26 @@ async function boot(): Promise<void> {
     }
   });
   el.cancel.addEventListener('click', () => {
-    void window.rune.cancel().then(() => window.close());
+    if (closing) {
+      return;
+    }
+    closing = true;
+    forwardRequested = false;
+    renderFooter();
+    void window.rune.cancel();
   });
 
   window.rune.onEvent(onRunEvent);
-  render();
+  render(true);
 }
 
 async function navigate(direction: 1 | -1): Promise<void> {
+  if (closing) {
+    return;
+  }
+  if (direction === -1) {
+    forwardRequested = false;
+  }
   if (state.page === 'inputs' && direction === 1) {
     if (pendingInputSubmissions > 0) {
       forwardRequested = true;
@@ -185,26 +202,46 @@ async function navigate(direction: 1 | -1): Promise<void> {
       state.pageIndex = nextIndex;
     }
   } else if (state.page === 'summary') {
+    if (summaryBackPending) {
+      return;
+    }
     if (direction === -1) {
-      state.page = state.inputs.length > 0 ? 'inputs' : 'welcome';
-      state.pageIndex = Math.max(0, state.inputPages - 1);
+      summaryBackPending = true;
+      renderFooter();
+      try {
+        await refreshStringsAndWindowTitle();
+        await refreshInputs();
+        state.page = state.inputs.length > 0 ? 'inputs' : 'welcome';
+        state.pageIndex = Math.max(0, state.inputPages - 1);
+      } finally {
+        summaryBackPending = false;
+        renderFooter();
+      }
     } else {
       state.page = 'progress';
-      render();
+      render(true);
       const result = await window.rune.execute();
+      state.warnings = await window.rune.warnings();
       state.result = result;
       state.page = 'result';
-      render();
+      render(true);
       return;
     }
   } else if (state.page === 'result') {
     await window.rune.done();
     return;
   }
-  render();
+  render(true);
 }
 
-function render(): void {
+function render(focusPage = false): void {
+  const focusedInputControlId =
+    state.page === 'inputs' &&
+    !closing &&
+    document.activeElement instanceof HTMLElement &&
+    el.page.contains(document.activeElement)
+      ? document.activeElement.id
+      : undefined;
   const version = ++renderVersion;
   el.page.classList.remove('page');
   void el.page.offsetWidth; // restart the page-in animation
@@ -231,10 +268,27 @@ function render(): void {
       break;
   }
   renderFooter();
+  if (focusedInputControlId !== undefined && state.page === 'inputs') {
+    const control = document.getElementById(focusedInputControlId);
+    if (
+      control instanceof HTMLElement &&
+      el.page.contains(control) &&
+      !control.matches(':disabled')
+    ) {
+      control.focus();
+    }
+  }
+  if (focusPage && !closing) {
+    const heading = el.page.querySelector('h2');
+    const target = heading instanceof HTMLElement ? heading : el.page;
+    target.tabIndex = -1;
+    target.focus();
+  }
 }
 
 function renderFooter(): void {
   el.back.hidden = state.page === 'welcome' || state.page === 'progress' || state.page === 'result';
+  el.back.disabled = summaryBackPending;
   el.back.textContent = text('rune.button.back');
   el.cancel.textContent = text('rune.button.cancel');
   el.cancel.hidden = state.page === 'result';
@@ -244,13 +298,18 @@ function renderFooter(): void {
     el.next.disabled = false;
   } else if (state.page === 'summary') {
     el.next.textContent = text('rune.button.install');
-    el.next.disabled = state.planFailed;
+    el.next.disabled = state.planFailed || summaryBackPending;
   } else if (state.page === 'progress') {
     el.next.textContent = text('rune.button.install');
     el.next.disabled = true;
   } else {
     el.next.textContent = text('rune.button.next');
     el.next.disabled = !currentPageComplete();
+  }
+  if (closing) {
+    el.back.disabled = true;
+    el.next.disabled = true;
+    el.cancel.disabled = true;
   }
 }
 
@@ -261,11 +320,14 @@ function currentPageComplete(): boolean {
   if (pendingInputSubmissions > 0) {
     return false;
   }
-  // The engine's pendingInputs() is the one completeness signal: a secret's value crosses
-  // masked and an unanswered value crosses absent, so the projection cannot be read for
-  // presence (§9.2).
+  // Engine pending state and main's current rejected-edit projection together determine
+  // completeness; a rejected transaction leaves the authoritative engine value unchanged.
   return pageInputs().every(
-    (input) => !state.invalid.has(input.id) && !state.pending.has(input.id),
+    (input) =>
+      !input.enabled ||
+      (input.editRejection === undefined &&
+        input.rejection === undefined &&
+        !state.pending.has(input.id)),
   );
 }
 
@@ -286,8 +348,7 @@ function renderWelcome(): void {
   const heading = document.createElement('h2');
   heading.textContent = text('rune.page.welcome.title');
   const description = document.createElement('p');
-  description.textContent =
-    text('product.description') || `${state.productName} ${state.productVersion}`;
+  description.textContent = state.displayProduct.welcome;
   container.append(heading, description);
   el.page.append(container);
 }
@@ -301,35 +362,93 @@ function renderInputs(): void {
 function renderField(input: BridgeInput): HTMLElement {
   const field = div('field');
   field.dataset['id'] = input.id;
+  const problem = inputProblem(input);
   if (!input.enabled) {
     field.classList.add('disabled');
   }
-  if (state.invalid.has(input.id)) {
+  if (problem !== undefined) {
     field.classList.add('invalid');
   }
 
+  const ids = fieldIds(input.id);
+  const description = text(`inputs.${input.id}.description`);
+  const describedBy = [
+    description === '' ? undefined : ids.description,
+    problem === undefined ? undefined : ids.error,
+  ]
+    .filter((id): id is string => id !== undefined)
+    .join(' ');
+
   const label = document.createElement('label');
-  label.textContent = text(`inputs.${input.id}.title`) || input.id;
+  label.id = ids.label;
+  if (input.spec.type !== 'multiselect') {
+    label.htmlFor = ids.control;
+  }
+  label.textContent = text(`inputs.${input.id}.title`);
   field.append(label);
 
-  const description = text(`inputs.${input.id}.description`);
   if (description !== '') {
     const paragraph = document.createElement('p');
+    paragraph.id = ids.description;
     paragraph.className = 'description';
     paragraph.textContent = description;
     field.append(paragraph);
   }
 
-  field.append(renderControl(input));
+  const control = renderControl(input);
+  configureControl(control, ids.control, describedBy, problem !== undefined);
+  if (input.spec.type === 'multiselect') {
+    control.setAttribute('role', 'group');
+    control.setAttribute('aria-labelledby', ids.label);
+  }
+  field.append(control);
 
-  const problem = state.invalid.get(input.id);
   if (problem !== undefined) {
     const error = document.createElement('p');
+    error.id = ids.error;
     error.className = 'error';
     error.textContent = problem;
     field.append(error);
   }
   return field;
+}
+
+function inputProblem(input: BridgeInput): string | undefined {
+  if (!input.enabled) {
+    return undefined;
+  }
+  if (input.editRejection !== undefined) {
+    return input.editRejection.displayText;
+  }
+  if (input.rejection === undefined) {
+    return undefined;
+  }
+  return input.rejection.issue.message;
+}
+
+function fieldIds(inputId: string): FieldIds {
+  const base = `rune-input-${encodeURIComponent(inputId)}`;
+  return {
+    control: `${base}-control`,
+    label: `${base}-label`,
+    description: `${base}-description`,
+    error: `${base}-error`,
+  };
+}
+
+function configureControl(
+  control: HTMLElement,
+  id: string,
+  describedBy: string,
+  invalid: boolean,
+): void {
+  control.id = id;
+  if (describedBy !== '') {
+    control.setAttribute('aria-describedby', describedBy);
+  }
+  if (invalid) {
+    control.setAttribute('aria-invalid', 'true');
+  }
 }
 
 function renderControl(input: BridgeInput): HTMLElement {
@@ -345,18 +464,15 @@ function renderControl(input: BridgeInput): HTMLElement {
   }
   const box = document.createElement('input');
   box.type = spec.type === 'secret' ? 'password' : 'text';
-  const rejected = input.rejection?.candidate;
-  const draft = state.drafts.get(input.id);
+  const rejected = input.editRejection?.candidate ?? input.rejection?.candidate;
   box.value =
     spec.type === 'secret'
       ? ''
-      : draft !== undefined
-        ? draft
-        : typeof rejected === 'string'
-          ? rejected
-          : typeof input.value === 'string'
-            ? input.value
-            : '';
+      : typeof rejected === 'string'
+        ? rejected
+        : typeof input.value === 'string'
+          ? input.value
+          : '';
   box.disabled = !input.enabled;
   box.addEventListener('change', () => {
     void submit(input.id, box.value);
@@ -405,7 +521,7 @@ function selectBox(input: BridgeInput): HTMLElement {
   for (const value of options) {
     const item = document.createElement('option');
     item.value = value;
-    item.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
+    item.textContent = text(`inputs.${input.id}.options.${value}.label`);
     if (input.value === value) {
       item.selected = true;
     }
@@ -419,10 +535,12 @@ function selectBox(input: BridgeInput): HTMLElement {
 
 function multiselect(input: BridgeInput): HTMLElement {
   const container = document.createElement('div');
+  const controlId = fieldIds(input.id).control;
   const chosen = new Set(Array.isArray(input.value) ? input.value : []);
-  for (const value of input.spec.options ?? []) {
+  for (const [index, value] of (input.spec.options ?? []).entries()) {
     const row = div('option-row');
     const box = document.createElement('input');
+    box.id = `${controlId}-option-${index}`;
     box.type = 'checkbox';
     box.checked = chosen.has(value);
     box.disabled = !input.enabled;
@@ -434,8 +552,9 @@ function multiselect(input: BridgeInput): HTMLElement {
       }
       void submit(input.id, [...chosen]);
     });
-    const label = document.createElement('span');
-    label.textContent = text(`inputs.${input.id}.options.${value}.label`) || value;
+    const label = document.createElement('label');
+    label.htmlFor = box.id;
+    label.textContent = text(`inputs.${input.id}.options.${value}.label`);
     row.append(box, label);
     container.append(row);
   }
@@ -447,16 +566,15 @@ async function submit(id: string, raw: unknown): Promise<void> {
   pendingInputSubmissions += 1;
   renderFooter();
   try {
+    let accepted = false;
     try {
       await window.rune.setValue(id, raw);
-      state.invalid.delete(id);
-      state.drafts.delete(id);
-    } catch (error) {
-      const hint = text(`inputs.${id}.patternHint`);
-      state.invalid.set(id, hint !== '' ? hint : messageOf(error));
-      if (typeof raw === 'string') {
-        state.drafts.set(id, raw);
-      }
+      accepted = true;
+    } catch {
+      // Main publishes the recoverable failure through the refreshed input projection.
+    }
+    if (accepted) {
+      await refreshStringsAndWindowTitle();
     }
     await refreshInputs();
   } finally {
@@ -474,31 +592,17 @@ async function submit(id: string, raw: unknown): Promise<void> {
   }
 }
 
+async function refreshStringsAndWindowTitle(): Promise<void> {
+  applyStrings(await window.rune.getStrings());
+  const theme = await window.rune.getThemeConfig();
+  if (theme.windowTitle !== undefined) {
+    document.title = theme.windowTitle;
+  }
+}
+
 async function refreshInputs(): Promise<void> {
-  const previouslyRejected = new Set(
-    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
-  );
   state.inputs = await window.rune.allInputs();
   state.pending = new Set((await window.rune.pendingInputs()).map((input) => input.id));
-  const rejected = new Set(
-    state.inputs.filter((input) => input.rejection !== undefined).map((input) => input.id),
-  );
-  for (const id of previouslyRejected) {
-    if (!rejected.has(id)) {
-      state.invalid.delete(id);
-    }
-  }
-  for (const input of state.inputs) {
-    if (!input.enabled) {
-      state.invalid.delete(input.id);
-      state.drafts.delete(input.id);
-      continue;
-    }
-    if (input.rejection !== undefined) {
-      const hint = text(`inputs.${input.id}.patternHint`);
-      state.invalid.set(input.id, hint !== '' ? hint : input.rejection.issue.message);
-    }
-  }
 }
 
 function messageOf(error: unknown): string {
@@ -508,7 +612,7 @@ function messageOf(error: unknown): string {
 }
 
 function isCurrentSummary(version: number): boolean {
-  return state.page === 'summary' && renderVersion === version;
+  return state.page === 'summary' && renderVersion === version && !summaryBackPending && !closing;
 }
 
 async function renderSummary(version: number): Promise<void> {
@@ -537,6 +641,12 @@ async function renderSummary(version: number): Promise<void> {
   if (!isCurrentSummary(version)) {
     return;
   }
+  await refreshStringsAndWindowTitle();
+  await refreshInputs();
+  if (!isCurrentSummary(version)) {
+    return;
+  }
+  heading.textContent = text('rune.page.summary.title');
   state.planFailed = false;
   renderFooter();
   for (const step of plan.steps) {
@@ -549,7 +659,7 @@ async function renderSummary(version: number): Promise<void> {
     row.append(title);
     const detail = document.createElement('div');
     detail.className = 'command';
-    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.command.argv.join(' ');
+    detail.textContent = step.state === 'SKIPPED' ? step.skipReason : step.displayCommand;
     row.append(detail);
     el.page.append(row);
   }
@@ -565,13 +675,16 @@ let progressRenderVersion = 0;
 
 function renderProgress(): void {
   const heading = document.createElement('h2');
+  heading.id = 'rune-page-progress-title';
   heading.className = 'result-heading';
   heading.textContent = text('rune.page.progress.title');
   const bar = document.createElement('progress');
   bar.className = 'progress-track';
   bar.max = 1;
   bar.value = 0;
+  bar.setAttribute('aria-labelledby', heading.id);
   const title = div('progress-title');
+  title.setAttribute('role', 'status');
   const log = div('log');
   el.page.append(heading, bar, title, log);
   progress = { bar, title, log };
@@ -640,20 +753,19 @@ function onRunEvent(event: BridgeEvent): void {
   if (progress === undefined) {
     return;
   }
+  if (event.kind === 'runStarted') {
+    progress.title.textContent = event.displayText;
+  }
   if (event.kind === 'stepStarted') {
-    progress.title.textContent = chrome('rune.progress.step', {
-      index: event.index + 1,
-      total: event.total,
-      title: event.title,
-    });
+    progress.title.textContent = event.displayText;
     const fraction = event.total > 0 ? event.index / event.total : 0;
     progress.bar.value = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
   }
   if (event.kind === 'stepOutput') {
-    appendLiveLog(event.line);
+    appendLiveLog(event.displayText);
   }
   if (event.kind === 'stepFinished') {
-    appendLiveLog(`-- ${event.stepId}: ${event.state}`);
+    appendLiveLog(event.displayText);
   }
   if (event.kind === 'runFinished') {
     progress.bar.value = progress.bar.max;
@@ -680,20 +792,16 @@ function renderResult(): void {
   const sub = document.createElement('p');
   sub.className = 'result-sub';
   sub.textContent =
-    result.nothingExecuted && ok
-      ? text('rune.result.nothingExecuted')
-      : `${result.stepsSucceeded} / ${result.stepsTotal}`;
+    result.nothingExecuted && ok ? text('rune.result.nothingExecuted') : result.displaySummary;
   el.page.append(badge, heading, sub);
 
   // The §10 warnings: the same run never warns in one mode and stays silent in another.
-  void window.rune.warnings().then((warnings) => {
-    for (const warning of warnings) {
-      const line = document.createElement('p');
-      line.className = 'result-sub';
-      line.textContent = warning;
-      el.page.append(line);
-    }
-  });
+  for (const warning of state.warnings) {
+    const line = document.createElement('p');
+    line.className = 'result-sub';
+    line.textContent = warning.displayText;
+    el.page.append(line);
+  }
 
   for (const step of result.steps) {
     if (step.state !== 'FAILED') {
@@ -701,7 +809,7 @@ function renderResult(): void {
     }
     const row = div('result-step');
     const title = document.createElement('strong');
-    title.textContent = `${step.title} (exit ${step.exitCode ?? '?'})`;
+    title.textContent = step.displayTitle;
     const tail = document.createElement('div');
     tail.className = 'tail';
     tail.textContent = (step.outputTail ?? []).map((entry) => entry.line).join('\n');

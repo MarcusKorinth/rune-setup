@@ -17,7 +17,9 @@ import type {
   BridgeInputType,
   BridgePlan,
   BridgeResult,
+  BridgeStrings,
   BridgeTheme,
+  BridgeWarning,
   RuneBridge,
 } from './types.js';
 
@@ -54,9 +56,9 @@ export function buildBridge(ipc: BridgeIpc): RuneBridge {
     describe: () => ipc.invoke('rune:describe') as Promise<BridgeResult>,
     execute: () => ipc.invoke('rune:execute') as Promise<BridgeResult>,
     cancel: () => ipc.invoke('rune:cancel') as Promise<void>,
-    getStrings: () => ipc.invoke('rune:getStrings') as Promise<Readonly<Record<string, string>>>,
+    getStrings: () => ipc.invoke('rune:getStrings') as Promise<BridgeStrings>,
     getThemeConfig: () => ipc.invoke('rune:getThemeConfig') as Promise<BridgeTheme>,
-    warnings: () => ipc.invoke('rune:warnings') as Promise<readonly string[]>,
+    warnings: () => ipc.invoke('rune:warnings') as Promise<readonly BridgeWarning[]>,
     done: () => ipc.invoke('rune:done') as Promise<void>,
     onEvent: (listener) => {
       ipc.on('rune:event', (_event, payload) => listener(payload as BridgeEvent));

@@ -105,13 +105,21 @@ describe('parseShellArgv', () => {
   });
 
   it.each([
-    [['--unknown'], 'unknown flag --unknown'],
+    [['--unknown'], 'unknown flag'],
+    [['--set=token=distinctive-secret-candidate'], 'unknown flag'],
+    [['--unknown=distinctive-secret-candidate'], 'unknown flag'],
     [['--set'], '--set expects a value'],
     [['--values'], '--values expects a value'],
     [['--locale'], '--locale expects a value'],
     [['--result'], '--result expects a value'],
     [['--log-file'], '--log-file expects a value'],
-    [['--set', 'port'], '--set expects key=value, got "port"'],
+    [['installer.yaml', '--log-file', ''], '--log-file needs a non-empty path'],
+    [['installer.yaml', '--values', ''], '--values needs a non-empty path'],
+    [
+      ['installer.yaml', '--values', 'base.yaml', '--values', ''],
+      '--values needs a non-empty path',
+    ],
+    [['--set', 'port'], '--set expects key=value'],
     [[], 'the shell needs a manifest path'],
   ] as const)('reports %s as a RUNE usage error', (argv, message) => {
     try {

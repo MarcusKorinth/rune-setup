@@ -1,0 +1,15 @@
+schemaVersion: 1
+product:
+  name: Edit rejection smoke
+  version: 1.0.0
+inputs:
+  code:
+    type: text
+    required: false
+    default: GOOD
+    pattern: '[A-Z]+'
+    patternHint: "Use later-secret-42\nsecond line"
+  token:
+    type: secret
+    required: false
+steps: []

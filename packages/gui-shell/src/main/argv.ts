@@ -58,7 +58,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         const pair = next();
         const separator = pair.indexOf('=');
         if (separator <= 0) {
-          throw new UsageError(`--set expects key=value, got "${pair}"`);
+          throw new UsageError('--set expects key=value');
         }
         overrides.set(pair.slice(0, separator), pair.slice(separator + 1));
         break;
@@ -80,7 +80,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         break;
       default:
         if (argument.startsWith('--')) {
-          throw new UsageError(`unknown flag ${argument}`);
+          throw new UsageError('unknown flag');
         }
         if (manifestPath !== undefined) {
           throw new UsageError('the shell accepts exactly one manifest path');
@@ -91,6 +91,12 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
 
   if (manifestPath === undefined) {
     throw new UsageError('the shell needs a manifest path');
+  }
+  if (logFile === '') {
+    throw new UsageError('--log-file needs a non-empty path');
+  }
+  if (values.includes('')) {
+    throw new UsageError('--values needs a non-empty path');
   }
   if (result === '-' && !nonInteractive) {
     throw new UsageError('--result - requires --non-interactive in the GUI shell');

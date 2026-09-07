@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ import { ExecutionError, Session, type RunEvent, type RunResult } from '@rune/en
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  sent: [] as Array<{ channel: string; payload: unknown }>,
   duringLoad: undefined as (() => Promise<void>) | undefined,
   closeDuringLoad: false,
   emitRendererGone: undefined as (() => void) | undefined,
@@ -17,7 +18,9 @@ const electronHarness = vi.hoisted(() => ({
 
 vi.mock('electron', () => {
   class FakeWebContents {
-    readonly send = vi.fn();
+    readonly send = vi.fn((channel: string, payload: unknown) => {
+      electronHarness.sent.push({ channel, payload });
+    });
     readonly #listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
     on(event: string, listener: (...args: unknown[]) => void): void {
@@ -104,6 +107,7 @@ import { app, dialog } from 'electron';
 
 import { headlessRun, main } from '../src/main/index.js';
 import type { ShellInvocation } from '../src/main/argv.js';
+import { completeWrite } from './stream-fixture.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -112,6 +116,7 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   electronHarness.handlers.clear();
+  electronHarness.sent = [];
   electronHarness.duringLoad = undefined;
   electronHarness.closeDuringLoad = false;
   electronHarness.emitRendererGone = undefined;
@@ -141,7 +146,7 @@ describe('the GUI shell stderr diagnostics', () => {
       { stream: 'stdout', line: `stdout ${secret}` },
       { stream: 'stderr', line: `stderr ${secret}` },
     ]);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
       _chunk: unknown,
       callback: () => void,
@@ -157,7 +162,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     const resultText = stdout.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toMatch(
-      /^running 1 steps on \w+\r?\n\[1\/1\] Report \*\*\*\r?\n {2}stdout \*\*\*\r?\n {2}stderr \*\*\*\r?\n {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n$/,
+      /^running 1 steps on \w+\r?\nStep 1 of 1: Report \*\*\*\r?\n {2}stdout \*\*\*\r?\n {2}stderr \*\*\*\r?\n {2}-> SUCCEEDED \(exit 0\) after \d+ms\r?\n$/,
     );
     expect(diagnostics).not.toContain(secret);
     expect(JSON.parse(resultText)).toMatchObject({ status: 'succeeded', exitCode: 0 });
@@ -183,7 +188,7 @@ describe('the GUI shell stderr diagnostics', () => {
       mode: 'non-interactive',
       overrides: { token: 'warningInput', warningInput: 'discarded' },
     });
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await expect(headlessRun(session, invocation(manifestPath))).resolves.toBe(0);
 
@@ -210,13 +215,53 @@ describe('the GUI shell stderr diagnostics', () => {
     vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new Error('runner rejected headless-secret'),
     );
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
     await expect(headlessRun(session, invocation(manifestPath))).resolves.toBe(70);
 
-    expect(stderr).toHaveBeenCalledWith('runner rejected ***\n');
-    expect(stderr.mock.calls.flat().join('')).not.toContain('headless-secret');
+    expect(stderr.mock.calls.map(([text]) => String(text))).toContain('runner rejected ***\n');
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(
+      'headless-secret',
+    );
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
+  });
+
+  it('preserves the plan topology when headless log preparation fails', async () => {
+    const fixture = blockedLogFixture('rune-shell-headless-log-failure-');
+    const session = await Session.open(fixture.manifestPath, {
+      environment: {},
+      mode: 'non-interactive',
+      logFile: fixture.logPath,
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+
+    await expect(
+      headlessRun(session, {
+        ...invocation(fixture.manifestPath),
+        result: fixture.resultPath,
+        logFile: fixture.logPath,
+      }),
+    ).resolves.toBe(1);
+
+    expect(JSON.parse(readFileSync(fixture.resultPath, 'utf8'))).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+      steps: [
+        { id: 'runnable', state: 'NOT_RUN' },
+        { id: 'skipped', state: 'SKIPPED' },
+      ],
+    });
+    expect(existsSync(fixture.sentinelPath)).toBe(false);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain('log file');
   });
 
   it('shows one named and masked error when renderer execution rejects', async () => {
@@ -233,7 +278,14 @@ describe('the GUI shell stderr diagnostics', () => {
     vi.spyOn(Session.prototype, 'execute').mockRejectedValue(
       new ExecutionError('RUNE-403', `cannot start ${secret}`),
     );
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const localeDir = join(dirname(manifestPath), 'locales');
+    mkdirSync(localeDir);
+    writeFileSync(
+      join(localeDir, 'de.yaml'),
+      `rune.dialog.fatal.title: "RUNE Fehler ${secret}"\n`,
+      'utf8',
+    );
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
       if (execute === undefined) {
@@ -246,15 +298,157 @@ describe('the GUI shell stderr diagnostics', () => {
       }
     };
 
-    await main([manifestPath, '--set', `token=${secret}`]);
+    await main([manifestPath, '--locale', 'de', '--set', `token=${secret}`]);
 
     expect(app.exit).toHaveBeenCalledWith(1);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
+      'RUNE Fehler ***',
       'RUNE-403 (exit 1): cannot start ***',
     );
-    expect(stderr.mock.calls.flat().join('')).not.toContain(secret);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).not.toContain(secret);
+  });
+
+  it('preserves the plan topology when windowed log preparation fails', async () => {
+    const fixture = blockedLogFixture('rune-shell-windowed-log-failure-');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      try {
+        await execute();
+      } catch {
+        // Main owns the fatal error; the bridge also rejects to the renderer.
+      }
+    };
+
+    await main([
+      fixture.manifestPath,
+      '--log-file',
+      fixture.logPath,
+      '--result',
+      fixture.resultPath,
+    ]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    expect(JSON.parse(readFileSync(fixture.resultPath, 'utf8'))).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsTotal: 2,
+      stepsExecuted: 0,
+      stepsSucceeded: 0,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 1,
+      stepsNotRun: 1,
+      nothingExecuted: true,
+      steps: [
+        { id: 'runnable', state: 'NOT_RUN' },
+        { id: 'skipped', state: 'SKIPPED' },
+      ],
+    });
+    expect(existsSync(fixture.sentinelPath)).toBe(false);
+    expect(dialog.showErrorBox).toHaveBeenCalledOnce();
+    expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toContain('log file');
+  });
+
+  it('delivers the terminal result after a windowed late log close failure', async () => {
+    const manifestPath = manifest([
+      'inputs: {}',
+      'steps:',
+      '  - id: completed',
+      '    run:',
+      '      command: echo',
+    ]);
+    const resultPath = join(dirname(manifestPath), 'result.json');
+    const session = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
+    const plan = session.plan();
+    const described = session.describe();
+    if (described.status !== 'planned') {
+      throw new Error('the fixture did not produce a planned result');
+    }
+    const completedSteps = described.steps.map((step) =>
+      step.state === 'PENDING'
+        ? { ...step, state: 'SUCCEEDED' as const, exitCode: 0, durationMs: 1 }
+        : step,
+    );
+    const terminalResult = {
+      ...described,
+      status: 'failed' as const,
+      exitCode: 1,
+      dryRun: false,
+      error: { code: 'RUNE-406' as const, message: 'the log close failed', location: null },
+      steps: completedSteps,
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsFailed: 0,
+      stepsCancelled: 0,
+      stepsSkipped: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+    } satisfies RunResult;
+    vi.spyOn(Session, 'open').mockResolvedValue(session);
+    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
+      observer?.({ kind: 'runStarted', plan });
+      observer?.({
+        kind: 'stepStarted',
+        stepId: 'completed',
+        index: 0,
+        total: 1,
+        title: 'completed',
+      });
+      observer?.({
+        kind: 'stepFinished',
+        stepId: 'completed',
+        state: 'SUCCEEDED',
+        exitCode: 0,
+        durationMs: 1,
+      });
+      observer?.({ kind: 'runFinished', result: terminalResult });
+      throw new ExecutionError('RUNE-406', 'the log close failed');
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+    electronHarness.duringLoad = async () => {
+      const execute = electronHarness.handlers.get('rune:execute');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
+      }
+      await expect(execute()).rejects.toThrow('RUNE-406');
+    };
+
+    await main([manifestPath, '--result', resultPath]);
+
+    expect(app.exit).toHaveBeenCalledWith(1);
+    const serialized = JSON.parse(readFileSync(resultPath, 'utf8'));
+    expect(serialized).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      error: { code: 'RUNE-406' },
+      stepsExecuted: 1,
+      stepsSucceeded: 1,
+      stepsFailed: 0,
+      stepsNotRun: 0,
+      nothingExecuted: false,
+      steps: [{ id: 'completed', state: 'SUCCEEDED', exitCode: 0 }],
+    });
+    const terminalEvent = electronHarness.sent.find(
+      (event) => (event.payload as { kind?: unknown }).kind === 'runFinished',
+    );
+    expect(terminalEvent).toEqual({
+      channel: 'rune:event',
+      payload: {
+        kind: 'runFinished',
+        result: {
+          ...serialized,
+          displaySummary:
+            'failed: 1 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 1)',
+          steps: [{ ...serialized.steps[0], displayTitle: 'completed (exit 0)' }],
+        },
+      },
+    });
   });
 
   it('masks registered secrets when windowed result delivery rejects', async () => {
@@ -263,15 +457,13 @@ describe('the GUI shell stderr diagnostics', () => {
     const secret = 'windowed-secret';
     const blockedDirectory = join(dir, `blocked-${secret}`);
     writeFileSync(blockedDirectory, 'not a directory', 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
-      const done = electronHarness.handlers.get('rune:done');
-      if (execute === undefined || done === undefined) {
-        throw new Error('the execute or done handler was not registered');
+      if (execute === undefined) {
+        throw new Error('the execute handler was not registered');
       }
-      await execute();
-      await done();
+      await expect(execute()).rejects.toThrow('RUNE-407');
     };
 
     await main([
@@ -300,7 +492,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const blockedDirectory = join(dir, `blocked-${secret}`);
     const resultPath = join(blockedDirectory, 'cancelled.json');
     writeFileSync(blockedDirectory, 'not a directory', 'utf8');
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.closeDuringLoad = true;
 
     await expect(
@@ -325,7 +517,7 @@ describe('the GUI shell stderr diagnostics', () => {
     const manifestPath = manifest(['inputs:', '  token:', '    type: secret', 'steps: []'], dir);
     const resultPath = join(dir, 'result.json');
     const secret = 'renderer-gone-secret';
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
       electronHarness.emitRendererGone?.();
       electronHarness.emitRendererGone?.();
@@ -338,10 +530,10 @@ describe('the GUI shell stderr diagnostics', () => {
     expect(existsSync(resultPath)).toBe(false);
     expect(dialog.showErrorBox).toHaveBeenCalledOnce();
     expect(dialog.showErrorBox).toHaveBeenCalledWith(
-      'RUNE setup failed',
-      expect.stringContaining('RUNE-500 (exit 70): the renderer process exited unexpectedly'),
+      'RUNE',
+      'RUNE-500 (exit 70): The setup could not be started.',
     );
-    const diagnostics = stderr.mock.calls.flat().join('');
+    const diagnostics = stderr.mock.calls.map(([text]) => String(text)).join('');
     expect(diagnostics).toContain('RUNE-500 (exit 70)');
     expect(diagnostics).not.toContain(secret);
   });
@@ -372,7 +564,7 @@ describe('the GUI shell stderr diagnostics', () => {
       cancelled.resolve();
     });
     vi.spyOn(Session, 'open').mockResolvedValue(session);
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.onClosed = () => order.push('closed');
     electronHarness.duringLoad = async () => {
       const execute = electronHarness.handlers.get('rune:execute');
@@ -430,6 +622,44 @@ function invocation(manifestPath: string): ShellInvocation {
     result: undefined,
     logFile: undefined,
     nonInteractive: true,
+  };
+}
+
+function blockedLogFixture(prefix: string): {
+  readonly manifestPath: string;
+  readonly logPath: string;
+  readonly resultPath: string;
+  readonly sentinelPath: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const blockedParent = join(dir, 'blocked-parent');
+  const sentinelPath = join(dir, 'runner-started');
+  writeFileSync(blockedParent, 'not a directory', 'utf8');
+  return {
+    manifestPath: manifest(
+      [
+        'inputs:',
+        '  enabled:',
+        '    type: boolean',
+        '    default: false',
+        'steps:',
+        '  - id: runnable',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        `      args: ${JSON.stringify([
+          '-e',
+          `require('node:fs').writeFileSync(${JSON.stringify(sentinelPath)}, 'started')`,
+        ])}`,
+        '  - id: skipped',
+        '    when: "${enabled}"',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+      ],
+      dir,
+    ),
+    logPath: join(blockedParent, 'run.log'),
+    resultPath: join(dir, 'result.json'),
+    sentinelPath,
   };
 }
 

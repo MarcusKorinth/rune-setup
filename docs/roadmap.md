@@ -90,11 +90,12 @@ The interactive CLI, frozen `Session` facade, and cross-client contract suite ar
 - [x] Electron GUI shell (`packages/gui-shell/`, TypeScript + HTML/CSS): **main** hosts
   `@rune/engine` in-process (owns the `Session`, IPC handlers, window, exit code);
   **preload** exposes the **IPC bridge** via `contextBridge` — a 1:1 projection of the
-  `Session` facade and events, secrets masked towards the renderer; **renderer** is a
+  `Session` facade and events plus the shell-only `done` signal, secrets masked towards
+  the renderer; **renderer** is a
   pure sandboxed renderer (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`): pages Welcome,
   generated input pages, Summary, Progress, Result; greyed-out disabled inputs flipping
   live, red pattern state, cancel flow, named `RuneError` display, shell-crash → exit
-  70, exit-code forwarding through `rune run --gui`
+  70
 - [x] **default theme**: modern, polished, animated, light/dark, built on CSS custom
   properties
 - [x] **theming layers**: manifest `gui:` block (`accentColor`, `logo`, `banner`, `theme`,
@@ -102,7 +103,7 @@ The interactive CLI, frozen `Session` facade, and cross-client contract suite ar
 - [x] `rune gui install` command, version handshake, and per-user cache contract; the first
   prebuilt shell artifacts are published with M4 release engineering. Until then,
   source checkouts launch the shell through the development-only `RUNE_GUI_SHELL` override
-- [x] IPC-bridge unit test pinning the preload API as a 1:1 projection of the facade
+- [x] IPC-bridge unit test pinning the facade projection and shell-only `done` signal
 - [x] dedicated shell CI lane: Playwright-for-Electron smoke suite (rendering, theming,
   cancel, crash handling, headless run)
 - [x] **mode-parity suite as release gate**: identical plans, event sequences and results

@@ -78,13 +78,17 @@ describe('the preload bridge', () => {
     const runStarted = {
       kind: 'runStarted',
       plan: {
+        planSchemaVersion: 1,
         manifestPath: 'installer.yaml',
+        manifestSha256: 'a'.repeat(64),
         locale: null,
         platform: 'linux',
         preview: false,
-        failFast: true,
+        resolvedInputs: [],
+        executionOptions: { failFast: true },
         steps: [],
       },
+      displayText: 'running 0 steps on linux',
     } satisfies BridgeEvent;
     listener(undefined, runStarted);
     expect(seen).toEqual([runStarted]);

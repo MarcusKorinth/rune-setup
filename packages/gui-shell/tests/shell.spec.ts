@@ -22,14 +22,23 @@ const requiredBooleanFixturePath = join(
   'required-boolean.yaml',
 );
 const invalidSeedFixturePath = join(packageDirectory, 'tests', 'fixtures', 'invalid-seed.yaml');
+const editRejectionFixturePath = join(packageDirectory, 'tests', 'fixtures', 'edit-rejection.yaml');
 const executionFixturePath = join(packageDirectory, 'tests', 'fixtures', 'execution.yaml');
 const launcherPath = join(packageDirectory, 'tests', 'fixtures', 'launch.cjs');
 const rendererLauncherPath = join(packageDirectory, 'tests', 'fixtures', 'renderer-launch.cjs');
 const electronExecutable = createRequire(import.meta.url)('electron') as string;
 
 interface SummaryTestControl {
+  cancelCount(): number;
+  executeCount(): number;
   planCount(): number;
   resolvePlan(index: number, title: string): void;
+  warningCount(): number;
+  resolveWarnings(
+    index: number,
+    warnings: readonly { readonly message: string; readonly displayText: string }[],
+  ): void;
+  doneCount(): number;
   emitOutput(line: string): void;
   emitStepStarted(index: number, total: number): void;
   emitFinished(): void;
@@ -101,7 +110,7 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
   try {
     application = await electron.launch({
       executablePath: electronExecutable,
-      args: [launcherPath, fixturePath],
+      args: [launcherPath, fixturePath, '--locale', 'en'],
       cwd: packageDirectory,
     });
 
@@ -121,6 +130,8 @@ test('launches the real Node 22 shell and renders Welcome', async () => {
     });
 
     await expect(page.locator('#product-name')).toHaveText('RUNE Shell Smoke');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await expect(page).toHaveTitle('Custom shell window');
     await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await expect(page.locator('.welcome p')).toHaveText('Real Electron renderer smoke');
     await expect(page.locator('#logo')).toBeVisible();
@@ -221,6 +232,7 @@ test('keeps Install disabled for the current summary plan only', async () => {
     const page = await application.firstWindow();
     const install = page.locator('#next');
 
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await install.click();
     await expect(page.locator('.result-heading')).toHaveText('Summary');
     await expect(install).toBeDisabled();
@@ -264,6 +276,221 @@ test('keeps Install disabled for the current summary plan only', async () => {
     );
     await expect(page.locator('.summary-step')).toHaveText('current planecho current plan');
     await expect(install).toBeEnabled();
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps Cancel authoritative over a same-task Install click', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const back = page.locator('#back');
+    const cancel = page.locator('#cancel');
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'ready plan'),
+    );
+    await expect(install).toBeEnabled();
+
+    await page.evaluate(() => {
+      const cancelButton = document.querySelector('#cancel');
+      const installButton = document.querySelector('#next');
+      if (
+        !(cancelButton instanceof HTMLButtonElement) ||
+        !(installButton instanceof HTMLButtonElement)
+      ) {
+        throw new Error('wizard controls did not render');
+      }
+      cancelButton.click();
+      installButton.click();
+    });
+
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.cancelCount(),
+      ),
+    ).toBe(1);
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.executeCount(),
+      ),
+    ).toBe(0);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('keeps a cancelled pending Summary disabled after its plan completes', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const back = page.locator('#back');
+    const cancel = page.locator('#cancel');
+    const install = page.locator('#next');
+
+    await install.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await cancel.click();
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'late plan'),
+    );
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolveFrame) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()));
+        }),
+    );
+    await expect(page.locator('.summary-step')).toHaveCount(0);
+    await expect(back).toBeDisabled();
+    await expect(cancel).toBeDisabled();
+    await expect(install).toBeDisabled();
+    await page.evaluate(() => {
+      const installButton = document.querySelector('#next');
+      if (!(installButton instanceof HTMLButtonElement)) {
+        throw new Error('Install did not render');
+      }
+      installButton.click();
+    });
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.cancelCount(),
+      ),
+    ).toBe(1);
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.executeCount(),
+      ),
+    ).toBe(0);
+  } finally {
+    await application?.close();
+  }
+});
+
+test('waits for Result warnings before allowing Finish', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.planCount(),
+        ),
+      )
+      .toBe(1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolvePlan(0, 'warning plan'),
+    );
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.warningCount(),
+        ),
+      )
+      .toBe(1);
+
+    await expect(page.locator('.progress-track')).toBeVisible();
+    await expect(page.locator('.result-badge')).toHaveCount(0);
+    await expect(next).toBeDisabled();
+    expect(
+      await page.evaluate(() =>
+        (
+          window as unknown as { summaryTestControl: SummaryTestControl }
+        ).summaryTestControl.doneCount(),
+      ),
+    ).toBe(0);
+
+    await page.evaluate(() =>
+      (
+        window as unknown as { summaryTestControl: SummaryTestControl }
+      ).summaryTestControl.resolveWarnings(0, [
+        { message: 'A required warning', displayText: 'warning: A required warning' },
+      ]),
+    );
+    await expect(page.locator('.result-heading')).toHaveText('Setup completed successfully.');
+    await expect(page.locator('.result-sub')).toContainText([
+      'succeeded: 1 succeeded, 0 failed, 0 skipped, 0 cancelled, 0 not run (exit 0)',
+      'warning: A required warning',
+    ]);
+    await expect(next).toHaveText('Finish');
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { summaryTestControl: SummaryTestControl }
+          ).summaryTestControl.doneCount(),
+        ),
+      )
+      .toBe(1);
   } finally {
     await application?.close();
   }
@@ -354,6 +581,82 @@ test('blocks Next while the engine is validating an edited input', async () => {
   }
 });
 
+test('does not retain a pending Next request after navigating Back', async () => {
+  let application: ElectronApplication | undefined;
+
+  try {
+    application = await electron.launch({
+      executablePath: electronExecutable,
+      args: [rendererLauncherPath, '--input-race'],
+      cwd: packageDirectory,
+    });
+    const page = await application.firstWindow();
+    const next = page.locator('#next');
+    const field = page.locator('.field[data-id="code"]');
+
+    await next.click();
+    await expect(field).toBeVisible();
+    await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      const nextButton = document.querySelector('#next');
+      if (!(input instanceof HTMLInputElement) || !(nextButton instanceof HTMLButtonElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'bad';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(1);
+
+    await page.locator('#back').click();
+    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.rejectSubmission(0),
+    );
+
+    await next.click();
+    await expect(field).toBeVisible();
+    await page.evaluate(() => {
+      const input = document.querySelector('.field[data-id="code"] input');
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error('input race fixture did not render its controls');
+      }
+      input.value = 'GOOD';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { inputRaceTestControl: InputRaceTestControl }
+          ).inputRaceTestControl.submissionCount(),
+        ),
+      )
+      .toBe(2);
+    await page.evaluate(() =>
+      (
+        window as unknown as { inputRaceTestControl: InputRaceTestControl }
+      ).inputRaceTestControl.resolveSubmission(1),
+    );
+    await expect(next).toBeEnabled();
+    await expect(next).toHaveText('Next');
+    await expect(field).toBeVisible();
+    await expect(page.locator('.result-heading')).toHaveCount(0);
+  } finally {
+    await application?.close();
+  }
+});
+
 test('bounds the live Progress log while retaining its newest output', async () => {
   const liveLogCap = 20_000;
   let application: ElectronApplication | undefined;
@@ -416,7 +719,7 @@ test('bounds the live Progress log while retaining its newest output', async () 
     expect(logUpdates.beforeFrameText).toBe('');
     expect(logUpdates.mutationCount).toBe(1);
     expect(log).not.toContain('discard-this-old-head');
-    expect(log).toContain('-- test-step: SUCCEEDED');
+    expect(log).toContain('  -> SUCCEEDED after 1ms');
     expect(log.length).toBeLessThanOrEqual(liveLogCap);
   } finally {
     await application?.close();
@@ -550,32 +853,117 @@ test('disables conditional controls natively across input pages', async () => {
   }
 });
 
-test('prefills an invalid seed and blocks Next until the engine accepts a correction', async () => {
+for (const seededCase of [
+  {
+    name: 'pattern mismatch',
+    args: [] as readonly string[],
+    value: 'bad-value',
+    reason: 'Use uppercase letters',
+    excludesHint: false,
+  },
+  {
+    name: 'overlength value',
+    args: ['--set', `code=${'A'.repeat(4097)}`] as readonly string[],
+    value: 'A'.repeat(4097),
+    reason: 'the value is longer than the 4096 bytes a checked value may have',
+    excludesHint: true,
+  },
+] as const) {
+  test(`prefills an invalid ${seededCase.name} and blocks Next until correction`, async () => {
+    let application: ElectronApplication | undefined;
+    const longValue = 'A'.repeat(4097);
+
+    try {
+      application = await electron.launch({
+        executablePath: electronExecutable,
+        args: [launcherPath, invalidSeedFixturePath, ...seededCase.args],
+        cwd: packageDirectory,
+      });
+      const page = await application.firstWindow();
+      const next = page.locator('#next');
+
+      await expect(page.locator('.welcome h2')).toHaveText('Welcome');
+      await next.click();
+
+      const field = page.locator('.field[data-id="code"]');
+      const input = field.locator('input');
+      await expect(input).toHaveValue(seededCase.value);
+      await expect(field).toHaveClass(/invalid/);
+      await expect(field.locator('.error')).toContainText(seededCase.reason);
+      if (seededCase.excludesHint) {
+        await expect(field.locator('.error')).not.toContainText('Use uppercase letters');
+      }
+      await expect(next).toBeDisabled();
+
+      await input.fill('GOOD');
+      await input.dispatchEvent('change');
+      await expect(field).not.toHaveClass(/invalid/);
+      await expect(input).toHaveValue('GOOD');
+      await expect(next).toBeEnabled();
+
+      await input.fill(longValue);
+      await input.dispatchEvent('change');
+      await expect(field).toHaveClass(/invalid/);
+      await expect(field.locator('.error')).toContainText(
+        'the value is longer than the 4096 bytes a checked value may have',
+      );
+      await expect(field.locator('.error')).not.toContainText('Use uppercase letters');
+      await expect(next).toBeDisabled();
+    } finally {
+      await application?.close();
+    }
+  });
+}
+
+test('remasks a rejected public edit after the same-page secret is accepted', async () => {
   let application: ElectronApplication | undefined;
 
   try {
     application = await electron.launch({
       executablePath: electronExecutable,
-      args: [launcherPath, invalidSeedFixturePath],
+      args: [launcherPath, editRejectionFixturePath],
       cwd: packageDirectory,
     });
     const page = await application.firstWindow();
     const next = page.locator('#next');
 
-    await expect(page.locator('.welcome h2')).toHaveText('Welcome');
     await next.click();
-
     const field = page.locator('.field[data-id="code"]');
-    const input = field.locator('input');
-    await expect(input).toHaveValue('bad-value');
+    const code = field.locator('input');
+    const token = page.locator('.field[data-id="token"] input');
+    const rawCandidate = 'later-secret-42';
+
+    await code.fill(rawCandidate);
+    await code.dispatchEvent('change');
     await expect(field).toHaveClass(/invalid/);
-    await expect(field.locator('.error')).toHaveText('Use uppercase letters');
+    await expect(field.locator('.error')).toHaveJSProperty(
+      'textContent',
+      `RUNE-202 (exit 4): code (from the answer): "${rawCandidate}": ` +
+        `Use ${rawCandidate}\\nsecond line`,
+    );
+    await expect(code).toHaveValue(rawCandidate);
+    await expect(code).toHaveAttribute('aria-invalid', 'true');
     await expect(next).toBeDisabled();
 
-    await input.fill('GOOD');
-    await input.dispatchEvent('change');
+    await token.fill(rawCandidate);
+    await token.dispatchEvent('change');
+    await expect(field).toHaveClass(/invalid/);
+    await expect(field.locator('.error')).toHaveJSProperty(
+      'textContent',
+      'RUNE-202 (exit 4): code (from the answer): "***": Use ***\\nsecond line',
+    );
+    await expect(code).toHaveValue('***');
+    await expect(token).toHaveValue('');
+    await expect(code).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('body')).not.toContainText(rawCandidate);
+    await expect(next).toBeDisabled();
+
+    await code.fill('VALID');
+    await code.dispatchEvent('change');
     await expect(field).not.toHaveClass(/invalid/);
-    await expect(input).toHaveValue('GOOD');
+    await expect(field.locator('.error')).toHaveCount(0);
+    await expect(code).toHaveValue('VALID');
+    await expect(code).not.toHaveAttribute('aria-invalid');
     await expect(next).toBeEnabled();
   } finally {
     await application?.close();

@@ -1,0 +1,22 @@
+schemaVersion: 1
+product:
+  name: Secret details
+  version: display-only
+gui:
+  windowTitle: Secret details
+inputs:
+  displaySecret:
+    type: secret
+    title: Secret details
+  workingDirectory:
+    type: secret
+    title: Working directory
+  publicPath:
+    type: text
+    title: Public path
+steps:
+  - id: masked-path
+    title: Masked path
+    run:
+      command: node
+      cwd: '${workingDirectory}'
