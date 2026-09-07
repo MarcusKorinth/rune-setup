@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CancelToken } from '../../src/engine/cancel.js';
 import { hostPlatform } from '../../src/engine/context.js';
-import * as executor from '../../src/engine/executor.js';
+import * as failureResults from '../../src/results/failure.js';
 import type { InputState } from '../../src/engine/inputs.js';
 import {
   isSecretString,
@@ -292,7 +292,7 @@ describe('opening a session', () => {
     expect(session.getStrings().productDescription()).toBe('***');
     expect(session.getThemeConfig()).toEqual({ windowTitle: '***' });
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: new InputError('RUNE-202', 'test failure'),
       manifestPath: path,
       dryRun: false,
@@ -639,7 +639,7 @@ describe('opening a session', () => {
   it('registers validated identity without inventing a locale when locale selection fails', async () => {
     const path = fixture(BASE);
     const foreign = hostPlatform() === 'windows' ? 'linux' : 'windows';
-    const register = vi.spyOn(executor, 'registerOpenFailureContext');
+    const register = vi.spyOn(failureResults, 'registerOpenFailureContext');
 
     try {
       await expect(
@@ -1261,7 +1261,7 @@ describe('answering inputs', () => {
     expect(session.pendingInputs()).toBe(pending);
     expect(session.plan()).toBe(plan);
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: rejection!,
       manifestPath: path,
       dryRun: true,
@@ -1355,7 +1355,7 @@ describe('answering inputs', () => {
     expect(session.plan()).toBe(plan);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe('***');
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: rejection!,
       manifestPath: path,
       dryRun: true,
@@ -1451,7 +1451,7 @@ describe('answering inputs', () => {
     expect(session.allInputs().find((input) => input.id === 'mirror')?.value).toBe(derivedSecret);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: planningError!,
       manifestPath: path,
       dryRun: true,
@@ -1469,7 +1469,7 @@ describe('answering inputs', () => {
     });
     expect(JSON.stringify(failure)).not.toContain(derivedSecret);
 
-    const cancelledFailure = executor.createFailureResult({
+    const cancelledFailure = failureResults.createFailureResult({
       error: new CancelledError(),
       manifestPath: path,
       dryRun: true,
@@ -1494,7 +1494,7 @@ describe('answering inputs', () => {
       expect(error).toBeInstanceOf(InputError);
       rejectedError = error as InputError;
     }
-    const rejectedFailure = executor.createFailureResult({
+    const rejectedFailure = failureResults.createFailureResult({
       error: rejectedError!,
       manifestPath: path,
       dryRun: true,
@@ -1514,7 +1514,7 @@ describe('answering inputs', () => {
     expect(session.allInputs()).toBe(inputs);
     expect(session.pendingInputs()).toBe(pending);
 
-    const foreignFailure = executor.createFailureResult({
+    const foreignFailure = failureResults.createFailureResult({
       error: new ExecutionError('RUNE-405', planningError!.message),
       manifestPath: path,
       dryRun: true,
@@ -1533,7 +1533,7 @@ describe('answering inputs', () => {
     expect(JSON.stringify(foreignFailure)).not.toContain(derivedSecret);
 
     expect(session.setValue('unrelated', 'after')).toEqual([]);
-    const staleFailure = executor.createFailureResult({
+    const staleFailure = failureResults.createFailureResult({
       error: planningError!,
       manifestPath: path,
       dryRun: true,
@@ -1582,7 +1582,7 @@ describe('answering inputs', () => {
       expect(error).toBeInstanceOf(InputError);
       rejectedError = error as InputError;
     }
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: rejectedError!,
       manifestPath: path,
       dryRun: true,
@@ -1643,7 +1643,7 @@ describe('answering inputs', () => {
     expect(session.allInputs().find((input) => input.id === 'mirror')?.value).toBe(derivedSecret);
     expect(formatSessionTerminalLine(strings, derivedSecret)).toBe(derivedSecret);
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: planningError!,
       manifestPath: path,
       dryRun: true,
@@ -1709,7 +1709,7 @@ describe('answering inputs', () => {
     expect(session.allInputs()).toBe(inputs);
     expect(session.plan()).toBe(plan);
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: rejection!,
       manifestPath: path,
       dryRun: false,
@@ -1779,7 +1779,7 @@ describe('answering inputs', () => {
     expect(session.plan()).toBe(plan);
     expect(formatSessionTerminalLine(session.getStrings(), secret)).toBe(secret);
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: rejection!,
       manifestPath: path,
       dryRun: false,
@@ -1925,7 +1925,7 @@ describe('answering inputs', () => {
       expectSafe(diagnostic);
     }
 
-    const failure = executor.createFailureResult({
+    const failure = failureResults.createFailureResult({
       error: error!,
       manifestPath: path,
       dryRun: true,
@@ -1947,7 +1947,7 @@ describe('answering inputs', () => {
     expect(singleError?.issues).toHaveLength(1);
     expect(singleError?.location).toBeUndefined();
     expectSafe(`${singleError?.location?.file ?? ''}: ${singleError?.message ?? ''}`);
-    const singleFailure = executor.createFailureResult({
+    const singleFailure = failureResults.createFailureResult({
       error: singleError!,
       manifestPath: path,
       dryRun: true,
