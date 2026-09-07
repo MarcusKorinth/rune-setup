@@ -758,11 +758,6 @@ export interface EnvironmentUse {
   readonly locations: readonly Location[];
 }
 
-/**
- * The §4.3 warning: a `secret` interpolated into process argv (`command` or `args`) — the
- * command and its arguments can be visible in OS process listings; `env:` is the recommended
- * carrier. A warning, never an error: the author may have no choice with a foreign tool.
- */
 export function environmentReferences(
   manifest: ManifestV1,
   ctx: Pick<SemanticContext, 'file' | 'sourceMap'>,
