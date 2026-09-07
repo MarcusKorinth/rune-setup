@@ -438,7 +438,7 @@ describe('the IPC bridge', () => {
     const terminalResult = session.describe();
     const failure = new ExecutionError('RUNE-406', 'the log close failed');
     const execute = vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer) => {
-      observer?.({ kind: 'runFinished', result: terminalResult });
+      await observer?.({ kind: 'runFinished', result: terminalResult });
       throw failure;
     });
     const sent: Array<{ channel: string; payload: unknown }> = [];
@@ -1256,7 +1256,7 @@ describe('the IPC bridge', () => {
         { kind: 'runFinished', result: failedResult },
       ];
       for (const event of events) {
-        observer?.(event);
+        await observer?.(event);
       }
       return failedResult;
     });
@@ -1396,7 +1396,7 @@ describe('the IPC bridge', () => {
         { kind: 'runFinished', result: executionResult },
       ];
       for (const event of events) {
-        observer?.(event);
+        await observer?.(event);
       }
       return executionResult;
     });

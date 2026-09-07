@@ -47,6 +47,152 @@ function openedWritable(path: string, options: WritableOptions): fs.WriteStream 
 }
 
 describe('log-file sink failures', () => {
+  it('waits for a slow write callback before acknowledging its record', async () => {
+    const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    let completeWrite: (() => void) | undefined;
+    mockedFs.streamFactory = (target) =>
+      openedWritable(target, {
+        write(chunk, _encoding, callback) {
+          completeWrite = () => {
+            fs.appendFileSync(target, String(chunk));
+            callback();
+          };
+        },
+      });
+    const sink = await createLogFileSink(path);
+    let acknowledged = false;
+    const pending = sink
+      .observer({ kind: 'stepOutput', stepId: 'install', stream: 'stdout', line: 'complete' })
+      .then(() => {
+        acknowledged = true;
+      });
+
+    await Promise.resolve();
+    expect(acknowledged).toBe(false);
+    expect(fs.readFileSync(path, 'utf8')).toBe('');
+
+    completeWrite!();
+    await pending;
+    expect(acknowledged).toBe(true);
+    await sink.close();
+    expect(fs.readFileSync(path, 'utf8')).toContain('[install:stdout] complete');
+  });
+
+  it('keeps a slow writable bounded and writes every awaited record in order', async () => {
+    const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    let stream: fs.WriteStream;
+    let maximumBufferedBytes = 0;
+    let maximumRecordBytes = 0;
+    mockedFs.streamFactory = (target) => {
+      stream = openedWritable(target, {
+        highWaterMark: 16,
+        write(chunk, _encoding, callback) {
+          const record = String(chunk);
+          maximumBufferedBytes = Math.max(maximumBufferedBytes, stream.writableLength);
+          maximumRecordBytes = Math.max(maximumRecordBytes, Buffer.byteLength(record));
+          setImmediate(() => {
+            fs.appendFileSync(target, record);
+            callback();
+          });
+        },
+      });
+      return stream;
+    };
+    const sink = await createLogFileSink(path);
+    const output = Array.from({ length: 40 }, (_, index) => `record ${index}: ${'x'.repeat(80)}`);
+
+    for (const line of output) {
+      await sink.observer({ kind: 'stepOutput', stepId: 'install', stream: 'stdout', line });
+    }
+    await sink.close();
+
+    expect(maximumBufferedBytes).toBeLessThanOrEqual(maximumRecordBytes);
+    const lines = fs
+      .readFileSync(path, 'utf8')
+      .trimEnd()
+      .split('\n')
+      .map((line) => line.slice(line.indexOf('[install:stdout] ') + '[install:stdout] '.length));
+    expect(lines).toEqual(output);
+  });
+
+  it('settles a pending write on an error even when its callback never arrives', async () => {
+    const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    let stream: fs.WriteStream;
+    const write = vi.fn();
+    mockedFs.streamFactory = (target) => {
+      stream = openedWritable(target, { write });
+      return stream;
+    };
+    const sink = await createLogFileSink(path);
+    const cause = Object.assign(new Error('private device details'), { code: 'EIO' });
+    const pending = sink.observer({
+      kind: 'stepOutput',
+      stepId: 'install',
+      stream: 'stdout',
+      line: 'in flight',
+    });
+
+    stream!.emit('error', cause);
+
+    await expect(pending).resolves.toBeUndefined();
+    await sink.observer({ kind: 'stepOutput', stepId: 'install', stream: 'stdout', line: 'later' });
+    expect(write).toHaveBeenCalledTimes(1);
+    await expect(sink.close()).rejects.toMatchObject({ code: 'RUNE-406', cause });
+  });
+
+  it.each([false, true])(
+    'settles a pending write on premature close (close requested: %s)',
+    async (closeRequested) => {
+      const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+      let stream: fs.WriteStream;
+      mockedFs.streamFactory = (target) => {
+        stream = openedWritable(target, { write: vi.fn() });
+        return stream;
+      };
+      const sink = await createLogFileSink(path);
+      const pending = sink.observer({
+        kind: 'stepOutput',
+        stepId: 'install',
+        stream: 'stdout',
+        line: 'in flight',
+      });
+      const closing = closeRequested ? sink.close() : undefined;
+      const expectedFailure =
+        closing === undefined
+          ? undefined
+          : expect(closing).rejects.toMatchObject({
+              code: 'RUNE-406',
+              cause: { code: 'ERR_STREAM_PREMATURE_CLOSE' },
+            });
+
+      stream!.destroy();
+
+      await expect(pending).resolves.toBeUndefined();
+      if (expectedFailure !== undefined) {
+        await expectedFailure;
+      } else {
+        await expect(sink.close()).rejects.toMatchObject({
+          code: 'RUNE-406',
+          cause: { code: 'ERR_STREAM_PREMATURE_CLOSE' },
+        });
+      }
+    },
+  );
+
+  it('rejects an opening stream that closes without an open or error event', async () => {
+    const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
+    mockedFs.streamFactory = () => {
+      const stream = new Writable();
+      queueMicrotask(() => stream.destroy());
+      return stream;
+    };
+
+    await expect(createLogFileSink(path)).rejects.toMatchObject({
+      code: 'RUNE-406',
+      cause: { code: 'ERR_STREAM_PREMATURE_CLOSE' },
+    });
+  });
+
   it('settles with a controlled error when a buffered write fails', async () => {
     const path = join(fs.mkdtempSync(join(tmpdir(), 'rune-log-')), 'run.log');
     mockedFs.streamFactory = (target) =>
@@ -57,7 +203,7 @@ describe('log-file sink failures', () => {
       });
     const sink = await createLogFileSink(path);
 
-    sink.observer({
+    await sink.observer({
       kind: 'stepOutput',
       stepId: 'install',
       stream: 'stderr',
@@ -87,7 +233,12 @@ describe('log-file sink failures', () => {
       });
     const sink = await createLogFileSink(path);
 
-    sink.observer({ kind: 'stepOutput', stepId: 'install', stream: 'stderr', line: 'failed' });
+    await sink.observer({
+      kind: 'stepOutput',
+      stepId: 'install',
+      stream: 'stderr',
+      line: 'failed',
+    });
 
     await expect(sink.close()).rejects.toMatchObject({
       code: 'RUNE-406',
@@ -151,7 +302,7 @@ describe('log-file sink failures', () => {
         { environment: {}, logFile: logPath },
         {
           run: async (request) => {
-            request.onOutput('stdout', 'installed');
+            await request.onOutput('stdout', 'installed');
             return { kind: 'exited', exitCode: 0 };
           },
         },
@@ -226,7 +377,7 @@ describe('log-file sink failures', () => {
         { environment: {}, logFile: logPath },
         {
           run: async (request) => {
-            request.onOutput('stdout', 'installed');
+            await request.onOutput('stdout', 'installed');
             return { kind: 'exited', exitCode: Number.NaN };
           },
         },

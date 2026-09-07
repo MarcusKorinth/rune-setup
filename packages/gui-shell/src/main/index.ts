@@ -13,7 +13,6 @@ import {
   dialog,
   ipcMain,
   type BrowserWindowConstructorOptions,
-  type WebContents,
 } from 'electron';
 
 import {
@@ -55,6 +54,7 @@ import {
   projectWarnings,
 } from './serialize.js';
 import { guardShellStreams, type ShellProcessStreams, type ShellStreams } from './streams.js';
+import { createEventDelivery } from './eventDelivery.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -306,17 +306,17 @@ async function executeHeadless(
       if (event.kind === 'runFinished') {
         terminalResult = event.result;
       }
-      progress(event);
+      return progress(event);
     }, cancel);
   } catch (error) {
     return (await failWith(error, invocation, session, output, terminalResult, plan)).exitCode;
   }
 
   for (const warning of session.warnings()) {
-    writeSessionChromeDiagnostic(session, output, 'rune.warning', { message: warning });
+    await writeSessionChromeDiagnostic(session, output, 'rune.warning', { message: warning });
   }
   if (result.nothingExecuted) {
-    writeSessionChromeDiagnostic(session, output, 'rune.warning', {
+    await writeSessionChromeDiagnostic(session, output, 'rune.warning', {
       message: session.getStrings().chrome('rune.result.nothingExecuted'),
     });
   }
@@ -341,7 +341,9 @@ export async function windowedRun(
   ) => deliver(result, target, output),
 ): Promise<number> {
   const window = new BrowserWindow(windowOptions(windowTheme(session)));
+  const events = createEventDelivery(window.webContents);
   window.once('ready-to-show', () => window.show());
+  window.once('closed', () => events.dispose());
 
   let running = false;
   let closeRequested = false;
@@ -370,7 +372,7 @@ export async function windowedRun(
 
   registerBridge(session, {
     output,
-    events: window.webContents,
+    events,
     onExecuteStart: () => {
       if (closeRequested || closeFinalizing) {
         throw new CancelledError();
@@ -431,6 +433,7 @@ export async function windowedRun(
   });
 
   window.webContents.on('render-process-gone', () => {
+    events.dispose();
     if (rendererGone || renderedDone) {
       return;
     }
@@ -464,6 +467,7 @@ export async function windowedRun(
     if (running) {
       event.preventDefault();
       closeRequested = true;
+      events.dispose();
       session.cancel();
       return;
     }
@@ -497,25 +501,29 @@ export async function windowedRun(
   });
   const closed = new Promise<void>((resolve) => window.on('closed', () => resolve()));
 
-  await withSigtermHandler(
-    () => {
-      sigtermRequested = true;
-      closeWindowOnSigterm(window)();
-    },
-    async () => {
-      if (!sigtermRequested) {
-        try {
-          await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
-        } catch (error) {
-          if (!sigtermRequested && !rendererGone) {
-            throw error;
+  try {
+    await withSigtermHandler(
+      () => {
+        sigtermRequested = true;
+        closeWindowOnSigterm(window)();
+      },
+      async () => {
+        if (!sigtermRequested) {
+          try {
+            await window.loadFile(join(app.getAppPath(), 'src', 'renderer', 'index.html'));
+          } catch (error) {
+            if (!sigtermRequested && !rendererGone) {
+              throw error;
+            }
           }
         }
-      }
-      await closed;
-    },
-    signals,
-  );
+        await closed;
+      },
+      signals,
+    );
+  } finally {
+    events.dispose();
+  }
 
   if (fatalCode !== undefined) {
     return fatalCode;
@@ -532,7 +540,7 @@ export function registerBridge(
   session: Session,
   hooks: {
     output?: ShellStreams;
-    events: Pick<WebContents, 'send'>;
+    events: { send(channel: string, payload: unknown): unknown };
     onExecuteStart?: () => void;
     onExecuteEnd?: (result: RunResult) => void | Promise<void>;
     onExecuteError?: (
@@ -658,7 +666,7 @@ export function registerBridge(
     try {
       plan = session.plan();
       const consoleObserver = shellProgressObserver(session, output);
-      result = await session.execute((event: RunEvent) => {
+      result = await session.execute(async (event: RunEvent) => {
         if (event.kind === 'runFinished') {
           // Session can publish the engine-owned failed terminal before rejecting when its
           // log sink fails during finalization. Retain that authoritative result for delivery.
@@ -667,9 +675,9 @@ export function registerBridge(
         // Keep the terminal sink independent of renderer delivery. The engine owns the
         // observer exception boundary, so neither sink can corrupt the run.
         try {
-          consoleObserver(event);
+          await consoleObserver(event);
         } finally {
-          hooks.events.send(EVENT_CHANNEL, projectEvent(event, session.getStrings()));
+          await hooks.events.send(EVENT_CHANNEL, projectEvent(event, session.getStrings()));
         }
       });
     } catch (error) {
@@ -850,35 +858,42 @@ function writeSessionDiagnostic(session: Session, message: string, output: Shell
   output.stderr.write(`${formatSessionTerminalLine(session.getStrings(), message)}\n`);
 }
 
-function writeSessionChromeDiagnostic(
+async function writeSessionChromeDiagnostic(
   session: Session,
   output: ShellStreams,
   key: ChromeKey,
   values?: Readonly<Record<string, string | number>>,
-): void {
+): Promise<void> {
   const strings = session.getStrings();
-  output.stderr.write(`${formatSessionTerminalLine(strings, strings.chrome(key, values))}\n`);
+  await output.stderr.writeAndWait(
+    `${formatSessionTerminalLine(strings, strings.chrome(key, values))}\n`,
+  );
 }
 
 /** Renders the shell's copy of the shared run-event stream to diagnostic stderr. */
-function shellProgressObserver(session: Session, output: ShellStreams): (event: RunEvent) => void {
-  return (event) => {
+function shellProgressObserver(
+  session: Session,
+  output: ShellStreams,
+): (event: RunEvent) => Promise<void> {
+  return async (event) => {
     switch (event.kind) {
       case 'runStarted':
-        writeSessionChromeDiagnostic(session, output, 'rune.progress.runStarted', {
+        await writeSessionChromeDiagnostic(session, output, 'rune.progress.runStarted', {
           total: event.plan.steps.length,
           platform: event.plan.platform,
         });
         break;
       case 'stepStarted':
-        writeSessionChromeDiagnostic(session, output, 'rune.progress.step', {
+        await writeSessionChromeDiagnostic(session, output, 'rune.progress.step', {
           index: event.index + 1,
           total: event.total,
           title: event.title,
         });
         break;
       case 'stepOutput':
-        writeSessionChromeDiagnostic(session, output, 'rune.progress.output', { line: event.line });
+        await writeSessionChromeDiagnostic(session, output, 'rune.progress.output', {
+          line: event.line,
+        });
         break;
       case 'stepFinished': {
         const values = {
@@ -886,7 +901,7 @@ function shellProgressObserver(session: Session, output: ShellStreams): (event: 
           durationMs: event.durationMs,
           ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
         };
-        writeSessionChromeDiagnostic(
+        await writeSessionChromeDiagnostic(
           session,
           output,
           event.exitCode === undefined

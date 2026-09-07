@@ -14,7 +14,7 @@ export interface ShellProcessStreams {
 export interface GuardedShellStream {
   /** Best-effort write used for diagnostics. */
   readonly write: (text: string) => void;
-  /** Awaited write used when stdout carries the requested result. */
+  /** Awaited write for execution progress and requested stdout results. */
   readonly writeAndWait: (text: string) => Promise<StreamWriteOutcome>;
   /** True only when the first stream error was not an early-closing consumer. */
   readonly failed: () => boolean;

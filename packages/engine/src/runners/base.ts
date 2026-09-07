@@ -16,9 +16,10 @@ export interface SpawnRequest {
   readonly extraEnv: Readonly<Record<string, string>>;
   /**
    * Called once per complete bounded logical line or fixed value-free placeholder, in order;
-   * never with artificial raw fragments. The caller masks each callback before rendering.
+   * never with artificial raw fragments. Await a returned Promise before the next line
+   * or settlement. The caller masks each callback before rendering.
    */
-  readonly onOutput: (stream: 'stdout' | 'stderr', line: string) => void;
+  readonly onOutput: (stream: 'stdout' | 'stderr', line: string) => unknown;
   readonly cancel: CancelToken;
 }
 

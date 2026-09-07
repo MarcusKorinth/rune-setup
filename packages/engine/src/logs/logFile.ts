@@ -11,11 +11,12 @@ import { dirname } from 'node:path';
 import { finished } from 'node:stream/promises';
 
 import { escapeDiagnosticText } from '../diagnostics.js';
-import type { EngineObserver, RunEvent } from '../engine/events.js';
+import type { RunEvent } from '../engine/events.js';
 import { ExecutionError, filesystemFailureReason } from '../errors.js';
 
 export interface LogFileSink {
-  readonly observer: EngineObserver;
+  /** Resolves after the record is written, or after a failure retained for close(). */
+  readonly observer: (event: RunEvent) => Promise<void>;
   /** Flushes and closes the file; call once, after the run settled. */
   close(): Promise<void>;
 }
@@ -63,21 +64,34 @@ export async function createLogFileSink(
       phase === 'opening' ? 'open' : phase === 'writing' ? 'write to' : 'close',
       cause,
     );
+    stream.destroy();
+  });
+  stream.on('close', () => {
+    if (phase !== 'closing') {
+      rememberFailure(phase === 'opening' ? 'open' : 'write to', prematureClose());
+    }
   });
 
   let descriptor: number;
   try {
     descriptor = await new Promise<number>((resolve, reject) => {
-      const opened = (fd: number): void => {
+      const cleanup = (): void => {
+        stream.removeListener('open', opened);
         stream.removeListener('error', failed);
+        stream.removeListener('close', closed);
+      };
+      const opened = (fd: number): void => {
+        cleanup();
         resolve(fd);
       };
       const failed = (cause: unknown): void => {
-        stream.removeListener('open', opened);
+        cleanup();
         reject(cause);
       };
+      const closed = (): void => failed(prematureClose());
       stream.once('open', opened);
       stream.once('error', failed);
+      stream.once('close', closed);
     });
   } catch (cause) {
     rememberFailure('open', cause);
@@ -115,18 +129,40 @@ export async function createLogFileSink(
   return {
     observer: (event) => {
       if (failure !== undefined || phase !== 'writing') {
-        return;
+        return Promise.resolve();
       }
-      try {
-        const record = `${new Date().toISOString()} ${describe(event)}`;
-        stream.write(`${mask(escapeDiagnosticText(mask(record)))}\n`, (cause) => {
-          if (cause !== undefined && cause !== null) {
-            rememberFailure('write to', cause);
-          }
-        });
-      } catch (cause) {
-        rememberFailure('write to', cause);
-      }
+      // Waiting for the write callback keeps a cooperating producer from filling the
+      // Writable's queue, including when individual records exceed its high-water mark.
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = (): void => {
+          if (settled) return;
+          settled = true;
+          stream.removeListener('error', failed);
+          stream.removeListener('close', closed);
+          resolve();
+        };
+        const failed = (cause: unknown): void => {
+          rememberFailure('write to', cause);
+          settle();
+          stream.destroy();
+        };
+        const closed = (): void => failed(prematureClose());
+        stream.once('error', failed);
+        stream.once('close', closed);
+        try {
+          const record = `${new Date().toISOString()} ${describe(event)}`;
+          stream.write(`${mask(escapeDiagnosticText(mask(record)))}\n`, (cause) => {
+            if (cause !== undefined && cause !== null) {
+              failed(cause);
+            } else {
+              settle();
+            }
+          });
+        } catch (cause) {
+          failed(cause);
+        }
+      });
     },
     close: () => {
       closePromise ??= closeStream();
@@ -136,6 +172,7 @@ export async function createLogFileSink(
 
   async function closeStream(): Promise<void> {
     phase = 'closing';
+    const completion = finished(stream, { cleanup: true });
     try {
       stream.end();
     } catch (cause) {
@@ -144,7 +181,7 @@ export async function createLogFileSink(
     }
 
     try {
-      await finished(stream, { cleanup: true });
+      await completion;
     } catch (cause) {
       rememberFailure('close', cause);
     }
@@ -153,6 +190,12 @@ export async function createLogFileSink(
       throw failure;
     }
   }
+}
+
+function prematureClose(): Error {
+  return Object.assign(new Error('the log stream closed before completing its operation'), {
+    code: 'ERR_STREAM_PREMATURE_CLOSE',
+  });
 }
 
 function fileStats(fd: number): Promise<Stats> {

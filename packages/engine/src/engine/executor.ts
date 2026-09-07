@@ -246,22 +246,23 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
   const runner = options.runner ?? new SpawnRunner();
   const runId = randomUUID();
 
-  const emit = (event: RunEvent): void => {
-    try {
-      const returned = (observer as (event: RunEvent) => unknown)(deepFreeze(event));
-      if (returned instanceof Promise) {
-        void returned.then(undefined, () => undefined);
+  let delivery = Promise.resolve();
+  const emit = (event: RunEvent): Promise<void> => {
+    delivery = delivery.then(async () => {
+      try {
+        const returned = observer(deepFreeze(event));
+        if (returned instanceof Promise) await returned;
+      } catch {
+        // A broken renderer must never corrupt a run (§9.1).
       }
-    } catch {
-      // A broken renderer must never corrupt a run (§9.1).
-    }
+    });
+    return delivery;
   };
 
   const startedAt = new Date();
   const runStartedAt = performance.now();
   const steps: ResultStep[] = [];
   let failed = false;
-  let wasCancelled: boolean;
   let fatalTerminationFailure = false;
   let fatalInternalError: InternalError | undefined;
 
@@ -270,13 +271,13 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     plan.resolvedInputs.map((input) => input.id),
     process.platform,
   );
-  emit({ kind: 'runStarted', plan });
-  wasCancelled = cancel.isCancelled;
+  await emit({ kind: 'runStarted', plan });
+  let wasCancelled = cancel.isCancelled;
 
   for (const [index, step] of plan.steps.entries()) {
     if (step.state === 'SKIPPED') {
       steps.push(skippedResultStep(step, secrets));
-      emit({
+      await emit({
         kind: 'stepFinished',
         stepId: step.id,
         state: 'SKIPPED',
@@ -313,7 +314,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       transitionStepState(step.state, 'NOT_RUN');
       const state = 'NOT_RUN';
       steps.push(commandResultStep(step, state, null, 0, [], secrets));
-      emit({
+      await emit({
         kind: 'stepFinished',
         stepId: step.id,
         state,
@@ -325,7 +326,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
 
     let state = transitionStepState(step.state, 'RUNNING');
 
-    emit({
+    await emit({
       kind: 'stepStarted',
       stepId: step.id,
       index,
@@ -355,7 +356,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
           onOutput: (stream, rawLine) => {
             // Deferring delivery by one microtask lets the runner's settlement handler close
             // this gate before output queued after resolve/reject can reach an engine sink.
-            queueMicrotask(() => {
+            return Promise.resolve().then(() => {
               if (!acceptingOutput) {
                 return;
               }
@@ -376,7 +377,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
                   : rawLine;
               const line = projectStructuredString(boundedLine, secrets);
               keepInTail(stream, line);
-              emit({ kind: 'stepOutput', stepId: step.id, stream, line });
+              return emit({ kind: 'stepOutput', stepId: step.id, stream, line });
             });
           },
         })
@@ -395,6 +396,8 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
       outcome = { kind: 'failedToStart', reason: 'other' };
     }
 
+    // Also drain accepted output from custom runners which settle in the same turn.
+    await delivery;
     const durationMs = Math.max(0, performance.now() - stepStartedAt);
     let terminalState: 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
     let exitCode: number | null = null;
@@ -470,7 +473,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
           ? OVERSIZED_OUTPUT_LINE_PLACEHOLDER
           : maskedDiagnostic;
       keepInTail('stderr', line);
-      emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
+      await emit({ kind: 'stepOutput', stepId: step.id, stream: 'stderr', line });
     }
 
     transitionStepState(state, terminalState);
@@ -484,7 +487,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     }
 
     steps.push(commandResultStep(step, state, exitCode, durationMs, tail, secrets));
-    emit(finishedStepEvent(step.id, state, exitCode, durationMs));
+    await emit(finishedStepEvent(step.id, state, exitCode, durationMs));
   }
 
   const finishedAt = new Date();
@@ -528,7 +531,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     durationMs,
   });
 
-  emit({ kind: 'runFinished', result });
+  await emit({ kind: 'runFinished', result });
   if (fatalInternalError !== undefined) {
     throw fatalInternalError;
   }

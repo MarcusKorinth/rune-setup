@@ -45,7 +45,7 @@ RUNE is not a replacement for WiX, NSIS, Inno Setup, or the Qt Installer Framewo
 1. **Declarative.** One YAML file describes inputs, conditions, and steps. RUNE interprets it; installer authors write no code.
 2. **Mode parity.** GUI, interactive CLI, and CI/CD share one Planner and one Executor. Frontends can only (a) supply input values and (b) render engine events and engine-resolved strings. Behavior not expressible through those two channels does not ship. The GUI shell hosts the engine in its Electron main process; its renderer reaches the engine only through the IPC bridge — a 1:1 projection of the same `Session` facade every other frontend uses.
 3. **Safe by default.** argv arrays only, never `shell: true`; YAML parsed with the core schema only (no custom tags, no code execution); interpolation is single-pass string substitution, never evaluation; conditions use a closed hand-written grammar, never `eval` or `new Function`; secrets are wrapped and masked end-to-end.
-4. **Automation-first.** Every interactive input is settable via `--set`, `RUNE_INPUT_*` env vars, or `--values` files. RUNE never blocks a pipeline: no TTY means non-interactive behavior. Exit codes and the result file are stable machine contracts.
+4. **Automation-first.** Every interactive input is settable via `--set`, `RUNE_INPUT_*` env vars, or `--values` files. RUNE never prompts without a TTY: no TTY means non-interactive behavior. Exit codes and the result file are stable machine contracts.
 5. **Extensible via defined seams.** Input types and the runner sit behind small registries/interfaces. New capabilities land as new `schemaVersion`s, never as silent reinterpretation of v1 manifests.
 
 ## 3) System overview
@@ -350,6 +350,11 @@ against the spec's own security rule.
 Process contract:
 
 - `child_process.spawn(command, args, { shell: false, ... })` — argv arrays, never a shell; **async on the Node event loop** (the process exit and the stream ends are awaited; no worker threads, no blocking calls), so the engine never blocks whoever hosts it — the CLI or the Electron main process
+- Normal completion waits for stdout and stderr to reach EOF, including pipes inherited
+  by descendants after the direct process exits. There is no implicit deadline for this
+  wait. `timeoutSeconds` remains active until output has been delivered; cancellation also
+  remains available. Authors starting background services must redirect their streams or
+  configure a timeout when the workflow needs a bounded completion time.
 - argv = interpolated `[command, ...args]`; relative `cwd` and commands containing a target path separator resolve against `${manifestDir}`, never the caller's cwd, while bare command names remain unchanged for ordinary `PATH` lookup. Target-absolute path values stay byte-identical; target-relative path values translate only separators recognized by the target grammar (`/` and `\` on Windows, `/` on Linux) to host separators before anchoring
 - Windows drive-relative command spellings (`C:tool.exe`, `C:dir\tool.exe`) are rejected at
   plan time: their meaning depends on process-global per-drive state and therefore cannot be
@@ -480,7 +485,32 @@ Events are frozen plain objects (`readonly` types, `Object.freeze`d). **Run even
 
 **Session event:** `InputStateChanged(inputId, enabled)` is produced by `setValue()` and **returned to the caller** — over the IPC bridge it is the resolved value of `rune.setValue`, and there is deliberately no separate push event (one delivery, nothing to double-apply) — whenever an input's `when:` flips because a controlling value changed. It belongs to the resolution phase, not to execution: it is never delivered through the run-event observer and does not count against the `RunStarted`/`RunFinished` bracket.
 
-**Observer delivery contract:** run events are delivered synchronously, in order, from the engine's event-loop turn (observer callbacks are plain synchronous functions; the engine never awaits them). Immediately before the first `RunStarted` callback, the Executor captures and freezes one shallow copy of the parent environment; every spawn and termination helper in that run receives that same internal snapshot, so an observer's mutation of the live host environment cannot affect execution. Observers must return quickly and must not throw; an observer exception is caught and swallowed — a broken renderer can never corrupt a run. `RunStarted` is first and `RunFinished` is last, exactly once each; no event is delivered after the `execute()` promise settles. The frontend's terminal event is withheld until every engine-owned sink has finalized. If finalization fails after steps ran, the sole `RunFinished` carries the failure result with the Executor's actual step states and counters; the facade then rejects with the corresponding `RuneError`. Observers can never influence execution.
+**Observer delivery contract:** run events are delivered serially in order. An observer
+may return a native Promise; the engine waits for it before delivering the next event.
+Other return values are ignored. Thrown errors and rejected Promises are contained per
+sink, so a failed frontend cannot change the execution outcome. A slow, healthy sink
+applies backpressure: the runner awaits line delivery before reading further from that
+pipe, allowing OS pipe buffering to slow the child. Both stdout and stderr retain at most
+one chunk under processing plus their bounded readable buffers and the existing 64 KiB
+logical-line state. No output is dropped because a sink is slow. The documented replacement
+of oversized logical lines remains unchanged.
+
+Immediately before RunStarted, the Executor freezes the parent environment snapshot.
+RunStarted is first and RunFinished is last, exactly once each. All accepted output and
+observer Promises finish before step/run settlement; no event follows execute settlement.
+Session waits for log writes and finalization before its terminal frontend event. A log
+finalization failure retains the actual step states in the sole failed RunFinished and
+then rejects with the corresponding RuneError. Observer latency contributes to execution
+wall time and can therefore trigger a configured timeout. Cancellation still signals the
+child while a sink is pending; completing the run waits for accepted output to drain.
+A sink which closes or errors releases its pending writes under its existing failure
+contract. A healthy sink which never resumes can delay finalization; RUNE does not discard
+its logs to impose an artificial output deadline.
+
+CLI and shell stderr writers await their write callbacks. The GUI transport acknowledges
+each event after synchronous renderer handling, with at most one event in flight. A lost
+renderer releases the transport waiter and follows the existing renderer-loss lifecycle.
+Custom runners must await each onOutput return before sending more output or settling.
 
 ### 9.2 Electron IPC bridge (main ↔ renderer)
 
@@ -787,14 +817,14 @@ All suites run under **vitest** unless stated otherwise; core CI runs them on Wi
 5. Only declared `boolean` inputs may stand bare in `when:`; conditions are strictly typed and fully checkable at `validate` time; an input's `when:` references only earlier-declared inputs.
 6. Secrets are wrapped at resolution, registered for masking before any step can launch, and masked in every maskable human or dynamic field at every current sink (console, log file, result file incl. output tails, plan previews, child output, and main→renderer IPC payloads). Immutable facade input snapshots are masked against the spellings known in their resolution or completed-plan phase and are replaced, never mutated, when the first successful plan discovers derived spellings. Structured machine projections preserve the exhaustive field-level exception list in §10 exactly by contract, including when carried over IPC or written to machine results; human presentation derived from any such exact machine field is still composed and masked at its sink. The renderer→main `rune.setValue` call is the only IPC call intentionally carrying a user-entered clear-text secret and is never logged. Supplied-vs-derived path limitations remain as §10 specifies: a line naming a supplied path spelling can stay clear when the declared secret holds a derived one instead, including a located diagnostic, the RUNE-406 and RUNE-407 announcements of the log and result sinks, the `result written to` success line, and the plan preview's manifest and log paths. Secrets are revealed only at spawn inside the runner.
 7. Every value affecting execution passes through the one resolution chain with recorded provenance; all authoritative input validation — type coercion, option membership by `value`, `pattern` full-match, JSON-array parsing — lives in the engine's input-type registry; frontend checks (CLI re-prompts, GUI red fields) are presentation sugar that may only re-ask, never accept.
-8. RUNE never blocks a pipeline: no TTY ⇒ non-interactive behavior; missing inputs ⇒ exit 4 with the complete list and accepted sources; resolution is all-or-nothing before any side effect.
+8. RUNE never prompts without a TTY: no TTY ⇒ non-interactive behavior; missing inputs ⇒ exit 4 with the complete list and accepted sources; resolution is all-or-nothing before any side effect.
 9. Exit codes are fixed, cross-platform identical, free of `128+signal` arithmetic. Configured-run result delivery and `status`/exit-code correspondence follow §10, including its usage, unsupported-host, failed-delivery, and lost-stdout exceptions and the renderer/main-process-loss boundaries of §9.4. Normally terminating configured runs preserve the mapped result outcome once delivery is claimed; abnormal host termination cannot undo an already committed result file.
 10. stdout carries only requested machine output; everything else goes to stderr.
 11. The GUI renderer contains no engine logic and reaches the engine only through the IPC bridge, a 1:1 projection of the `Session` facade and events; the engine package (`@rune/engine`: `manifest`/`inputs`/`i18n`/`engine`/`runners`/`results`/`logs`/`errors`) never depends on `cli` or `gui-shell`.
 12. Unknown manifest keys are rejected with located errors (reserved keys with a "later schemaVersion" message); unknown locale-overlay keys are located errors; unknown `--set`/values keys are hard input errors — nothing silently no-ops.
 13. Relative `command`/`cwd`/script/asset paths resolve against the manifest's directory, never the caller's cwd — in the author's tree and inside a packaged artifact alike.
 14. Step state transitions follow the legal-transition table, monotonic, exactly one terminal state per step, at most one step `RUNNING`.
-15. `RunStarted`/`RunFinished` bracket every execution exactly once; run events are synchronous and in-order; observer exceptions are swallowed; no run event is delivered after the `execute()` promise settles.
+15. `RunStarted`/`RunFinished` bracket every execution exactly once; run events are serial and awaited; observer errors and rejections are contained; no run event is delivered after the `execute()` promise settles.
 16. A disabled input (false `when:`) has identical semantics in all three modes — not required, never prompted, resolves to its type's empty value, supplied values ignored with engine-owned warning state and recorded provenance; frontends differ only in how they show it (greyed field, skipped prompt, nothing), and additional human warning lines follow the masking and delivery rules in §10.
 17. The engine owns locale selection and text resolution; every frontend renders the strings the engine resolved; ids, option values, commands, args, env, cwd, paths, and every machine contract are never localized.
 

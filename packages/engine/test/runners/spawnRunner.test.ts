@@ -5,6 +5,7 @@ import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { Readable } from 'node:stream';
+import { setTimeout as scheduleTimeout } from 'node:timers';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +43,7 @@ function run(
   command: ResolvedCommand,
   options: {
     cancel?: CancelToken;
-    onOutput?: (stream: string, line: string) => void;
+    onOutput?: (stream: string, line: string) => unknown;
     parentEnv?: Readonly<Record<string, string | undefined>>;
     extraEnv?: Readonly<Record<string, string>>;
   } = {},
@@ -392,6 +393,138 @@ describe('SpawnRunner', () => {
     expect(lines).toContain('stderr:oops');
   });
 
+  it('ignores arbitrary then methods returned by an output callback', async () => {
+    const then = vi.fn(() => {
+      throw new Error('untrusted then method');
+    });
+    await expect(
+      run(nodeCommand('console.log("line")'), {
+        onOutput: () => ({ then }),
+      }),
+    ).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+    expect(then).not.toHaveBeenCalled();
+  });
+
+  it('bounds stream read-ahead while a slow sink retains a line, then drains every line', async () => {
+    let produced = 0;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lines: string[] = [];
+    const stream = new Readable({
+      highWaterMark: 32,
+      read() {
+        this.push(produced === 1000 ? null : `${String(produced++).padStart(8, '0')}\n`);
+      },
+    });
+    const forwarding = forwardLines(
+      stream,
+      (line) => {
+        lines.push(line);
+        return lines.length === 1 ? held : undefined;
+      },
+      () => {
+        throw new Error('unexpected stream failure');
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(lines).toHaveLength(1));
+      expect(produced).toBeLessThan(20);
+      expect(stream.readableLength).toBeLessThanOrEqual(41);
+    } finally {
+      release();
+    }
+    await forwarding;
+    expect(lines).toEqual(
+      Array.from({ length: 1000 }, (_, index) => String(index).padStart(8, '0')),
+    );
+  });
+
+  it('cancels a child while preserving buffered output across a prolonged sink stall', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-cancel-drain-'));
+    const readyPath = join(directory, 'written.json');
+    const expected = Array.from({ length: 100 }, (_, index) => `${index}:${'x'.repeat(1024)}`);
+    const cancel = new CancelToken();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lines: string[] = [];
+    let pid: number | undefined;
+    let settled = false;
+    const pending = run(
+      nodeCommand(
+        [
+          'const lines = Array.from({length: 100}, (_, index) => `${index}:${"x".repeat(1024)}`);',
+          'process.stdout.write(lines.join("\\n") + "\\n", () => {',
+          `require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, JSON.stringify(process.pid));`,
+          '});',
+          'setInterval(() => {}, 1000);',
+        ].join('\n'),
+      ),
+      {
+        cancel,
+        onOutput: (_stream, line) => {
+          lines.push(line);
+          return lines.length === 1 ? held : undefined;
+        },
+      },
+    ).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    try {
+      await vi.waitFor(
+        () => {
+          pid = JSON.parse(readFileSync(readyPath, 'utf8')) as number;
+          expect(lines).toHaveLength(1);
+        },
+        { timeout: 5000 },
+      );
+      cancel.cancel();
+      await vi.waitFor(() => expect(processIsAlive(pid!)).toBe(false), { timeout: 15000 });
+      // Exceed both the process-group grace and the orphan-stdio close deadline.
+      // A slow healthy sink must not be mistaken for a descendant holding a pipe.
+      await new Promise<void>((resolve) => setTimeout(resolve, 11000));
+      expect(settled).toBe(false);
+      release();
+      await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
+      expect(lines).toEqual(expected);
+    } finally {
+      release();
+      cancel.cancel();
+      if (pid !== undefined) stopProcess(pid);
+      await withDeadline(pending, 15000);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 35000);
+
+  it('waits for a pending output sink after the real child has exited', async () => {
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lines: string[] = [];
+    let settled = false;
+    const pending = run(nodeCommand('console.log("first\\nlast")'), {
+      onOutput: (_stream, line) => {
+        lines.push(line);
+        return line === 'last' ? held : undefined;
+      },
+    }).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    try {
+      await vi.waitFor(() => expect(lines).toEqual(['first', 'last']));
+      expect(settled).toBe(false);
+    } finally {
+      release();
+    }
+    await expect(pending).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+  });
+
   it('delivers a logical line at exactly the UTF-8 payload limit unchanged', async () => {
     const lines: string[] = [];
 
@@ -417,12 +550,13 @@ describe('SpawnRunner', () => {
       stream.once('error', reject);
     });
 
-    forwardLines(
+    const forwarding = forwardLines(
       stream,
       (line) => lines.push(line),
       () => undefined,
     );
     await ended;
+    await forwarding;
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toBe('x'.repeat(MAX_OUTPUT_LINE_BYTES));
@@ -430,12 +564,12 @@ describe('SpawnRunner', () => {
     expect(lines[0]).not.toBe(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
   });
 
-  it('contains a stream error once and ignores later data and end without exposing it', () => {
+  it('contains a stream error once and ignores later data and end without exposing it', async () => {
     const lines: string[] = [];
     let failures = 0;
     const stream = new Readable({ read: () => undefined });
 
-    forwardLines(
+    const forwarding = forwardLines(
       stream,
       (line) => lines.push(line),
       () => {
@@ -443,16 +577,56 @@ describe('SpawnRunner', () => {
       },
     );
 
-    expect(stream.listenerCount('error')).toBe(1);
-    stream.emit('data', 'before\n');
+    expect(stream.listenerCount('error')).toBeGreaterThanOrEqual(1);
+    stream.push('before\n');
+    await vi.waitFor(() => expect(lines).toEqual(['before']));
     expect(() => stream.emit('error', new Error('private stream failure'))).not.toThrow();
     expect(() => stream.emit('error', new Error('second private failure'))).not.toThrow();
-    stream.emit('data', 'after\n');
+    stream.push('after\n');
     stream.emit('end');
+    await forwarding;
 
     expect(failures).toBe(1);
     expect(lines).toEqual(['before']);
     expect(JSON.stringify({ lines, failures })).not.toContain('private stream failure');
+  });
+
+  it('drains complete lines already read when a stream fails during a pending sink write', async () => {
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lines: string[] = [];
+    let failures = 0;
+    const stream = new Readable({ read: () => undefined });
+    const forwarding = forwardLines(
+      stream,
+      (line) => {
+        lines.push(line);
+        return line === 'first' ? held : undefined;
+      },
+      () => {
+        failures += 1;
+      },
+    );
+
+    try {
+      stream.push('first\nsecond\nunfinished');
+      await vi.waitFor(() => expect(lines).toEqual(['first']));
+      stream.emit('error', new Error('private read failure'));
+      stream.emit('data', 'later chunk\n');
+      expect(failures).toBe(1);
+      expect(lines).toEqual(['first']);
+
+      release();
+      await forwarding;
+
+      expect(lines).toEqual(['first', 'second']);
+      expect(failures).toBe(1);
+    } finally {
+      release();
+      stream.destroy();
+    }
   });
 
   it('replaces a newline-free line over the limit once and emits nothing raw at EOF', async () => {
@@ -1564,11 +1738,28 @@ describe('SpawnRunner', () => {
     expect(cancel.activeListeners).toBe(0);
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'keeps the first timeout cause while cancellation arrives during graceful termination',
-    async () => {
+  it.skipIf(process.platform === 'win32').each(['timedOut', 'cancelled'] as const)(
+    'keeps the first %s cause during graceful termination',
+    async (firstCause) => {
       const cancel = new CancelToken();
       const signals: string[] = [];
+      let ready = (): void => undefined;
+      let terminated = (): void => undefined;
+      const childReady = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const childTerminated = new Promise<void>((resolve) => {
+        terminated = resolve;
+      });
+      let expire = (): void => {
+        throw new Error('run deadline was not armed');
+      };
+      // Capture only the run deadline. Drive it after the real child has installed
+      // its signal handler; process startup speed must not decide the winning cause.
+      const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementationOnce((callback) => {
+        expire = callback;
+        return scheduleTimeout(() => undefined, 15000);
+      });
       const pending = run(
         nodeCommand(
           [
@@ -1577,51 +1768,34 @@ describe('SpawnRunner', () => {
             '  console.log(`term:${++signals}`);',
             '  setTimeout(() => process.exit(0), 300);',
             '});',
+            'console.log("ready");',
             'setInterval(() => {}, 1000);',
           ].join('\n'),
           { timeoutSeconds: 0.05 },
         ),
-        { cancel, onOutput: (_stream, line) => signals.push(line) },
+        {
+          cancel,
+          onOutput: (_stream, line) => {
+            signals.push(line);
+            if (line === 'ready') ready();
+            if (line === 'term:1') terminated();
+          },
+        },
       );
-      const cancelTimer = setTimeout(() => cancel.cancel(), 100);
+      timer.mockRestore();
 
       try {
-        await expect(pending).resolves.toEqual({ kind: 'timedOut' });
+        await withDeadline(childReady, 5000);
+        if (firstCause === 'timedOut') expire();
+        else cancel.cancel();
+        await withDeadline(childTerminated, 5000);
+        if (firstCause === 'timedOut') cancel.cancel();
+        else expire();
+
+        await expect(withDeadline(pending, 10000)).resolves.toEqual({ kind: firstCause });
         expect(signals.filter((line) => line.startsWith('term:'))).toEqual(['term:1']);
       } finally {
-        clearTimeout(cancelTimer);
-        cancel.cancel();
-      }
-    },
-    15000,
-  );
-
-  it.skipIf(process.platform === 'win32')(
-    'keeps the first cancellation cause while timeout arrives during graceful termination',
-    async () => {
-      const cancel = new CancelToken();
-      const signals: string[] = [];
-      const pending = run(
-        nodeCommand(
-          [
-            'let signals = 0;',
-            'process.on("SIGTERM", () => {',
-            '  console.log(`term:${++signals}`);',
-            '  setTimeout(() => process.exit(0), 300);',
-            '});',
-            'setInterval(() => {}, 1000);',
-          ].join('\n'),
-          { timeoutSeconds: 0.1 },
-        ),
-        { cancel, onOutput: (_stream, line) => signals.push(line) },
-      );
-      const cancelTimer = setTimeout(() => cancel.cancel(), 50);
-
-      try {
-        await expect(pending).resolves.toEqual({ kind: 'cancelled' });
-        expect(signals.filter((line) => line.startsWith('term:'))).toEqual(['term:1']);
-      } finally {
-        clearTimeout(cancelTimer);
+        timer.mockRestore();
         cancel.cancel();
       }
     },
@@ -1693,15 +1867,99 @@ describe('SpawnRunner', () => {
     }
   }, 25000);
 
-  it('releases the child stdio after the bounded close wait so an orphan cannot pin the host', async () => {
-    // The grandchild inherits the step's stdout/stderr pipes, leaves the process group, and
-    // outlives the direct child; only the runner's read ends decide whether the host can exit.
-    const grandchildScript = 'setTimeout(() => {}, 20000);';
+  it('waits for descendant EOF without an implicit normal-completion deadline', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-descendant-output-'));
+    const releasePath = join(directory, 'release-output');
+    const grandchildScript = [
+      'const { existsSync } = require("node:fs");',
+      'const poll = setInterval(() => {',
+      `  if (!existsSync(${JSON.stringify(releasePath)})) return;`,
+      '  clearInterval(poll);',
+      '  process.stdout.write("late:first\\nlate:stdout-tail");',
+      '  process.stderr.write("late:error\\nlate:stderr-tail");',
+      '}, 10);',
+    ].join('\n');
     const parentScript = [
       'const { spawn } = require("node:child_process");',
       `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "inherit", detached: true });`,
       'grandchild.unref();',
-      'console.log(`grandchild:${grandchild.pid}`);',
+      'process.stdout.write(`${process.pid}:${grandchild.pid}\\n`, () => process.exit(0));',
+    ].join('\n');
+    const recorder = recordSpawnedProcesses();
+    const cancel = new TrackedCancelToken();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let settled = false;
+    let parentPid: number | undefined;
+    let grandchildPid: number | undefined;
+    let reportProcessIds = (_ids: readonly [number, number]): void => undefined;
+    const processIds = new Promise<readonly [number, number]>((resolveIds) => {
+      reportProcessIds = resolveIds;
+    });
+    const pending = run(nodeCommand(parentScript), {
+      cancel,
+      onOutput: (stream, line) => {
+        (stream === 'stdout' ? stdout : stderr).push(line);
+        const match = /^(\d+):(\d+)$/.exec(line);
+        if (match?.[1] !== undefined && match[2] !== undefined) {
+          reportProcessIds([Number(match[1]), Number(match[2])]);
+        }
+      },
+    }).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+
+    try {
+      [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
+      const directChild = recordedProcess(recorder, parentPid);
+      await waitForObservedExit(directChild, 5000);
+      expect(directChild.exitCode).toBe(0);
+      expect(processIsAlive(grandchildPid)).toBe(true);
+      // Normal completion has no counterpart to the five-second close deadline used after
+      // termination. Only this test's explicit release lets the descendant reach EOF.
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 6000));
+      expect(settled).toBe(false);
+      expect(cancel.activeListeners).toBe(1);
+      expect(directChild.stdout?.readableEnded).toBe(false);
+      expect(directChild.stderr?.readableEnded).toBe(false);
+      expect(stdout).toEqual([`${parentPid}:${grandchildPid}`]);
+      expect(stderr).toEqual([]);
+
+      writeFileSync(releasePath, 'release');
+
+      await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'exited', exitCode: 0 });
+      expect(stdout).toEqual([`${parentPid}:${grandchildPid}`, 'late:first', 'late:stdout-tail']);
+      expect(stderr).toEqual(['late:error', 'late:stderr-tail']);
+      expect(directChild.stdout?.readableEnded).toBe(true);
+      expect(directChild.stderr?.readableEnded).toBe(true);
+      expect(cancel.activeListeners).toBe(0);
+    } finally {
+      recorder.stop();
+      cancel.cancel();
+      if (parentPid !== undefined) stopProcess(parentPid);
+      if (grandchildPid !== undefined) stopProcess(grandchildPid);
+      try {
+        await withDeadline(pending, 5000);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  }, 20000);
+
+  it('keeps a configured timeout active after direct exit and releases orphan pipes', async () => {
+    // The grandchild inherits the step's stdout/stderr pipes, leaves the process group, and
+    // outlives the direct child; only the runner's read ends decide whether the host can exit.
+    const grandchildScript = [
+      'process.stdout.on("error", () => {});',
+      'const heartbeat = setInterval(() => console.log("orphan:tick"), 1000);',
+      'setTimeout(() => clearInterval(heartbeat), 20000);',
+    ].join('\n');
+    const parentScript = [
+      'const { spawn } = require("node:child_process");',
+      `const grandchild = spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "inherit", detached: true });`,
+      'grandchild.unref();',
+      'console.log(`${process.pid}:${grandchild.pid}`);',
       'setTimeout(() => process.exit(0), 200);',
     ].join('\n');
     // Node reports libuv pipe handles as PipeWrap on Windows and Linux alike. The baseline
@@ -1709,37 +1967,55 @@ describe('SpawnRunner', () => {
     const pipeCount = (): number =>
       process.getActiveResourcesInfo().filter((resource) => resource === 'PipeWrap').length;
     const baseline = pipeCount();
-    let reportGrandchild = (_pid: number): void => undefined;
-    const reportedGrandchild = new Promise<number>((resolvePid) => {
-      reportGrandchild = resolvePid;
+    const recorder = recordSpawnedProcesses();
+    let reportProcessIds = (_ids: readonly [number, number]): void => undefined;
+    const processIds = new Promise<readonly [number, number]>((resolveIds) => {
+      reportProcessIds = resolveIds;
     });
+    let parentPid: number | undefined;
     let grandchildPid: number | undefined;
-    const pending = run(nodeCommand(parentScript, { timeoutSeconds: 1 }), {
+    let heartbeatLines = 0;
+    let settled = false;
+    const pending = run(nodeCommand(parentScript, { timeoutSeconds: 2 }), {
       onOutput: (_stream, line) => {
-        const match = /^grandchild:(\d+)$/.exec(line);
-        if (match?.[1] !== undefined) {
-          reportGrandchild(Number(match[1]));
+        const match = /^(\d+):(\d+)$/.exec(line);
+        if (match?.[1] !== undefined && match[2] !== undefined) {
+          reportProcessIds([Number(match[1]), Number(match[2])]);
         }
+        if (line === 'orphan:tick') heartbeatLines += 1;
+        // Each acknowledged line suspends the idle timer briefly, without renewing its budget.
+        return Promise.resolve();
       },
+    }).then((outcome) => {
+      settled = true;
+      return outcome;
     });
 
     try {
-      grandchildPid = await withDeadline(reportedGrandchild, 5000);
+      [parentPid, grandchildPid] = await withDeadline(processIds, 5000);
+      const directChild = recordedProcess(recorder, parentPid);
+      await waitForObservedExit(directChild, 5000);
+      expect(directChild.exitCode).toBe(0);
+      expect(directChild.stdout?.readableEnded).toBe(false);
       expect(processIsAlive(grandchildPid)).toBe(true);
+      expect(settled).toBe(false);
 
       // The direct child has ended, so both platforms confirm the tree absent and keep the
-      // timeout cause; the bounded close wait then expires because the orphan holds the pipes.
+      // timeout cause; the bounded close wait expires despite the orphan's regular output.
       await expect(withDeadline(pending, 15000)).resolves.toEqual({ kind: 'timedOut' });
+      expect(heartbeatLines).toBeGreaterThanOrEqual(3);
       // The orphan is still alive: the host is released by dropping the pipe ends, not by
       // killing it.
       expect(processIsAlive(grandchildPid)).toBe(true);
 
-      const settled = Date.now();
-      while (pipeCount() !== baseline && Date.now() - settled < 2000) {
+      const settledAt = Date.now();
+      while (pipeCount() !== baseline && Date.now() - settledAt < 2000) {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
       }
       expect(pipeCount()).toBe(baseline);
     } finally {
+      recorder.stop();
+      if (parentPid !== undefined) stopProcess(parentPid);
       if (grandchildPid !== undefined) {
         stopProcess(grandchildPid);
       }

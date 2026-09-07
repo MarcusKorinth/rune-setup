@@ -22,10 +22,14 @@ import { z } from 'zod';
 
 interface FakeWindow {
   close(): void;
+  readonly webContents: unknown;
 }
 
 const electronHarness = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  eventAck: undefined as ((event: { sender: unknown }, sequence: unknown) => void) | undefined,
+  acknowledgeEvents: true,
+  eventCount: 0,
   constructionError: undefined as Error | undefined,
   duringLoad: undefined as (() => void | Promise<void>) | undefined,
   loadError: undefined as Error | undefined,
@@ -39,7 +43,14 @@ const electronHarness = vi.hoisted(() => ({
 vi.mock('electron', () => {
   class FakeBrowserWindow implements FakeWindow {
     readonly webContents = {
-      send: vi.fn(),
+      send: vi.fn((_channel: string, payload: unknown) => {
+        electronHarness.eventCount += 1;
+        if (!electronHarness.acknowledgeEvents) return;
+        electronHarness.eventAck?.(
+          { sender: electronHarness.window?.webContents },
+          (payload as { sequence: number }).sequence,
+        );
+      }),
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
         if (event === 'render-process-gone') {
           electronHarness.emitRendererGone = () => {
@@ -108,6 +119,16 @@ vi.mock('electron', () => {
     BrowserWindow: FakeBrowserWindow,
     dialog: { showErrorBox: vi.fn() },
     ipcMain: {
+      on: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          electronHarness.eventAck = listener;
+        },
+      ),
+      off: vi.fn(
+        (_channel: string, listener: (event: { sender: unknown }, sequence: unknown) => void) => {
+          if (electronHarness.eventAck === listener) electronHarness.eventAck = undefined;
+        },
+      ),
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
         electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
       }),
@@ -159,6 +180,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  electronHarness.acknowledgeEvents = true;
+  electronHarness.eventCount = 0;
   electronHarness.handlers.clear();
   electronHarness.constructionError = undefined;
   electronHarness.duringLoad = undefined;
@@ -239,8 +262,8 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     });
     const plan = session.plan();
     vi.spyOn(Session.prototype, 'execute').mockImplementation(async (observer, cancelToken) => {
-      observer?.({ kind: 'runStarted', plan });
-      observer?.({
+      await observer?.({ kind: 'runStarted', plan });
+      await observer?.({
         kind: 'stepStarted',
         stepId: 'wait',
         index: 0,
@@ -264,14 +287,14 @@ describe('the GUI shell SIGTERM lifecycle', () => {
         stepsNotRun: 0,
         nothingExecuted: false,
       } as RunResult;
-      observer?.({
+      await observer?.({
         kind: 'stepFinished',
         stepId: 'wait',
         state: 'CANCELLED',
         exitCode: undefined,
         durationMs: 0,
       });
-      observer?.({ kind: 'runFinished', result });
+      await observer?.({ kind: 'runFinished', result });
       return result;
     });
     const cancel = vi.spyOn(Session.prototype, 'cancel');
@@ -1119,6 +1142,46 @@ describe('the GUI shell native window', () => {
 });
 
 describe('windowed result delivery', () => {
+  it.each(['renderer-gone', 'close'] as const)(
+    'releases a pending event on %s without blocking finalization',
+    async (action) => {
+      const { invocation, resultPath, session } = await windowedFixture();
+      const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));
+      const displayFatal = vi.fn();
+      vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+      electronHarness.acknowledgeEvents = false;
+      electronHarness.duringLoad = async () => {
+        const execution = Promise.resolve(bridgeHandler('rune:execute')());
+        await vi.waitFor(() => expect(electronHarness.eventCount).toBe(1));
+        if (action === 'renderer-gone') {
+          electronHarness.emitRendererGone?.();
+        } else {
+          electronHarness.window?.close();
+        }
+        await execution;
+      };
+      await expect(
+        windowedRun(
+          session,
+          invocation,
+          new FakeSigtermSource(),
+          displayFatal,
+          undefined,
+          deliverResult,
+        ),
+      ).resolves.toBe(action === 'renderer-gone' ? 70 : 6);
+      expect(electronHarness.eventAck).toBeUndefined();
+      expect(electronHarness.eventCount).toBe(1);
+      if (action === 'renderer-gone') {
+        expect(deliverResult).not.toHaveBeenCalled();
+        expect(existsSync(resultPath)).toBe(false);
+      } else {
+        expect(deliverResult).toHaveBeenCalledOnce();
+        expect(deliveredResult(resultPath)).toMatchObject({ status: 'cancelled', exitCode: 6 });
+      }
+    },
+  );
+
   it('writes one cancelled outcome and uses safe fallback after failed pre-Proceed planning', async () => {
     const { derivedPath, invocation, resultPath, session } = await failedPlanningFixture('gui');
     const deliverResult = vi.fn((result: RunResult) => writeResult(result, resultPath));

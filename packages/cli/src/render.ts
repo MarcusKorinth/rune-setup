@@ -132,7 +132,10 @@ function quotedLogPath(announcement: string | undefined): string {
 }
 
 /** The progress renderer for a live run — diagnostics, so stderr (§10). */
-export function progressObserver(io: CliIo, strings: StringTable): (event: RunEvent) => void {
+export function progressObserver(
+  io: CliIo,
+  strings: StringTable,
+): (event: RunEvent) => void | Promise<void> {
   return (event) => {
     switch (event.kind) {
       case 'runStarted':
@@ -188,6 +191,7 @@ export function progressObserver(io: CliIo, strings: StringTable): (event: RunEv
       case 'runFinished':
         break;
     }
+    return io.drainStderr?.();
   };
 }
 

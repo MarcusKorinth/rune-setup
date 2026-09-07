@@ -86,6 +86,49 @@ function countLines(text: string, line: string): number {
 }
 
 describe('CLI bootstrap: guarded process streams and the effective exit code', () => {
+  it('backpressures real child output through a slow stderr sink without losing lines', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-bootstrap-drain-'));
+    const manifestPath = join(directory, 'installer.yaml');
+    const lines = Array.from({ length: 64 }, (_, index) => `${index}:${'x'.repeat(1024)}`);
+    writeFileSync(
+      manifestPath,
+      [
+        'schemaVersion: 1',
+        'product: { name: Example, version: "1.0.0" }',
+        'steps:',
+        '  - id: output',
+        '    run:',
+        `      command: ${JSON.stringify(process.execPath)}`,
+        `      args: ${JSON.stringify(['-e', "for(let i=0;i<64;i++) process.stdout.write(i+':'+ 'x'.repeat(1024)+'\\n')"])}`,
+      ].join('\n'),
+    );
+    const chunks: string[] = [];
+    let peakBufferedBytes = 0;
+    const stderr = new Writable({
+      highWaterMark: 1,
+      write(chunk: Buffer, _encoding, callback) {
+        chunks.push(chunk.toString());
+        setImmediate(() => {
+          peakBufferedBytes = Math.max(peakBufferedBytes, stderr.writableLength);
+          callback();
+        });
+      },
+    });
+
+    const code = await bootstrap(
+      ['run', manifestPath, '--non-interactive'],
+      { stdout: capturingSink().stream, stderr },
+      { setExitCode: vi.fn(), control: {} },
+    );
+    await new Promise<void>((resolve) => stderr.end(resolve));
+
+    expect(code).toBe(0);
+    expect(chunks.filter((chunk) => /^ {2}\d+:/u.test(chunk))).toEqual(
+      lines.map((line) => `  ${line}\n`),
+    );
+    expect(peakBufferedBytes).toBeLessThanOrEqual(2048);
+  });
+
   it('exits 70 with one fixed line when requested stdout output is lost', async () => {
     const stderr = capturingSink();
     const setExitCode = vi.fn();

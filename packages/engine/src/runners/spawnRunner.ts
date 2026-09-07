@@ -9,6 +9,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { win32 } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import type { Readable } from 'node:stream';
 
 import { isFullyQualifiedWindowsPath } from '../engine/paths.js';
 import { isSecretString, revealSecretString, type SecretString } from '../engine/secrets.js';
@@ -160,6 +162,47 @@ export class SpawnRunner implements Runner {
         return;
       }
 
+      let outputInFlight = 0;
+      const outputWaiters = new Set<() => void>();
+      const deliverOutput = (stream: 'stdout' | 'stderr', line: string): unknown => {
+        const returned = request.onOutput(stream, line);
+        if (!(returned instanceof Promise)) return undefined;
+        outputInFlight += 1;
+        for (const notify of outputWaiters) notify();
+        return returned.finally(() => {
+          outputInFlight -= 1;
+          for (const notify of outputWaiters) notify();
+        });
+      };
+      const waitForChildClose = (): Promise<void> =>
+        new Promise((resolveClose) => {
+          let watchdog: NodeJS.Timeout | undefined;
+          let remainingMs = CHILD_CLOSE_TIMEOUT_MS;
+          let resumedAt: number | undefined;
+          let completed = false;
+          const done = (): void => {
+            if (completed) return;
+            completed = true;
+            clearTimeout(watchdog);
+            outputWaiters.delete(changed);
+            resolveClose();
+          };
+          const changed = (): void => {
+            if (completed) return;
+            if (outputInFlight > 0) {
+              if (resumedAt !== undefined) remainingMs -= performance.now() - resumedAt;
+              resumedAt = undefined;
+              clearTimeout(watchdog);
+              watchdog = undefined;
+            } else if (watchdog === undefined) {
+              resumedAt = performance.now();
+              watchdog = setTimeout(done, Math.max(0, remainingMs));
+            }
+          };
+          outputWaiters.add(changed);
+          changed();
+          void childClosePromise.then(done);
+        });
       let settled = false;
       let startupFailureClaimed = false;
       let terminationCause: TerminationCause | undefined;
@@ -206,11 +249,12 @@ export class SpawnRunner implements Runner {
         terminationTask = (async () => {
           const terminationConfirmed = await terminateTree(child, request.parentEnv);
           if (!childClosed) {
-            await waitForCompletion(childClosePromise, CHILD_CLOSE_TIMEOUT_MS);
+            await waitForChildClose();
           }
           if (!childClosed) {
             releaseChildStdio(child);
           }
+          await outputCompletion;
           settle(terminationConfirmed ? cause : { kind: 'terminationFailed' });
         })();
         // The task is stored to make the single in-flight termination explicit. Its helpers
@@ -232,24 +276,27 @@ export class SpawnRunner implements Runner {
         );
       });
 
-      forwardLines(
+      const stdoutCompletion = forwardLines(
         child.stdout,
-        (line) => request.onOutput('stdout', line),
+        (line) => deliverOutput('stdout', line),
         () => requestTermination({ kind: 'streamFailed', stream: 'stdout' }),
       );
-      forwardLines(
+      const stderrCompletion = forwardLines(
         child.stderr,
-        (line) => request.onOutput('stderr', line),
+        (line) => deliverOutput('stderr', line),
         () => requestTermination({ kind: 'streamFailed', stream: 'stderr' }),
       );
 
+      const outputCompletion = Promise.all([stdoutCompletion, stderrCompletion]);
       child.once('close', (code) => {
         completeChildClose();
-        if (!startupFailureClaimed && terminationCause === undefined) {
-          settle(
-            typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
-          );
-        }
+        void outputCompletion.then(() => {
+          if (!startupFailureClaimed && terminationCause === undefined) {
+            settle(
+              typeof code === 'number' ? { kind: 'exited', exitCode: code } : { kind: 'signalled' },
+            );
+          }
+        });
       });
 
       if (command.timeoutSeconds !== null) {
@@ -689,12 +736,12 @@ export const spawnRunnerTestSeam = Object.freeze({
  * @internal Exported for deterministic stream-framing tests; not part of the package API.
  */
 export function forwardLines(
-  stream: NodeJS.ReadableStream | null,
-  onLine: (line: string) => void,
+  stream: Readable | null,
+  onLine: (line: string) => unknown,
   onError: () => void,
-): void {
+): Promise<void> {
   if (stream === null) {
-    return;
+    return Promise.resolve();
   }
 
   let parts: string[] = [];
@@ -710,15 +757,15 @@ export function forwardLines(
     discarding = false;
   };
 
-  const omitLine = (): void => {
+  const omitLine = async (): Promise<void> => {
     parts = [];
     byteLength = 0;
     endsWithCarriageReturn = false;
     discarding = true;
-    onLine(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
+    await onLine(OVERSIZED_OUTPUT_LINE_PLACEHOLDER);
   };
 
-  const append = (text: string, terminated: boolean): void => {
+  const append = async (text: string, terminated: boolean): Promise<void> => {
     if (discarding || text === '') {
       return;
     }
@@ -731,7 +778,7 @@ export function forwardLines(
       !terminated && nextByteLength === MAX_OUTPUT_LINE_BYTES + 1 && nextEndsWithCarriageReturn;
 
     if (payloadByteLength > MAX_OUTPUT_LINE_BYTES && !mayBecomeCrLf) {
-      omitLine();
+      await omitLine();
       return;
     }
 
@@ -740,59 +787,52 @@ export function forwardLines(
     endsWithCarriageReturn = nextEndsWithCarriageReturn;
   };
 
-  const finishLine = (text: string): void => {
+  const finishLine = async (text: string): Promise<void> => {
     if (discarding) {
       resetLine();
       return;
     }
 
-    append(text, true);
+    await append(text, true);
     if (discarding) {
       resetLine();
       return;
     }
 
     const line = parts.join('');
-    onLine(endsWithCarriageReturn ? line.slice(0, -1) : line);
+    await onLine(endsWithCarriageReturn ? line.slice(0, -1) : line);
     resetLine();
   };
 
-  // Keep one listener installed after the first error so a broken stream cannot emit a later
-  // unhandled `error`. The callback is deliberately value-free and runs at most once.
-  stream.on('error', () => {
-    if (failed) {
-      return;
-    }
+  const fail = (): void => {
+    if (failed) return;
     failed = true;
     onError();
-  });
+  };
+  // Readable-mode iteration remains serial even when ChildProcess.flushStdio calls
+  // resume() at process exit. A flowing data listener plus pause() cannot guarantee that.
+  stream.on('error', fail);
   stream.setEncoding('utf8');
-  stream.on('data', (chunk: string) => {
-    if (failed) {
-      return;
-    }
-    let start = 0;
-    let newline = chunk.indexOf('\n');
-    while (newline !== -1) {
-      finishLine(chunk.slice(start, newline));
-      if (failed) {
-        return;
+  return (async () => {
+    try {
+      for await (const chunk of stream) {
+        if (failed) break;
+        const text = chunk as string;
+        let start = 0;
+        let newline = text.indexOf('\n');
+        while (newline !== -1) {
+          await finishLine(text.slice(start, newline));
+          start = newline + 1;
+          newline = text.indexOf('\n', start);
+        }
+        await append(text.slice(start), false);
       }
-      start = newline + 1;
-      newline = chunk.indexOf('\n', start);
+      if (!failed && !discarding) {
+        if (byteLength > MAX_OUTPUT_LINE_BYTES) await omitLine();
+        else if (byteLength !== 0) await onLine(parts.join(''));
+      }
+    } catch {
+      fail();
     }
-    append(chunk.slice(start), false);
-  });
-  stream.on('end', () => {
-    if (failed || discarding) {
-      return;
-    }
-    if (byteLength > MAX_OUTPUT_LINE_BYTES) {
-      omitLine();
-      return;
-    }
-    if (byteLength !== 0) {
-      onLine(parts.join(''));
-    }
-  });
+  })();
 }

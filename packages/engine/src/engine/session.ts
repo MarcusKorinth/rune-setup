@@ -506,12 +506,12 @@ export class Session {
           : await createLogFileSink(logFile, (text) => planSecrets.mask(text), {
               announcement: this.effectiveLogFile?.announcement ?? logFile,
             });
-      const observers: EngineObserver = (event) => {
-        notifyObserver(log?.observer, event);
+      const observers: EngineObserver = async (event) => {
+        await notifyObserver(log?.observer, event);
         if (event.kind === 'runFinished') {
           terminal = event;
         } else {
-          notifyObserver(observer, event);
+          await notifyObserver(observer, event);
         }
       };
       completed = await executeRun({
@@ -530,7 +530,7 @@ export class Session {
       // The frontend sees no terminal event until that engine-owned sink has finalized.
       closeAttempted = true;
       await log?.close();
-      notifyObserver(observer, terminal);
+      await notifyObserver(observer, terminal);
       return completed;
     } catch (error) {
       if (log !== undefined && !closeAttempted) {
@@ -553,7 +553,7 @@ export class Session {
                 }),
               ) as RuneError);
         const result = createCompletedRunFailureResult(runError, terminalResult);
-        notifyObserver(observer, Object.freeze({ kind: 'runFinished', result }));
+        await notifyObserver(observer, Object.freeze({ kind: 'runFinished', result }));
         throw runError;
       }
       throw projected;
@@ -711,11 +711,14 @@ function missingInputIssue(manifestAnnouncement: string, id: string): RuneIssue 
 }
 
 /** Observer failures are isolated per sink and can never change execution or finalization. */
-function notifyObserver(observer: EngineObserver | undefined, event: RunEvent): void {
+async function notifyObserver(
+  observer: EngineObserver | undefined,
+  event: RunEvent,
+): Promise<void> {
   try {
     const returned = (observer as ((event: RunEvent) => unknown) | undefined)?.(event);
     if (returned instanceof Promise) {
-      void returned.then(undefined, () => undefined);
+      await returned;
     }
   } catch {
     // A broken renderer or sink must never corrupt a run (§9.1).
