@@ -27,6 +27,25 @@ export interface RuneBridge {
   onEvent(listener: (event: BridgeEvent) => void): void;
 }
 
+/** Plain rejection data: Electron drops custom properties from native Error objects. */
+export interface BridgeError {
+  readonly kind: 'rune-error';
+  readonly code: string;
+  readonly message: string;
+  readonly location: {
+    readonly file: string;
+    readonly line: number;
+    readonly column: number;
+  } | null;
+  readonly exitCode: number;
+  /** Complete main-owned human presentation; render verbatim, never compose the fields. */
+  readonly displayText: string;
+}
+
+/** Internal invoke transport; an absent success value represents a void facade return. */
+export type BridgeReply<T> =
+  { readonly ok: true; readonly value?: T } | { readonly ok: false; readonly error: BridgeError };
+
 /** One current renderer presentation snapshot composed by main from the session string table. */
 export interface BridgeStrings {
   /** The engine-selected locale, or built-in English defaults. */

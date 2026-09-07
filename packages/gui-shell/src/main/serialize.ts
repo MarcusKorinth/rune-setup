@@ -9,6 +9,9 @@
 import { pathToFileURL } from 'node:url';
 
 import {
+  RuneError,
+  exitCodeFor,
+  formatIssues,
   formatSessionTerminalLine,
   type ExecutionPlan,
   type RunEvent,
@@ -18,12 +21,54 @@ import {
 } from '@rune/engine';
 
 import type {
+  BridgeError,
   BridgeEvent,
   BridgePlan,
   BridgeResult,
   BridgeTheme,
   BridgeWarning,
 } from '../preload/types.js';
+
+/** Copies only public error fields; causes, stacks, and arbitrary properties stay in main. */
+export function projectError(error: unknown, mask: (text: string) => string): BridgeError {
+  const fallback: BridgeError = {
+    kind: 'rune-error',
+    code: 'RUNE-500',
+    message: 'An unexpected shell error occurred.',
+    location: null,
+    exitCode: 70,
+    displayText: 'RUNE-500 (exit 70): An unexpected shell error occurred.',
+  };
+  try {
+    if (!(error instanceof RuneError)) {
+      return fallback;
+    }
+    const text = (raw: string): string => {
+      const masked = mask(raw);
+      const escaped = JSON.stringify(masked).slice(1, -1);
+      return mask(escaped) === escaped ? masked : '***';
+    };
+    return {
+      kind: 'rune-error',
+      code: error.code,
+      message: text(error.message),
+      location:
+        error.location === undefined
+          ? null
+          : {
+              file: text(error.location.file),
+              line: error.location.line,
+              column: error.location.column,
+            },
+      exitCode: exitCodeFor(error),
+      displayText: text(
+        `${error.code} (exit ${exitCodeFor(error)}): ${formatIssues(error.issues)}`,
+      ),
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 export function project<T>(value: T): unknown {
   if (value === undefined) {

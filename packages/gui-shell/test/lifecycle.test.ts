@@ -1,3 +1,5 @@
+import { throughPreload } from './bridge-fixture.js';
+
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +11,7 @@ import {
   CancelledError,
   ExecutionError,
   ManifestError,
+  InternalError,
   RUNE_VERSION,
   PlatformError,
   RESULT_LOG_COLLISION_MESSAGE,
@@ -111,6 +114,8 @@ vi.mock('electron', () => {
 
   return {
     app: {
+      on: vi.fn(),
+      off: vi.fn(),
       exit: vi.fn(),
       getAppPath: vi.fn(() => 'C:\\rune-shell'),
       isPackaged: false,
@@ -130,7 +135,10 @@ vi.mock('electron', () => {
         },
       ),
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
-        electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
+        electronHarness.handlers.set(
+          channel,
+          throughPreload((...args: unknown[]) => handler({}, ...args)),
+        );
       }),
     },
   };
@@ -326,66 +334,71 @@ describe('the GUI shell SIGTERM lifecycle', () => {
     expect(signals.listener).toBeUndefined();
   });
 
-  it('latches SIGTERM during readiness and completes the headless cancellation flow', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'rune-early-sigterm-'));
-    const manifestPath = join(dir, 'installer.yaml');
-    const resultPath = join(dir, 'result.json');
-    writeFileSync(
-      manifestPath,
-      [
-        'schemaVersion: 1',
-        'product:',
-        '  name: Early signal lifecycle',
-        '  version: 1.0.0',
-        'inputs: {}',
-        'steps:',
-        '  - id: never-started',
-        '    run:',
-        '      command: unused',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const session = await Session.open(manifestPath, {
-      environment: {},
-      mode: 'non-interactive',
-    });
-    const plan = session.plan();
-    vi.spyOn(Session.prototype, 'execute').mockImplementation(async (_observer, cancelToken) => {
-      expect(cancelToken?.isCancelled).toBe(true);
-      return createFailureResult({
-        error: new CancelledError(),
+  it.each(['SIGTERM', 'before-quit'])(
+    'latches %s during readiness and completes the headless cancellation flow',
+    async (source) => {
+      const dir = mkdtempSync(join(tmpdir(), 'rune-early-sigterm-'));
+      const manifestPath = join(dir, 'installer.yaml');
+      const resultPath = join(dir, 'result.json');
+      writeFileSync(
         manifestPath,
-        dryRun: false,
-        session,
-        plan,
+        [
+          'schemaVersion: 1',
+          'product:',
+          '  name: Early signal lifecycle',
+          '  version: 1.0.0',
+          'inputs: {}',
+          'steps:',
+          '  - id: never-started',
+          '    run:',
+          '      command: unused',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const session = await Session.open(manifestPath, {
+        environment: {},
+        mode: 'non-interactive',
       });
-    });
-    const open = vi.spyOn(Session, 'open').mockResolvedValue(session);
-    const ready = deferred<void>();
-    vi.mocked(app.whenReady).mockReturnValue(ready.promise);
-    const signals = new FakeSigtermSource();
-    vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
+      const plan = session.plan();
+      vi.spyOn(Session.prototype, 'execute').mockImplementation(async (_observer, cancelToken) => {
+        expect(cancelToken?.isCancelled).toBe(true);
+        return createFailureResult({
+          error: new CancelledError(),
+          manifestPath,
+          dryRun: false,
+          session,
+          plan,
+        });
+      });
+      const open = vi.spyOn(Session, 'open').mockResolvedValue(session);
+      const ready = deferred<void>();
+      vi.mocked(app.whenReady).mockReturnValue(ready.promise);
+      const signals = new FakeSigtermSource();
+      vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
 
-    const run = main([manifestPath, '--non-interactive', '--result', resultPath], signals);
+      const run = main([manifestPath, '--non-interactive', '--result', resultPath], signals);
 
-    expect(signals.added).toHaveLength(1);
-    expect(open).not.toHaveBeenCalled();
-    signals.emit();
-    ready.resolve();
+      expect(signals.added).toHaveLength(1);
+      expect(open).not.toHaveBeenCalled();
+      if (source === 'SIGTERM') signals.emit();
+      else emitNativeQuit();
+      ready.resolve();
 
-    await run;
-    expect(app.exit).toHaveBeenCalledOnce();
-    expect(app.exit).toHaveBeenCalledWith(6);
-    expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
-      status: 'cancelled',
-      exitCode: 6,
-      mode: 'non-interactive',
-      stepsNotRun: 1,
-    });
-    expect(signals.removed).toEqual(signals.added);
-    expect(signals.listener).toBeUndefined();
-  });
+      await run;
+      expect(app.exit).toHaveBeenCalledOnce();
+      expect(app.exit).toHaveBeenCalledWith(6);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+        status: 'cancelled',
+        exitCode: 6,
+        mode: 'non-interactive',
+        stepsNotRun: 1,
+      });
+      expect(signals.removed).toEqual(signals.added);
+      expect(signals.listener).toBeUndefined();
+      expect(app.off).toHaveBeenCalledWith('before-quit', nativeQuitHandler());
+    },
+  );
 
   it('turns windowed SIGTERM into an unconditional close request', async () => {
     const signals = new FakeSigtermSource();
@@ -402,6 +415,82 @@ describe('the GUI shell SIGTERM lifecycle', () => {
 
     expect(signals.removed).toEqual(signals.added);
   });
+
+  it.each([false, true])(
+    'waits for launcher ownership and preserves early cancellation (headless=%s)',
+    async (headless) => {
+      const { invocation, resultPath } = await windowedFixture(
+        [],
+        [
+          'steps:',
+          '  - id: never-started',
+          '    run:',
+          `      command: ${JSON.stringify(process.execPath)}`,
+        ],
+      );
+      const open = vi.spyOn(Session, 'open');
+      const signals = new FakeSigtermSource();
+      const decision = deferred<'start' | 'cancel'>();
+      const startup = vi.fn(() => {
+        expect(signals.listener).toBeTypeOf('function');
+        return decision.promise;
+      });
+      const run = main(
+        [
+          invocation.manifestPath,
+          '--result',
+          resultPath,
+          ...(headless ? ['--non-interactive'] : []),
+        ],
+        signals,
+        { stdout: new PassThrough(), stderr: new PassThrough() },
+        startup,
+      );
+
+      expect(startup).toHaveBeenCalledOnce();
+      expect(app.whenReady).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+      expect(electronHarness.window).toBeUndefined();
+      decision.resolve('cancel');
+      await run;
+
+      expect(app.exit).toHaveBeenCalledExactlyOnceWith(6);
+      expect(deliveredResult(resultPath)).toMatchObject({
+        status: 'cancelled',
+        exitCode: 6,
+        mode: headless ? 'non-interactive' : 'gui',
+        stepsExecuted: 0,
+      });
+      expect(signals.removed).toEqual(signals.added);
+    },
+  );
+
+  it('abandons a failed launcher gate before parsing, Session open, or result delivery', async () => {
+    const { invocation, resultPath } = await windowedFixture();
+    const open = vi.spyOn(Session, 'open');
+    const signals = new FakeSigtermSource();
+    const stderr = new PassThrough();
+    const startup = (): Promise<'start' | 'cancel'> =>
+      Promise.reject(new InternalError('the GUI shell startup handshake failed'));
+
+    await main(
+      [invocation.manifestPath, '--result', resultPath, '--invalid-argument'],
+      signals,
+      { stdout: new PassThrough(), stderr },
+      startup,
+    );
+
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(70);
+    expect(app.whenReady).not.toHaveBeenCalled();
+    expect(app.off).toHaveBeenCalledExactlyOnceWith('before-quit', nativeQuitHandler());
+    expect(open).not.toHaveBeenCalled();
+    expect(electronHarness.window).toBeUndefined();
+    expect(existsSync(resultPath)).toBe(false);
+    expect(stderr.read()?.toString()).toBe(
+      `${new InternalError('the GUI shell startup handshake failed').message}\n`,
+    );
+    expect(signals.removed).toEqual(signals.added);
+  });
 });
 
 describe('the GUI shell main lifecycle', () => {
@@ -410,23 +499,77 @@ describe('the GUI shell main lifecycle', () => {
     vi.mocked(app.whenReady).mockResolvedValue();
   });
 
-  it('answers the version probe without waiting for Electron readiness', async () => {
-    const stdout = new PassThrough();
-    const chunks: string[] = [];
-    stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+  it.each([[SHELL_VERSION_PROBE_FLAG]])(
+    'answers the version probe without waiting for Electron readiness: %s',
+    async (...argv) => {
+      const stdout = new PassThrough();
+      const chunks: string[] = [];
+      stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
 
-    await main([SHELL_VERSION_PROBE_FLAG], new FakeSigtermSource(), {
-      stdout,
+      await main(argv, new FakeSigtermSource(), {
+        stdout,
+        stderr: new PassThrough(),
+      });
+
+      expect(app.whenReady).not.toHaveBeenCalled();
+      expect(app.exit).toHaveBeenCalledOnce();
+      expect(app.exit).toHaveBeenCalledWith(0);
+      expect(JSON.parse(chunks.join(''))).toEqual({
+        protocolVersion: 1,
+        runeVersion: RUNE_VERSION,
+      });
+      expect(app.on).not.toHaveBeenCalled();
+      expect(app.off).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps native quit guarded during pending result delivery without replacing the settled outcome', async () => {
+    const { invocation } = await windowedFixture();
+    const writing = deferred<void>();
+    const chunks: string[] = [];
+    let finishWrite: (() => void) | undefined;
+    const stdout = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        chunks.push(chunk.toString());
+        finishWrite = callback;
+        writing.resolve();
+      },
+    });
+    const run = main(
+      [invocation.manifestPath, '--non-interactive', '--result', '-'],
+      new FakeSigtermSource(),
+      { stdout, stderr: new PassThrough() },
+    );
+    await writing.promise;
+    emitNativeQuit();
+    expect(app.exit).not.toHaveBeenCalled();
+    expect(app.off).not.toHaveBeenCalled();
+    finishWrite?.();
+    await run;
+    expect(JSON.parse(chunks.join(''))).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(0);
+    expect(app.off).toHaveBeenCalledExactlyOnceWith('before-quit', nativeQuitHandler());
+  });
+
+  it('routes native quit through the ordinary windowed cancellation lifecycle', async () => {
+    const { invocation, resultPath } = await windowedFixture();
+    electronHarness.duringLoad = () => emitNativeQuit();
+    await main([invocation.manifestPath, '--result', resultPath], new FakeSigtermSource(), {
+      stdout: new PassThrough(),
       stderr: new PassThrough(),
     });
+    expect(deliveredResult(resultPath)).toMatchObject({ status: 'cancelled', exitCode: 6 });
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(6);
+    expect(app.off).toHaveBeenCalledExactlyOnceWith('before-quit', nativeQuitHandler());
+  });
 
-    expect(app.whenReady).not.toHaveBeenCalled();
-    expect(app.exit).toHaveBeenCalledOnce();
-    expect(app.exit).toHaveBeenCalledWith(0);
-    expect(JSON.parse(chunks.join(''))).toEqual({
-      protocolVersion: 1,
-      runeVersion: RUNE_VERSION,
+  it('removes the native quit handler after invalid invocation failure', async () => {
+    await main(['--unknown'], new FakeSigtermSource(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
     });
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(2);
+    expect(app.off).toHaveBeenCalledExactlyOnceWith('before-quit', nativeQuitHandler());
   });
 
   it('reports a guarded probe stdout failure without entering Electron', async () => {
@@ -705,6 +848,37 @@ describe('the GUI shell main lifecycle', () => {
       exitCode: 3,
       mode: 'non-interactive',
     });
+  });
+
+  it('keeps startup failure delivery authoritative while a later SIGTERM is latched', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-startup-delivery-signal-'));
+    const signals = new FakeSigtermSource();
+    const written = deferred<void>();
+    let releaseWrite: (() => void) | undefined;
+    let resultText = '';
+    const stdout = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        resultText += chunk.toString('utf8');
+        releaseWrite = callback;
+        written.resolve();
+      },
+    });
+    const run = main(
+      [join(directory, 'missing.yaml'), '--non-interactive', '--result', '-'],
+      signals,
+      { stdout, stderr: new PassThrough() },
+      () => Promise.resolve('start'),
+    );
+
+    await written.promise;
+    expect(app.exit).not.toHaveBeenCalled();
+    expect(() => signals.emit()).not.toThrow();
+    releaseWrite?.();
+    await run;
+
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(3);
+    expect(JSON.parse(resultText)).toMatchObject({ status: 'config_error', exitCode: 3 });
+    expect(signals.removed).toEqual(signals.added);
   });
 
   it('lets one RUNE-407 delivery failure override the startup error without naming the path', async () => {
@@ -1226,7 +1400,9 @@ describe('windowed result delivery', () => {
     const displayFatal = vi.fn();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:plan')())).rejects.toThrow('RUNE-301');
+      await expect(Promise.resolve(bridgeHandler('rune:plan')())).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-301'),
+      });
       electronHarness.emitRendererGone?.();
     };
 
@@ -1333,9 +1509,9 @@ describe('windowed result delivery', () => {
         await deliveryStarted.promise;
         expect(existsSync(resultPath)).toBe(false);
 
-        await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow(
-          'RUNE-601 (exit 6)',
-        );
+        await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toMatchObject({
+          displayText: expect.stringContaining('RUNE-601 (exit 6)'),
+        });
         expect(execute).not.toHaveBeenCalled();
 
         releaseDelivery.resolve();
@@ -1570,7 +1746,9 @@ describe('windowed result delivery', () => {
       expect(electronHarness.closed).toBe(false);
 
       releaseDelivery.resolve();
-      await expect(execution).rejects.toThrow('RUNE-201');
+      await expect(execution).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-201'),
+      });
     };
 
     await expect(
@@ -1651,7 +1829,9 @@ describe('windowed result delivery', () => {
     const displayFatal = vi.fn();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-407');
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-407'),
+      });
     };
 
     await expect(
@@ -1711,7 +1891,9 @@ describe('windowed result delivery', () => {
     const displayFatal = vi.fn();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-407');
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-407'),
+      });
     };
 
     await expect(
@@ -1747,7 +1929,9 @@ describe('windowed result delivery', () => {
     const displayFatal = vi.fn();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-406');
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-406'),
+      });
     };
 
     await expect(
@@ -1777,7 +1961,9 @@ describe('windowed result delivery', () => {
     vi.mocked(app.whenReady).mockResolvedValue();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(completeWrite);
     electronHarness.duringLoad = async () => {
-      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toThrow('RUNE-406');
+      await expect(Promise.resolve(bridgeHandler('rune:execute')())).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-406'),
+      });
     };
 
     await main(
@@ -1832,7 +2018,9 @@ describe('windowed result delivery', () => {
       expect(existsSync(resultPath)).toBe(false);
 
       releaseDelivery.resolve();
-      await expect(execution).rejects.toThrow('RUNE-201');
+      await expect(execution).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-201'),
+      });
     };
 
     await expect(
@@ -1848,6 +2036,21 @@ describe('windowed result delivery', () => {
     });
   });
 });
+
+function nativeQuitHandler(): (event: { preventDefault(): void }) => void {
+  const calls = vi.mocked(app.on).mock.calls as unknown as ReadonlyArray<
+    readonly [string, (event: { preventDefault(): void }) => void]
+  >;
+  const listener = calls.find(([event]) => event === 'before-quit')?.[1];
+  if (listener === undefined) throw new Error('The native quit handler was not registered');
+  return listener;
+}
+
+function emitNativeQuit(): void {
+  const preventDefault = vi.fn();
+  nativeQuitHandler()({ preventDefault });
+  expect(preventDefault).toHaveBeenCalledOnce();
+}
 
 function deferred<T>(): {
   promise: Promise<T>;

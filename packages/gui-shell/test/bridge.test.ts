@@ -1,3 +1,5 @@
+import { throughPreload } from './bridge-fixture.js';
+
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -23,6 +25,7 @@ vi.mock('electron', () => ({
 
 import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
 import type {
+  BridgeError,
   BridgeEvent,
   BridgeInput,
   BridgePlan,
@@ -345,7 +348,7 @@ async function bridgeOver(session: Session): Promise<{
   registerBridge(
     session,
     { events: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) } },
-    (channel, handler) => handlers.set(channel, handler),
+    (channel, handler) => handlers.set(channel, throughPreload(handler)),
   );
   return {
     channels: [...handlers.keys()],
@@ -379,10 +382,12 @@ describe('the IPC bridge', () => {
           errors.push({ error, plan: failedPlan });
         },
       },
-      (channel, handler) => handlers.set(channel, handler),
+      (channel, handler) => handlers.set(channel, throughPreload(handler)),
     );
 
-    await expect(handlers.get('rune:execute')?.()).rejects.toThrow(/token|databasePort/);
+    await expect(handlers.get('rune:execute')?.()).rejects.toMatchObject({
+      displayText: expect.stringMatching(/token|databasePort/),
+    });
     expect(errors).toHaveLength(1);
     expect(errors[0]?.plan).toBeUndefined();
     expect(plan).toHaveBeenCalledTimes(1);
@@ -414,10 +419,12 @@ describe('the IPC bridge', () => {
         onExecuteError,
         onExecuteEnd,
       },
-      (channel, handler) => handlers.set(channel, handler),
+      (channel, handler) => handlers.set(channel, throughPreload(handler)),
     );
 
-    await expect(handlers.get('rune:execute')?.()).rejects.toThrow('RUNE-601 (exit 6)');
+    await expect(handlers.get('rune:execute')?.()).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-601 (exit 6)'),
+    });
     expect(onExecuteStart).toHaveBeenCalledOnce();
     expect(plan).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
@@ -456,10 +463,12 @@ describe('the IPC bridge', () => {
           errors.push({ error, plan, terminalResult: result });
         },
       },
-      (channel, handler) => handlers.set(channel, handler),
+      (channel, handler) => handlers.set(channel, throughPreload(handler)),
     );
 
-    await expect(handlers.get('rune:execute')?.()).rejects.toThrow('RUNE-406');
+    await expect(handlers.get('rune:execute')?.()).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-406'),
+    });
 
     expect(errors).toEqual([{ error: failure, plan: expectedPlan, terminalResult }]);
     expect(sent).toHaveLength(1);
@@ -503,12 +512,13 @@ describe('the IPC bridge', () => {
         onExecuteEnd,
         onExecuteError,
       },
-      (channel, handler) => handlers.set(channel, handler),
+      (channel, handler) => handlers.set(channel, throughPreload(handler)),
     );
 
     const error = await rejectedBy(Promise.resolve(handlers.get('rune:execute')?.()));
 
-    expect(error.message).toBe('writeResult failed for ***');
+    expect(error).toMatchObject({ code: 'RUNE-500', exitCode: 70 });
+    expect(error.displayText).toBe('RUNE-500 (exit 70): An unexpected shell error occurred.');
     expect(onExecuteStart).toHaveBeenCalledTimes(1);
     expect(onExecuteEnd).toHaveBeenCalledTimes(1);
     expect(onExecuteError).not.toHaveBeenCalled();
@@ -536,7 +546,7 @@ describe('the IPC bridge', () => {
     registerBridge(
       session,
       { events: { send: () => undefined }, onCancelRequested },
-      (channel, handler) => handlers.set(channel, handler),
+      (channel, handler) => handlers.set(channel, throughPreload(handler)),
     );
 
     await handlers.get('rune:cancel')?.();
@@ -863,7 +873,9 @@ describe('the IPC bridge', () => {
 
     const live = await Session.open(manifestPath, { environment: {}, mode: 'gui' });
     const liveBridge = await bridgeOver(live);
-    await expect(liveBridge.call('rune:setValue', 'code', longValue)).rejects.toThrow('RUNE-202');
+    await expect(liveBridge.call('rune:setValue', 'code', longValue)).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-202'),
+    });
     const liveInput = ((await liveBridge.call('rune:allInputs')) as readonly BridgeInput[]).find(
       (input) => input.id === 'code',
     );
@@ -897,7 +909,9 @@ describe('the IPC bridge', () => {
     const bridge = await bridgeOver(session);
     const rawCandidate = 'later-secret-42';
 
-    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toThrow('RUNE-202');
+    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-202'),
+    });
     const beforeSecret = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     const beforeRejected = beforeSecret.find((input) => input.id === 'code');
 
@@ -927,7 +941,9 @@ describe('the IPC bridge', () => {
     const corrected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     expect(corrected.find((input) => input.id === 'code')).not.toHaveProperty('editRejection');
 
-    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toThrow('RUNE-202');
+    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-202'),
+    });
     await bridge.call('rune:setValue', 'enableCode', false);
     const disabled = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     expect(disabled.find((input) => input.id === 'code')).toMatchObject({
@@ -946,7 +962,9 @@ describe('the IPC bridge', () => {
     });
     const bridge = await bridgeOver(session);
 
-    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toThrow('RUNE-202');
+    await expect(bridge.call('rune:setValue', 'code', rawCandidate)).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-202'),
+    });
     const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
 
     expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
@@ -963,7 +981,9 @@ describe('the IPC bridge', () => {
     });
     const bridge = await bridgeOver(session);
 
-    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toThrow('RUNE-202');
+    await expect(bridge.call('rune:setValue', 'code', 'invalid')).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-202'),
+    });
     const inputs = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
 
     expect(inputs.find((input) => input.id === 'code')?.editRejection).toEqual({
@@ -979,7 +999,9 @@ describe('the IPC bridge', () => {
     });
     const bridge = await bridgeOver(session);
 
-    await expect(bridge.call('rune:setValue', 'enabled', true)).rejects.toThrow('RUNE-301');
+    await expect(bridge.call('rune:setValue', 'enabled', true)).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-301'),
+    });
     const booleanRejected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     const enabled = booleanRejected.find((input) => input.id === 'enabled');
     expect(enabled).toMatchObject({ value: false, source: 'default' });
@@ -999,9 +1021,9 @@ describe('the IPC bridge', () => {
       'editRejection',
     );
 
-    await expect(bridge.call('rune:setValue', 'token', 'MISSING_SECRET')).rejects.toThrow(
-      'RUNE-301',
-    );
+    await expect(bridge.call('rune:setValue', 'token', 'MISSING_SECRET')).rejects.toMatchObject({
+      displayText: expect.stringContaining('RUNE-301'),
+    });
     const secretRejected = (await bridge.call('rune:allInputs')) as readonly BridgeInput[];
     const token = secretRejected.find((input) => input.id === 'token');
     expect(token).toMatchObject({ value: null, source: 'answer' });
@@ -1036,13 +1058,16 @@ describe('the IPC bridge', () => {
     const genericError = await rejectedBy(bridge.call('rune:warnings'));
     const nonError = await rejectedBy(bridge.call('rune:getThemeConfig'));
 
-    expect(runeError.message).toContain('RUNE-203 (exit 4)');
-    expect(runeError.message).toContain('"***" names no input');
-    expect(genericError.message).toBe('generic failure contains ***');
-    expect(nonError.message).toBe('non-Error failure contains ***');
+    expect(runeError.displayText).toContain('RUNE-203 (exit 4)');
+    expect(runeError.displayText).toContain('"***" names no input');
+    expect(genericError.displayText).toBe(
+      'RUNE-500 (exit 70): An unexpected shell error occurred.',
+    );
+    expect(nonError).toEqual(genericError);
     for (const error of [runeError, genericError, nonError]) {
-      expect(error).toBeInstanceOf(Error);
-      expect(error.message).not.toContain('super-secret-value');
+      expect(error).not.toBeInstanceOf(Error);
+      expect(error.kind).toBe('rune-error');
+      expect(error.displayText).not.toContain('super-secret-value');
     }
     warnings.mockRestore();
     theme.mockRestore();
@@ -1059,10 +1084,10 @@ describe('the IPC bridge', () => {
 
     const error = await rejectedBy(bridge.call('rune:setValue', 'installDatabase', 'invalid'));
 
-    expect(error.message).toContain('RUNE-202');
-    expect(error.message).toContain('exit 4');
-    expect(error.message).toContain('***');
-    expect(error.message).not.toContain(secret);
+    expect(error.displayText).toContain('RUNE-202');
+    expect(error.displayText).toContain('exit 4');
+    expect(error.displayText).toContain('***');
+    expect(error.displayText).not.toContain(secret);
   });
 
   it('includes located RuneError issues once and masks them at the rejection sink', async () => {
@@ -1099,9 +1124,11 @@ describe('the IPC bridge', () => {
     const locatedRejection = await rejectedBy(bridge.call('rune:warnings'));
     const aggregateRejection = await rejectedBy(bridge.call('rune:warnings'));
 
-    expect(locatedRejection.message).toBe('RUNE-202 (exit 4): answers.yaml:7:9: invalid value ***');
-    expect(locatedRejection.message).not.toContain('super-secret-value');
-    expect(aggregateRejection.message).toBe(
+    expect(locatedRejection.displayText).toBe(
+      'RUNE-202 (exit 4): answers.yaml:7:9: invalid value ***',
+    );
+    expect(locatedRejection.displayText).not.toContain('super-secret-value');
+    expect(aggregateRejection.displayText).toBe(
       'RUNE-202 (exit 4): answers.yaml:7:9: first invalid value\\n' +
         'answers.yaml:8:9: second invalid value',
     );
@@ -1468,14 +1495,19 @@ describe('the IPC bridge', () => {
   });
 });
 
-async function rejectedBy(promise: Promise<unknown>): Promise<Error> {
+async function rejectedBy(promise: Promise<unknown>): Promise<BridgeError> {
   try {
     await promise;
   } catch (error) {
-    if (error instanceof Error) {
-      return error;
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'kind' in error &&
+      error.kind === 'rune-error'
+    ) {
+      return error as BridgeError;
     }
-    throw new Error('bridge rejection was not normalized to Error', { cause: error });
+    throw new Error('bridge rejection was not normalized to BridgeError', { cause: error });
   }
   throw new Error('bridge call unexpectedly resolved');
 }

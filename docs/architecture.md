@@ -521,7 +521,7 @@ The IPC bridge is how the GUI shell's renderer drives the engine. The engine run
 - **Methods:** `rune.open`, `rune.pendingInputs`, `rune.allInputs`, `rune.warnings`, `rune.setValue`, `rune.plan`, `rune.describe`, `rune.execute`, `rune.cancel`, `rune.getStrings`, `rune.getThemeConfig` — every one returns a Promise and maps to the corresponding facade operation. `rune.getStrings` wraps the current facade table as `{ locale, entries, displayProduct: { name, version, welcome } }`, where `locale` is the engine-selected tag or `null` for built-in English defaults: main composes the human product name and version and, when no description exists, the complete name/version fallback with that exact authenticated table; an explicit product description, including an empty one, remains the authoritative accessor-projected welcome text. The renderer replaces this whole presentation snapshot after every accepted answer, after every successful plan, and before Back returns from Summary. After an actual rejected `rune.setValue` call for a current input, main decorates that input's next `allInputs` projection with human-only `editRejection: { candidate?, displayText }`: the candidate is retained only for public string edits on `text`, `file`, or `directory`, while every input type retains the safe error presentation. Main recomputes this metadata with the current authenticated string table on every read. `displayText` is the current remasked safe engine error, so a length, type, or pattern rejection retains its authoritative cause instead of being classified again by the shell; for a genuine pattern mismatch, that engine diagnostic already incorporates the localized `patternHint`, including its explicit-empty semantics and human-sink control escaping. Main terminal-projects any retained candidate separately. It keeps an authentic seed `rejection` separate and removes the edit rejection after a successful correction or when the input becomes disabled. This closure-local presentation state neither mutates engine input state nor validates a value. `rune.plan` projects the frozen `ExecutionPlan`; `rune.describe` projects the dry-run result. `rune.execute` is long-running: run events are pushed while it is in flight and its promise resolves with the `RunResult`; `rune.cancel` is the only call serviced concurrently with it. `rune.warnings` preserves each original warning message and adds its complete `displayText`. The shell-lifecycle-only `rune.done` signal lets the Result page release the window after result delivery; it adds no engine behavior.
 - **Events (main → renderer):** `runStarted`, `stepStarted`, `stepOutput`, `stepFinished`, `runFinished` — the run events only; the live enable/disable signal for §5's disabled inputs (`InputStateChanged`) is the resolved value of `rune.setValue`, not a pushed event. `allInputs()` and `pendingInputs()` already return their plain sink-safe snapshots from the facade. A successful `rune.plan` publishes the plan-masked input snapshot before its response resolves, so subsequent input reads use every secret spelling that plan derived; a renderer-held pre-plan response remains the immutable historical phase snapshot described in §9.1, and the renderer replaces it by reading the current inputs. Other payloads remain **bridge projections**: main runs the complete plan, result, and event values through the bridge serializer first (JSON-safe plain data; `SecretString` → `***`, `mask()` applied), preserving every machine field, and may then add complete human-only presentation metadata composed as §9.1 defines. `webContents.send` / the invoke return therefore gives Electron's structured clone only plain masked data, never an engine object (structured clone ignores `toJSON()`, so a raw `SecretString` must never reach it). The same facade methods, IPC channels, and run-event kinds remain in force; each engine event produces exactly one pushed bridge message, and presentation metadata adds no RPC. Ordering and bracketing rules of §9.1 hold across the bridge.
 - **Secrets:** values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
-- **Errors:** a `RuneError` thrown by the facade rejects the bridge promise with a serialized error carrying the `RUNE-xxx` code, message, location, and the exit code the CLI would have used. Two classes: rejections of `rune.setValue` and `rune.plan` are **recoverable** — the renderer shows the authoritative engine diagnostic inline (including `patternHint` when the engine reports a pattern mismatch), keeps Next disabled while inputs are incomplete or invalid (§9.3), and lets the session continue; only errors from `rune.open`, `rune.execute`, and failures outside any bridge call (e.g. window close during a run) are **fatal** — main, not the renderer, maps those through `exitCodeFor` and exits with that code (§9.4).
+- **Errors:** every invoke returns a JSON-safe tagged success or failure reply. Preload unwraps successful values and rejects failures with a plain `BridgeError` object tagged `kind: "rune-error"`, carrying the `RUNE-xxx` `code`, masked `message`, masked source `location` (or `null`), and the `exitCode` the CLI would have used. Main also supplies the complete masked `displayText`, including the code, exit code, and located diagnostics; the renderer assigns it verbatim without parsing Electron error messages or composing metadata. Machine codes stay exact. Native `Error` objects never cross either IPC or `contextBridge`: Electron does not preserve their custom properties. Stacks, causes, and arbitrary properties stay in main. Unknown thrown values, transport failures, and malformed replies become a fixed value-free RUNE-500 / exit 70 diagnostic. Two classes: rejections of `rune.setValue` and `rune.plan` are **recoverable** — the renderer shows the authoritative engine diagnostic inline (including `patternHint` when the engine reports a pattern mismatch), keeps Next disabled while inputs are incomplete or invalid (§9.3), and lets the session continue; only errors from `rune.open`, `rune.execute`, and failures outside any bridge call (e.g. window close during a run) are **fatal** — main, not the renderer, maps those through `exitCodeFor` and exits with that code (§9.4).
 
 ### 9.3 Per-frontend behavior
 
@@ -548,6 +548,58 @@ Every frontend asserts at session open that it can render every input type the m
 **Author-time delivery.** Authors and CI need Node 24 LTS only — `npm install -g @rune/cli` or `npx @rune/cli …`; nothing else is installed for engine/CLI use. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. The CLI npm package (`@rune/cli`) contains no Electron; the shell is a separate prebuilt artifact, and core/CI never see Electron. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are present in the 0.1.0 source milestone; the first published shell artifacts and their release lane arrive with M4, so source checkouts use the development override until then. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
 
 *Version coupling.* The shell bundles its own copy of `@rune/engine`; `@rune/cli` ships another. To keep mode parity real rather than nominal, **`rune gui install` fetches the shell release whose engine version equals the installed CLI's**; the per-user cache is keyed by that version; `rune run --gui` refuses a cached shell whose engine version differs from its own (exit 2, hint: re-run `rune gui install`). The result file's `runeVersion` under `--gui` is the shell engine's version — by construction equal to the CLI's.
+
+*Cancellation readiness on Linux.* Workflow launches use a private duplex pipe on fd 3.
+The CLI supplies `RUNE_GUI_STARTUP_TOKEN` as 32 lowercase hexadecimal characters; the
+shell removes that environment variable immediately and installs its outer SIGTERM latch
+before sending `READY <token>\n`. Before parsing the invocation or opening a Session,
+the shell waits for exactly `START <token>\n` or `CANCEL <token>\n`; CANCEL latches the
+request before the normal lifecycle begins. Each frame is ASCII, at most 128 bytes. Both
+sides allow 10 seconds for their expected frame and clean up the descriptor, listeners,
+and timer on every gate outcome. EOF, malformed input, error, or the shell-side deadline
+ends the shell with exit 70 and no Session, renderer, or result. Standalone shell launches
+without the token retain their existing behavior; Windows keeps its native close request.
+
+The CLI buffers cancellation until READY. Immediately before attempting its one control
+write, it irreversibly transfers result ownership to the shell. A write failure after that
+point cannot trigger a competing CLI result. After START, a later cancel is forwarded as
+SIGTERM; CANCEL already carries the first request and needs no duplicate signal. Before
+the transfer, the CLI owns startup failure/cancellation; a missing READY terminates the
+startup process tree, and cancellation requested before the deadline retains exit 6.
+The second Ctrl+C before transfer closes the pipe so the shell cannot start an orphaned
+workflow. No handshake bytes use stdout or stderr, and the token never enters step environments.
+
+*Cache publication.* Extracted shells are immutable generations beneath the engine-version
+cache directory. Installation creates a complete generation before atomically replacing a
+small current-generation pointer. Readers resolve that pointer once for probe and launch.
+Concurrent successful installers may choose the last published complete generation; an
+interrupted installer must not remove the previously selected shell. Existing direct-binary
+caches remain readable during migration. Failed pointer publication removes only that
+installer's unpublished files. Published generations are retained so an already located or
+running shell cannot lose its files; clearing an unused engine-version cache is an explicit
+user operation. This protects process interruption and concurrent publication without a
+stale-lock recovery protocol. An invalid pointer or a pointer to missing files produces an actionable cache
+error, never a path outside that version's cache directory.
+
+*Native quit requests.* For a configured invocation, the shell intercepts Electron's
+`before-quit` event, prevents immediate shutdown, and routes it through the same
+cancellation latch as SIGTERM. On Linux, Electron's native SIGTERM handler initiates
+application quit rather than reliably emitting a Node process signal. The listener
+remains active through startup, execution, and result/log delivery. The engine outcome
+and delivery rules retain ownership of the exit code; final `app.exit` bypasses this
+quit event. Version probes have no configured run and remain outside this lifecycle.
+Electron restores the native SIGTERM action after the first signal; a second SIGTERM
+can force termination without result delivery, like other hard process termination.
+
+*Startup deadline.* The shell version probe must finish within 10 seconds. On expiry,
+the CLI terminates the probe process tree (POSIX: SIGKILL to its dedicated group;
+Windows: `taskkill /T /F`) and waits at most another 5 seconds for its streams to close.
+It then releases its handles and reports a usage error (exit 2), without starting a
+workflow shell. Cancellation requested before the deadline remains cancellation
+(exit 6); a later cancellation does not replace a claimed timeout. Development overrides require a prepared Electron binary; the CLI never evaluates
+Electron's automatic-download entry point. Probe output is
+limited to 4096 characters and is never included in the diagnostic. The CLI retains
+pre-launch error/result ownership; the probe never opens a Session or writes a result.
 
 *Archive format.* Shell artifacts are `.tar.gz` on Linux and `.zip` on Windows; `rune gui install` fetches with Node's built-in `fetch` and unpacks by spawning the OS `tar` as argv (`tar -xf`; bsdtar ships with Windows 10+/11 and handles both formats) — no archive library, in line with §12's runtime dependency list.
 
