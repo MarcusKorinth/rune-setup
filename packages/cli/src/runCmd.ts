@@ -132,19 +132,19 @@ export async function runCommand(
         if (!(error instanceof CancelledError)) {
           throw error;
         }
+        // The shell has not started, so the CLI validates the invocation before it owns the
+        // cancellation outcome. Execution remains exclusively in the shell on ordinary GUI
+        // launches.
+        session = await Session.open(manifestPath, {
+          mode: 'gui',
+          values: flags.values ?? [],
+          overrides,
+          locale: flags.locale,
+          logFile: flags.logFile,
+          ...(resultDestination === undefined ? {} : { resultDestination: resultDestination.path }),
+        });
+        strings = session.getStrings();
         if (resultDestination !== undefined) {
-          // The shell has not started, so the CLI temporarily owns this configured outcome.
-          // Open only far enough to authenticate the version-2 cancellation result; execution
-          // remains exclusively in the shell on every ordinary GUI launch.
-          session = await Session.open(manifestPath, {
-            mode: 'gui',
-            values: flags.values ?? [],
-            overrides,
-            locale: flags.locale,
-            logFile: flags.logFile,
-            resultDestination: resultDestination.path,
-          });
-          strings = session.getStrings();
           const result = createFailureResult({
             error,
             manifestPath: absoluteManifestPath,

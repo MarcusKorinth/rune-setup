@@ -106,16 +106,55 @@ describe('GUI result ownership before shell launch', () => {
     }
   });
 
-  it('keeps pre-shell cancellation unchanged when no result was requested', async () => {
-    const io = capture();
-    gui.launchGui.mockRejectedValueOnce(
-      new CancelledError('cancelled before the GUI shell started'),
-    );
+  it.each([
+    { name: 'a valid manifest', expectedCode: 6, expectedStatus: 'cancelled' },
+    { name: 'an invalid manifest', expectedCode: 3, expectedStatus: 'config_error' },
+    { name: 'invalid values', expectedCode: 4, expectedStatus: 'input_error' },
+    { name: 'an invalid locale', expectedCode: 2, expectedStatus: undefined },
+  ])('keeps $name authoritative with and without a result sink', async (scenario) => {
+    const directory = mkdtempSync(join(tmpdir(), 'rune-gui-prelaunch-validation-'));
+    const manifestPath = manifestFixture(directory);
+    const valuesPath = join(directory, 'values.yaml');
 
-    await expect(
-      runCommand('installer.yaml', { gui: true }, io, interaction()),
-    ).rejects.toMatchObject({ code: 6 });
-    expect(io.stderr).not.toHaveBeenCalled();
+    if (scenario.expectedCode === 3) {
+      writeFileSync(manifestPath, 'schemaVersion: 1\nproduct:\n  name: Example\n', 'utf8');
+    }
+    if (scenario.expectedCode === 4) {
+      writeFileSync(valuesPath, 'unknown: value\n', 'utf8');
+    }
+
+    try {
+      for (const requestedResult of [false, true]) {
+        const resultPath = join(directory, `result-${requestedResult}.json`);
+        const args = ['run', manifestPath, '--gui'];
+        if (scenario.expectedCode === 4) {
+          args.push('--values', valuesPath);
+        }
+        if (scenario.expectedCode === 2) {
+          args.push('--locale', 'definitely_invalid');
+        }
+        if (requestedResult) {
+          args.push('--result', resultPath);
+        }
+        gui.launchGui.mockRejectedValueOnce(
+          new CancelledError('cancelled before the GUI shell started'),
+        );
+
+        expect(await run(args, capture(), interaction())).toBe(scenario.expectedCode);
+        if (scenario.expectedStatus === undefined) {
+          expect(existsSync(resultPath)).toBe(false);
+        } else if (requestedResult) {
+          expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toMatchObject({
+            status: scenario.expectedStatus,
+            exitCode: scenario.expectedCode,
+          });
+        } else {
+          expect(existsSync(resultPath)).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('does not write a result for GUI usage errors', async () => {
