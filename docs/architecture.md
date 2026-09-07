@@ -686,8 +686,8 @@ stdout is reserved exclusively for requested machine output (`--result -`, the d
 Windows Electron 44.2.0 currently adds a native CRLF before application stdout in subprocess
 and headless invocations, including before the JSON emitted by `--result -`; even an
 Electron-only app reproduces it. This is an unresolved deviation from the exact stdout
-requirement above. Existing archive smoke checks compare against native whitespace and
-parse JSON, so their success does not establish byte-exact Windows stdout compliance.
+requirement above. Archive smoke checks allow that known native CRLF but reject additional
+application bytes, so their success does not establish byte-exact Windows stdout compliance.
 Result-file delivery and Node CLI output are unaffected; use `--result PATH` for exact
 serialized bytes. The strict stdout release requirement remains open before publication.
 See the [historical upstream issue](https://github.com/electron/electron/issues/12578).

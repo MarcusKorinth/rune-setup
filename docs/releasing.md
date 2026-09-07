@@ -104,8 +104,9 @@ and non-interactive runs. It also exercises real child processes, masked result/
 input and step failures, timeouts, unwritable destinations, and cancellation.
 
 - [ ] Resolve the native Windows Electron stdout prefix and verify exact empty and
-      serialized artifact stdout before publication. Archive smoke checks that compare
-      native whitespace and parse JSON do not establish byte-exact compliance.
+      serialized artifact stdout before publication. Archive smoke checks allow the known
+      native CRLF and reject additional application bytes, but do not establish byte-exact
+      compliance.
 
 The public npm name `@rune/cli` currently belongs to another project. Settle the
 namespace and update these commands before any registry publication.
