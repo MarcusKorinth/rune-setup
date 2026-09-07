@@ -6,25 +6,28 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, type Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import { CancelledError, PlatformError, RUNE_VERSION, UsageError } from '@rune/engine';
 
 import type { RunFlags } from './args.js';
+import { locateCachedShell, publishCachedShell } from './guiCache.js';
+import { createGuiStartupGate, type GuiStartupGate } from './guiStartup.js';
 import { ExitWithCode, humanStderr, type CliControl, type CliIo } from './io.js';
 import type { Interaction } from './prompt.js';
 
@@ -34,6 +37,8 @@ const RELEASES = 'https://github.com/MarcusKorinth/rune-setup/releases/download'
 const SHELL_BINARY = process.platform === 'win32' ? 'rune-gui-shell.exe' : 'rune-gui-shell';
 
 const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
+const SHELL_PROBE_TIMEOUT_MS = 10_000;
+const SHELL_PROBE_CLOSE_TIMEOUT_MS = 5000;
 
 /** The §10 table: only these codes are forwarded; anything else is an internal error. */
 const FORWARDABLE = new Set([0, 1, 2, 3, 4, 5, 6, 70]);
@@ -81,8 +86,15 @@ export function locateShell(
       ? { kind: 'dev', dir: location }
       : { kind: 'binary', path: location };
   }
-  const cached = join(shellCacheDir(), SHELL_BINARY);
-  return existsSync(cached) ? { kind: 'binary', path: cached } : undefined;
+  const cache = shellCacheDir();
+  try {
+    const binary = locateCachedShell(cache, SHELL_BINARY, RUNE_VERSION);
+    return binary === undefined ? undefined : { kind: 'binary', path: binary };
+  } catch {
+    throw new UsageError(
+      `the GUI shell cache at "${cache}" has no readable complete selection — run: rune gui install`,
+    );
+  }
 }
 
 /** `rune gui install`: fetch the release matching this engine version, unpack via OS tar. */
@@ -154,14 +166,13 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
       throw cause;
     }
 
-    const cacheParent = dirname(target);
     try {
-      mkdirSync(cacheParent, { recursive: true });
-      stagingDirectory = mkdtempSync(join(cacheParent, '.rune-shell-stage-'));
+      mkdirSync(target, { recursive: true });
+      stagingDirectory = mkdtempSync(join(target, '.rune-shell-stage-'));
     } catch {
       humanStderr(
         io,
-        `could not prepare the GUI shell cache at ${cacheParent} — check directory permissions and available disk space`,
+        `could not prepare the GUI shell cache at ${target} — check directory permissions and available disk space`,
       );
       throw new ExitWithCode(1);
     }
@@ -183,7 +194,7 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
     const stagedShell = join(stagingDirectory, SHELL_BINARY);
     let stagedShellIsFile: boolean;
     try {
-      stagedShellIsFile = statSync(stagedShell, { throwIfNoEntry: false })?.isFile() === true;
+      stagedShellIsFile = lstatSync(stagedShell, { throwIfNoEntry: false })?.isFile() === true;
     } catch {
       humanStderr(
         io,
@@ -208,40 +219,16 @@ export async function guiInstallCommand(io: CliIo): Promise<void> {
 }
 
 function promoteStagedDirectory(stagingDirectory: string, target: string, io: CliIo): void {
-  const backup = `${stagingDirectory}-backup`;
-  const hadExistingTarget = existsSync(target);
-  if (hadExistingTarget) {
-    try {
-      renameSync(target, backup);
-    } catch {
-      humanStderr(
-        io,
-        `could not preserve the existing GUI shell cache at ${target} — check permissions`,
-      );
-      throw new ExitWithCode(1);
-    }
-  }
-
   try {
-    renameSync(stagingDirectory, target);
+    publishCachedShell(stagingDirectory, target, SHELL_BINARY, RUNE_VERSION, (path) => {
+      humanStderr(io, `warning: could not remove temporary GUI shell files at ${path}`);
+    });
   } catch {
-    if (hadExistingTarget) {
-      try {
-        renameSync(backup, target);
-      } catch {
-        humanStderr(
-          io,
-          `could not install the GUI shell or restore the previous cache; the recoverable backup remains at ${backup}`,
-        );
-        throw new ExitWithCode(1);
-      }
-    }
-    humanStderr(io, `could not install the GUI shell to ${target} — check cache permissions`);
+    humanStderr(
+      io,
+      `could not publish the GUI shell in ${target} — check cache permissions and available disk space; run: rune gui install`,
+    );
     throw new ExitWithCode(1);
-  }
-
-  if (hadExistingTarget) {
-    removeBestEffort(backup, io);
   }
 }
 
@@ -293,23 +280,30 @@ export async function launchGui(
   let child: ReturnType<typeof spawn> | undefined;
   let probeChild: ReturnType<typeof spawn> | undefined;
   let probeTerminationSent = false;
+  let probeTimedOut = false;
   let cancelRequested = false;
   let receivedSigint = false;
-  const terminateProbe = (): void => {
-    if (probeTerminationSent || probeChild?.pid === undefined) return;
+  let startup: GuiStartupGate | undefined;
+  const terminateProbe = (force = false): void => {
+    if ((!force && probeTerminationSent) || probeChild?.pid === undefined) return;
     probeTerminationSent = true;
     if (process.platform === 'win32') {
       // The probe has no cooperative session; terminate its complete process tree.
-      const taskkill = spawn('taskkill', ['/PID', String(probeChild.pid), '/T', '/F'], {
-        stdio: 'ignore',
-        shell: false,
-      });
-      // Cancellation is already in progress; a failed best-effort terminator must not crash us.
-      taskkill.once('error', () => undefined);
+      try {
+        const taskkill = spawn('taskkill', ['/PID', String(probeChild.pid), '/T', '/F'], {
+          stdio: 'ignore',
+          shell: false,
+          timeout: SHELL_PROBE_CLOSE_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+        });
+        taskkill.once('error', () => undefined);
+      } catch {
+        // The close deadline also bounds a probe whose terminator cannot start.
+      }
       return;
     }
     try {
-      process.kill(-probeChild.pid, 'SIGTERM');
+      process.kill(-probeChild.pid, force ? 'SIGKILL' : 'SIGTERM');
     } catch {
       // The detached probe group already exited between the signal and this request.
     }
@@ -334,11 +328,12 @@ export async function launchGui(
     if (probeChild !== undefined) {
       terminateProbe();
     } else {
-      forwardCancel();
+      if (process.platform !== 'linux' || startup?.cancel() === true) forwardCancel();
     }
   };
   const onSigint = (): void => {
     if (receivedSigint) {
+      if (startup?.transferred() === false) startup.abort();
       interaction.forceExit?.(6);
       return;
     }
@@ -352,20 +347,31 @@ export async function launchGui(
     process.on('SIGTERM', onSigterm);
   }
   const disposeCancel = control.cancel?.onCancel(requestCancel);
+  const onHostExit = (): void => {
+    if (startup?.transferred() === false) startup.abort();
+  };
+  process.once('exit', onHostExit);
 
   try {
     if (cancelRequested) {
       throw new CancelledError('cancelled before the GUI shell started');
     }
     try {
-      await verifyShellVersion(location, (probe) => {
-        probeChild = probe;
-        if (probe !== undefined && cancelRequested) {
-          terminateProbe();
-        }
-      });
+      await verifyShellVersion(
+        location,
+        (probe) => {
+          probeChild = probe;
+          if (probe !== undefined && cancelRequested) {
+            terminateProbe();
+          }
+        },
+        () => {
+          probeTimedOut = !cancelRequested;
+          terminateProbe(true);
+        },
+      );
     } catch (cause) {
-      if (cancelRequested) {
+      if (cancelRequested && !probeTimedOut) {
         throw new CancelledError('cancelled before the GUI shell started');
       }
       throw cause;
@@ -375,8 +381,15 @@ export async function launchGui(
     }
 
     const [command, args] = shellCommand(location, argv);
+    const startupToken = process.platform === 'linux' ? randomBytes(16).toString('hex') : undefined;
     const launchedChild = spawn(command, args, {
-      stdio: ['ignore', 'ignore', 'inherit'],
+      stdio:
+        startupToken === undefined
+          ? ['ignore', 'ignore', 'inherit']
+          : ['ignore', 'ignore', 'inherit', 'pipe'],
+      ...(startupToken === undefined
+        ? {}
+        : { env: { ...process.env, RUNE_GUI_STARTUP_TOKEN: startupToken } }),
       shell: false,
       // Its own process group on POSIX: a terminal Ctrl+C must reach only the CLI, which
       // forwards a deliberate SIGTERM — a raw SIGINT would kill the shell past its cancel
@@ -384,18 +397,36 @@ export async function launchGui(
       detached: process.platform !== 'win32',
     });
     child = launchedChild;
-
-    if (cancelRequested) {
+    if (startupToken !== undefined) {
+      startup = createGuiStartupGate(
+        (launchedChild.stdio?.[3] as Duplex | null | undefined) ?? undefined,
+        startupToken,
+      );
+      if (cancelRequested) startup.cancel();
+    } else if (cancelRequested) {
       forwardCancel();
     }
 
-    const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
+    const completion = new Promise<{ code: number | null; failed: boolean }>((resolve) => {
       launchedChild.on('error', (cause) => {
         humanStderr(io, `could not launch the GUI shell: ${cause.message}`);
+        startup?.abort();
         resolve({ code: null, failed: true });
       });
-      launchedChild.on('close', (code) => resolve({ code, failed: false }));
+      launchedChild.once('close', (code) => {
+        startup?.abort();
+        resolve({ code, failed: false });
+      });
     });
+    if (startup !== undefined) {
+      try {
+        await startup.completion;
+      } catch (cause) {
+        await terminateUnreadyShell(launchedChild, completion);
+        throw cause;
+      }
+    }
+    const outcome = await completion;
 
     // Signal death or an unknown (e.g. Chromium crash) code is an internal error (§9.4).
     const exit =
@@ -404,6 +435,7 @@ export async function launchGui(
       throw new ExitWithCode(exit);
     }
   } finally {
+    process.off('exit', onHostExit);
     disposeCancel?.();
     if (ownsSignals) {
       process.removeListener('SIGINT', onSigint);
@@ -412,9 +444,36 @@ export async function launchGui(
   }
 }
 
+/** A rejected startup gate cannot leave a detached process tree or pipe pinning the CLI. */
+async function terminateUnreadyShell(
+  child: ReturnType<typeof spawn>,
+  completion: Promise<unknown>,
+): Promise<void> {
+  if (child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // The startup group may already have exited before its gate failure is observed.
+    }
+  }
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      completion,
+      new Promise<void>((resolveClose) => {
+        deadline = setTimeout(resolveClose, SHELL_PROBE_CLOSE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+    child.unref();
+  }
+}
+
 async function verifyShellVersion(
   location: ShellLocation,
   onProbe: (child: ReturnType<typeof spawn> | undefined) => void,
+  onDeadline: () => void,
 ): Promise<void> {
   const [command, args] = shellCommand(location, [SHELL_VERSION_PROBE_FLAG]);
   const child = spawn(command, args, {
@@ -426,16 +485,20 @@ async function verifyShellVersion(
   child.stdout.setEncoding('utf8');
   const onData = (chunk: string): void => {
     if (stdout.length <= 4096) {
-      stdout += chunk;
+      stdout += chunk.slice(0, 4097 - stdout.length);
     }
   };
   child.stdout.on('data', onData);
 
+  let timedOut = false;
   const outcome = await new Promise<{ code: number | null; failed: boolean }>((resolve) => {
     let settled = false;
+    let closeDeadline: NodeJS.Timeout | undefined;
     const finish = (result: { code: number | null; failed: boolean }): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
+      clearTimeout(closeDeadline);
       child.stdout.removeListener('data', onData);
       child.removeListener('error', onError);
       child.removeListener('close', onClose);
@@ -444,11 +507,27 @@ async function verifyShellVersion(
     };
     const onError = (): void => finish({ code: null, failed: true });
     const onClose = (code: number | null): void => finish({ code, failed: false });
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      closeDeadline = setTimeout(() => {
+        child.stdout.destroy();
+        child.unref();
+        finish({ code: null, failed: true });
+        // A late native process error still needs an owner after we release the handle.
+        child.once('error', () => undefined);
+      }, SHELL_PROBE_CLOSE_TIMEOUT_MS);
+      onDeadline();
+    }, SHELL_PROBE_TIMEOUT_MS);
     child.once('error', onError);
     child.once('close', onClose);
     onProbe(child);
   });
   const reinstall = 'run: rune gui install';
+  if (timedOut) {
+    throw new UsageError(
+      `the GUI shell did not complete its version probe within 10 seconds — ${reinstall}`,
+    );
+  }
   if (outcome.failed || outcome.code !== 0 || stdout.length > 4096) {
     throw new UsageError(`the GUI shell version could not be verified — ${reinstall}`);
   }

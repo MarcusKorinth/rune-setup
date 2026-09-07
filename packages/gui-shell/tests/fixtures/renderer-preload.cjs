@@ -1,6 +1,7 @@
 const { contextBridge } = require('electron');
 
 const pendingPlans = [];
+const pendingPlanRejections = [];
 const pendingWarnings = [];
 let eventListener;
 let doneCount = 0;
@@ -57,8 +58,9 @@ contextBridge.exposeInMainWorld('rune', {
   allInputs: async () => [],
   setValue: async () => [],
   plan: () =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       pendingPlans.push(resolve);
+      pendingPlanRejections.push(reject);
     }),
   execute: async () => {
     executeCount += 1;
@@ -110,6 +112,16 @@ contextBridge.exposeInMainWorld('summaryTestControl', {
   cancelCount: () => cancelCount,
   executeCount: () => executeCount,
   planCount: () => pendingPlans.length,
+  rejectPlan: (index) => {
+    pendingPlanRejections[index]?.({
+      kind: 'rune-error',
+      code: 'RUNE-301',
+      exitCode: 5,
+      message: 'The renderer must use displayText.',
+      location: { file: 'answers.yaml', line: 7, column: 9 },
+      displayText: 'Authoritative diagnostic without reconstructed metadata.',
+    });
+  },
   resolvePlan: (index, title) => {
     const resolve = pendingPlans[index];
     if (resolve === undefined) {

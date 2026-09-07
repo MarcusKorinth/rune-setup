@@ -1,3 +1,5 @@
+import { throughPreload } from './bridge-fixture.js';
+
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -92,6 +94,8 @@ vi.mock('electron', () => {
 
   return {
     app: {
+      on: vi.fn(),
+      off: vi.fn(),
       exit: vi.fn(),
       getAppPath: vi.fn(() => 'C:\\rune-shell'),
       isPackaged: false,
@@ -111,7 +115,10 @@ vi.mock('electron', () => {
         },
       ),
       handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
-        electronHarness.handlers.set(channel, (...args: unknown[]) => handler({}, ...args));
+        electronHarness.handlers.set(
+          channel,
+          throughPreload((...args: unknown[]) => handler({}, ...args)),
+        );
       }),
     },
   };
@@ -476,7 +483,9 @@ describe('the GUI shell stderr diagnostics', () => {
       if (execute === undefined) {
         throw new Error('the execute handler was not registered');
       }
-      await expect(execute()).rejects.toThrow('RUNE-406');
+      await expect(execute()).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-406'),
+      });
     };
 
     await main([manifestPath, '--result', resultPath]);
@@ -523,7 +532,9 @@ describe('the GUI shell stderr diagnostics', () => {
       if (execute === undefined) {
         throw new Error('the execute handler was not registered');
       }
-      await expect(execute()).rejects.toThrow('RUNE-407');
+      await expect(execute()).rejects.toMatchObject({
+        displayText: expect.stringContaining('RUNE-407'),
+      });
     };
 
     await main([

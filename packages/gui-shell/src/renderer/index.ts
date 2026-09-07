@@ -606,9 +606,14 @@ async function refreshInputs(): Promise<void> {
 }
 
 function messageOf(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  // Electron prefixes bridge rejections with the invoke boilerplate; keep the useful part.
-  return raw.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '');
+  return typeof error === 'object' &&
+    error !== null &&
+    'kind' in error &&
+    error.kind === 'rune-error' &&
+    'displayText' in error &&
+    typeof error.displayText === 'string'
+    ? error.displayText
+    : 'RUNE-500 (exit 70): An unexpected shell error occurred.';
 }
 
 function isCurrentSummary(version: number): boolean {

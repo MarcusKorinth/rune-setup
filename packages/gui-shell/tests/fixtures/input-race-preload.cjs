@@ -76,7 +76,14 @@ contextBridge.exposeInMainWorld('inputRaceTestControl', {
       ...(typeof submission.raw === 'string' ? { candidate: submission.raw } : {}),
       displayText: 'Use uppercase letters',
     };
-    submission.reject(new Error('Use uppercase letters'));
+    submission.reject({
+      kind: 'rune-error',
+      code: 'RUNE-202',
+      exitCode: 4,
+      location: null,
+      message: 'Use uppercase letters',
+      displayText: 'Use uppercase letters',
+    });
   },
   resolveSubmission: (index) => {
     const submission = pendingSetValues[index];

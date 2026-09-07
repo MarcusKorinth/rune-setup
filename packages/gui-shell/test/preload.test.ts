@@ -7,14 +7,14 @@ import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeIpc } from '../src/preload/index.cts';
-import type { BridgeEvent } from '../src/preload/types.js';
+import type { BridgeError, BridgeEvent } from '../src/preload/types.js';
 
 // @ts-expect-error tsc addresses the compiled file as .cjs; vitest resolves the source
 import { buildBridge } from '../src/preload/index.cts';
 
 function fakeIpc() {
   return {
-    invoke: vi.fn<BridgeIpc['invoke']>().mockResolvedValue(undefined),
+    invoke: vi.fn<BridgeIpc['invoke']>().mockResolvedValue({ ok: true }),
     on: vi.fn<BridgeIpc['on']>(),
     send: vi.fn<BridgeIpc['send']>(),
   };
@@ -47,6 +47,66 @@ describe('the preload bridge', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  const failure: BridgeError = {
+    kind: 'rune-error',
+    code: 'RUNE-202',
+    message: 'invalid value',
+    location: { file: 'answers.yaml', line: 7, column: 9 },
+    exitCode: 4,
+    displayText: 'RUNE-202 (exit 4): answers.yaml:7:9: invalid value',
+  };
+
+  it('preserves plain failure metadata on every method and strips extra fields', async () => {
+    const ipc = fakeIpc();
+    ipc.invoke.mockResolvedValue({
+      ok: false,
+      error: {
+        ...failure,
+        stack: 'private stack',
+        cause: 'private cause',
+        location: { ...failure.location, privateValue: 'private location metadata' },
+      },
+    });
+    const api = buildBridge(ipc);
+    const { onEvent: _onEvent, setValue, ...withoutArguments } = api;
+    for (const call of [...Object.values(withoutArguments), () => setValue('id', 'raw')]) {
+      await expect(call()).rejects.toEqual(failure);
+    }
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    [],
+    { ok: 'true' },
+    { ok: false },
+    { ok: false, error: { ...failure, exitCode: NaN } },
+    { ok: false, error: { ...failure, location: { file: 'bad', line: 0, column: 1 } } },
+    { ok: false, error: { ...failure, code: 'unexpected' } },
+  ])('fails closed on malformed reply %#', async (reply) => {
+    const ipc = fakeIpc();
+    ipc.invoke.mockResolvedValue(reply);
+    await expect(buildBridge(ipc).plan()).rejects.toEqual({
+      kind: 'rune-error',
+      code: 'RUNE-500',
+      message: 'An unexpected shell error occurred.',
+      location: null,
+      exitCode: 70,
+      displayText: 'RUNE-500 (exit 70): An unexpected shell error occurred.',
+    });
+  });
+
+  it('suppresses untrusted Electron transport errors', async () => {
+    const ipc = fakeIpc();
+    ipc.invoke.mockRejectedValue(new Error('Error invoking remote method: private-token'));
+    await expect(buildBridge(ipc).plan()).rejects.toMatchObject({
+      code: 'RUNE-500',
+      exitCode: 70,
+      displayText: 'RUNE-500 (exit 70): An unexpected shell error occurred.',
+    });
   });
 
   it('exposes exactly the facade projection - no method more, none less', () => {

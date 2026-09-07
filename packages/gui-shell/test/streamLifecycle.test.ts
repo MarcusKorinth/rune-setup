@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   app: {
+    on: vi.fn(),
+    off: vi.fn(),
     exit: vi.fn(),
     getAppPath: vi.fn(() => 'C:\\rune-shell'),
     isPackaged: false,

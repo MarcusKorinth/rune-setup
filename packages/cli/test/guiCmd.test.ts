@@ -1,20 +1,24 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
+  closeSync,
   createWriteStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { Duplex, PassThrough } from 'node:stream';
 import type * as Fs from 'node:fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,12 +43,16 @@ vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof Fs>();
   return {
     ...fs,
+    closeSync: vi.fn(fs.closeSync),
     createWriteStream: vi.fn(fs.createWriteStream),
+    lstatSync: vi.fn(fs.lstatSync),
     mkdirSync: vi.fn(fs.mkdirSync),
     mkdtempSync: vi.fn(fs.mkdtempSync),
+    openSync: vi.fn(fs.openSync),
+    readFileSync: vi.fn(fs.readFileSync),
     renameSync: vi.fn(fs.renameSync),
     rmSync: vi.fn(fs.rmSync),
-    statSync: vi.fn(fs.statSync),
+    writeFileSync: vi.fn(fs.writeFileSync),
   };
 });
 
@@ -53,12 +61,16 @@ const savedXdgCacheHome = process.env['XDG_CACHE_HOME'];
 const savedGuiShell = process.env['RUNE_GUI_SHELL'];
 const savedElectronOverrideDistPath = process.env['ELECTRON_OVERRIDE_DIST_PATH'];
 const spawnMock = vi.mocked(spawn);
+const closeSyncMock = vi.mocked(closeSync);
 const createWriteStreamMock = vi.mocked(createWriteStream);
+const lstatSyncMock = vi.mocked(lstatSync);
 const mkdirSyncMock = vi.mocked(mkdirSync);
 const mkdtempSyncMock = vi.mocked(mkdtempSync);
+const openSyncMock = vi.mocked(openSync);
+const readFileSyncMock = vi.mocked(readFileSync);
 const renameSyncMock = vi.mocked(renameSync);
 const rmSyncMock = vi.mocked(rmSync);
-const statSyncMock = vi.mocked(statSync);
+const writeFileSyncMock = vi.mocked(writeFileSync);
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 let testDirectory: string;
@@ -148,7 +160,7 @@ function waitingProbe(pid = 3131): {
     child: child as unknown as ReturnType<typeof spawn>,
     events: child,
     close: (output, code = 0) => {
-      child.stdout.end(output);
+      if (!child.stdout.writableEnded && !child.stdout.destroyed) child.stdout.end(output);
       child.emit('close', code);
     },
   };
@@ -163,12 +175,33 @@ function probeErrorProcess(message: string): ReturnType<typeof spawn> {
 
 function runProcess(code: number | null = 0): ReturnType<typeof spawn> {
   const child = new EventEmitter();
-  queueMicrotask(() => child.emit('close', code));
+  const options = spawnMock.mock.lastCall?.[2];
+  if (process.platform === 'linux' && options?.env?.['RUNE_GUI_STARTUP_TOKEN'] !== undefined) {
+    attachStartupPipe(child, () => child.emit('close', code));
+  } else queueMicrotask(() => child.emit('close', code));
   return child as ReturnType<typeof spawn>;
+}
+
+function attachStartupPipe(child: EventEmitter, onDecision?: () => void): void {
+  let sentReady = false;
+  const pipe = new Duplex({
+    read() {
+      if (sentReady) return;
+      sentReady = true;
+      const token = spawnMock.mock.lastCall?.[2]?.env?.['RUNE_GUI_STARTUP_TOKEN'];
+      this.push(Buffer.from(`READY ${token}\n`));
+    },
+    write(_chunk, _encoding, callback) {
+      callback();
+      if (onDecision !== undefined) setImmediate(onDecision);
+    },
+  });
+  Object.assign(child, { stdio: [null, null, null, pipe], unref: vi.fn() });
 }
 
 function errorProcess(message: string): ReturnType<typeof spawn> {
   const child = new EventEmitter();
+  Object.assign(child, { unref: vi.fn() });
   queueMicrotask(() => child.emit('error', new Error(message)));
   return child as ReturnType<typeof spawn>;
 }
@@ -182,6 +215,7 @@ function waitingProcess(
   };
   child.pid = pid;
   child.kill = vi.fn();
+  if (process.platform === 'linux') attachStartupPipe(child);
   return child;
 }
 
@@ -221,6 +255,26 @@ function downloadedArchive(): string {
 
 function shellTemporaryDirectories(): readonly string[] {
   return readdirSync(tmpdir()).filter((entry) => entry.startsWith('rune-gui-install-'));
+}
+
+function cachedGeneration(contents = 'existing shell'): { name: string; binary: string } {
+  const name = `generation-${randomUUID()}`;
+  const binary = join(shellCacheDir(), name, shellBinary);
+  mkdirSync(dirname(binary), { recursive: true });
+  writeFileSync(binary, contents);
+  writeFileSync(join(shellCacheDir(), 'current'), `${name}\n`);
+  return { name, binary };
+}
+
+function selectedBinary(): string {
+  const location = locateShell({});
+  expect(location?.kind).toBe('binary');
+  if (location?.kind !== 'binary') throw new Error('no selected shell');
+  return location.path;
+}
+
+function isTemporaryPointer(path: unknown): path is string {
+  return typeof path === 'string' && /^\.current-[a-f0-9-]{36}\.tmp$/u.test(basename(path));
 }
 
 describe('rune gui install temporary archive', () => {
@@ -424,6 +478,7 @@ describe('rune gui install atomic cache promotion', () => {
   });
 
   it('reports cache-directory setup failures as installation failures', async () => {
+    const previous = cachedGeneration();
     mkdirSyncMock.mockImplementationOnce(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
     });
@@ -433,6 +488,24 @@ describe('rune gui install atomic cache promotion', () => {
 
     expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not prepare'));
     expect(spawnMock).not.toHaveBeenCalled();
+    expect(selectedBinary()).toBe(previous.binary);
+    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+  });
+
+  it('keeps the current generation intact when private staging-directory creation fails', async () => {
+    const previous = cachedGeneration();
+    const realMkdtempSync = mkdtempSyncMock.getMockImplementation()!;
+    mkdtempSyncMock.mockImplementationOnce(realMkdtempSync).mockImplementationOnce(() => {
+      throw new Error('staging directory denied');
+    });
+    const io = capture();
+
+    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not prepare'));
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(selectedBinary()).toBe(previous.binary);
+    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
   });
 
   it('does not make a partially extracted shell locatable when tar fails', async () => {
@@ -455,16 +528,42 @@ describe('rune gui install atomic cache promotion', () => {
     expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
   });
 
-  it('promotes a complete staged shell over an existing cache and removes remnants', async () => {
-    const installedShell = join(shellCacheDir(), shellBinary);
-    mkdirSync(dirname(installedShell), { recursive: true });
-    writeFileSync(installedShell, 'existing shell');
+  it('publishes a complete generation and retains a previously located legacy shell', async () => {
+    const legacyShell = join(shellCacheDir(), shellBinary);
+    mkdirSync(dirname(legacyShell), { recursive: true });
+    writeFileSync(legacyShell, 'existing shell');
 
     await guiInstallCommand(capture());
 
-    expect(locateShell({})).toEqual({ kind: 'binary', path: installedShell });
+    const installedShell = selectedBinary();
+    const generationName = basename(dirname(installedShell));
+    expect(generationName).toMatch(/^generation-v1-[a-f0-9-]{36}$/u);
+    expect(dirname(dirname(installedShell))).toBe(shellCacheDir());
+    expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${generationName}\n`);
+    expect(writeFileSyncMock).toHaveBeenCalledWith(expect.any(Number), `${generationName}\n`, {
+      encoding: 'utf8',
+      flush: true,
+    });
+    expect(openSyncMock).toHaveBeenCalledWith(expect.any(String), 'wx', 0o600);
     expect(readFileSync(installedShell, 'utf8')).toBe('new shell');
-    expect(readdirSync(dirname(shellCacheDir()))).toEqual([basename(shellCacheDir())]);
+    expect(readFileSync(legacyShell, 'utf8')).toBe('existing shell');
+    expect(readdirSync(shellCacheDir()).sort()).toEqual(
+      ['current', generationName, shellBinary].sort(),
+    );
+  });
+
+  it('retains published generations when another installation becomes current', async () => {
+    const previous = cachedGeneration();
+
+    await guiInstallCommand(capture());
+
+    const installedShell = selectedBinary();
+    expect(installedShell).not.toBe(previous.binary);
+    expect(readFileSync(installedShell, 'utf8')).toBe('new shell');
+    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+    expect(readdirSync(shellCacheDir()).sort()).toEqual(
+      ['current', previous.name, basename(dirname(installedShell))].sort(),
+    );
   });
 
   it('rejects an archive without the expected shell binary without promotion', async () => {
@@ -483,7 +582,7 @@ describe('rune gui install atomic cache promotion', () => {
     const existingShell = join(shellCacheDir(), shellBinary);
     mkdirSync(dirname(existingShell), { recursive: true });
     writeFileSync(existingShell, 'existing shell');
-    statSyncMock.mockImplementationOnce(() => {
+    lstatSyncMock.mockImplementationOnce(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
     });
     const io = capture();
@@ -494,68 +593,364 @@ describe('rune gui install atomic cache promotion', () => {
     expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
   });
 
-  it('restores the existing cache when promotion fails', async () => {
-    const existingShell = join(shellCacheDir(), shellBinary);
-    mkdirSync(dirname(existingShell), { recursive: true });
-    writeFileSync(existingShell, 'existing shell');
+  it.each([
+    'generation rename',
+    'pointer creation',
+    'pointer write or flush',
+    'pointer close',
+    'pointer rename',
+  ])('keeps the current generation intact when %s fails', async (failure) => {
+    const previous = cachedGeneration();
     const realRenameSync = renameSyncMock.getMockImplementation()!;
-    renameSyncMock
-      .mockImplementationOnce((oldPath, newPath) => realRenameSync(oldPath, newPath))
-      .mockImplementationOnce(() => {
-        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
-      });
+    const realOpenSync = openSyncMock.getMockImplementation()!;
+    const realWriteFileSync = writeFileSyncMock.getMockImplementation()!;
+    const realCloseSync = closeSyncMock.getMockImplementation()!;
+    let pointerDescriptor: number | undefined;
+    const fail = (): never => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    };
+    openSyncMock.mockImplementation((path, flags, mode) => {
+      if (isTemporaryPointer(path) && failure === 'pointer creation') fail();
+      const descriptor = realOpenSync(path, flags, mode);
+      if (isTemporaryPointer(path)) pointerDescriptor = descriptor;
+      return descriptor;
+    });
+    renameSyncMock.mockImplementation((from, to) => {
+      if (
+        (failure === 'generation rename' && basename(String(to)).startsWith('generation-v1-')) ||
+        (failure === 'pointer rename' && isTemporaryPointer(from))
+      ) {
+        fail();
+      }
+      return realRenameSync(from, to);
+    });
+    writeFileSyncMock.mockImplementation((file, data, options) => {
+      if (file === pointerDescriptor && failure === 'pointer write or flush') {
+        realWriteFileSync(file, 'partial pointer');
+        return fail();
+      }
+      return realWriteFileSync(file, data, options);
+    });
+    closeSyncMock.mockImplementation((file) => {
+      realCloseSync(file);
+      if (file === pointerDescriptor && failure === 'pointer close') fail();
+    });
     const io = capture();
 
-    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+    try {
+      await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
 
-    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not install'));
-    expect(readFileSync(existingShell, 'utf8')).toBe('existing shell');
+      expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      const generations = readdirSync(shellCacheDir()).filter((name) =>
+        name.startsWith('generation-v1-'),
+      );
+      expect(generations).toHaveLength(failure === 'generation rename' ? 0 : 1);
+      expect(readdirSync(shellCacheDir()).sort()).toEqual(
+        ['current', previous.name, ...generations].sort(),
+      );
+      for (const generation of generations) {
+        expect(readFileSync(join(shellCacheDir(), generation, shellBinary), 'utf8')).toBe(
+          'new shell',
+        );
+        expect(existsSync(join(shellCacheDir(), generation, '.rune-complete.json'))).toBe(true);
+      }
+      expect(existsSync(dirname(downloadedArchive()))).toBe(false);
+    } finally {
+      openSyncMock.mockImplementation(realOpenSync);
+      renameSyncMock.mockImplementation(realRenameSync);
+      writeFileSyncMock.mockImplementation(realWriteFileSync);
+      closeSyncMock.mockImplementation(realCloseSync);
+    }
   });
 
-  it('retains a recoverable backup when cache restoration fails', async () => {
-    const existingShell = join(shellCacheDir(), shellBinary);
-    mkdirSync(dirname(existingShell), { recursive: true });
-    writeFileSync(existingShell, 'existing shell');
+  it('keeps the current generation intact when failed publication cleanup also fails', async () => {
+    const previous = cachedGeneration();
     const realRenameSync = renameSyncMock.getMockImplementation()!;
-    renameSyncMock
-      .mockImplementationOnce((oldPath, newPath) => realRenameSync(oldPath, newPath))
-      .mockImplementationOnce(() => {
-        throw Object.assign(new Error('promotion denied'), { code: 'EACCES' });
-      })
-      .mockImplementationOnce(() => {
-        throw Object.assign(new Error('restoration denied'), { code: 'EACCES' });
-      });
+    const realRmSync = rmSyncMock.getMockImplementation()!;
+    renameSyncMock.mockImplementation((from, to) => {
+      if (isTemporaryPointer(from)) throw new Error('pointer publication denied');
+      return realRenameSync(from, to);
+    });
+    rmSyncMock.mockImplementation((path, options) => {
+      if (isTemporaryPointer(path)) throw new Error('pointer cleanup denied');
+      return realRmSync(path, options);
+    });
     const io = capture();
 
-    await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
+    try {
+      await expect(guiInstallCommand(io)).rejects.toMatchObject({ code: 1 });
 
-    const backup = renameSyncMock.mock.calls[0]?.[1];
-    expect(typeof backup).toBe('string');
-    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining(String(backup)));
-    expect(readFileSync(join(String(backup), shellBinary), 'utf8')).toBe('existing shell');
-    expect(existsSync(existingShell)).toBe(false);
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('could not publish'));
+      expect(io.stderr).toHaveBeenCalledWith(
+        expect.stringContaining('warning: could not remove temporary GUI shell files'),
+      );
+      expect(
+        readdirSync(shellCacheDir()).filter((name) => name.startsWith('generation-v1-')),
+      ).toHaveLength(1);
+      expect(readdirSync(shellCacheDir()).filter(isTemporaryPointer)).toHaveLength(1);
+    } finally {
+      renameSyncMock.mockImplementation(realRenameSync);
+      rmSyncMock.mockImplementation(realRmSync);
+    }
   });
 
-  it('keeps a successful installation when old-cache cleanup fails', async () => {
-    const installedShell = join(shellCacheDir(), shellBinary);
-    mkdirSync(dirname(installedShell), { recursive: true });
-    writeFileSync(installedShell, 'existing shell');
+  it('does not remove a pointer temporary file it could not create exclusively', async () => {
+    const previous = cachedGeneration();
+    const realOpenSync = openSyncMock.getMockImplementation()!;
+    let pointer: string | undefined;
+    openSyncMock.mockImplementation((path, flags, mode) => {
+      if (isTemporaryPointer(path)) {
+        pointer = path;
+        writeFileSync(path, 'another installer owns this file');
+        throw Object.assign(new Error('already exists'), { code: 'EEXIST' });
+      }
+      return realOpenSync(path, flags, mode);
+    });
+
+    try {
+      await expect(guiInstallCommand(capture())).rejects.toMatchObject({ code: 1 });
+
+      expect(pointer).toBeDefined();
+      expect(readFileSync(pointer!, 'utf8')).toBe('another installer owns this file');
+      expect(selectedBinary()).toBe(previous.binary);
+      expect(readFileSync(join(shellCacheDir(), 'current'), 'utf8')).toBe(`${previous.name}\n`);
+      expect(
+        readdirSync(shellCacheDir()).filter((name) => name.startsWith('generation-v1-')),
+      ).toHaveLength(1);
+    } finally {
+      openSyncMock.mockImplementation(realOpenSync);
+    }
+  });
+
+  it('keeps a successful installation when archive cleanup fails', async () => {
+    const previous = cachedGeneration();
     rmSyncMock.mockImplementationOnce(() => {
       throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
     });
     const io = capture();
 
-    await guiInstallCommand(io);
+    try {
+      await guiInstallCommand(io);
 
-    expect(readFileSync(installedShell, 'utf8')).toBe('new shell');
-    expect(io.stderr).toHaveBeenCalledWith(
-      expect.stringContaining('warning: could not remove temporary GUI shell files'),
+      expect(readFileSync(selectedBinary(), 'utf8')).toBe('new shell');
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(io.stderr).toHaveBeenCalledWith(
+        expect.stringContaining('warning: could not remove temporary GUI shell files'),
+      );
+      expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('installed to'));
+    } finally {
+      rmSync(dirname(downloadedArchive()), { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 1])(
+    'selects the last complete concurrent installer (first completed: %i)',
+    async (first) => {
+      const previous = cachedGeneration();
+      const extractions: { child: EventEmitter; directory: string }[] = [];
+      spawnMock.mockImplementation((_command, args) => {
+        const child = new EventEmitter();
+        const directory = Array.isArray(args) ? args[3] : undefined;
+        if (typeof directory !== 'string') throw new Error('missing extraction directory');
+        extractions.push({ child, directory });
+        return child as ReturnType<typeof spawn>;
+      });
+      const installs = [guiInstallCommand(capture()), guiInstallCommand(capture())];
+      await vi.waitFor(() => expect(extractions).toHaveLength(2));
+      expect(extractions[0]!.directory).not.toBe(extractions[1]!.directory);
+      expect(selectedBinary()).toBe(previous.binary);
+      for (const [index, extraction] of extractions.entries()) {
+        writeFileSync(join(extraction.directory, shellBinary), `shell ${index}`);
+      }
+
+      extractions[first]!.child.emit('close', 0);
+      await vi.waitFor(() => expect(readFileSync(selectedBinary(), 'utf8')).toBe(`shell ${first}`));
+      const firstShell = selectedBinary();
+      const last = 1 - first;
+      extractions[last]!.child.emit('close', 0);
+      await Promise.all(installs);
+
+      const lastShell = selectedBinary();
+      expect(readFileSync(lastShell, 'utf8')).toBe(`shell ${last}`);
+      expect(readFileSync(firstShell, 'utf8')).toBe(`shell ${first}`);
+      expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+      expect(readdirSync(shellCacheDir()).sort()).toEqual(
+        [
+          'current',
+          previous.name,
+          basename(dirname(firstShell)),
+          basename(dirname(lastShell)),
+        ].sort(),
+      );
+    },
+  );
+});
+
+describe('GUI shell cache selection', () => {
+  it('reports an actionable usage error when every sealed generation is damaged', async () => {
+    await guiInstallCommand(capture());
+    const first = selectedBinary();
+    await guiInstallCommand(capture());
+    const second = selectedBinary();
+    expect(second).not.toBe(first);
+    writeFileSync(first, 'damaged first shell');
+    writeFileSync(second, 'damaged second shell');
+
+    let failure: unknown;
+    try {
+      locateShell({});
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(UsageError);
+    expect(exitCodeFor(failure)).toBe(2);
+    expect((failure as UsageError).message).toContain('run: rune gui install');
+  });
+
+  it.each(['', '\n'])('accepts the exact generation basename with terminator %j', (terminator) => {
+    const previous = cachedGeneration();
+    writeFileSync(join(shellCacheDir(), 'current'), previous.name + terminator);
+
+    expect(selectedBinary()).toBe(previous.binary);
+  });
+
+  it('ignores interrupted stages, unpublished generations and temporary pointers', () => {
+    const cache = shellCacheDir();
+    const orphan = cachedGeneration('unpublished shell');
+    rmSync(join(cache, 'current'));
+    const stage = join(cache, '.rune-shell-stage-orphan');
+    mkdirSync(stage);
+    writeFileSync(join(stage, shellBinary), 'incomplete shell');
+    writeFileSync(join(cache, `.current-${randomUUID()}.tmp`), `${orphan.name}\n`);
+
+    expect(locateShell({})).toBeUndefined();
+
+    const legacy = join(cache, shellBinary);
+    writeFileSync(legacy, 'legacy shell');
+    expect(selectedBinary()).toBe(legacy);
+  });
+
+  it.each([
+    '',
+    '../outside',
+    '..\\outside',
+    '/outside/shell',
+    'C:\\outside\\shell',
+    'generation-00000000-0000-0000-0000-000000000000/../outside',
+    'generation-00000000-0000-0000-0000-000000000000\\outside',
+    'generation-00000000-0000-0000-0000-000000000000\n\n',
+    'generation-00000000-0000-0000-0000-000000000000\r\n',
+    ' generation-00000000-0000-0000-0000-000000000000',
+    '{"generation":"outside"}',
+    'x'.repeat(256),
+  ])('rejects malformed selection %j without falling back to the legacy shell', (selection) => {
+    const cache = shellCacheDir();
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(join(cache, shellBinary), 'legacy shell');
+    writeFileSync(join(cache, 'current'), selection);
+
+    let error: unknown;
+    try {
+      locateShell({});
+    } catch (cause) {
+      error = cause;
+    }
+
+    expect(error).toBeInstanceOf(UsageError);
+    expect(exitCodeFor(error)).toBe(2);
+    expect((error as UsageError).message).toContain('run: rune gui install');
+  });
+
+  it.each(['missing generation', 'missing binary', 'directory pointer', 'directory binary'])(
+    'reports an actionable error for a %s',
+    (failure) => {
+      const previous = cachedGeneration();
+      if (failure === 'missing generation') rmSync(dirname(previous.binary), { recursive: true });
+      else if (failure === 'missing binary') rmSync(previous.binary);
+      else if (failure === 'directory pointer') {
+        rmSync(join(shellCacheDir(), 'current'));
+        mkdirSync(join(shellCacheDir(), 'current'));
+      } else {
+        rmSync(previous.binary);
+        mkdirSync(previous.binary);
+      }
+
+      expect(() => locateShell({})).toThrow(UsageError);
+      expect(() => locateShell({})).toThrow('run: rune gui install');
+    },
+  );
+
+  it('maps a current-pointer read failure to an actionable usage error', () => {
+    cachedGeneration();
+    readFileSyncMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+
+    expect(() => locateShell({})).toThrow(UsageError);
+  });
+
+  it('rejects a generation directory linked outside the version cache', () => {
+    const previous = cachedGeneration();
+    const outside = join(testDirectory, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, shellBinary), 'outside shell');
+    rmSync(dirname(previous.binary), { recursive: true });
+    symlinkSync(
+      outside,
+      dirname(previous.binary),
+      process.platform === 'win32' ? 'junction' : 'dir',
     );
-    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('installed to'));
+
+    expect(() => locateShell({})).toThrow(UsageError);
+  });
+
+  it.runIf(process.platform !== 'win32')('rejects linked pointer and binary files', () => {
+    const previous = cachedGeneration();
+    const pointer = join(shellCacheDir(), 'current');
+    const outsidePointer = join(testDirectory, 'outside-current');
+    writeFileSync(outsidePointer, `${previous.name}\n`);
+    rmSync(pointer);
+    symlinkSync(outsidePointer, pointer);
+    expect(() => locateShell({})).toThrow(UsageError);
+
+    rmSync(pointer);
+    writeFileSync(pointer, `${previous.name}\n`);
+    const outsideBinary = join(testDirectory, 'outside-shell');
+    writeFileSync(outsideBinary, 'outside shell');
+    rmSync(previous.binary);
+    symlinkSync(outsideBinary, previous.binary);
+    expect(() => locateShell({})).toThrow(UsageError);
   });
 });
 
 describe('rune run --gui shell version handshake', () => {
+  it('probes and launches the same generation when another installer publishes during the probe', async () => {
+    const previous = cachedGeneration();
+    const next = cachedGeneration('next shell');
+    writeFileSync(join(shellCacheDir(), 'current'), `${previous.name}\n`);
+    delete process.env['RUNE_GUI_SHELL'];
+    spawnMock
+      .mockImplementationOnce(() => {
+        writeFileSync(join(shellCacheDir(), 'current'), `${next.name}\n`);
+        return probeProcess(JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }));
+      })
+      .mockImplementationOnce(() => runProcess());
+
+    await launchGui('installer.yaml', {}, capture(), interaction);
+
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(previous.binary);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe(previous.binary);
+    expect(selectedBinary()).toBe(next.binary);
+    expect(readFileSync(previous.binary, 'utf8')).toBe('existing shell');
+  });
+
   it('refuses an unsupported host before resolving a development override or spawning', async () => {
     const { directory } = developmentShell();
     process.env['RUNE_GUI_SHELL'] = directory;
@@ -624,7 +1019,18 @@ describe('rune run --gui shell version handshake', () => {
       'run.log',
     ]);
     expect(spawnMock.mock.calls[1]?.[2]).toEqual({
-      stdio: ['ignore', 'ignore', 'inherit'],
+      stdio:
+        process.platform === 'linux'
+          ? ['ignore', 'ignore', 'inherit', 'pipe']
+          : ['ignore', 'ignore', 'inherit'],
+      ...(process.platform === 'linux'
+        ? {
+            env: {
+              ...process.env,
+              RUNE_GUI_STARTUP_TOKEN: expect.stringMatching(/^[a-f0-9]{32}$/u),
+            },
+          }
+        : {}),
       shell: false,
       detached: process.platform !== 'win32',
     });
@@ -646,6 +1052,23 @@ describe('rune run --gui shell version handshake', () => {
     expect(spawnMock.mock.calls[1]?.[0]).toBe(electron);
     expect(spawnMock.mock.calls[1]?.[1]).toEqual([shellDirectory, '--', 'installer.yaml']);
   });
+
+  it.each(['path.txt', 'dist/electron'])(
+    'rejects an unprepared development runtime missing %s without installing it',
+    async (missing) => {
+      const { directory: shellDirectory } = developmentShell();
+      rmSync(join(shellDirectory, 'node_modules', 'electron', missing));
+      process.env['RUNE_GUI_SHELL'] = shellDirectory;
+
+      const error = await launchGui('installer.yaml', {}, capture(), interaction).catch(
+        (cause: unknown) => cause,
+      );
+
+      expect(error).toBeInstanceOf(UsageError);
+      expect((error as Error).message).toContain('prepare:electron');
+      expect(spawnMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('normalizes a relative development-directory shell before probing and launching', async () => {
     const { directory: shellDirectory, electron } = developmentShell();
@@ -819,7 +1242,7 @@ describe('rune run --gui shell version handshake', () => {
         expect(spawnMock.mock.calls[1]).toEqual([
           'taskkill',
           ['/PID', '3131', '/T', '/F'],
-          { stdio: 'ignore', shell: false },
+          { stdio: 'ignore', shell: false, timeout: 5000, killSignal: 'SIGKILL' },
         ]);
       } else {
         expect(processKill).toHaveBeenCalledWith(-3131, 'SIGTERM');
@@ -966,9 +1389,9 @@ describe('rune run --gui shell version handshake', () => {
       .mockImplementationOnce(() => errorProcess('permission denied\nFORGED'));
     const io = capture();
 
-    await expect(launchGui('installer.yaml', {}, io, interaction)).rejects.toMatchObject({
-      code: 70,
-    });
+    const failure = launchGui('installer.yaml', {}, io, interaction);
+    if (process.platform === 'linux') await expect(failure).rejects.toBeInstanceOf(UsageError);
+    else await expect(failure).rejects.toMatchObject({ code: 70 });
 
     expect(io.stderr).toHaveBeenCalledWith(
       'could not launch the GUI shell: permission denied\\nFORGED',
@@ -1006,7 +1429,7 @@ describe('rune run --gui shell version handshake', () => {
         expect(spawnMock.mock.calls[1]).toEqual([
           'taskkill',
           ['/PID', '3131', '/T', '/F'],
-          { stdio: 'ignore', shell: false },
+          { stdio: 'ignore', shell: false, timeout: 5000, killSignal: 'SIGKILL' },
         ]);
       } else {
         expect(processKill).toHaveBeenCalledTimes(1);
@@ -1069,7 +1492,7 @@ describe('rune run --gui shell version handshake', () => {
         expect(spawnMock.mock.calls[1]).toEqual([
           'taskkill',
           ['/PID', '3131', '/T', '/F'],
-          { stdio: 'ignore', shell: false },
+          { stdio: 'ignore', shell: false, timeout: 5000, killSignal: 'SIGKILL' },
         ]);
         expect(spawnMock).toHaveBeenCalledTimes(2);
       } else {
@@ -1114,6 +1537,79 @@ describe('rune run --gui shell version handshake', () => {
       expect(() => taskkill.emit('error', new Error('taskkill unavailable'))).not.toThrow();
       probe.close('', null);
       await expect(launch).rejects.toBeInstanceOf(CancelledError);
+    },
+  );
+
+  it.each(['linux', 'win32'] as const)(
+    'bounds a stuck version probe and its close wait on %s',
+    async (platform) => {
+      stubHostPlatform(platform);
+      vi.useFakeTimers();
+      const probe = waitingProbe(3131);
+      probe.child.unref = vi.fn();
+      const processKill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      spawnMock.mockImplementationOnce(() => probe.child).mockImplementation(() => runProcess());
+      const launch = launchGui('installer.yaml', {}, capture(), interaction).catch(
+        (error: unknown) => error,
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(9999);
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        expect(processKill).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        if (platform === 'linux') {
+          expect(processKill).toHaveBeenCalledWith(-3131, 'SIGKILL');
+        } else {
+          expect(spawnMock.mock.calls[1]).toEqual([
+            'taskkill',
+            ['/PID', '3131', '/T', '/F'],
+            { stdio: 'ignore', shell: false, timeout: 5000, killSignal: 'SIGKILL' },
+          ]);
+        }
+        await vi.advanceTimersByTimeAsync(5000);
+        const error = await launch;
+        expect(error).toBeInstanceOf(UsageError);
+        expect(exitCodeFor(error)).toBe(2);
+        expect((error as Error).message).toContain('within 10 seconds');
+        expect(probe.events.stdout.destroyed).toBe(true);
+        expect(probe.child.unref).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+        expect(spawnMock.mock.calls.filter(([command]) => command !== 'taskkill')).toHaveLength(1);
+        // A late native error after the close deadline must not crash the host.
+        expect(() => probe.events.emit('error', new Error('late error'))).not.toThrow();
+      } finally {
+        probe.close('', null);
+        processKill.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(['before', 'after'] as const)(
+    'keeps the first terminal cause when cancellation arrives %s the probe deadline',
+    async (order) => {
+      stubHostPlatform('linux');
+      vi.useFakeTimers();
+      const probe = waitingProbe(3131);
+      const cancel = new CancelToken();
+      const processKill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      spawnMock.mockImplementationOnce(() => probe.child);
+      const launch = launchGui('installer.yaml', {}, capture(), interaction, { cancel }).catch(
+        (error: unknown) => error,
+      );
+      try {
+        if (order === 'before') cancel.cancel();
+        await vi.advanceTimersByTimeAsync(10000);
+        if (order === 'after') cancel.cancel();
+        probe.close('', null);
+        expect(exitCodeFor(await launch)).toBe(order === 'before' ? 6 : 2);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+      } finally {
+        probe.close('', null);
+        processKill.mockRestore();
+        vi.useRealTimers();
+      }
     },
   );
 

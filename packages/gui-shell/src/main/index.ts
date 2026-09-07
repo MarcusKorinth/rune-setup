@@ -45,9 +45,11 @@ import {
   shellVersionProbeOutput,
   type ShellInvocation,
 } from './argv.js';
+import type { BridgeReply } from '../preload/types.js';
 import {
   project,
   projectEvent,
+  projectError,
   projectPlan,
   projectResult,
   projectTheme,
@@ -55,6 +57,7 @@ import {
 } from './serialize.js';
 import { guardShellStreams, type ShellProcessStreams, type ShellStreams } from './streams.js';
 import { createEventDelivery } from './eventDelivery.js';
+import { takeStartupGate, type StartupGate } from './startup.js';
 
 /** The §9.2 channel names — one per facade method, pinned by the bridge unit test. */
 export const BRIDGE_CHANNELS = [
@@ -149,6 +152,7 @@ export async function main(
   argv: readonly string[] = process.argv.slice(app.isPackaged ? 1 : 2),
   signals: SigtermSource = process,
   processStreams: ShellProcessStreams = { stdout: process.stdout, stderr: process.stderr },
+  startup: StartupGate | undefined = takeStartupGate(),
 ): Promise<void> {
   // Install both error owners before argv parsing or Electron readiness can emit a diagnostic.
   const output = guardShellStreams(processStreams);
@@ -173,7 +177,20 @@ export async function main(
     fatalDisplayed = true;
     showWindowedFatal(error, session);
   };
+  const routedSignals = new LatchedSigtermSource();
+  const routeSignal = (): void => routedSignals.request();
+  // Electron's native POSIX signal handler requests app.quit(). Keep the existing
+  // cancellation and result owners alive until main deliberately calls app.exit().
+  const routeNativeQuit = (event: { preventDefault(): void }): void => {
+    event.preventDefault();
+    routedSignals.request();
+  };
+  signals.on('SIGTERM', routeSignal);
+  app.on('before-quit', routeNativeQuit);
   try {
+    if (startup !== undefined && (await startup()) === 'cancel') {
+      routedSignals.request();
+    }
     const parsedInvocation = parseShellArgv(argv);
     if (
       parsedInvocation.result !== undefined &&
@@ -186,22 +203,15 @@ export async function main(
     }
     invocation = parsedInvocation;
     windowed = !parsedInvocation.nonInteractive;
-    const routedSignals = new LatchedSigtermSource();
-    exitCode = await withSigtermHandler(
-      () => routedSignals.request(),
-      async () => {
-        await app.whenReady();
-        openingSession = true;
-        const session = await openSession(parsedInvocation);
-        openingSession = false;
-        activeSession = session;
+    await app.whenReady();
+    openingSession = true;
+    const session = await openSession(parsedInvocation);
+    openingSession = false;
+    activeSession = session;
 
-        return parsedInvocation.nonInteractive
-          ? headlessRun(session, parsedInvocation, routedSignals, output)
-          : windowedRun(session, parsedInvocation, routedSignals, displayFatal, output);
-      },
-      signals,
-    );
+    exitCode = await (parsedInvocation.nonInteractive
+      ? headlessRun(session, parsedInvocation, routedSignals, output)
+      : windowedRun(session, parsedInvocation, routedSignals, displayFatal, output));
   } catch (error) {
     if (windowed && activeSession !== undefined && invocation !== undefined) {
       // The host is alive with authenticated Session context, so this remains a configured run.
@@ -244,6 +254,11 @@ export async function main(
       displayFatal(error, undefined);
       exitCode = exitCodeFor(error);
     }
+  } finally {
+    // Startup failures can deliver a result asynchronously too; keep cancellation latched
+    // through that delivery instead of restoring the native signal action in the catch path.
+    signals.off('SIGTERM', routeSignal);
+    app.off('before-quit', routeNativeQuit);
   }
   const effectiveExitCode = output.stdout.failed() ? 70 : exitCode;
   output.dispose();
@@ -574,11 +589,12 @@ export function registerBridge(
     { readonly safeError: string; readonly rawCandidate?: string }
   >();
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
-    register(channel, async (...args: unknown[]) => {
+    register(channel, async (...args: unknown[]): Promise<BridgeReply<unknown>> => {
       try {
-        return project(await handler(...args));
+        const value = project(await handler(...args));
+        return { ok: true, ...(value === undefined ? {} : { value }) };
       } catch (error) {
-        throw bridgeError(error, maskError);
+        return { ok: false, error: projectError(error, maskError) };
       }
     });
   };
@@ -632,7 +648,7 @@ export function registerBridge(
       return changes;
     } catch (error) {
       if (current !== undefined) {
-        const safeError = bridgeError(error, maskError).message;
+        const safeError = projectError(error, maskError).displayText;
         if (
           typeof raw === 'string' &&
           (current.spec.type === 'text' ||
@@ -706,22 +722,6 @@ export function registerBridge(
     await hooks.onRendererDone?.();
     return undefined;
   });
-}
-
-function bridgeError(error: unknown, mask: (text: string) => string): Error {
-  if (error instanceof RuneError) {
-    return new Error(
-      mask(`${error.code} (exit ${exitCodeFor(error)}): ${formatIssues(error.issues)}`),
-    );
-  }
-  if (error instanceof Error) {
-    return new Error(mask(error.message));
-  }
-  try {
-    return new Error(mask(String(error)));
-  } catch {
-    return new Error('RUNE-500 (exit 70): An unexpected shell error occurred.');
-  }
 }
 
 function describeWindowedFatal(error: unknown, session: Session | undefined): string {
