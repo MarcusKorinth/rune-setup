@@ -90,6 +90,7 @@ it('terminates a real hung version probe and its descendant before rejecting sta
     }
     await pending;
     vi.unstubAllEnvs();
-    rmSync(directory, { recursive: true, force: true });
+    // Retry bounded cleanup while Windows releases the terminated copied executable.
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
   }
 }, 25000);
