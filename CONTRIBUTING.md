@@ -232,8 +232,12 @@ affected project area).
 - add regression tests for bug fixes
 - ensure the relevant test slice passes before opening a pull request
 - run the full core gate before opening a pull request — exactly what the core CI lane runs:
-  `npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm test && npm run test:packages`
+  `npm run typecheck && npm run lint && npm run format:check && npm run depcruise && npm run test:coverage && npm run test:packages`
   (`npm run format` fixes formatting)
+- `npm test` runs the same suite without coverage for local iteration. The coverage
+  check covers all runtime TypeScript source and uses global and scoped floors;
+  reports are written to `coverage/index.html` and
+  `coverage/coverage-summary.json`. Thresholds are defined in `vitest.config.ts`.
 - unit tests live in `packages/<pkg>/test/` (vitest), cross-package suites in `tests/`;
   `packages/gui-shell/tests/` is reserved for the Playwright smoke suite
 
