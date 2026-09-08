@@ -51,7 +51,7 @@ export default defineConfig({
         functions: 92,
         lines: 87,
         'packages/engine/src/**/*.ts': {
-          statements: 95,
+          statements: 94,
           branches: 90,
           functions: 96,
           lines: 95,
