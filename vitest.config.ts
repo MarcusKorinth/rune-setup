@@ -39,8 +39,8 @@ export default defineConfig({
       provider: 'v8',
       // Include unimported runtime files too. Child processes and native Electron
       // tests run outside this collector; their execution is not credited here.
-      include: ['packages/*/src/**/*.{ts,cts}'],
-      exclude: ['**/*.d.ts'],
+      include: ['packages/*/src/**/*.{ts,cts,mts}'],
+      exclude: ['**/*.d.{ts,cts,mts}'],
       reporter: ['text', 'json', 'json-summary', 'html'],
       reportOnFailure: true,
       thresholds: {
@@ -50,25 +50,25 @@ export default defineConfig({
         branches: 84,
         functions: 92,
         lines: 87,
-        'packages/engine/src/**/*.ts': {
+        'packages/engine/src/**/*.{ts,cts,mts}': {
           statements: 94,
           branches: 90,
           functions: 96,
           lines: 95,
         },
-        'packages/cli/src/**/*.ts': {
+        'packages/cli/src/**/*.{ts,cts,mts}': {
           statements: 94,
           branches: 90,
           functions: 90,
           lines: 96,
         },
-        'packages/gui-shell/src/main/**/*.ts': {
+        'packages/gui-shell/src/main/**/*.{ts,cts,mts}': {
           statements: 97,
           branches: 91,
           functions: 99,
           lines: 97,
         },
-        'packages/gui-shell/src/preload/**/*.{ts,cts}': {
+        'packages/gui-shell/src/preload/**/*.{ts,cts,mts}': {
           statements: 92,
           branches: 94,
           functions: 100,
