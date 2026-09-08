@@ -65,6 +65,22 @@ jobs:
             --json-output /report/semgrep.json \
             packages/engine/src packages/cli/src packages/gui-shell/src scripts examples \
             packages/gui-shell/src/preload/index.cts
+      - name: Warn about incomplete taint analysis
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path("output/security/report/semgrep.json").read_text(encoding="utf-8")
+          )
+          if report["time"]["fixpoint_timeouts"]:
+              print(
+                  "::warning::Semgrep taint analysis reached an internal limit; "
+                  "inspect the retained JSON report."
+              )
+          PY
       - name: Retain the scan report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
