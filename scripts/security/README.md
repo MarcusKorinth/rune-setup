@@ -12,10 +12,17 @@ updates. Review the rule repository pin alongside scanner updates; it is not upd
 automatically. Review rule changes and run the scan before changing that pin.
 
 The scanner runs without network access, credentials, telemetry, or source upload.
-It checks engine, CLI, GUI, build scripts, and examples, including `.cts` and `.mjs`
-files. Tests, generated output, and third-party sources are outside this scan.
-Findings and scan errors fail the job; its JSON report is retained as a CI artifact.
-Investigate findings rather than adding broad exclusions or silently ignoring errors.
+It checks engine, CLI, GUI, build scripts, and examples, including `.mjs` files. Semgrep
+applies `--scan-unknown-extensions` to explicit file targets only, so the GUI preload
+`.cts` file is also passed explicitly. Tests, generated output, and third-party sources
+are outside this scan.
+Findings and ordinary scan errors fail the job; its JSON report is retained as a CI
+artifact. Semgrep 1.176.0 can also report nonblocking internal taint-analysis limits
+in `time.fixpoint_timeouts` while returning no scan errors. Those limits can leave
+taint checks incomplete. When that list is nonempty, the workflow emits a warning
+that directs reviewers to the retained JSON report. Zero findings do not prove
+complete taint analysis. Investigate findings rather than adding broad exclusions or
+silently ignoring errors.
 
 To reproduce the static check locally, follow the `static-analysis` job in
 [security.yml](../../.github/workflows/security.yml): check out its exact rule commit,

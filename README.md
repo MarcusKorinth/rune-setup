@@ -22,7 +22,7 @@ See the [remaining work](docs/roadmap.md) and [release acceptance criteria](docs
 From the repository root:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 npm run build
 node packages/cli/dist/main.js validate examples/basic/installer.yaml
 node packages/cli/dist/main.js run examples/basic/installer.yaml --dry-run

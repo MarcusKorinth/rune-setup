@@ -4,7 +4,7 @@ This workflow creates a small configuration in a directory you choose. It runs o
 and Linux with Node.js 24 LTS on `PATH`. It needs no administrator rights, network
 connection, or additional software installation.
 
-Run these commands from the repository root. In a source checkout, first run `npm ci` and
+Run these commands from the repository root. In a source checkout, first run `npm ci --ignore-scripts` and
 `npm run build`, then replace `rune` below with `node packages/cli/dist/main.js`.
 
 ```text
