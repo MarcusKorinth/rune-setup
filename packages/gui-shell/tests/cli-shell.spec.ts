@@ -164,7 +164,18 @@ async function finishGuiRun(run: CliShellRun): Promise<void> {
   await next.click();
   await expect(page.locator('.result-heading')).not.toHaveText('Summary');
   await expect(next).toHaveText('Finish');
-  await next.click();
+  // Finish may destroy its CDP target before Playwright receives the click response.
+  // Callers still verify the CLI exit code and delivered result after both settle.
+  const finishClick = next.click().catch((error: unknown) => {
+    if (
+      !(error instanceof Error) ||
+      !error.message.startsWith('locator.click: Target page, context or browser has been closed') ||
+      !error.message.includes('performing click action')
+    ) {
+      throw error;
+    }
+  });
+  await Promise.all([run.exitCode, finishClick]);
 }
 
 async function readResult(path: string): Promise<GuiResult> {
