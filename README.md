@@ -95,7 +95,7 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm run depcruise
-npm test
+npm run test:coverage
 npm run test:packages
 ```
 
