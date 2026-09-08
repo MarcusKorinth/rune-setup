@@ -97,6 +97,8 @@ function checkPattern(text: string, spec: InputSpec): Coercion {
   }
 
   const pattern = compileInputPattern(spec.pattern);
+  // Patterns are trusted manifest-author code; input length is bounded above (architecture §4.2).
+  // nosemgrep: detect-non-literal-regexp
   if (!new RegExp(`^(?:${pattern.source})$`, pattern.flags).test(text)) {
     const hint =
       'patternHint' in spec && spec.patternHint !== undefined ? spec.patternHint : undefined;

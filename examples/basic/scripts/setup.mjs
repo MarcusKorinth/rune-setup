@@ -16,6 +16,8 @@ if (action === 'configure') {
   }
   await writeFile(
     join(directory, 'configuration.json'),
+    // The object literal is inside an existing template substitution.
+    // nosemgrep: missing-template-string-indicator
     `${JSON.stringify({ profile }, null, 2)}\n`,
   );
   process.stdout.write('Wrote configuration.json.\n');

@@ -825,6 +825,8 @@ export const INPUT_PATTERN_FLAGS = 'u';
 
 /** Compiles a `pattern:` the one way RUNE compiles it. Throws if it is not a valid one. */
 export function compileInputPattern(pattern: string): RegExp {
+  // This compiles trusted manifest-author code, not an untrusted value (architecture §4.2).
+  // nosemgrep: detect-non-literal-regexp
   return new RegExp(pattern, INPUT_PATTERN_FLAGS);
 }
 

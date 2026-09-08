@@ -293,7 +293,10 @@ export function createRuntimeContext(
   const preview = platform !== host;
   const environment = options.environment ?? process.env;
   const environmentValues = snapshotEnvironment(environment, host === 'windows');
+  // Preview path placeholders are plain text, not HTML markup.
+  // nosemgrep: html-in-template-string
   const home = preview ? `<home@${platform}>` : (hostBuiltIns?.home ?? homedir());
+  // nosemgrep: html-in-template-string
   const temp = preview ? `<temp@${platform}>` : (hostBuiltIns?.temp ?? tmpdir());
 
   const environmentValue = (name: string): string | undefined =>
