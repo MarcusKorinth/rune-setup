@@ -29,7 +29,7 @@ Both paths prevent obsolete files in `dist` from entering their archives.
 Run the core gate on Windows and Linux:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 npm run typecheck
 npm run lint
 npm run format:check
@@ -103,6 +103,11 @@ The artifact check removes `DISPLAY` and `WAYLAND_DISPLAY` for Linux version pro
 and non-interactive runs. It also exercises real child processes, masked result/log output,
 input and step failures, timeouts, unwritable destinations, and cancellation.
 
+- [ ] Resolve the native Windows Electron stdout prefix and verify exact empty and
+      serialized artifact stdout before publication. Archive smoke checks allow the known
+      native CRLF and reject additional application bytes, but do not establish byte-exact
+      compliance.
+
 The public npm name `@rune/cli` currently belongs to another project. Settle the
 namespace and update these commands before any registry publication.
 
@@ -138,3 +143,9 @@ external `node` command or other tools used by the author's scripts.
 - GUI-cache updates retain previously published generations so a running application
   keeps its files. Unused version directories can be removed manually when no shell
   uses them; automatic cache pruning is not implemented.
+- Windows Electron 44.2.0 currently adds a native CRLF before application stdout in
+  subprocess and headless invocations, including before `--result -` JSON; an
+  Electron-only app reproduces it. This remains an unresolved deviation from the
+  exact stdout requirement; see the [historical upstream issue](https://github.com/electron/electron/issues/12578).
+  Result-file delivery and Node CLI output are unaffected; use `--result PATH` for
+  exact serialized bytes. The strict stdout requirement remains open before publication.

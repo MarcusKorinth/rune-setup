@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   createWriteStream,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -560,12 +561,15 @@ function devElectron(shellDir: string): string {
     const moduleDirectory = dirname(require.resolve('electron'));
     // Electron's Node entry may download a missing runtime synchronously. Resolve the
     // prepared binary without executing that entry, so startup never installs software.
-    const executableName = readFileSync(join(moduleDirectory, 'path.txt'), 'utf8').trim();
-    const executable = join(
-      process.env['ELECTRON_OVERRIDE_DIST_PATH'] ?? join(moduleDirectory, 'dist'),
-      executableName,
-    );
-    if (executableName === '' || !statSync(executable).isFile()) throw new Error();
+    const pathFile = join(moduleDirectory, 'path.txt');
+    const executableName = existsSync(pathFile) ? readFileSync(pathFile, 'utf8').trim() : '';
+    const overrideDirectory = process.env['ELECTRON_OVERRIDE_DIST_PATH'];
+    const executable = overrideDirectory
+      ? join(overrideDirectory, executableName || 'electron')
+      : join(moduleDirectory, 'dist', executableName);
+    if ((!overrideDirectory && executableName === '') || !statSync(executable).isFile()) {
+      throw new Error();
+    }
     return executable;
   } catch {
     throw new UsageError(
