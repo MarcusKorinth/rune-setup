@@ -481,8 +481,14 @@ describe('SpawnRunner', () => {
 
   it('cancels a child while preserving buffered output across a prolonged sink stall', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-cancel-drain-'));
-    const readyPath = join(directory, 'written.json');
-    const expected = Array.from({ length: 100 }, (_, index) => `${index}:${'x'.repeat(1024)}`);
+    const releasePath = join(directory, 'release-output');
+    const expected = [
+      'primed',
+      ...Array.from({ length: 99 }, (_, index) => `${index}:${'x'.repeat(512)}`),
+    ];
+    // These ASCII lines fit one parent readable buffer, so `readableLength` can prove the
+    // complete post-prime write arrived without depending on OS pipe capacity.
+    const bufferedOutput = `${expected.slice(1).join('\n')}\n`;
     const cancel = new CancelToken();
     let release = (): void => undefined;
     const held = new Promise<void>((resolve) => {
@@ -490,14 +496,19 @@ describe('SpawnRunner', () => {
     });
     const lines: string[] = [];
     let pid: number | undefined;
+    const recorder = recordSpawnedProcesses();
     let settled = false;
     const pending = run(
       nodeCommand(
         [
-          'const lines = Array.from({length: 100}, (_, index) => `${index}:${"x".repeat(1024)}`);',
-          'process.stdout.write(lines.join("\\n") + "\\n", () => {',
-          `require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, JSON.stringify(process.pid));`,
-          '});',
+          'const fs = require("node:fs");',
+          'process.stdout.write("primed\\n");',
+          'const lines = Array.from({ length: 99 }, (_, index) => `${index}:${"x".repeat(512)}`);',
+          'const waitForRelease = setInterval(() => {',
+          `  if (!fs.existsSync(${JSON.stringify(releasePath)})) return;`,
+          '  clearInterval(waitForRelease);',
+          '  process.stdout.write(lines.join("\\n") + "\\n");',
+          '}, 10);',
           'setInterval(() => {}, 1000);',
         ].join('\n'),
       ),
@@ -505,7 +516,7 @@ describe('SpawnRunner', () => {
         cancel,
         onOutput: (_stream, line) => {
           lines.push(line);
-          return lines.length === 1 ? held : undefined;
+          return line === 'primed' ? held : undefined;
         },
       },
     ).then((outcome) => {
@@ -515,21 +526,32 @@ describe('SpawnRunner', () => {
     try {
       await vi.waitFor(
         () => {
-          pid = JSON.parse(readFileSync(readyPath, 'utf8')) as number;
-          expect(lines).toHaveLength(1);
+          expect(lines).toEqual(['primed']);
+          expect(recorder.spawned).toHaveLength(1);
+          pid = recorder.spawned[0]?.pid;
+          expect(pid).toBeTypeOf('number');
         },
         { timeout: 5000 },
       );
+      const child = recorder.spawned[0];
+      expect(child?.stdout).not.toBeNull();
+      writeFileSync(releasePath, 'release');
+      await vi.waitFor(
+        () => expect(child?.stdout?.readableLength).toBe(Buffer.byteLength(bufferedOutput, 'utf8')),
+        { timeout: 5000 },
+      );
+
       cancel.cancel();
       await vi.waitFor(() => expect(processIsAlive(pid!)).toBe(false), { timeout: 15000 });
-      // Exceed both the process-group grace and the orphan-stdio close deadline.
-      // A slow healthy sink must not be mistaken for a descendant holding a pipe.
-      await new Promise<void>((resolve) => setTimeout(resolve, 11000));
+      // The runner has closed its read end after the fixed child-close cutoff, but the healthy
+      // sink is still pending and must drain the complete parent-accepted buffer when released.
+      await vi.waitFor(() => expect(child?.stdout?.destroyed).toBe(true), { timeout: 15000 });
       expect(settled).toBe(false);
       release();
       await expect(withDeadline(pending, 5000)).resolves.toEqual({ kind: 'cancelled' });
       expect(lines).toEqual(expected);
     } finally {
+      recorder.stop();
       release();
       cancel.cancel();
       if (pid !== undefined) stopProcess(pid);
