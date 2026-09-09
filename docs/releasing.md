@@ -24,9 +24,9 @@ after the gates succeed; it is not a way to request a verification-only run.
 
 For verification before tagging, run **GUI release** manually in GitHub Actions on
 the chosen branch. Manual runs accept the `Unreleased` changelog section, execute
-the same core, security, native shell, extracted-archive, and portable workflow checks, and retain the
-assembled downloads as the `gui-release-candidate` artifact. They never create or
-modify a GitHub release.
+the same core, security, native shell, extracted-archive, and portable workflow
+checks, and retain the assembled downloads as the `gui-release-candidate` artifact.
+They never create or modify a GitHub release.
 
 Both paths reuse the normal Windows/Linux CI and security workflows against the
 triggering commit. Publication waits for all checks, verifies each archive against
@@ -133,8 +133,9 @@ xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
       Shell archives are intentionally unsigned; Windows may show an unknown-publisher
       warning. Do not describe them as signed or promise that operating-system
       reputation checks will accept them without a prompt.
-- [ ] Record the verified commit, artifact checksums, and results before approving
-      publication. Keep the changelog unreleased until publication occurs.
+- [ ] Record the verified commit, artifact checksums, and results before pushing the
+      publication tag. A versioned changelog entry does not establish that the release
+      workflow has succeeded or that its downloads are available.
 
 ## Package inspection
 
