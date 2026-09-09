@@ -78,5 +78,5 @@ export class InputTypeRegistry {
   }
 }
 
-/** The registry the engine uses: the seven types of the MVP. */
+/** The registry the engine uses for the seven schema-v1 input types. */
 export const inputTypes = new InputTypeRegistry(BUILT_IN_INPUT_TYPES);

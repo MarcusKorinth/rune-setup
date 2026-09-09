@@ -1,7 +1,9 @@
-# Remaining work
+# Distribution and release work
 
-This list describes unfinished user workflows and their
-[release acceptance checks](releasing.md).
+The source checkout already includes automated core, installed-package, and GUI archive
+checks on Windows and Linux. The distribution work below is unimplemented or unpublished;
+candidate checks must be repeated for each release. See the
+[release acceptance checks](releasing.md) for the commands and required evidence.
 
 ## Distribution
 
@@ -14,14 +16,14 @@ This list describes unfinished user workflows and their
 - Connect verified CI artifacts to release publication once repository and npm ownership
   are settled.
 
-## Reliability and usability
+## Checks for each candidate
 
 - Verify the Node 24 LTS and Electron 44 runtime on the full platform matrix.
 - Exercise the documented example through terminal, automated, and graphical runs.
 - Review dependency advisories and test the installed packages, including failure and
   cancellation, result delivery, and declared-secret handling.
 
-## Documentation
+## Documentation for distribution
 
 - Keep installation instructions executable against the released deliverables.
 - Document manifest inputs, script requirements, values files, results, and practical

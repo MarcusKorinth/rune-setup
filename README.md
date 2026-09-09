@@ -37,6 +37,32 @@ For an interactive run, omit `--non-interactive`. The terminal shows the plan an
 you change inputs before executing it. [CLI usage](packages/cli/README.md) covers values
 files, environment inputs, validation, and result output.
 
+## Write a workflow
+
+Start from the [basic manifest](examples/basic/installer.yaml). Relative `cwd` values
+and command paths containing a path separator resolve from the manifest directory;
+bare command names use `PATH`. Argument paths are passed through after interpolation.
+Use `${manifestDir}/scripts/setup.mjs` when a script argument must stay relative to the
+manifest directory regardless of `cwd`. Commands receive separate arguments without
+an implicit shell and still need their own runtime and tools.
+
+The architecture is also the detailed author and host reference:
+
+- [Manifest fields, input types, and validation](docs/architecture.md#4-manifest-contract)
+- [Input value precedence](docs/architecture.md#5-value-resolution)
+- [Interpolation, conditions, and localization](docs/architecture.md#6-interpolation-condition-and-text-resolution-semantics)
+- [Command execution and timeouts](docs/architecture.md#8-runner-layer)
+- [Session API and ordered events](docs/architecture.md#91-session-facade-and-events)
+- [Exit codes, results, logs, and masking](docs/architecture.md#10-automation-contract)
+
+Run only workflows and scripts you trust. Validation checks the manifest contract;
+it does not sandbox the commands or prevent changes they make with your permissions.
+Use declared `secret` inputs for credentials and pass them through command environment
+entries. Masking has documented limits, including exact machine fields in results;
+see [security and trust boundaries](SECURITY.md) before using sensitive values.
+Author-defined text patterns run without a regex timeout, so avoid nested quantifiers
+such as `(a+)+`. Use `timeoutSeconds` when a command needs a deadline.
+
 ## Try the wizard
 
 Prepare the Electron binary after the build:
@@ -99,6 +125,7 @@ npm run test:coverage
 npm run test:packages
 ```
 
+Use `npm test` for local runs without coverage instrumentation.
 The shell also has a Playwright smoke suite:
 `npm run test:smoke --workspace @rune/gui-shell`.
 Linux CI runs it under `xvfb-run --auto-servernum`.
