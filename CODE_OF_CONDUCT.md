@@ -36,7 +36,13 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement. All complaints will be reviewed and investigated promptly and fairly.
+Marcus Korinth is responsible for enforcing this Code of Conduct in the repository.
+
+To report abuse or harassment on GitHub, choose **Report content** on the relevant
+issue, pull request, or comment, or use
+[GitHub's abuse-reporting form](https://support.github.com/contact/report-abuse?category=report-abuse&report=other&report_type=unspecified).
+GitHub Support receives and handles these reports under GitHub's community guidelines.
+Keep sensitive details out of public issues and comments.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

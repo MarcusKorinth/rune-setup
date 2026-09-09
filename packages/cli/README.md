@@ -38,7 +38,7 @@ Pass it with `--values path/to/values.yaml`; later values files override earlier
 Use declared `secret` inputs for sensitive values, preferably supplied through the
 environment or values files. Arguments can be visible in process listings. Pass secrets
 to commands through explicit environment entries instead of argv. Direct `${env.NAME}`
-references are not registered as secrets. Read the [security boundaries](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/SECURITY.md)
+references are not registered as secrets. Read the [security boundaries](https://github.com/MarcusKorinth/rune-setup/blob/main/SECURITY.md)
 for masking limits, including exact machine fields that remain visible in results.
 
 ## Inspect results and schemas
