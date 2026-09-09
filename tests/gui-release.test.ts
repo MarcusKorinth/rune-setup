@@ -115,6 +115,44 @@ describe('GUI release candidate verification', () => {
     });
   });
 
+  it.each(['0.0.0', '1.2.3-0', '1.2.3-alpha-beta.12', '1.2.3-01alpha'])(
+    'accepts release version %s',
+    (version) => {
+      const candidate = fixture(version);
+      const result = candidate.run('validate');
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout).version).toBe(version);
+    },
+  );
+
+  it('rejects invalid version components, build metadata, and trailing whitespace', () => {
+    const candidate = fixture();
+    for (const version of [
+      '',
+      '1.2',
+      '1.2.3.4',
+      '01.2.3',
+      '1.02.3',
+      '1.2.03',
+      '1.2.3-',
+      '1.2.3-01',
+      '1.2.3-rc.01',
+      '1.2.3-rc..1',
+      '1.2.3+build.1',
+      '1.2.3-rc.1+build',
+      '1.2.3\n',
+      '1.2.3-rc.1\n',
+      ' 1.2.3',
+      '1.2.3 ',
+      '1.2.3-rc.1\t',
+    ]) {
+      candidate.write('packages/engine/package.json', { name: '@rune/engine', version });
+      const result = candidate.run('validate');
+      expect(result.status, JSON.stringify(version)).not.toBe(0);
+      expect(result.stderr).toContain('Use SemVer without build metadata');
+    }
+  });
+
   it('refuses an inconsistent package version, lockfile, tag, or checkout', () => {
     const candidate = fixture();
     expect(candidate.run('validate', { GITHUB_REF: 'refs/tags/v1.2.4' }).status).not.toBe(0);

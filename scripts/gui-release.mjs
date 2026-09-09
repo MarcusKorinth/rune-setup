@@ -17,8 +17,27 @@ const root = process.cwd();
 const destination = join(root, 'output/gui-release');
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
-const versionPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/u;
+
+/** Release tags use SemVer without build metadata; validate each component independently. */
+function isReleaseVersion(value) {
+  if (typeof value !== 'string' || /[^0-9A-Za-z.-]/u.test(value)) return false;
+  const separator = value.indexOf('-');
+  const core = separator === -1 ? value : value.slice(0, separator);
+  const numbers = core.split('.');
+  if (numbers.length !== 3 || !numbers.every((part) => /^(?:0|[1-9][0-9]*)$/u.test(part))) {
+    return false;
+  }
+  if (separator === -1) return true;
+  return value
+    .slice(separator + 1)
+    .split('.')
+    .every(
+      (part) =>
+        part !== '' &&
+        !/[^0-9A-Za-z-]/u.test(part) &&
+        (!/^[0-9]+$/u.test(part) || part === '0' || part[0] !== '0'),
+    );
+}
 
 function command(program, args) {
   const result = spawnSync(program, args, {
@@ -37,7 +56,7 @@ function releaseIdentity() {
   const version = process.env.RELEASE_VERSION;
   const tag = process.env.RELEASE_TAG;
   const commit = process.env.RELEASE_COMMIT;
-  assert(typeof version === 'string' && versionPattern.test(version), 'Invalid release version');
+  assert(isReleaseVersion(version), 'Invalid release version');
   assert.equal(tag, `v${version}`, 'Release tag must match its version');
   assert(/^[0-9a-f]{40}$/u.test(commit ?? ''), 'Invalid release commit');
   return { version, tag, commit };
@@ -67,14 +86,11 @@ function validate() {
   }));
   const [engine] = packages;
   const version = engine.manifest.version;
-  assert(
-    typeof version === 'string' && versionPattern.test(version),
-    'Use SemVer without build metadata',
-  );
+  assert(isReleaseVersion(version), 'Use SemVer without build metadata');
   const tag = `v${version}`;
   const commit = command('git', ['rev-parse', 'HEAD']);
   assert.equal(
-    command('git', ['rev-parse', `${process.env.GITHUB_SHA}^{commit}`]),
+    command('git', ['rev-parse', process.env.GITHUB_SHA + '^{commit}']),
     commit,
     'Checkout differs from the triggering commit',
   );
@@ -102,7 +118,7 @@ function validate() {
       'Pushed tag differs from the package version',
     );
     assert.equal(
-      command('git', ['rev-parse', `${tag}^{commit}`]),
+      command('git', ['rev-parse', tag + '^{commit}']),
       commit,
       'Tag does not identify this checkout',
     );
