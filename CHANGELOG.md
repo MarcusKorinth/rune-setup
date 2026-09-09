@@ -2,38 +2,31 @@
 
 ## Unreleased
 
-### Available in development builds
+## 0.1.0
+
+### Added
 
 - YAML workflow loading, validation, input resolution, planning, and command execution.
 - Interactive and non-interactive CLI modes, plus an Electron wizard using the same engine.
 - Conditional inputs and steps, locale overlays, GUI themes, dry-run previews, logs,
   structured results, and cancellation.
+- Windows x64 ZIP and Linux x64 tar.gz GUI runtimes with RUNE icons and product metadata.
+- Portable workflow packaging with bundled scripts, payload, logos, CSS and translations.
+  The packaged executable opens its workflow without a manifest argument or Node installation.
 
-### Changed
+### Execution and delivery
 
-- Preserve error codes, messages, source locations, and exit codes across the GUI bridge.
-- Move development and execution to Node 24 LTS and a supported Electron release;
-  update the test and lint tools within compatible supported versions.
-- Apply backpressure across process pipes, log files, terminal output, and GUI events;
-  wait for accepted output before settling a run.
-- Bound GUI version probes and prevent implicit Electron downloads during startup.
-- Coordinate Linux GUI startup so early cancellation preserves its result and exit code.
-- Route native application-quit requests through cancellation and await result delivery.
-- Publish GUI-cache updates as complete generations with an atomic selection, preserving
-  the usable shell through interrupted or concurrent installations.
-- Add a runnable setup example and verify installed engine/CLI tarballs in CI.
-- Rebuild npm package output from a clean state so deleted-source artifacts cannot ship.
-- Build host GUI shell archives with locked runtime dependencies and verify freshly
-  extracted applications, including execution without Node on the command search path.
-- Start packaged Linux non-interactive runs and version probes without a display server.
-- Package workflows with the GUI runtime, preserving scripts, payload, local design
-  resources, and translations; start the bundled workflow without a manifest argument.
-- Add tag-triggered GUI releases that reuse the full CI/security gate and publish the
-  tested Windows/Linux archives with checksums and source metadata; manual runs verify
-  candidates without publishing.
-- Replace incorrect public npm installation instructions with development usage and
-  concrete distribution requirements.
+- Process output uses backpressure and declared-secret masking across logs, terminal
+  output and GUI events. Runs wait for accepted output and result delivery.
+- Packaged Windows stdout is byte-exact; Linux probes and non-interactive runs do not
+  require a display server.
+- GUI downloads are built and checked on Windows and Linux before publication, with
+  archive checksums, dependency metadata and the source commit recorded alongside them.
 
-Public npm package delivery remains unfinished. GUI publication is configured but
-still requires a verified release candidate and version tag. See
-[remaining work](docs/roadmap.md) and [release checks](docs/releasing.md).
+### Distribution scope
+
+- Archives are unsigned and must be extracted before use. Linux requires Electron's
+  system libraries and Chromium sandbox support.
+- Workflow commands retain their own tool and permission requirements. RUNE does not
+  provide elevation, rollback, uninstall, MSI/NSIS packages, or macOS support.
+- Public npm packages are not part of this release; authors build the CLI from source.

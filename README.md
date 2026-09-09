@@ -14,9 +14,10 @@ or an Electron wizard. Authors provide the scripts and payload their setup needs
 
 ## Project status
 
-The engine, CLI, and wizard run from a development checkout. Engine/CLI tarballs and
-GUI shell archives and portable workflow packages can be built locally. Registry
-publication and the first downloadable release remain outstanding.
+GUI releases target Windows and Linux x64. A version is available when its
+[GitHub Release](https://github.com/MarcusKorinth/rune-setup/releases) contains the
+download archives. Engine/CLI packages and portable workflows can also be built
+from source; public npm installation is not available yet.
 
 RUNE targets Windows and Linux. Development uses Node 24 LTS and
 Electron 44; use the checked-in `.nvmrc` for the current
@@ -24,6 +25,28 @@ checkout. The public npm name `@rune/cli` belongs to another project, so RUNE's
 publication namespace must be settled before registry installation is documented.
 
 See the [remaining work](docs/roadmap.md) and [release acceptance criteria](docs/releasing.md).
+
+## Download the GUI runtime
+
+From a published release, download `rune-gui-shell-windows.zip` or
+`rune-gui-shell-linux.tar.gz` and extract the entire archive. It includes the runtime;
+RUNE itself does not need a separate Node installation.
+
+Start it with your workflow manifest. On Windows:
+
+```powershell
+./rune-gui-shell.exe -- C:/work/my-workflow/installer.yaml
+```
+
+On Linux:
+
+```bash
+./rune-gui-shell -- /work/my-workflow/installer.yaml
+```
+
+These are unsigned runtime archives. See [runtime prerequisites](docs/releasing.md#runtime-prerequisites)
+for Linux system libraries and the requirements of authored commands. To distribute an
+executable that opens your own workflow directly, follow [workflow packaging](docs/packaging.md).
 
 ## Try the example
 
@@ -98,9 +121,10 @@ Then run:
 node packages/cli/dist/main.js run examples/basic/installer.yaml --gui
 ```
 
-The wizard supports conditional inputs, localized text, and themes. `rune gui install`
-expects published release archives; these are not yet available. To distribute your
-workflow with its design and runtime, follow [workflow packaging](docs/packaging.md).
+The wizard supports conditional inputs, localized text, and themes. Once the matching
+RUNE version has a published GUI archive, `node packages/cli/dist/main.js gui install`
+installs it in the per-user cache. Remove `RUNE_GUI_SHELL` to use that cached shell.
+To distribute your workflow with its design and runtime, follow [workflow packaging](docs/packaging.md).
 
 ## Build a GUI archive
 
