@@ -37,6 +37,7 @@ import {
   type ShellInvocation,
 } from './argv.js';
 import { registerBridge } from './bridge.js';
+import { bundledWorkflow } from './bundledWorkflow.js';
 import { windowTheme } from './serialize.js';
 import { shellProgressObserver, writeSessionChromeDiagnostic } from './progress.js';
 import {
@@ -164,7 +165,10 @@ export async function main(
     if (startup !== undefined && (await startup()) === 'cancel') {
       routedSignals.request();
     }
-    const parsedInvocation = parseShellArgv(argv);
+    const parsedInvocation = parseShellArgv(
+      argv,
+      app.isPackaged ? bundledWorkflow(process.resourcesPath) : undefined,
+    );
     if (
       parsedInvocation.result !== undefined &&
       parsedInvocation.result !== '-' &&

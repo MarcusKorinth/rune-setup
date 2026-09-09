@@ -528,6 +528,36 @@ describe('the GUI shell main lifecycle', () => {
     vi.mocked(app.whenReady).mockResolvedValue();
   });
 
+  it('runs its packaged workflow without a manifest argument', async () => {
+    const resources = mkdtempSync(join(tmpdir(), 'rune-bound-main-'));
+    mkdirSync(join(resources, 'workflow'));
+    writeFileSync(
+      join(resources, 'workflow', 'installer.yaml'),
+      'schemaVersion: 1\nproduct: {name: Bound, version: "1"}\nsteps: []\n',
+    );
+    writeFileSync(
+      join(resources, 'rune-workflow.json'),
+      JSON.stringify({ schemaVersion: 1, manifest: 'workflow/installer.yaml' }),
+    );
+    const packaged = Object.getOwnPropertyDescriptor(app, 'isPackaged')!;
+    const resourceProperty = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    Object.defineProperty(app, 'isPackaged', { ...packaged, value: true });
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: resources });
+    const result = join(resources, 'result.json');
+    try {
+      await main(['--non-interactive', '--result', result], new FakeSigtermSource(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      });
+      expect(app.exit).toHaveBeenCalledWith(0);
+      expect(JSON.parse(readFileSync(result, 'utf8')).product.name).toBe('Bound');
+    } finally {
+      Object.defineProperty(app, 'isPackaged', packaged);
+      if (resourceProperty === undefined) Reflect.deleteProperty(process, 'resourcesPath');
+      else Object.defineProperty(process, 'resourcesPath', resourceProperty);
+    }
+  });
+
   it.each([[SHELL_VERSION_PROBE_FLAG], ['--ozone-platform=headless', SHELL_VERSION_PROBE_FLAG]])(
     'answers the version probe without opening a Session or window: %s',
     async (...argv) => {
@@ -547,6 +577,7 @@ describe('the GUI shell main lifecycle', () => {
       expect(JSON.parse(chunks.join(''))).toEqual({
         protocolVersion: 1,
         runeVersion: RUNE_VERSION,
+        workflowPackageVersion: 1,
       });
       expect(app.on).not.toHaveBeenCalled();
       expect(app.off).not.toHaveBeenCalled();
@@ -596,6 +627,7 @@ describe('the GUI shell main lifecycle', () => {
         expect(JSON.parse(chunks.join(''))).toEqual({
           protocolVersion: 1,
           runeVersion: RUNE_VERSION,
+          workflowPackageVersion: 1,
         });
         expect(open).not.toHaveBeenCalled();
         expect(electronHarness.window).toBeUndefined();

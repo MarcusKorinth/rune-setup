@@ -4,7 +4,8 @@ A release candidate needs verified installation and execution workflows on Windo
 and Linux. This is a reusable acceptance checklist, not a live record of completed
 work: record results against the chosen commit and artifact checksums. Existing CI
 already exercises core behavior, installed packages, and GUI archives. Registry
-delivery, public GUI downloads, and portable workflow packaging remain unfinished.
+delivery and the first public GUI downloads remain outstanding. Portable workflow
+packages reuse the same shell; their acceptance check is part of the GUI release gate.
 
 ## User workflows
 
@@ -101,6 +102,7 @@ Build a host x64 shell archive after preparing Electron:
 ```bash
 npm run build:shell
 npm run test:shell:package
+npm run test:workflow:package
 ```
 
 Windows builds also need Visual Studio C++ Build Tools with the x64 compiler and

@@ -11,6 +11,7 @@ import { Command, CommanderError } from 'commander';
 import { exitCodeFor, RuneError, RUNE_VERSION } from '@rune/engine';
 
 import { guiInstallCommand } from './guiCmd.js';
+import { packageCommand, type PackageFlags } from './packageCmd.js';
 import {
   escapeTerminalText,
   ExitWithCode,
@@ -115,6 +116,22 @@ export async function run(
     .description('fetch the prebuilt GUI shell for this engine version into the per-user cache')
     .action(async () => {
       await guiInstallCommand(io);
+    });
+
+  program
+    .command('package')
+    .description('package a workflow with the GUI runtime for this host')
+    .argument('<manifest>', 'path to the manifest file')
+    .requiredOption('--output <archive>', 'new output archive (.zip on Windows, .tar.gz on Linux)')
+    .option('--shell <directory>', 'extracted generic GUI shell (defaults to the installed cache)')
+    .option(
+      '--include <path>',
+      'additional resource relative to the manifest directory',
+      collect,
+      [],
+    )
+    .action((manifest: string, flags: PackageFlags) => {
+      packageCommand(manifest, flags, io);
     });
 
   program

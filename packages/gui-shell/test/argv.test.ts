@@ -17,6 +17,7 @@ describe('the shell version probe', () => {
     expect(JSON.parse(shellVersionProbeOutput())).toEqual({
       protocolVersion: 1,
       runeVersion: RUNE_VERSION,
+      workflowPackageVersion: 1,
     });
   });
 
@@ -33,6 +34,25 @@ describe('the shell version probe', () => {
 });
 
 describe('parseShellArgv', () => {
+  it('opens the bound workflow without arguments and preserves headless options', () => {
+    expect(parseShellArgv([], '/bundle/workflow/setup.yaml')).toMatchObject({
+      manifestPath: '/bundle/workflow/setup.yaml',
+      nonInteractive: false,
+    });
+    expect(
+      parseShellArgv(['--non-interactive', '--result', '-'], '/bundle/workflow/setup.yaml'),
+    ).toMatchObject({
+      manifestPath: '/bundle/workflow/setup.yaml',
+      nonInteractive: true,
+      result: '-',
+    });
+    expect(
+      parseShellArgv(['--', '--literal.yaml'], '/bundle/workflow/setup.yaml').manifestPath,
+    ).toBe('--literal.yaml');
+    expect(
+      parseShellArgv(['--remote-debugging-port=0'], '/bundle/workflow/setup.yaml').manifestPath,
+    ).toBe('/bundle/workflow/setup.yaml');
+  });
   it('parses a valid shell invocation', () => {
     expect(
       parseShellArgv([
