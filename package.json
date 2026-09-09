@@ -23,6 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "test:packages": "node scripts/verify-packages.mjs",
     "test:shell:package": "node scripts/verify-shell.mjs",
+    "test:workflow:package": "node scripts/verify-workflow-package.mjs",
     "clean": "tsc -b --clean"
   },
   "devDependencies": {

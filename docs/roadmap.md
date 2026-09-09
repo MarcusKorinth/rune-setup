@@ -11,8 +11,8 @@ candidate checks must be repeated for each release. See the
   and documentation. Verify installation of the engine and CLI in an empty consumer project.
 - Publish verified Windows and Linux GUI archives for the chosen architectures. Local
   x64 builds include the runtime and application resources and have artifact checks.
-- Implement portable workflow packaging: include the manifest, scripts, payload, assets,
-  and locale overlays, then run the artifact on a machine without Node or repository sources.
+- Verify the portable workflow packages for the release candidate, including manifest,
+  scripts, payload, assets, and locales, without Node or repository sources.
 - Connect verified CI artifacts to release publication once repository and npm ownership
   are settled.
 

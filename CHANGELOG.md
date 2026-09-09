@@ -26,8 +26,10 @@
 - Build host GUI shell archives with locked runtime dependencies and verify freshly
   extracted applications, including execution without Node on the command search path.
 - Start packaged Linux non-interactive runs and version probes without a display server.
+- Package workflows with the GUI runtime, preserving scripts, payload, local design
+  resources, and translations; start the bundled workflow without a manifest argument.
 - Replace incorrect public npm installation instructions with development usage and
   concrete distribution requirements.
 
-Public package delivery, GUI archive publication, and portable workflow packaging remain
-unfinished. See [remaining work](docs/roadmap.md) and [release checks](docs/releasing.md).
+Public npm package delivery and GUI archive publication remain unfinished. See
+[remaining work](docs/roadmap.md) and [release checks](docs/releasing.md).

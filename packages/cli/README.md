@@ -66,8 +66,9 @@ node packages/cli/dist/main.js schema --result --output result.schema.json
 
 For GUI development, follow the [wizard instructions](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/README.md#try-the-wizard).
 With `--gui`, the optional `--result` accepts a file path; `--result -` is unavailable.
-Local shell archives can be built from the repository. Published archives and portable
-workflow packaging remain unfinished. See the [release checklist](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/docs/releasing.md).
+Local shell archives can be built from the repository. `rune package` combines an extracted
+shell with a workflow for distribution; see [workflow packaging](https://github.com/MarcusKorinth/rune-setup/blob/main/docs/packaging.md).
+The first public downloads remain outstanding. See the [release checklist](https://github.com/MarcusKorinth/rune-setup/blob/main/docs/releasing.md).
 
 ## Process output and background services
 

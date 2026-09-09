@@ -425,7 +425,7 @@ try {
   verifyShellBranding(unpacked, version);
   process.stdout.write('Packaged RUNE icon and native product metadata passed.\n');
   const probe = invoke(executable, ['--rune-version-probe'], headlessEnvironment);
-  const probeResult = { protocolVersion: 1, runeVersion: version };
+  const probeResult = { protocolVersion: 1, runeVersion: version, workflowPackageVersion: 1 };
   assert.equal(
     probe.stdout,
     `${JSON.stringify(probeResult)}\n`,

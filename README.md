@@ -15,8 +15,8 @@ or an Electron wizard. Authors provide the scripts and payload their setup needs
 ## Project status
 
 The engine, CLI, and wizard run from a development checkout. Engine/CLI tarballs and
-GUI shell archives can be built locally. Registry publication, downloadable releases,
-and portable workflow packaging remain unfinished.
+GUI shell archives and portable workflow packages can be built locally. Registry
+publication and the first downloadable release remain outstanding.
 
 RUNE targets Windows and Linux. Development uses Node 24 LTS and
 Electron 44; use the checked-in `.nvmrc` for the current
@@ -99,8 +99,8 @@ node packages/cli/dist/main.js run examples/basic/installer.yaml --gui
 ```
 
 The wizard supports conditional inputs, localized text, and themes. `rune gui install`
-expects published release archives; these are not yet available. `rune package` is not
-implemented.
+expects published release archives; these are not yet available. To distribute your
+workflow with its design and runtime, follow [workflow packaging](docs/packaging.md).
 
 ## Build a GUI archive
 
@@ -117,6 +117,23 @@ the packaged application. Linux graphical checks require a display. These are lo
 unsigned builds; they do not package a workflow or publish a release.
 See the [runtime prerequisites](docs/releasing.md#runtime-prerequisites) before running
 an archive; Linux still needs Electron's system libraries and sandbox support.
+
+## Package your workflow
+
+`rune package` combines an extracted GUI shell with your manifest, scripts, payload,
+assets and translations. The resulting Windows ZIP or Linux tar.gz opens your workflow
+when its executable starts, with no RUNE or Node installation on the user's machine.
+Commands in your workflow retain their own tool and permission requirements.
+
+Until the CLI is published, invoke it from this checkout:
+
+```bash
+node packages/cli/dist/main.js package path/to/installer.yaml --shell path/to/extracted-shell --output output/my-setup.zip
+```
+
+Use `.tar.gz` when building on Linux. Additional resources require explicit `--include`
+arguments. See [packaging and end-user commands](docs/packaging.md) for the layout,
+customization and automation instructions.
 
 ## Development
 

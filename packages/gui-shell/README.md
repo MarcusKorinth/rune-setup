@@ -29,9 +29,9 @@ The Linux archive's launcher selects a display-free runtime for non-interactive 
 and version probes. Graphical runs still need a display, and both modes need the
 [documented system libraries and sandbox support](../../docs/releasing.md#runtime-prerequisites).
 
-Builds are unsigned and currently use Electron's default icon. Public release delivery
-and portable workflow packaging remain unfinished; see
-[release acceptance](../../docs/releasing.md).
+Builds use RUNE artwork and are unsigned. To distribute a configured workflow with
+its scripts and design, follow [workflow packaging](../../docs/packaging.md).
+Public release delivery follows [release acceptance](../../docs/releasing.md).
 
 Bridge failures preserve `code`, `message`, `location`, and `exitCode` as plain data.
 The renderer displays the main-composed `displayText` verbatim. Stacks and causes remain

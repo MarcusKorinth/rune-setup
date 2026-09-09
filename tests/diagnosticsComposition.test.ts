@@ -78,6 +78,11 @@ interface Site {
  */
 const ALLOWED: readonly { readonly file: string; readonly code: string; readonly why: string }[] = [
   {
+    file: 'cli/packageCmd.ts',
+    code: 'JSON.stringify({',
+    why: 'serializes package format and relative manifest identity; packaging does not resolve run inputs',
+  },
+  {
     file: 'cli/cli.ts',
     code: 'outputError: (text, write) => write(escapeTerminalText(withoutFinalLf(text))),',
     why: "commander's own usage text, composed before any session or registry exists",

@@ -37,8 +37,7 @@ is complete. Distribution and verification requirements are listed in
 The implementation includes the seven input types, conditional inputs and steps,
 safe interpolation, localization, argv execution, logs and results, and the three
 frontends. Public npm installation and downloadable GUI archives still require a
-working delivery path. Portable workflow packaging is specified in §9.5 but is not
-implemented.
+working delivery path. Portable workflow packaging is described in §9.5.
 
 The current manifest schema excludes rollback, uninstall, repair, elevation, retries,
 parallel steps, dependencies between steps, step outputs, custom pages, and plugins.
@@ -104,13 +103,13 @@ rune run installer.yaml [--gui] [--non-interactive] [--dry-run]
                         [--platform windows|linux]     # dry-run only
 rune schema [--output FILE] [--result]   # manifest JSON Schema (v1); --result: result-file schema
 rune gui install                         # author-time: fetch the prebuilt GUI shell into the per-user cache
-rune package installer.yaml              # planned packaging: self-contained end-user artifact (§9.5)
+rune package installer.yaml --output ARCHIVE [--shell DIRECTORY] [--include PATH]...
 rune --version
 ```
 
 The current CLI implements `validate`, `schema`, and both the interactive and
-non-interactive forms of `run`, including dry-run, plus `--gui` and `gui install`.
-`package` is not implemented.
+non-interactive forms of `run`, including dry-run, plus `--gui`, `gui install`, and
+host x64 workflow packaging.
 
 Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
@@ -675,7 +674,7 @@ Electron bundles Chromium and a Node runtime, so the GUI uses a bundled renderer
 does not require an end-user Node installation. The engine, CLI, and shell are written
 in TypeScript, and the shell hosts the engine in-process without a sidecar or engine
 binary. The existing shell archives provide this runtime; bundling an author's workflow
-and resources into a portable end-user artifact remains planned work (§9.5). Workflow
+and resources into a portable end-user artifact uses `rune package` (§9.5). Workflow
 commands may still depend on tools or permissions specified by the author.
 
 The application in `packages/gui-shell/` has three responsibilities:
@@ -689,7 +688,7 @@ The application in `packages/gui-shell/` has three responsibilities:
   manifest, locale overlays, or values files; and never imports the engine.
 
 The shell also implements `--non-interactive`: main runs the engine without a window.
-The planned workflow artifact will reuse that path (§9.5).
+The workflow artifact reuses that path (§9.5).
 
 #### GUI launch and terminal outcome
 
@@ -856,25 +855,47 @@ The shell accepts Electron's explicit
 `--remote-debugging-port=<port>` before the literal `--` manifest marker, with a decimal
 port from 0 to 65535. Electron owns that switch; it is removed before parsing the RUNE
 invocation. This allows inspection of the unchanged distributed application. Without
-the switch the shell does not enable remote debugging. The marker remains mandatory
-for this form, and a switch after it is subject to normal RUNE argument validation.
+the switch the shell does not enable remote debugging. The generic shell requires
+the marker; a bound workflow (§9.5) also accepts the switch without a marker.
+A switch after the marker is subject to normal RUNE argument validation.
 
-### 9.5 End-user artifact (`rune package`, planned packaging)
+### 9.5 End-user artifact (`rune package`)
 
-`rune package` is not implemented. Its intended output is a self-contained, portable,
-per-user workflow artifact containing the Electron shell, engine JavaScript, manifest,
-`scripts/`, `payload/`, `assets/`, and `locales/`. The proposed builder is `electron-builder`;
-there is no planned engine binary or second bundler. Builder configuration and archive
-formats still require an explicit decision (§16): candidates are a portable `.exe` plus
-folder or zip on Windows, and AppImage or tar.gz on Linux.
+`rune package MANIFEST --output ARCHIVE` combines an extracted, version-matching GUI
+shell with a workflow. The first targets are host x64 Windows (`.zip`) and Linux
+(`.tar.gz`), using the OS archive tool. The shell is built with electron-builder;
+packaging reuses its runtime rather than rebuilding Electron. Authors may supply
+`--shell DIRECTORY` for a downloaded and extracted shell, or use the installed GUI
+cache. A development shell directory is not a distributable runtime.
 
-The artifact must launch the same wizard as `rune run --gui` without installing RUNE or
-requiring admin rights for RUNE itself. Its bundled renderer supplies the GUI theme.
-It must also accept `--non-interactive`, running the engine in Electron main without a
-window and preserving the shared exit-code and result-file contract for pipelines.
-These requirements do not remove prerequisites or permission needs of authored commands.
+The package contains the unchanged shell and a `resources/workflow/` directory.
+It preserves the manifest filename and relative resource paths. By default, only
+the manifest and adjacent `scripts/`, `payload/`, `assets/`, and `locales/` directories
+are copied. Additional files or directories require repeated `--include PATH`
+arguments relative to the manifest directory. GUI assets must be included. Absolute
+paths, parent traversal, symbolic links, and special files are refused in packaged
+resources. Packaging never copies the whole repository implicitly or overwrites an
+existing output archive. Inputs and values files are not collected automatically.
 
-The portability basis is **`${manifestDir}` anchoring** (§6.1, invariant 13): inside the artifact the manifest sits in a folder with its relative resources exactly as in the author's project tree, so nothing in the manifest changes between `rune run` on the author's machine and the packaged run on the end user's. The artifact layout, builder configuration, and archive formats still need an explicit decision before implementation (§16).
+`resources/rune-workflow.json` is a strict object with `schemaVersion: 1` and a
+relative `manifest` path beneath `resources/workflow/`. A packaged shell resolves
+this default from its own resources directory, independent of cwd. Without an
+explicit manifest argument, starting the executable opens that workflow. Explicit
+manifest arguments and standalone version probes retain the generic shell behavior.
+The probe advertises `workflowPackageVersion: 1`; the packager refuses shells without
+this capability, of another engine version, or already bound to a workflow.
+
+The artifact launches the same wizard as `rune run --gui`, including local author
+CSS, logos, and locale overlays, without installing RUNE or Node. It also accepts
+`--non-interactive` and the existing input, log, locale, and result flags; the engine
+still runs in Electron main with the shared exit-code and result contract. Authored
+commands retain their own runtime and permission prerequisites. Packaging does not
+install external commands, elevate privileges, create a single-file executable,
+or change the native executable icon and signature of the supplied shell.
+
+The portability basis is `${manifestDir}` anchoring (§6.1, invariant 13). Authors
+keep runtime resources beneath that directory and use relative paths; packaging
+does not rewrite script contents or guess dependencies of arbitrary commands.
 
 ## 10) Automation contract
 
@@ -1189,8 +1210,8 @@ is implemented.
 
 Future elevation, retries, dependencies, and step outputs require explicit schema
 changes. Step outputs would also require revisiting the static-plan contract.
-Relative-resource anchoring and the shared engine are the existing seams for the
-proposed packaging feature (§9.5); they do not constitute a packaging implementation.
+Relative-resource anchoring and the shared engine preserve the execution semantics
+of packaged workflows (§9.5).
 
 ## 14) Testing strategy
 
@@ -1250,7 +1271,7 @@ GUI archive. Release evidence must identify the exact candidate and platforms te
 
 ## 16) Open design decisions
 
-- Portable artifact layout, builder configuration, and target architectures (§9.5).
+- Additional portable formats and architectures beyond the host x64 archives (§9.5).
 - Public package namespace and release ownership.
 - GUI shell auto-update policy: whether `rune run --gui` ever checks for newer shells or updates remain explicit `rune gui install` re-runs (§9.4).
 

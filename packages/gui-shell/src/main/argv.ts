@@ -10,7 +10,10 @@ export const SHELL_VERSION_PROBE_FLAG = '--rune-version-probe';
 
 /** The probe is intentionally produced from the engine actually bundled with this shell. */
 export function shellVersionProbeOutput(): string {
-  return JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION }) + '\n';
+  return (
+    JSON.stringify({ protocolVersion: 1, runeVersion: RUNE_VERSION, workflowPackageVersion: 1 }) +
+    '\n'
+  );
 }
 
 export function isShellVersionProbe(argv: readonly string[]): boolean {
@@ -32,7 +35,10 @@ export interface ShellInvocation {
   readonly nonInteractive: boolean;
 }
 
-export function parseShellArgv(argv: readonly string[]): ShellInvocation {
+export function parseShellArgv(
+  argv: readonly string[],
+  defaultManifestPath?: string,
+): ShellInvocation {
   // The Linux launcher selects Ozone before Electron starts. Consume only its exact
   // leading switch, then require a fully parsed non-interactive invocation below.
   const headlessRuntime = argv[0] === '--ozone-platform=headless';
@@ -88,10 +94,11 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
         nonInteractive = true;
         break;
       default:
-        // Electron consumes this inspection switch; only its position before the literal
-        // manifest marker distinguishes it from a RUNE argument or a literal path.
+        // Electron consumes this inspection switch before the manifest marker.
+        // A bound workflow can omit the marker because it supplies a default manifest.
         if (
-          index < manifestMarker &&
+          (index < manifestMarker ||
+            (manifestMarker === -1 && defaultManifestPath !== undefined)) &&
           /^--remote-debugging-port=\d+$/.test(argument) &&
           Number(argument.slice('--remote-debugging-port='.length)) <= 65535
         ) {
@@ -107,6 +114,7 @@ export function parseShellArgv(argv: readonly string[]): ShellInvocation {
     }
   }
 
+  manifestPath ??= defaultManifestPath;
   if (manifestPath === undefined) {
     throw new UsageError('the shell needs a manifest path');
   }
