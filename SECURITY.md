@@ -6,14 +6,17 @@ development snapshots do not have a backport commitment.
 
 ## Reporting
 
-This repository is private. Collaborators can report suspected vulnerabilities to the
-maintainer through its restricted issue tracker, including the affected commit, impact,
-and a minimal reproduction with sensitive values replaced. Never include live credentials.
+Do not publish suspected vulnerabilities, exploit details, or sensitive logs in public
+issues. Once this repository is public, use **Report a vulnerability** on its
+[Security tab](https://github.com/MarcusKorinth/rune-setup/security) to submit a private
+report. Private vulnerability reporting must be enabled and verified when changing the
+repository's visibility. Until then, collaborators can use the restricted issue tracker.
 
-A public reporting channel has not yet been configured. Enabling and documenting a
-verified private-reporting route in the destination repository is required before public
-distribution. Do not publish exploit details or sensitive logs in public issues. Response
-and fix times are best-effort; there is no guaranteed response deadline.
+Include the affected commit or release, operating system, Node or Electron version,
+expected impact, and a minimal reproduction with sensitive values replaced. Never
+include live credentials.
+
+Response and fix times are best-effort; there is no guaranteed response deadline.
 
 ## Trust boundaries
 
