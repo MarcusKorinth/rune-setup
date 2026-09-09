@@ -1,5 +1,13 @@
 # RUNE
 
+[![CI](https://img.shields.io/github/actions/workflow/status/MarcusKorinth/rune-setup/ci.yml?branch=main&label=ci)](https://github.com/MarcusKorinth/rune-setup/actions/workflows/ci.yml)
+[![Security checks](https://img.shields.io/github/actions/workflow/status/MarcusKorinth/rune-setup/security.yml?branch=main&label=security)](https://github.com/MarcusKorinth/rune-setup/actions/workflows/security.yml)
+[![Node.js: 24 LTS](https://img.shields.io/badge/node.js-24%20LTS-green)](.nvmrc)
+[![TypeScript: strict](https://img.shields.io/badge/typescript-strict-blueviolet)](tsconfig.base.json)
+[![Platforms: Windows and Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue)](docs/releasing.md#runtime-prerequisites)
+[![Line coverage gate: ≥87%](https://img.shields.io/badge/line%20coverage%20gate-%E2%89%A587%25-brightgreen)](vitest.config.ts)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 RUNE runs setup workflows described in YAML. A workflow defines inputs and commands;
 the engine executes it through an interactive terminal, a non-interactive command,
 or an Electron wizard. Authors provide the scripts and payload their setup needs.
