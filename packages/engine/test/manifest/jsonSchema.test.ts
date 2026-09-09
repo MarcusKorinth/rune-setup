@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { manifestJsonSchema } from '../../src/manifest/index.js';
-import { INPUT_ID, INPUT_TYPES, STEP_ID } from '../../src/manifest/v1/schema.js';
+import { INPUT_ID, INPUT_TYPES, manifestV1Schema, STEP_ID } from '../../src/manifest/v1/schema.js';
 
 /**
  * `rune schema` publishes this document so editors can complete and check manifests
@@ -75,11 +76,32 @@ describe('manifestJsonSchema', () => {
   });
 
   it('publishes the maximum command timeout validation enforces', () => {
-    const command = properties['steps']?.items?.properties?.['run']?.anyOf?.find(
+    const command = properties['steps']?.items?.properties?.['run']?.oneOf?.find(
       (branch) => branch.properties?.['command'] !== undefined,
     );
 
     const timeout = command?.properties?.['timeoutSeconds'];
     expect(timeout?.anyOf?.find((branch) => branch.maximum !== undefined)?.maximum).toBe(2_147_483);
+  });
+
+  it.each([
+    { run: { command: 'node', args: ['--version'] }, valid: true },
+    { run: { windows: { command: 'node' } }, valid: true },
+    { run: { linux: { command: 'node' } }, valid: true },
+    { run: { windows: { command: 'node' }, linux: { command: 'node' } }, valid: true },
+    { run: { command: 'node', windows: { command: 'node' } }, valid: false },
+    { run: { command: 'node', args: 'invalid' }, valid: false },
+    { run: { linux: { command: 'node', args: 'invalid' } }, valid: false },
+    { run: { command: 'node', unknown: true }, valid: false },
+  ])('agrees with runtime validation for run form $run', ({ run, valid }) => {
+    const validator = z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0]);
+    const manifest = {
+      schemaVersion: 1,
+      product: { name: 'Example', version: '1.0' },
+      steps: [{ id: 'example', run }],
+    };
+
+    expect(manifestV1Schema.safeParse(manifest).success).toBe(valid);
+    expect(validator.safeParse(manifest).success).toBe(valid);
   });
 });

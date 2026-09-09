@@ -20,6 +20,7 @@
     "format:check": "prettier --check . --ignore-path .prettierignore",
     "depcruise": "depcruise packages tests --config .dependency-cruiser.cjs",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:packages": "node scripts/verify-packages.mjs",
     "test:shell:package": "node scripts/verify-shell.mjs",
     "clean": "tsc -b --clean"
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "4.1.11",
     "dependency-cruiser": "^18.2.0",
     "eslint": "^10.10.0",
     "prettier": "^3.0.0",

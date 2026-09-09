@@ -18,9 +18,9 @@ import {
   UsageError,
 } from '@rune/engine';
 
-vi.mock('electron', () => ({ app: {}, BrowserWindow: class {}, ipcMain: { handle: vi.fn() } }));
+vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() } }));
 
-import { registerBridge } from '../src/main/index.js';
+import { registerBridge } from '../src/main/bridge.js';
 import type { BridgeReply } from '../src/preload/types.js';
 import { throughPreload } from './bridge-fixture.js';
 

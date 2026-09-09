@@ -16,6 +16,7 @@ import {
   type ExecutionPlan,
   type RunEvent,
   type RunResult,
+  type Session,
   type StringTable,
   type ThemeConfig,
 } from '@rune/engine';
@@ -196,5 +197,14 @@ export function projectTheme(theme: ThemeConfig): BridgeTheme {
     ...(theme.banner === undefined ? {} : { banner: fileUrl(theme.banner) }),
     ...(theme.theme === undefined ? {} : { theme: fileUrl(theme.theme) }),
     ...(theme.windowTitle === undefined ? {} : { windowTitle: theme.windowTitle }),
+  };
+}
+
+/** Supplies the same localized default title to the native window and bridge. */
+export function windowTheme(session: Session): ThemeConfig {
+  const theme = session.getThemeConfig();
+  return {
+    ...theme,
+    windowTitle: theme.windowTitle ?? session.getStrings().chrome('rune.window.title'),
   };
 }

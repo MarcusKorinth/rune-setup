@@ -422,7 +422,7 @@ describe('resultJsonSchema', () => {
       expect(branch.type).toBe('object');
       expect(branch.additionalProperties).toBe(false);
       expect(branch.properties?.['resultSchemaVersion']).toMatchObject({ const: 2 });
-      expect(branch.properties?.['locale']?.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
+      expect(branch.properties?.['locale']).toEqual({ type: ['string', 'null'] });
       expect(branch.required).toEqual(
         expect.arrayContaining(['status', 'exitCode', 'dryRun', 'error', 'mode', 'locale']),
       );

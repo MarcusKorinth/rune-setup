@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 
-/** The seven input types of the MVP (docs/architecture.md §4.2). */
+/** The seven schema-v1 input types (docs/architecture.md §4.2). */
 export const INPUT_TYPES = [
   'text',
   'secret',
@@ -52,7 +52,9 @@ export const platformRunSchema = z.strictObject({
   linux: commandSpecSchema.optional(),
 });
 
-export const runSchema = z.union([commandSpecSchema, platformRunSchema]);
+// These strict forms cannot overlap. Keep every failed branch available to the presenter:
+// a plain union can discard command-field errors in favor of unknown platform keys.
+export const runSchema = z.xor([commandSpecSchema, platformRunSchema]);
 
 const inputBase = {
   title: z.string().optional(),
