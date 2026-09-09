@@ -39,9 +39,12 @@ files, environment inputs, validation, and result output.
 
 ## Write a workflow
 
-Start from the [basic manifest](examples/basic/installer.yaml). Paths to scripts and
-resources resolve from the manifest directory; commands receive separate arguments
-without an implicit shell. Each command still needs its own runtime and tools.
+Start from the [basic manifest](examples/basic/installer.yaml). Relative `cwd` values
+and command paths containing a path separator resolve from the manifest directory;
+bare command names use `PATH`. Argument paths are passed through after interpolation.
+Use `${manifestDir}/scripts/setup.mjs` when a script argument must stay relative to the
+manifest directory regardless of `cwd`. Commands receive separate arguments without
+an implicit shell and still need their own runtime and tools.
 
 The architecture is also the detailed author and host reference:
 
