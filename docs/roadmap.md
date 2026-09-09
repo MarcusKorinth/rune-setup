@@ -13,8 +13,8 @@ candidate checks must be repeated for each release. See the
   x64 builds include the runtime and application resources and have artifact checks.
 - Verify the portable workflow packages for the release candidate, including manifest,
   scripts, payload, assets, and locales, without Node or repository sources.
-- Connect verified CI artifacts to release publication once repository and npm ownership
-  are settled.
+- Use the tag-triggered GUI release workflow to publish tested archives after candidate
+  acceptance. Connect npm publication separately once the package namespace is settled.
 
 ## Checks for each candidate
 

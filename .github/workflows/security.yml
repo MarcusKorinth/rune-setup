@@ -7,12 +7,13 @@ on:
   schedule:
     - cron: '0 8 * * 1'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.ref }}
+  group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

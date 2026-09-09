@@ -28,8 +28,12 @@
 - Start packaged Linux non-interactive runs and version probes without a display server.
 - Package workflows with the GUI runtime, preserving scripts, payload, local design
   resources, and translations; start the bundled workflow without a manifest argument.
+- Add tag-triggered GUI releases that reuse the full CI/security gate and publish the
+  tested Windows/Linux archives with checksums and source metadata; manual runs verify
+  candidates without publishing.
 - Replace incorrect public npm installation instructions with development usage and
   concrete distribution requirements.
 
-Public npm package delivery and GUI archive publication remain unfinished. See
+Public npm package delivery remains unfinished. GUI publication is configured but
+still requires a verified release candidate and version tag. See
 [remaining work](docs/roadmap.md) and [release checks](docs/releasing.md).
