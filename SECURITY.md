@@ -27,9 +27,10 @@ and fix times are best-effort; there is no guaranteed response deadline.
   renderer is sandboxed and reaches the engine through an isolated preload bridge.
 - Text patterns are authored code. They use ECMAScript regular expressions without
   an evaluation timeout; avoid nested quantifiers such as `(a+)+`.
-- GUI cache integrity checks detect incomplete or damaged installations. They do not
-  authenticate a publisher or make an untrusted download safe. Current archives are
-  unsigned; release authentication and signing must be settled before distribution.
+- GUI cache integrity checks detect incomplete or damaged sealed cache generations.
+  Legacy unsealed caches remain supported without an integrity guarantee. These checks
+  do not authenticate a publisher or make an untrusted download safe. Current archives
+  are unsigned; release authentication and signing must be settled before distribution.
 
 ## Credentials and output
 
