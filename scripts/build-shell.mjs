@@ -169,7 +169,7 @@ try {
     join(shellDirectory, 'dist'),
     join(appDirectory, 'dist'),
   );
-  for (const path of ['src/renderer/index.html', 'src/theme/default.css']) {
+  for (const path of ['src/renderer/index.html', 'src/theme/default.css', 'resources/icon.png']) {
     mkdirSync(dirname(join(appDirectory, path)), { recursive: true });
     copyFileSync(join(shellDirectory, path), join(appDirectory, path));
   }
@@ -193,7 +193,7 @@ try {
   };
   const appManifest = {
     name: 'rune-gui-shell',
-    productName: 'RUNE GUI Shell',
+    productName: 'RUNE',
     version: shellManifest.version,
     description: shellManifest.description,
     author: 'Marcus Korinth',
@@ -221,6 +221,7 @@ try {
     config: {
       appId: 'io.github.marcuskorinth.rune-setup',
       productName: appManifest.productName,
+      copyright: 'Copyright (c) Marcus Korinth',
       electronVersion: electronManifest.version,
       electronDist,
       asar: true,
@@ -232,6 +233,7 @@ try {
         'dist/**/*.mjs',
         'src/renderer/index.html',
         'src/theme/default.css',
+        'resources/icon.png',
         'LICENSE',
         '!**/*.map',
         '!**/*.ts',
@@ -240,10 +242,15 @@ try {
       artifactName: archiveName,
       win: {
         executableName: 'rune-gui-shell',
+        icon: join(shellDirectory, 'resources', 'icon.ico'),
         signExecutable: false,
         requestedExecutionLevel: 'asInvoker',
       },
-      linux: { executableName: 'rune-gui-shell', category: 'Utility' },
+      linux: {
+        executableName: 'rune-gui-shell',
+        category: 'Utility',
+        icon: join(shellDirectory, 'resources', 'icon.png'),
+      },
     },
   });
   const archive = join(destination, archiveName);

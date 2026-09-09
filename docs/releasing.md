@@ -70,8 +70,10 @@ xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
       [security finding policy](../SECURITY.md#security-maintenance).
 - [ ] Check package versions, dependency pins, exported versions, and GUI version
       matching. Review the changelog and repository/package links.
-- [ ] Replace the default Electron icon with approved project artwork and decide
-      release signing. Current local archives are unsigned.
+- [ ] Verify the RUNE icon and product/version metadata in the extracted executable.
+      Shell archives are intentionally unsigned; Windows may show an unknown-publisher
+      warning. Do not describe them as signed or promise that operating-system
+      reputation checks will accept them without a prompt.
 - [ ] Record the verified commit, artifact checksums, and results before approving
       publication. Keep the changelog unreleased until publication occurs.
 

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>RUNE</title>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="#4f6df5" />
+  <polygon points="144,112 296,112 368,184 368,248 296,304 384,400 296,400 216,312 216,400 144,400" fill="#ffffff" />
+  <polygon points="216,184 272,184 296,208 296,224 272,248 216,248" fill="#4f6df5" />
+</svg>
