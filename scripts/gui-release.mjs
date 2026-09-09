@@ -239,10 +239,11 @@ async function publish() {
   const api = (path, args = []) => JSON.parse(command('gh', ['api', path, ...args]));
   const tagged = api(`repos/${repository}/commits/${identity.tag}`);
   assert.equal(tagged.sha, identity.commit, 'Remote tag moved since candidate verification');
-  const existing = api(endpoint, ['--paginate', '--slurp'])
-    .flat()
-    .find((release) => release.tag_name === identity.tag);
-  let release = existing;
+  const findRelease = () =>
+    api(endpoint, ['--paginate', '--slurp'])
+      .flat()
+      .find((release) => release.tag_name === identity.tag);
+  let release = findRelease();
   const notes = readFileSync(join(destination, 'release-notes.md'), 'utf8');
   if (!release) {
     command('gh', [
@@ -258,7 +259,9 @@ async function publish() {
       '--notes-file',
       join(destination, 'release-notes.md'),
     ]);
-    release = api(`${endpoint}/tags/${identity.tag}`);
+    // The tag endpoint finds published releases; authenticated listings also include drafts.
+    release = findRelease();
+    assert(release, 'The newly created draft release could not be found');
   }
   assert.equal(
     release.body.replace(/\r\n/gu, '\n').trim(),
