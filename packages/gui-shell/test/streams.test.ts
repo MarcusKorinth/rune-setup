@@ -169,6 +169,46 @@ describe('GUI shell process-stream ownership', () => {
     output.dispose();
   });
 
+  it('settles a pending stderr write when its consumer closes without a callback', async () => {
+    const stdout = collector();
+    const stderr = new Writable({
+      write() {
+        // Deliberately neither succeeds nor fails the write callback.
+      },
+    });
+    const output = guardShellStreams({ stdout: stdout.stream, stderr });
+
+    const pending = output.stderr.writeAndWait('diagnostic');
+    stderr.destroy();
+
+    await expect(pending).resolves.toBe('consumer-gone');
+    expect(output.stderr.isBroken()).toBe(true);
+    expect(output.stderr.failed()).toBe(false);
+    expect(stderr.destroyed).toBe(true);
+    await settled();
+    expect(stderr.listenerCount('error')).toBe(0);
+    expect(stderr.listenerCount('close')).toBe(0);
+    output.dispose();
+  });
+
+  it('keeps an earlier stream failure when the consumer then closes', async () => {
+    const stdout = collector();
+    const stderr = new Writable({
+      write() {
+        // Deliberately neither succeeds nor fails the write callback.
+      },
+    });
+    const output = guardShellStreams({ stdout: stdout.stream, stderr });
+
+    const pending = output.stderr.writeAndWait('diagnostic');
+    stderr.emit('error', systemError('EIO', 'first failure'));
+    stderr.destroy();
+
+    await expect(pending).resolves.toBe('failed');
+    expect(output.stderr.failed()).toBe(true);
+    output.dispose();
+  });
+
   it('disposes both listeners, settles a pending write, and ignores later writes', async () => {
     let finishWrite: ((error?: Error | null) => void) | undefined;
     const stdout = new Writable({

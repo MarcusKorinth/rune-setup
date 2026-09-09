@@ -441,6 +441,44 @@ describe('SpawnRunner', () => {
     );
   });
 
+  it('cuts off fresh reads after draining the current chunk and buffered snapshot', async () => {
+    const cutoff = new AbortController();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lines: string[] = [];
+    let failures = 0;
+    const stream = new Readable({
+      read: () => undefined,
+      destroy: (_error, callback) => callback(new Error('cutoff iterator stop')),
+    });
+    const forwarding = forwardLines(
+      stream,
+      (line) => {
+        lines.push(line);
+        return lines.length === 1 ? held : undefined;
+      },
+      () => {
+        failures += 1;
+      },
+      cutoff.signal,
+    );
+
+    stream.push('first\ncurrent\nprefix-');
+    await vi.waitFor(() => expect(lines).toEqual(['first']));
+    stream.push('suffix\nbuffered\nunterminated');
+    await vi.waitFor(() => expect(stream.readableLength).toBeGreaterThan(0));
+
+    cutoff.abort();
+    expect(stream.destroyed).toBe(true);
+    release();
+    await forwarding;
+
+    expect(lines).toEqual(['first', 'current', 'prefix-suffix', 'buffered']);
+    expect(failures).toBe(0);
+  });
+
   it('cancels a child while preserving buffered output across a prolonged sink stall', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'rune-cancel-drain-'));
     const readyPath = join(directory, 'written.json');
@@ -1947,12 +1985,12 @@ describe('SpawnRunner', () => {
     }
   }, 20000);
 
-  it('keeps a configured timeout active after direct exit and releases orphan pipes', async () => {
+  it('keeps a fixed close cutoff while an escaped descendant continues output', async () => {
     // The grandchild inherits the step's stdout/stderr pipes, leaves the process group, and
     // outlives the direct child; only the runner's read ends decide whether the host can exit.
     const grandchildScript = [
       'process.stdout.on("error", () => {});',
-      'const heartbeat = setInterval(() => console.log("orphan:tick"), 1000);',
+      'const heartbeat = setInterval(() => console.log("orphan:tick"), 100);',
       'setTimeout(() => clearInterval(heartbeat), 20000);',
     ].join('\n');
     const parentScript = [
@@ -1983,8 +2021,11 @@ describe('SpawnRunner', () => {
           reportProcessIds([Number(match[1]), Number(match[2])]);
         }
         if (line === 'orphan:tick') heartbeatLines += 1;
-        // Each acknowledged line suspends the idle timer briefly, without renewing its budget.
-        return Promise.resolve();
+        // The sink remains healthy and faster than the producer. Its Promises must not let fresh
+        // descendant output extend the fixed child-close cutoff.
+        return line === 'orphan:tick'
+          ? new Promise<void>((resolveLine) => setTimeout(resolveLine, 75))
+          : Promise.resolve();
       },
     }).then((outcome) => {
       settled = true;
@@ -2007,6 +2048,10 @@ describe('SpawnRunner', () => {
       // The orphan is still alive: the host is released by dropping the pipe ends, not by
       // killing it.
       expect(processIsAlive(grandchildPid)).toBe(true);
+
+      const linesAtSettlement = heartbeatLines;
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 300));
+      expect(heartbeatLines).toBe(linesAtSettlement);
 
       const settledAt = Date.now();
       while (pipeCount() !== baseline && Date.now() - settledAt < 2000) {

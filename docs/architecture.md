@@ -409,7 +409,7 @@ Process contract:
   incomplete UNC roots, and device namespaces are rejected at plan time. Foreign-platform
   previews preserve these target spellings unchanged and cannot execute them.
 - env = one shallow-frozen parent-environment snapshot captured by the Executor immediately before `RunStarted`, after removing the `RUNE_INPUT_<ID>` control variable of every declared input (case-insensitively on Windows), then the interpolated `env:` overlay, then reserved `RUNE_RUN_ID` / `RUNE_STEP_ID`; all other parent variables remain inherited, and an explicit command `env:` entry may set a removed name again. The same internal snapshot is used for every step and termination helper in the run and is never added to the `ExecutionPlan`, events, results, or root public API
-- stdout/stderr are consumed as streams and line-split with a **64 KiB (65,536 UTF-8 byte) payload limit per logical line**, independently per stream. At the first byte over the limit, the runner clears that line's retained content, emits exactly one fixed value-free line (`[output line omitted: exceeds 64 KiB]`), discards through the next real `\n`, and then resumes normally; EOF while discarding emits nothing further. Lines at or below the limit retain their existing semantics, including CRLF stripping, empty lines, and an unterminated final line. The runner never emits raw fragments at artificial boundaries, so each callback is either one complete bounded logical line or that placeholder and the Executor can pass the whole callback through the secret masker **before anything else sees it**. Persistent per-stream state is bounded; output is never buffered whole.
+- stdout/stderr are consumed as streams and line-split with a **64 KiB (65,536 UTF-8 byte) payload limit per logical line**, independently per stream. At the first byte over the limit, the runner clears that line's retained content, emits exactly one fixed value-free line (`[output line omitted: exceeds 64 KiB]`), discards through the next real `\n`, and then resumes normally; EOF while discarding emits nothing further. Lines at or below the limit retain their existing semantics, including CRLF stripping, empty lines, and an unterminated final line. The runner never emits raw fragments at artificial boundaries, so each callback is either one complete bounded logical line or that placeholder and the Executor can pass the whole callback through the secret masker **before anything else sees it**. Persistent per-stream state is bounded; output is never buffered whole. If the bounded child-close wait after termination expires, each reader stops accepting fresh pipe data after its current chunk plus one snapshot of its already-buffered readable content. Those accepted bytes still drain serially through complete logical lines and sink Promises; an incomplete line at this artificial cutoff is discarded rather than exposed as a raw fragment. Natural EOF behavior is unchanged.
 - success ⇔ exit code ∈ `successExitCodes` (default `[0]`)
 - startup failure classification is value-free: a missing, non-directory, or NUL-containing
   `cwd` is `invalidCwd` (RUNE-404); `ENOENT` retains the cwd check that distinguishes a
@@ -597,8 +597,9 @@ then rejects with the corresponding RuneError. Observer latency contributes to e
 wall time and can therefore trigger a configured timeout. Cancellation still signals the
 child while a sink is pending; completing the run waits for accepted output to drain.
 A sink which closes or errors releases its pending writes under its existing failure
-contract. A healthy sink which never resumes can delay finalization; RUNE does not discard
-its logs to impose an artificial output deadline.
+contract. A healthy sink which never resumes can delay finalization for output accepted before
+the termination cutoff; RUNE does not discard those accepted logs to impose an artificial sink
+deadline. Fresh descendant output cannot extend the fixed child-close cutoff.
 
 CLI and shell stderr writers await their write callbacks. The GUI transport acknowledges
 each event after synchronous renderer handling, with at most one event in flight. A lost
@@ -704,7 +705,9 @@ Windows uses `taskkill /PID <shell>` without `/F` to request window close (§7).
 The CLI waits and forwards the resulting code: 6 for cancellation, with the earlier-failure
 precedence in §7. A second `Ctrl+C` force-exits the CLI while the shell finishes cancelling.
 
-**Renderer loss.** Before main claims result delivery, renderer loss requests cooperative
+**Renderer loss.** Replacing the main-frame receiver through reload or cross-document
+navigation counts as renderer loss; the initial load, same-document navigation, and
+subframe navigation do not. Before main claims result delivery, renderer loss requests cooperative
 cancellation of a live run, produces exit 70, and writes no result. Main synchronously
 claims one memoized delivery attempt; from that point, the attempt owns the terminal
 outcome. Later renderer loss only marks the renderer gone and requests guarded window
@@ -887,6 +890,15 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 ### Stream discipline
 
 stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination. With `--dry-run --result -` stdout carries only the result JSON and the human plan is not rendered; `--result <path>` keeps the plan on stdout. A consumer that closes stdout or stderr early (`| head -1`, a viewer quit mid-stream) ends RUNE's output on that stream but never changes the exit code: the CLI owns the stream's `error` event, writes nothing further to the closed pipe, and prints no stack trace. Only that early-closing consumer (EPIPE, ECONNRESET) is silent: any other write error on stdout (a full disk, an I/O error) has lost requested machine output, so the CLI prints one fixed line on stderr — never the stream error itself — and exits 70; stderr diagnostics are best-effort, and a write error there never changes the exit code.
+
+Windows Electron 44.2.0 currently adds a native CRLF before application stdout in subprocess
+and headless invocations, including before the JSON emitted by `--result -`; even an
+Electron-only app reproduces it. This is an unresolved deviation from the exact stdout
+requirement above. Archive smoke checks allow that known native CRLF but reject additional
+application bytes, so their success does not establish byte-exact Windows stdout compliance.
+Result-file delivery and Node CLI output are unaffected; use `--result PATH` for exact
+serialized bytes. The strict stdout release requirement remains open before publication.
+See the [historical upstream issue](https://github.com/electron/electron/issues/12578).
 
 Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged. Lines rendered from a session use its authenticated `StringTable` and `formatSessionTerminalLine`: raw mask → control escape → final live mask. The second mask prevents an actual control from becoming a registered literal such as `\u001b` only after presentation. Authoring commands with no runtime secret registry (`validate`, `schema`) and pre-session fallback text use ordinary control escaping; requested JSON output bypasses human rendering entirely.
 
@@ -1223,6 +1235,7 @@ GUI archive. Release evidence must identify the exact candidate and platforms te
 
 - Portable artifact layout, builder configuration, and target architectures (§9.5).
 - Public package namespace and release ownership.
+- GUI shell auto-update policy: whether `rune run --gui` ever checks for newer shells or updates remain explicit `rune gui install` re-runs (§9.4).
 
 These require explicit decisions and corresponding tests. Their presence in an old
 roadmap or prior deferral does not establish that they are acceptable for a release.

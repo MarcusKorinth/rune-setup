@@ -373,6 +373,7 @@ export async function windowedRun(
   let deliveryOwned = false;
   let deliveryPending = false;
   let delivery: Promise<void> | undefined;
+  let initialMainFrameNavigationStarted = false;
   const deliverOutcome = (result: RunResult): Promise<void> => {
     if (delivery === undefined) {
       // Claim the terminal outcome before the delivery callback can run or throw.
@@ -449,7 +450,7 @@ export async function windowedRun(
     },
   });
 
-  window.webContents.on('render-process-gone', () => {
+  const handleRendererLoss = (): void => {
     events.dispose();
     if (rendererGone || renderedDone) {
       return;
@@ -473,6 +474,18 @@ export async function windowedRun(
     output.stderr.write(`${describeWindowedFatal(error, undefined)}\n`);
     displayFatal(error, undefined);
     window.close();
+  };
+
+  window.webContents.on('render-process-gone', handleRendererLoss);
+  window.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) {
+      return;
+    }
+    if (!initialMainFrameNavigationStarted) {
+      initialMainFrameNavigationStarted = true;
+      return;
+    }
+    handleRendererLoss();
   });
 
   window.on('close', (event) => {

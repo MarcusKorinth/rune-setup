@@ -37,11 +37,11 @@ avoid blocking the event loop and return a native Promise when a sink needs to w
 
 `manifestJsonSchema()` and `resultJsonSchema()` provide schemas for editor integration
 and result consumers. Manifest paths and command paths resolve according to the
-[architecture contract](../../docs/architecture.md).
+[architecture contract](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/docs/architecture.md).
 
 From the repository root, build with `npm run build` and run engine tests with
-`npm test -- packages/engine/test`. The [basic workflow](../../examples/basic/README.md)
-and [release checks](../../docs/releasing.md) cover practical integration and known
+`npm test -- packages/engine/test`. The [basic workflow](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/examples/basic/README.md)
+and [release checks](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/docs/releasing.md) cover practical integration and known
 execution limits.
 
 Run observers may return a native Promise. RUNE waits for it before the next event,
