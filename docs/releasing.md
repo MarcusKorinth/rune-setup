@@ -103,6 +103,12 @@ npm run build:shell
 npm run test:shell:package
 ```
 
+Windows builds also need Visual Studio C++ Build Tools with the x64 compiler and
+Windows 10/11 SDK; GitHub's Windows runner includes them. The MSVC build uses its
+static CRT, so users do not install another runtime. Alternatively set
+`RUNE_WINDOWS_CC` to an absolute LLVM-MinGW `clang.exe` or Zig `zig.exe` path.
+The builder compiles only a process transport launcher; Electron still hosts RUNE.
+
 Linux graphical checks run under a desktop display or `xvfb-run --auto-servernum` and
 require usable Chromium sandbox support. CI enables user namespaces for its temporary
 Linux runner; it does not add `--no-sandbox` to the artifact check. The build records
@@ -114,10 +120,9 @@ The artifact check removes `DISPLAY` and `WAYLAND_DISPLAY` for Linux version pro
 and non-interactive runs. It also exercises real child processes, masked result/log output,
 input and step failures, timeouts, unwritable destinations, and cancellation.
 
-- [ ] Resolve the native Windows Electron stdout prefix and verify exact empty and
-      serialized artifact stdout before publication. Archive smoke checks allow the known
-      native CRLF and reject additional application bytes, but do not establish byte-exact
-      compliance.
+- [ ] Verify exact empty stdout and serialized machine output from the published
+      entrypoint. The Windows launcher removes Electron's native initial CRLF and
+      preserves every subsequent application byte; the archive checks allow no prefix.
 
 The public npm name `@rune/cli` currently belongs to another project. Settle the
 namespace and update these commands before any registry publication.
@@ -154,9 +159,3 @@ external `node` command or other tools used by the author's scripts.
 - GUI-cache updates retain previously published generations so a running application
   keeps its files. Unused version directories can be removed manually when no shell
   uses them; automatic cache pruning is not implemented.
-- Windows Electron 44.2.0 currently adds a native CRLF before application stdout in
-  subprocess and headless invocations, including before `--result -` JSON; an
-  Electron-only app reproduces it. This remains an unresolved deviation from the
-  exact stdout requirement; see the [historical upstream issue](https://github.com/electron/electron/issues/12578).
-  Result-file delivery and Node CLI output are unaffected; use `--result PATH` for
-  exact serialized bytes. The strict stdout requirement remains open before publication.

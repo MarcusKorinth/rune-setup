@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, URL } from 'node:url';
 
 import { verifyShellBranding } from './verify-shell-branding.mjs';
+import { verifyWindowsLauncher } from './verify-windows-launcher.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(join(root, 'packages/gui-shell/package.json'));
@@ -18,7 +19,6 @@ assert(
   ['win32', 'linux'].includes(process.platform),
   'Shell verification supports Windows and Linux',
 );
-const knownNativeStdoutPrefix = process.platform === 'win32' ? '\r\n' : '';
 const archive = resolve(
   process.argv[2] ??
     join(
@@ -264,16 +264,8 @@ function checkedFailureResult(path, status, exitCode, mode = 'non-interactive') 
   return result;
 }
 
-function checkFailureOutput(run, gui = false) {
-  if (gui) {
-    assert.equal(run.stdout.trim(), '', 'Failures must not print human diagnostics to stdout');
-  } else {
-    assert.equal(
-      run.stdout,
-      knownNativeStdoutPrefix,
-      'Failures must not print application bytes to stdout',
-    );
-  }
+function checkFailureOutput(run) {
+  assert.equal(run.stdout, '', 'Failures must leave stdout byte-exactly empty');
   assert(!run.stderr.includes(secret), 'Failure diagnostics must mask the declared secret');
 }
 
@@ -366,9 +358,9 @@ async function waitForChild(run, marker) {
   throw new Error(`The cancellation child did not start: ${run.stderr()}`);
 }
 
-async function verifyCancellation(command, scriptPrefix, gui) {
+async function verifyCancellation(command, scriptPrefix, gui, closeRequest = false) {
   const scenario = failureWorkflow(
-    gui ? 'wizard-cancel' : 'headless-cancel',
+    `${gui ? 'wizard' : 'headless'}-${closeRequest ? 'close' : 'cancel'}`,
     command,
     scriptPrefix,
     { slow: true },
@@ -391,10 +383,11 @@ async function verifyCancellation(command, scriptPrefix, gui) {
       await page.locator('#next').click();
     }
     await waitForChild(run, scenario.marker);
-    if (gui) await page.locator('#cancel').click();
+    if (closeRequest) invoke('taskkill', ['/PID', String(run.child.pid)]);
+    else if (gui) await page.locator('#cancel').click();
     else assert(run.child.kill('SIGTERM'));
     const closed = await within(run.closed, 15_000, 'Cancellation did not complete');
-    checkFailureOutput({ stdout: run.stdout(), stderr: run.stderr() }, gui);
+    checkFailureOutput({ stdout: run.stdout(), stderr: run.stderr() });
     assert.deepEqual(
       closed,
       { code: 6, signal: null },
@@ -412,7 +405,7 @@ async function verifyCancellation(command, scriptPrefix, gui) {
     checkFailureLog(scenario.log);
     checkChildStopped(scenario.marker);
     process.stdout.write(
-      `Packaged ${gui ? 'wizard Cancel' : 'headless SIGTERM'} stopped a running OS child and delivered the masked cancellation result.\n`,
+      `Packaged ${closeRequest ? 'Windows close request' : gui ? 'wizard Cancel' : 'headless SIGTERM'} stopped a running OS child and delivered the masked cancellation result.\n`,
     );
   } finally {
     await stop(run);
@@ -435,8 +428,8 @@ try {
   const probeResult = { protocolVersion: 1, runeVersion: version };
   assert.equal(
     probe.stdout,
-    `${knownNativeStdoutPrefix}${JSON.stringify(probeResult)}\n`,
-    'The version probe must print only its known native prefix and serialized protocol result',
+    `${JSON.stringify(probeResult)}\n`,
+    'The version probe must print exactly its serialized protocol result',
   );
   process.stdout.write('Packaged version probe passed from an extracted path with spaces.\n');
 
@@ -450,11 +443,7 @@ try {
     ['--', emptyManifest, '--non-interactive'],
     headlessEnvironment,
   );
-  assert.equal(
-    control.stdout,
-    knownNativeStdoutPrefix,
-    'An empty workflow must not print application bytes to stdout',
-  );
+  assert.equal(control.stdout, '', 'An empty workflow must leave stdout byte-exactly empty');
 
   const windows = process.platform === 'win32';
   const script = join(workflow, windows ? 'check.ps1' : 'check.sh');
@@ -494,10 +483,19 @@ try {
     ].join('\n'),
   );
   const headless = invoke(executable, invocation('headless'), headlessEnvironment);
+  const abandoned = launch(
+    ['--', emptyManifest, '--non-interactive', '--result', '-'],
+    headlessEnvironment,
+  );
+  abandoned.child.stdout.destroy();
+  assert.deepEqual(await within(abandoned.closed, 15_000, 'Closed stdout did not settle'), {
+    code: 0,
+    signal: null,
+  });
   assert.equal(
     headless.stdout,
     control.stdout,
-    'The workflow must add no stdout beyond native runtime whitespace',
+    'The workflow must leave stdout byte-exactly empty',
   );
   assert(!headless.stderr.includes(secret));
   verifyResult('headless');
@@ -512,8 +510,8 @@ try {
   const streamedResult = JSON.parse(streamed.stdout);
   assert.equal(
     streamed.stdout,
-    `${knownNativeStdoutPrefix}${JSON.stringify(streamedResult, null, 2)}\n`,
-    '--result - must print only its known native prefix and serialized result',
+    `${JSON.stringify(streamedResult, null, 2)}\n`,
+    '--result - must print exactly its serialized result',
   );
   assert.equal(streamedResult.status, 'succeeded');
   assert.equal(streamedResult.exitCode, 0);
@@ -576,7 +574,7 @@ try {
     code: 0,
     signal: null,
   });
-  assert.equal(wizard.stdout().trim(), '');
+  assert.equal(wizard.stdout(), '');
   assert(!wizard.stderr().includes(secret));
   verifyResult('wizard');
   process.stdout.write(
@@ -587,9 +585,11 @@ try {
   verifyFailures(command, scriptPrefix);
   await verifyCancellation(command, scriptPrefix, true);
   if (process.platform === 'linux') await verifyCancellation(command, scriptPrefix, false);
+  if (process.platform === 'win32') await verifyCancellation(command, scriptPrefix, true, true);
+  await verifyWindowsLauncher(unpacked, headlessEnvironment);
 } finally {
   if (wizard !== undefined) await stop(wizard);
   await browser?.close().catch(() => undefined);
   assert.equal(dirname(directory), temporaryRoot, 'Refuse cleanup outside the temporary directory');
-  rmSync(directory, { recursive: true, force: true });
+  rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
