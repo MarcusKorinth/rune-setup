@@ -4,8 +4,8 @@ Thanks for contributing.
 
 ## Start here
 
-1. read `README.md` for usage and scope
-2. read `docs/architecture.md` for canonical semantics and invariants
+1. read [README.md](README.md) for usage and scope
+2. read [the architecture](docs/architecture.md) for semantics and invariants
 3. keep changes minimal, explicit, and reviewable
 
 By participating in this project you agree to abide by the
@@ -32,18 +32,13 @@ commits are not accepted.
 
 ## Project-specific expectations
 
-These rules are critical and must be preserved:
-
-- preserve mode parity:
-  - the GUI wizard, the interactive CLI, and non-interactive runs must
-    share identical engine semantics
-- keep the engine boundary strict:
-  - no execution, interpolation, or condition logic in frontend code
+- the GUI wizard, interactive CLI, and non-interactive runs share identical engine semantics
+- keep execution, interpolation, and condition logic in the engine
 - preserve the [secret projection contract](docs/architecture.md#logging-and-secret-masking),
   including its explicit machine-field exceptions; never bypass a masking sink
 - commands are executed as argv arrays, never through an implicit shell
 - add or update tests when behavior changes
-- update documentation when user-visible behavior or guarantees change
+- update documentation when behavior, APIs, guarantees, or invariants change
 
 ## Development workflow
 
@@ -77,9 +72,9 @@ chore/repo-bootstrap
 ### Working process
 
 1. create a branch from `main`
-2. implement your change
-3. write clean commits
-4. ensure tests pass
+2. implement the change and its relevant tests and documentation
+3. run the [required checks](#testing)
+4. create signed commits following the policy below
 5. open a pull request
 
 ## Commit message policy
@@ -165,10 +160,8 @@ A commit body is optional for:
 
 ### Readability
 
-- header: max 72 characters
-- body: keep paragraphs readable in GitHub and terminal tools; avoid
-  very long lines, but wrap where it improves clarity rather than to
-  satisfy a fixed column count
+Keep body paragraphs readable in GitHub and terminal tools. Wrap long lines
+where it improves clarity rather than to satisfy a fixed column count.
 
 ### Footer
 
@@ -182,13 +175,6 @@ Closes: #123
 
 ## Pull requests
 
-### General rules
-
-- pull requests must be focused on a single concern
-- avoid mixing refactoring and behavior changes
-- prefer small to medium-sized pull requests
-- ensure the change is reviewable
-
 ### PR title
 
 PR titles should follow Conventional Commits:
@@ -199,13 +185,8 @@ PR titles should follow Conventional Commits:
 
 ### PR expectations
 
-Before opening a PR:
-
-- tests pass
-- documentation is updated if needed
-- changes are cleanly structured
-
-A good PR should clearly explain:
+Prefer small to medium-sized pull requests. Before opening one, complete the
+[working process](#working-process) and explain:
 
 - what was changed
 - why it was changed
@@ -231,6 +212,7 @@ affected project area).
 
 - add tests for new behavior
 - add regression tests for bug fixes
+- test observable behavior rather than incidental implementation details
 - ensure the relevant test slice passes before opening a pull request
 - unit tests live in `packages/<pkg>/test/` (vitest), cross-package suites in `tests/`;
   `packages/gui-shell/tests/` is reserved for the Playwright smoke suite
@@ -257,14 +239,6 @@ The coverage check covers all runtime TypeScript source and uses global and scop
 floors; reports are written to `coverage/index.html` and
 `coverage/coverage-summary.json`. Thresholds are defined in `vitest.config.ts`.
 
-## Documentation
-
-Documentation must be updated when:
-
-- behavior changes
-- APIs change
-- guarantees or invariants change
-
 ## Versioning
 
 This project follows Semantic Versioning:
@@ -272,12 +246,3 @@ This project follows Semantic Versioning:
 - `fix` -> patch
 - `feat` -> minor
 - breaking changes -> major
-
-## Final notes
-
-- prefer clarity over cleverness
-- prefer explicit design over implicit behavior
-- prefer behaviorally strong tests over incidental implementation checks
-
-Consistency in history and structure is critical for long-term
-maintainability.
