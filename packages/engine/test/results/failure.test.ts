@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createFailureResult } from '../../src/engine/executor.js';
+import { createFailureResult } from '../../src/results/failure.js';
 import { hostPlatform } from '../../src/engine/context.js';
 import {
   CancelledError,
