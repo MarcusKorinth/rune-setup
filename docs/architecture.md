@@ -36,8 +36,9 @@ is complete. Distribution and verification requirements are listed in
 
 The implementation includes the seven input types, conditional inputs and steps,
 safe interpolation, localization, argv execution, logs and results, and the three
-frontends. Public npm installation and downloadable GUI archives still require a
-working delivery path. Portable workflow packaging is described in §9.5.
+frontends. GUI archives use the version-tag release workflow; public npm installation
+still requires a package namespace and publication. Portable workflow packaging is
+described in §9.5.
 
 The current manifest schema excludes rollback, uninstall, repair, elevation, retries,
 parallel steps, dependencies between steps, step outputs, custom pages, and plugins.
@@ -45,8 +46,8 @@ Reserved keys are rejected with a later-schema-version diagnostic. RUNE does not
 produce MSI/NSIS/system packages or promise transactional rollback or code signing.
 
 Manifest schema version (1), result schema version (2), and product SemVer are
-independent. The current package version is a development value; readiness is
-determined by the delivered artifacts and acceptance checks, not a milestone number.
+independent. A version number alone does not establish release readiness; that is
+determined by the delivered artifacts and acceptance checks.
 
 ## 2) Core principles
 
@@ -737,7 +738,7 @@ or operating-system trust guarantee.
 
 #### Shell distribution and version coupling
 
-Authors and CI use Node 24 LTS and build the source checkout; `node packages/cli/dist/main.js` is its CLI entry point. The workspace name `@rune/cli` is not a public installation instruction: that npm name currently belongs to a different project. Public npm delivery requires an owner-controlled namespace decision and corresponding package/import updates before publication. The local CLI package contains no Electron; core/CLI development uses `npm ci --ignore-scripts` to skip the separate shell binary download. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are implemented, but no shell archives are currently published. Source checkouts therefore use the development override until archive delivery is implemented and verified. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
+Authors and CI use Node 24 LTS and build the source checkout; `node packages/cli/dist/main.js` is its CLI entry point. The workspace name `@rune/cli` is not a public installation instruction: that npm name currently belongs to a different project. Public npm delivery requires an owner-controlled namespace decision and corresponding package/import updates before publication. The local CLI package contains no Electron; core/CLI development uses `npm ci --ignore-scripts` to skip the separate shell binary download. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The download requires published archive assets for the current engine version. Source checkouts without matching assets use the development override or build their own shell. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
 
 **Version matching.** The shell bundles its own copy of `@rune/engine`; `@rune/cli` ships another. **`rune gui install` fetches the shell release whose engine version equals the installed CLI's**; the per-user cache is keyed by that version; `rune run --gui` refuses a cached shell whose engine version differs from its own (exit 2, hint: re-run `rune gui install`). The result file's `runeVersion` under `--gui` is the shell engine's version — by construction equal to the CLI's.
 

@@ -8,9 +8,10 @@ the author's build machine, but the package includes RUNE's execution runtime.
 ## Build
 
 Build the CLI from the repository with `npm ci --ignore-scripts` and `npm run build`.
-Use an extracted GUI shell from the same RUNE version. Until the first release,
-build that shell with `npm run build:shell` after preparing Electron, then extract
-the archive under `output/shell/`. See [shell build prerequisites](releasing.md#build-and-verification).
+Use an extracted GUI shell from the same RUNE version, downloaded from its
+[published release](https://github.com/MarcusKorinth/rune-setup/releases) when available.
+To build the shell yourself, run `npm run build:shell` after preparing Electron, then
+extract the archive under `output/shell/`. See [shell build prerequisites](releasing.md#build-and-verification).
 
 From the RUNE checkout, on Windows:
 

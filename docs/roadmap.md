@@ -1,8 +1,8 @@
 # Distribution and release work
 
-The source checkout already includes automated core, installed-package, and GUI archive
-checks on Windows and Linux. The distribution work below is unimplemented or unpublished;
-candidate checks must be repeated for each release. See the
+The source checkout includes automated core, installed-package, and GUI archive checks
+on Windows and Linux. GUI delivery uses the version-tag release workflow; npm publication
+remains separate work. Candidate checks must be repeated for each release. See the
 [release acceptance checks](releasing.md) for the commands and required evidence.
 
 ## Distribution
