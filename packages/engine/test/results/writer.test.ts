@@ -599,7 +599,7 @@ describe('writeResult', () => {
     }
   });
 
-  it.sequential('anchors a relative destination to the cwd at call time', async () => {
+  it('anchors a relative destination to the cwd at call time', { concurrent: false }, async () => {
     const firstDirectory = mkdtempSync(join(tmpdir(), 'rune-result-writer-cwd-a-'));
     const secondDirectory = mkdtempSync(join(tmpdir(), 'rune-result-writer-cwd-b-'));
     const originalCwd = process.cwd();

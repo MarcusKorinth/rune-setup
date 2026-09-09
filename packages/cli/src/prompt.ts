@@ -258,7 +258,7 @@ function optionPresentation(state: InputState, strings: StringTable): CliPromptP
   return basePresentation(state, strings, lines);
 }
 
-/** Exactly the seven public MVP input types, each registered deliberately. */
+/** Exactly the seven schema-v1 input types, each registered deliberately. */
 export const cliPromptPresenters = new CliPromptRegistry([
   { name: 'text', present: (state, strings) => basePresentation(state, strings) },
   { name: 'secret', present: (state, strings) => basePresentation(state, strings, [], true) },

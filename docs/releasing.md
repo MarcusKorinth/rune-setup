@@ -1,7 +1,10 @@
 # Release acceptance
 
 A release candidate needs verified installation and execution workflows on Windows
-and Linux. This document is a checklist; unchecked work remains before release.
+and Linux. This is a reusable acceptance checklist, not a live record of completed
+work: record results against the chosen commit and artifact checksums. Existing CI
+already exercises core behavior, installed packages, and GUI archives. Registry
+delivery, public GUI downloads, and portable workflow packaging remain unfinished.
 
 ## User workflows
 
@@ -38,7 +41,11 @@ npm run test:coverage
 npm run test:packages
 ```
 
-Core CI skips installation scripts with `npm ci --ignore-scripts`. Shell tests also
+The coverage command runs the full core suite and enforces the global and package-area
+thresholds in [vitest.config.ts](../vitest.config.ts). It includes runtime source files
+even when no test imports them. Separate child processes and native Electron execution
+are outside that collector; a coverage percentage does not replace their artifact checks.
+`npm test` runs the core suite without coverage for local iteration. Shell tests also
 prepare the Electron binary and build the application. On Windows:
 
 ```powershell
@@ -59,6 +66,8 @@ xvfb-run --auto-servernum npm run test:smoke --workspace @rune/gui-shell
       packages and GUI archives.
 - [ ] Run `npm audit` and `npm audit --omit=dev`; review both development and runtime
       findings and record any unresolved risk with its impact.
+- [ ] Review source security scan results and follow the
+      [security finding policy](../SECURITY.md#security-maintenance).
 - [ ] Check package versions, dependency pins, exported versions, and GUI version
       matching. Review the changelog and repository/package links.
 - [ ] Replace the default Electron icon with approved project artwork and decide
@@ -119,8 +128,8 @@ boundary, not evidence that every such system has passed RUNE's checks. See Elec
 [platform support](https://github.com/electron/electron/blob/v44.2.0/README.md#platform-support).
 The verified local environments are Windows 11 Pro x64 and a Debian 12 x64 container
 (glibc 2.36) on a WSL2 host. The container uses an ordinary user, permitted user namespaces,
-and Xvfb for graphical checks. The configured GitHub runner matrix still needs to pass
-for the eventual candidate commit.
+and Xvfb for graphical checks. CI also verifies Windows and Linux runners; record the
+successful run for the chosen candidate rather than carrying a prior result forward.
 
 The Linux executable dynamically links to system libraries even in headless mode:
 glibc, GLib, NSS/NSPR, GTK 3, ATK/AT-SPI, Cairo/Pango, X11/XCB, xkbcommon, GBM, ALSA,

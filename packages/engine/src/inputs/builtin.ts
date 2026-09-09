@@ -1,5 +1,5 @@
 /**
- * The seven input types of the MVP (docs/architecture.md §4.2, §5).
+ * The seven schema-v1 input types (docs/architecture.md §4.2, §5).
  *
  * Every rule an author or a pipeline can run into lives here: which words mean true, that a
  * select is matched against option *values* and never against labels, that a multiselect
@@ -294,7 +294,7 @@ function pathType(name: 'file' | 'directory'): InputTypeHandler {
   };
 }
 
-/** The handlers of the seven MVP types, in the order the manifest schema lists them. */
+/** The handlers of the seven input types, in the order the manifest schema lists them. */
 export const BUILT_IN_INPUT_TYPES: readonly InputTypeHandler[] = [
   text,
   secret,

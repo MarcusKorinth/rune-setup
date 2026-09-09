@@ -18,12 +18,10 @@ import {
 } from '@rune/engine';
 
 vi.mock('electron', () => ({
-  app: {},
-  BrowserWindow: class {},
   ipcMain: { handle: vi.fn() },
 }));
 
-import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/index.js';
+import { BRIDGE_CHANNELS, EVENT_CHANNEL, registerBridge } from '../src/main/bridge.js';
 import type {
   BridgeError,
   BridgeEvent,

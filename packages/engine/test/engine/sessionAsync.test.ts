@@ -37,7 +37,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import { hostPlatform } from '../../src/engine/context.js';
 import { Session, type SessionOptions } from '../../src/engine/session.js';
 
-describe.sequential('asynchronous Session I/O', () => {
+describe('asynchronous Session I/O', { concurrent: false }, () => {
   it('opens and executes without synchronous filesystem calls in the lifecycle', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rune-session-async-'));
     const locales = join(directory, 'locales');

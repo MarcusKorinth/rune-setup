@@ -38,13 +38,13 @@ import {
 } from './context.js';
 import {
   createCompletedRunFailureResult,
-  describePlan,
-  executeRun,
   registerFailureResultError,
   registerFailureResultSession,
   registerOpenFailureContext,
   registerPreManifestFailureContext,
-} from './executor.js';
+} from '../results/failure.js';
+import { describePlan } from '../results/projection.js';
+import { executeRun } from './executor.js';
 import type { EngineObserver, RunEvent, RunFinished } from './events.js';
 import {
   parseValuesFileAsync,

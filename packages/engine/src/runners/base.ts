@@ -1,8 +1,8 @@
 /**
  * The runner boundary (docs/architecture.md §8, §13).
  *
- * Exactly one implementation exists in the MVP — every step is one argv spawn — but the
- * interface is the seam a later elevated or remote runner would implement.
+ * Every step uses the argv-spawn implementation. This interface is an internal execution
+ * and test seam; it does not expose public runner injection or secret materialization.
  */
 
 import type { ResolvedCommand } from '../engine/plan.js';

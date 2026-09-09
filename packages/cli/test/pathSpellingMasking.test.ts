@@ -75,7 +75,7 @@ const SPELLINGS: readonly Spelling[] = [
     platform: 'win32',
   },
   {
-    // A terminal sink escapes controls visibly, which is how R12-SEC-1 defeated the mask.
+    // Escaping terminal controls before masking would hide the original spelling from the mask.
     name: 'a control character',
     rewrite: (path) => path.replace(/([^\\/]+)$/u, 'se\tcret-$1'),
     unopenable: true,
