@@ -16,12 +16,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { CancelToken } from '../../src/engine/cancel.js';
 import { createRuntimeContext, hostPlatform } from '../../src/engine/context.js';
 import {
-  describePlan as describePlanWithMode,
   executeRun as executeRunWithMode,
   OUTPUT_TAIL_LINES,
   snapshotParentEnvironment,
   type ExecuteOptions,
 } from '../../src/engine/executor.js';
+import { describePlan as describePlanWithMode } from '../../src/results/projection.js';
 import { resolveInputs, resolveInputsWithRegistry } from '../../src/engine/inputs.js';
 import {
   buildPlan as buildPlanWithLocale,

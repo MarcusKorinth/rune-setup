@@ -4,15 +4,14 @@
  *
  * A diagnostic must hand its masker the bytes its supplier wrote. Whenever a message template
  * escapes, quotes, or otherwise re-spells a runtime value before composition, every mask that
- * follows meets a spelling no registry ever held, and a declared secret prints in the clear —
- * the defect found ten times in rounds 12 and 13 and twice more in round 16. Composing from
- * diagnostic parts instead (`quotedDiagnostic`, then quoting at presentation) keeps the raw
+ * follows meets a spelling no registry ever held, and a declared secret prints in the clear.
+ * Composing from diagnostic parts (`quotedDiagnostic`, then quoting at presentation) keeps the raw
  * value reachable by the mask, so this suite fails a source line that escapes first.
  *
  * It reads sources as text on purpose: the defect is a composition habit, and no runtime
  * assertion can see the site until someone supplies exactly the value that exposes it. It is a
- * cross-package suite because the class crosses packages: R12-SEC-1 and R13-SEC-2 both lived in
- * `packages/cli/src`, which composes lines before handing them to the session projector.
+ * cross-package suite because both the engine and CLI compose diagnostics before handing
+ * them to a masking sink.
  *
  * It catches, wherever in a file the line sits and however the line is written: any
  * `JSON.stringify(` — in a template substitution, in a `+` concatenation, hoisted into a local,
@@ -25,7 +24,7 @@
  * inside a template (interpolate.ts and the manifest presenter quote machine identities that way
  * on dozens of lines, which would make the list noise rather than documentation); and a value
  * split, joined, trimmed, case-folded, normalized, truncated or otherwise encoded before its mask
- * (R16-SEC-3's shape — no textual signature distinguishes those from ordinary parsing).
+ * because no textual signature distinguishes those operations from ordinary parsing.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -46,7 +45,7 @@ const SOURCE_ROOTS: readonly { readonly label: string; readonly directory: strin
   },
 ];
 
-/** A value JSON-escaped for a message — R12-SEC-1's and R16-SEC-2's shape, however spelled. */
+/** A value JSON-escaped before masking, regardless of the surrounding message syntax. */
 const JSON_STRINGIFY = /JSON\.stringify\(/u;
 
 /**

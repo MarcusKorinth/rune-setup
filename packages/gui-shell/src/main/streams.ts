@@ -211,3 +211,11 @@ function isConsumerGone(error: unknown): boolean {
     CONSUMER_GONE_CODES.has(error.code)
   );
 }
+
+let fallbackProcessOutput: ShellStreams | undefined;
+
+/** Shares one lazy stream guard when a direct shell entry has no lifecycle-owned output. */
+export function fallbackOutput(): ShellStreams {
+  fallbackProcessOutput ??= guardShellStreams({ stdout: process.stdout, stderr: process.stderr });
+  return fallbackProcessOutput;
+}

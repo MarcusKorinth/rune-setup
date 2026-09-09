@@ -4,6 +4,20 @@ This document is the canonical architectural contract for **RUNE** ("Runtime for
 
 It defines decisions, boundaries, and invariants. Engine, CLI, and GUI shell: **TypeScript 5.x in strict mode** (`"strict": true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) on **Node 24 LTS**; one **npm workspaces** monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package `tests/`); vitest, eslint (+ `@typescript-eslint`), prettier. The GUI shell (§9.4) is an Electron application whose main process hosts the engine in-process — one language, one runtime. MIT license.
 
+Use this reference by topic:
+
+- **Author a workflow:** [manifest fields](#4-manifest-contract), [value precedence](#5-value-resolution),
+  and [interpolation, conditions, and localization](#6-interpolation-condition-and-text-resolution-semantics).
+- **Understand a run:** [step lifecycle and cancellation](#7-execution-model),
+  [process execution and termination](#8-runner-layer), and [results and exit codes](#10-automation-contract).
+- **Build a frontend:** [Session API](#91-session-facade-and-events),
+  [Electron bridge](#92-electron-ipc-bridge-main--renderer), and [shell lifecycle](#94-gui-shell-electron).
+- **Review security boundaries:** [logging and masking](#logging-and-secret-masking),
+  especially [path spellings](#path-spellings) and [masking limitations](#masking-limitations).
+
+For release acceptance, use [releasing.md](releasing.md). For a shorter introduction,
+start with the [README](../README.md).
+
 ## 1) Purpose and boundary
 
 RUNE executes YAML setup workflows through an interactive CLI, a non-interactive CLI,
@@ -92,7 +106,7 @@ The current CLI implements `validate`, `schema`, and both the interactive and
 non-interactive forms of `run`, including dry-run, plus `--gui` and `gui install`.
 `package` is not implemented.
 
-Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected — an auto-popping window in an SSH session is a surprise, not a feature. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
+Mode selection: default is interactive CLI on a TTY; `--gui` is explicit opt-in (if the GUI shell is not present in the per-user cache, exit 2 with the hint to run `rune gui install`); `--non-interactive` never prompts. If a prompt would be needed and stdin is **not** a TTY, RUNE auto-degrades to non-interactive (§10). GUI is never auto-selected. `--platform` is accepted only with `rune run --dry-run`; real execution refuses it. `--gui` combines with neither `--non-interactive` nor `--dry-run` — both combinations are usage errors (exit 2); dry-run always renders through the CLI renderer. `--gui` also refuses `--result -` (usage error, exit 2) — by policy: a GUI run carries no stdout contract (a windowed Electron process may emit its own diagnostics and stdout attachment differs per OS, and the stderr pass-through of §10 is best-effort diagnostics, not a machine contract); use `--result path`, which the engine writes exactly as in every other mode (§9.4).
 
 For a real run, a non-stdout `--result` destination must differ from the effective log-file
 destination after both have been anchored to absolute paths. An exact collision is a usage error
@@ -157,7 +171,7 @@ A platform mapping with no block for the current platform plans the step as **`S
 
 The model layer uses **zod** schemas: `.strict()` objects (unknown keys rejected — the reject-unknown-keys posture for free) and discriminated unions (`InputSpec` on `type` via `z.discriminatedUnion`; `run:` as `CommandSpec | PlatformRunBlock`; `options` items as `string | OptionSpec`). Error presentation is owned by RUNE, not zod: `loader.ts` builds a `SourceMap` from the `yaml` document's node ranges (JSON path → `file:line:col`), and a presenter maps every zod issue path onto it and renders e.g. `installer.yaml:41:7: steps[2].run.windows.args must be a list of strings`, with did-you-mean suggestions (a small edit-distance helper) for unknown keys. Manifest keys are camelCase and so are the TypeScript fields — no alias layer. The same zod schemas are the source of `rune schema` (§4.1). Shape and semantics stay apart: the schemas describe shape only, and every cross-field rule lives in `rules.ts`, which keeps the generated JSON Schema a faithful description of what `validate` accepts.
 
-Loader hardening: `yaml` (eemeli) with the **core schema only** — plain YAML, no custom tags, no code execution, and known tags left unresolved so an explicitly tagged YAML 1.1 value (`!!binary`, `!!timestamp`) is an error rather than a Buffer or a Date. Nothing may disappear from a document without a word: duplicate mapping keys, keys that are not plain non-empty scalars (the parser folds a collection key and an empty key into one stringified entry) and `__proto__` are all located errors. The parser's own `uniqueKeys` option is deliberately **off** — its per-key rescan is quadratic, so a flat one-megabyte mapping would cost tens of seconds and the size cap would bound nothing; the duplicates are found instead in the single walk that already records every document path. UTF-8 required; file-size cap. Locale overlays and values files go through the same loader.
+Loader hardening: `yaml` (eemeli) with the **core schema only** — plain YAML, no custom tags, no code execution, and known tags left unresolved so an explicitly tagged YAML 1.1 value (`!!binary`, `!!timestamp`) is an error rather than a Buffer or a Date. Duplicate mapping keys, keys that are not plain non-empty scalars (the parser folds a collection key and an empty key into one stringified entry) and `__proto__` are all located errors. The parser's own `uniqueKeys` option is deliberately **off** — its per-key rescan is quadratic, so a flat one-megabyte mapping would cost tens of seconds and the size cap would bound nothing; the duplicates are found instead in the single walk that already records every document path. UTF-8 required; file-size cap. Locale overlays and values files go through the same loader.
 
 Semantic rules (after model validation, all errors collected, not first-fail): unique step ids; select/multiselect `default` ⊆ option values; `secret` inputs may not declare `default`; every `${name}` reference resolves to a declared input or built-in (static check at `validate` time); every `when:` — on steps **and on inputs** — parses **and type-checks** against declared input types; an input's `when:` references only built-ins and inputs declared earlier (acyclicity; declaration order = evaluation order); `pattern` compiles as an ECMAScript `RegExp` — always with the `u` flag, here and wherever a supplied value is later matched against it, because the flags decide which patterns exist at all and a pattern accepted by `validate` but rejected at the prompt would break mode parity — and is absent on `secret`; a `patternHint` without a `pattern` is rejected (it could never be shown); `RUNE_INPUT_*` env-name collisions between two input ids are a validation error; every locale-overlay key addresses an existing localizable path of this manifest or a known `rune.` chrome key (an unknown key is a located error in the overlay file — invariant 12 applies to overlays too; `rune validate` loads and checks **every** `locales/*.yaml` file next to the manifest regardless of `--locale`, whereas `run` loads only the selected locale's overlay and its language-only fallback — a `--locale` with no matching overlay is not an error, every string simply falls back); a Windows drive-relative `execution.logFile` (`C:run.log`) is rejected (§10); a warning is emitted when a `secret` input is interpolated into process argv — either `command` or `args` — because argv can be visible in OS process listings (`env:` is the recommended carrier).
 
@@ -178,15 +192,21 @@ and states are frozen, and its id lookup is a frozen `ReadonlyMap` view without 
 operations. The lookup and `inputs` array represent the same frozen state objects in declaration
 order. The separate public input projection is defined in §9.1.
 
-Rationale — an explicitness gradient: each layer is more specific to *this invocation* than the one below. Env below `--set` matters operationally: a stray `RUNE_INPUT_*` in a CI image can never silently defeat an explicit flag in the pipeline script.
+Each layer is more specific to the invocation than the preceding one. In particular,
+`--set` overrides `RUNE_INPUT_*` variables inherited from a CI image.
 
 Values files (layer 2) are YAML documents parsed with the same hardened loader as manifests (§4.3): each file is a single **flat mapping of input id → value** — no nesting, no sections, no per-file metadata. Values may be written natively in the input's declared type — `boolean` as a YAML bool, `multiselect` as a YAML list of strings, everything else as a YAML string — or as strings, which take the same registry coercion path as layers 3–4. Any other shape (a mapping as a value, a list for a non-multiselect input, a non-string list item, a bare integer where a string is expected) is an input error naming the key, a safe shape or type category, and the file and position (exit 4, RUNE-202). The diagnostic never echoes the raw value: before the key is associated with its declared input type, that value may be a secret.
 
-Coercion (layers 3–4 deliver strings) is owned by the input-type registry: booleans accept `true/false/1/0/yes/no` case-insensitive; select values are matched against option **values**, never labels; multiselect **comma-splits by default** and validates each item against option values — and if the string starts with `[`, it is instead parsed as a **JSON array of strings** (`--set tools='["a,b","c"]'`), the escape hatch for values containing commas; malformed JSON is an input error (exit 4, RUNE-202) and **never** falls back to comma-splitting; `text` values are full-matched against `pattern` when declared; file/directory stay strings (existence checks are the manifest author's concern via a step — frontends may *hint*, never enforce). Coercion or pattern failure names the key and source layer (exit 4). A non-secret value may be quoted only after registry masking; a secret value remains opaque. Unknown keys in `--set` or values files are **hard input errors**, never warnings — a typo that silently no-ops in automation is worse than a loud failure.
+Coercion (layers 3–4 deliver strings) is owned by the input-type registry: booleans accept `true/false/1/0/yes/no` case-insensitive; select values are matched against option **values**, never labels; multiselect **comma-splits by default** and validates each item against option values — and if the string starts with `[`, it is instead parsed as a **JSON array of strings** (`--set tools='["a,b","c"]'`), the escape hatch for values containing commas; malformed JSON is an input error (exit 4, RUNE-202) and **never** falls back to comma-splitting; `text` values are full-matched against `pattern` when declared; file/directory stay strings (existence checks are the manifest author's concern via a step — frontends may *hint*, never enforce). Coercion or pattern failure names the key and source layer (exit 4). A non-secret value may be quoted only after registry masking; a secret value remains opaque. Unknown keys in `--set` or values files are **hard input errors**, never warnings.
 
-**Disabled inputs.** Input `when:` conditions are evaluated during resolution, in declaration order, against the values resolved so far (an input's condition can only see inputs declared before it, §6.2). An input whose condition is false is **disabled**: it is not required, it is never prompted, and it resolves to its type's empty value (§4.2). These semantics are identical in all three modes — the frontends differ only in rendering: the GUI shows the field greyed out (visible, not editable) and re-evaluates live when a controlling input changes (`InputStateChanged`, §9.1); the interactive CLI skips the prompt; non-interactive treats it as not required and raises no error if it is missing. If a value for an input that is disabled **once the input set is final** was supplied through any layer 2–5 (`--values`, env, `--set`, or an interactive answer given before a controlling input was changed), RUNE records an engine-owned **warning**, **ignores** the value, and records the input in the result file with the effective empty value, the `source` layer that supplied the ignored value, and `ignored: "input disabled"` (§10). Human warning delivery follows the masking rules in §10: when an opened Session fails before a completed plan, the CLI suppresses additional warning lines while retaining the engine warning state. The decision is taken at the end of resolution, not at first merge — an interactive edit that re-enables an input makes its seeded value effective again, with no spurious warning. This is deliberately not a hard error — CI matrices share values files across variants that enable different inputs — and always recorded as a warning.
+**Disabled inputs.** Input `when:` conditions are evaluated during resolution, in declaration order, against the values resolved so far (an input's condition can only see inputs declared before it, §6.2). An input whose condition is false is **disabled**: it is not required, it is never prompted, and it resolves to its type's empty value (§4.2). These semantics are identical in all three modes — the frontends differ only in rendering: the GUI shows the field greyed out (visible, not editable) and re-evaluates live when a controlling input changes (`InputStateChanged`, §9.1); the interactive CLI skips the prompt; non-interactive treats it as not required and raises no error if it is missing.
 
-**What counts as an answer.** A `required` input is satisfied by a value, not by the absence of one dressed as a value: for `text`, `secret`, `select`, `file` and `directory` an empty string, and for `multiselect` an empty selection, leave the input *missing*. This is the shape of the CI mistake that matters — `RUNE_INPUT_TOKEN=` in a pipeline where the variable was never set expands to the empty string, and a required secret must not be satisfied by it. A `boolean` is never absent: `false` is an answer.
+If a value for an input that is disabled **once the input set is final** was supplied through any layer 2–5 (`--values`, env, `--set`, or an interactive answer given before a controlling input was changed), RUNE records an engine-owned **warning**, **ignores** the value, and records the input in the result file with the effective empty value, the `source` layer that supplied the ignored value, and `ignored: "input disabled"` (§10). Human warning delivery follows the masking rules in §10: when an opened Session fails before a completed plan, the CLI suppresses additional warning lines while retaining the engine warning state. The decision is taken at the end of resolution, not at first merge — an interactive edit that re-enables an input makes its seeded value effective again, with no spurious warning. This is deliberately not a hard error — CI matrices share values files across variants that enable different inputs — and always recorded as a warning.
+
+**Required values.** An empty string leaves a required `text`, `secret`, `select`,
+`file`, or `directory` input missing; an empty selection does the same for `multiselect`.
+For example, `RUNE_INPUT_TOKEN=` does not satisfy a required secret. A `boolean` is never
+absent: `false` is a valid answer.
 
 Interactive frontends prompt **only for still-missing, enabled inputs**, in declaration order, then show one summary before execution. Both interactive frontends allow layer-5 overrides of **any enabled input**, not only missing ones: the GUI pre-fills all fields from the seeded layers 1–4 and keeps them editable; the interactive CLI's summary is an **edit loop** — `Proceed / Change value <n> / Cancel` — so a seeded value can be replaced before anything runs (§9.3). An edit is an ordinary layer-5 answer with full provenance; changing a controlling input re-evaluates input `when:` for the inputs after it, and inputs that thereby become enabled and are still missing are prompted before the summary is shown again. A `pattern`-violating `text` value from layers 1–4 is reported where any other coercion failure is: non-interactive → exit 4 before any step runs; interactive CLI → treated as unanswered and prompted until valid; GUI → pre-filled, marked invalid, `Next` disabled. Execution starts only when the input set is complete and valid — which is what lets planning be a single phase in every mode.
 
@@ -205,15 +225,15 @@ Resolvable names (flat scope; collisions rejected at validate):
 
 Platform definitions: Node's `win32` maps to `windows` and `linux` maps to `linux`; every other host platform is rejected before planning with `PlatformError` (RUNE-002, exit 2) rather than being treated as Linux. `${home}` is `os.homedir()` (`USERPROFILE` on Windows, `HOME` on Linux); `${temp}` is `os.tmpdir()` (`%TEMP%` on Windows, usually `/tmp` on Linux). `${env.NAME}` lookup uses the host platform's `process.env` semantics — case-insensitive on Windows, case-sensitive on Linux; portable manifests must reference environment names in their exact POSIX casing.
 
-**Foreign-platform preview (`--platform`).** When `rune run --dry-run` previews a platform other than the host, host-dependent built-ins render as visibly marked **placeholder tokens** — `<home@linux>`, `<temp@windows>` — rather than the host's real values, which would be lies about the target. The dry-run output states that the plan is a cross-platform preview, and the result file marks it (`"crossPlatformPreview": true` in the run block, §10). Placeholders never reach execution: real runs refuse `--platform` (§4.1).
+**Foreign-platform preview (`--platform`).** When `rune run --dry-run` previews a platform other than the host, host-dependent built-ins render as visibly marked **placeholder tokens** — `<home@linux>`, `<temp@windows>` — rather than the host's real values, which do not describe the target. The dry-run output states that the plan is a cross-platform preview, and the result file marks it (`"crossPlatformPreview": true` in the run block, §10). Placeholders never reach execution: real runs refuse `--platform` (§4.1).
 
 Interpolable fields, exhaustively: `command`, each `args` item, `cwd`, `env` values, input `default`s, and variable references inside `when:`. Nothing else — in particular no `title`, `description`, `patternHint`, option labels, or `gui:` paths. String-context rendering stringifies (boolean → `true`/`false`; multiselect → comma-joined); inside `when:` a reference keeps its declared type.
 
-**Resolution timing (load-bearing invariant):** interpolation of `command`/`args`/`cwd`/`env` and step `when:` evaluation happen **exactly once**, in the Planner, after all inputs are final and before any step runs — never at YAML load, never lazily during execution. Two things are evaluated earlier, in the resolution stage, because they decide what is prompted and prefilled — and both are final the moment the input set is frozen for planning: input `when:` (the one condition kind evaluated there) and input `default` interpolation (built-ins and `${env.*}` only, no input references; rendered once, before prompting, so the rendered default is what the GUI/CLI prefill and what layers 2–5 override; an undefined `${env.NAME}` in a default is RUNE-301, exit 5, at resolution). Resolution is single-pass: resolved values are never re-scanned for `${`, which closes injection-via-input-values. Consequence: the plan is fully static, dry-run shows byte-for-byte the argv `run` will spawn, and all three frontends plan identically.
+**Resolution timing:** interpolation of `command`/`args`/`cwd`/`env` and step `when:` evaluation happen **exactly once**, in the Planner, after all inputs are final and before any step runs — never at YAML load, never lazily during execution. Two things are evaluated earlier, in the resolution stage, because they decide what is prompted and prefilled — and both are final the moment the input set is frozen for planning: input `when:` (the one condition kind evaluated there) and input `default` interpolation (built-ins and `${env.*}` only, no input references; rendered once, before prompting, so the rendered default is what the GUI/CLI prefill and what layers 2–5 override; an undefined `${env.NAME}` in a default is RUNE-301, exit 5, at resolution). Resolution is single-pass: resolved values are never re-scanned for `${`, which closes injection-via-input-values. Consequence: the plan is static and shared by all three frontends; dry-run projects the argv `run` will spawn, with secrets masked (§10).
 
 ### 6.2 Condition language (`when:`)
 
-A closed, hand-written expression language: ~200-line tokenizer + recursive-descent parser in `engine/conditions.ts` producing a small AST. **No `eval`, no `new Function`, no template engine.** Expression length capped (4 KiB) and parse depth capped. One grammar, one evaluator, two sites: `steps[].when` and `inputs.<id>.when`.
+A closed, hand-written expression language: tokenizer and recursive-descent parser in `engine/conditions.ts` producing a small AST. **No `eval`, no `new Function`, no template engine.** Expression length capped (4 KiB) and parse depth capped. One grammar, one evaluator, two sites: `steps[].when` and `inputs.<id>.when`.
 
 ```
 expr    := or ;
@@ -229,7 +249,7 @@ varref  := "${" NAME { "." NAME } "}" ;
 Integer literals are decimal values in the inclusive safe range
 `-9007199254740991..9007199254740991`; a literal outside that range is a validate-time error.
 
-No functions, arithmetic, regex, attribute access, or indexing. **Typing is strict:** a bare `${x}` is valid only if `x` is a declared `boolean` (`when: "${installDatabase}"`). Strings and selects are never implicitly truthy — `when: "${environment}"` fails with the hint *compare explicitly: `${environment} == 'production'`*. `==`/`!=` require both sides same type; `in` tests string ∈ multiselect. Because input types are declared, **every condition type-checks at `rune validate` time with zero values supplied**. Loose truthiness must never ship in v1 — it could never be tightened later.
+No functions, arithmetic, regex, attribute access, or indexing. **Typing is strict:** a bare `${x}` is valid only if `x` is a declared `boolean` (`when: "${installDatabase}"`). Strings and selects are never implicitly truthy — `when: "${environment}"` fails with the hint *compare explicitly: `${environment} == 'production'`*. `==`/`!=` require both sides same type; `in` tests string ∈ multiselect. Because input types are declared, **every condition type-checks at `rune validate` time with zero values supplied**.
 
 Absent `when:` ⇒ always eligible. On a step, a false condition plans the step as `SKIPPED` with reason `condition false: <expr>`. On an input, a false condition disables the input (§5).
 
@@ -274,7 +294,7 @@ One pipeline, shared by every verb and frontend, orchestrated by `Session`:
 5. **execute** — Executor walks the plan sequentially
 6. **report** — result file (counters, per-step results, output tails) + exit code
 
-`rune validate` = stages 1–2 (fully static), followed by the environment-variable audit report (§4.3). `rune run --dry-run` = stages 1–4, rendering the plan (final argv with secrets masked, cwd, skip reasons, disabled inputs) and executing nothing. There is **no fake runner**: dry-run and run share the same plan object, so they cannot drift.
+`rune validate` = stages 1–2 (fully static), followed by the environment-variable audit report (§4.3). `rune run --dry-run` = stages 1–4, rendering the plan (final argv with secrets masked, cwd, skip reasons, disabled inputs) and executing nothing. Dry-run and run share the same plan object; dry-run does not invoke a runner.
 
 Planning can reject an execution spelling before an `ExecutionPlan` exists: an invalid native
 Windows command root or drive-relative command (RUNE-401), an invalid native Windows `cwd`
@@ -329,7 +349,33 @@ RuneError
 
 ### Cancellation
 
-`CancelToken` is a small class around a boolean flag plus an `AbortSignal`-style listener list (`cancel()`, `isCancelled`, `onCancel(listener)`); the engine is `async`/`await` on the Node event loop, so cancellation is cooperative and needs no threads. One flow for all frontends (GUI Cancel button → `rune.cancel` over the IPC bridge → token, CLI first `Ctrl+C`, headless SIGTERM). The Executor checks the token between steps; a live child process gets the confirmed process-group/tree termination path of §8. After that operation the runner waits at most 5 s for the direct child's `close` event, so a missing event cannot leave execution pending; expiry preserves the original cancellation/timeout/stream-failure cause when tree termination was confirmed, but can never upgrade an unconfirmed termination. A confirmed interruption makes the step `CANCELLED`, remaining steps `NOT_RUN`, run status `cancelled`, exit 6. A runner that reports a non-success exit after cancellation was requested makes the step `CANCELLED` as well, with the same null exit code as a runner-reported cancellation. `SpawnRunner` never reports one: its kill path owns a requested cancellation and settles the step as `cancelled` or `terminationFailed`, so the rule only covers a runner that ignores the token. An exit the runner reported before the request stays `FAILED` — on Windows a console `Ctrl+C` also reaches the console-attached child (§8), and when the child's `close` is processed before RUNE's SIGINT handler fires, the step is `FAILED` with the child's `STATUS_CONTROL_C_EXIT` code and the run is `failed`, exit 1. If any earlier step is already `FAILED`, that failure takes precedence: the run stays `failed` with exit 1. A second `Ctrl+C` force-exits. Step **timeout reuses the same kill path** with terminal state `FAILED` (RUNE-402). An unconfirmed termination on either platform is instead the fatal `terminationFailed` contract from §8. If the GUI shell's window is closed during a run, the shell's main process calls `Session.cancel()` and awaits `RunFinished` before exiting — the same path, never a bare abort of the engine.
+`CancelToken` exposes `cancel()`, `isCancelled`, and `onCancel(listener)` around a boolean
+flag and an `AbortSignal`-style listener list. Cancellation is cooperative on the Node
+event loop and needs no threads.
+
+**Requests.** The GUI Cancel button calls `rune.cancel` over the bridge; the CLI's first
+`Ctrl+C` and headless SIGTERM request the same cancellation. The Executor checks the
+token between steps. A live child uses the confirmed process-group/tree termination
+path in §8. Closing the GUI window during a run calls `Session.cancel()` and awaits
+`RunFinished` before exiting. A second `Ctrl+C` force-exits.
+
+**Completion.** After the termination operation, the runner waits at most 5 s for the
+direct child's `close` event. If that wait expires, confirmed termination preserves the
+original cancellation, timeout, or stream-failure cause; it cannot make an unconfirmed
+termination successful. An unconfirmed operation is the fatal `terminationFailed`
+outcome in §8. A timeout uses the same kill path but makes the step `FAILED` (RUNE-402).
+
+**Outcome precedence.** A confirmed cancellation makes the current step `CANCELLED`,
+remaining steps `NOT_RUN`, and the run `cancelled` with exit 6. Any earlier `FAILED`
+step takes precedence: the run stays `failed` with exit 1.
+
+- A runner-reported non-success exit after a cancellation request also makes the step
+  `CANCELLED`, with a null exit code. This covers an internal runner that ignores the
+  token; `SpawnRunner` owns its kill path and reports `cancelled` or `terminationFailed`.
+- An exit reported before the request stays `FAILED`. On Windows, console `Ctrl+C`
+  reaches a console-attached child as well as RUNE. If the child's `close` is processed
+  before RUNE's SIGINT handler, the step is `FAILED` with `STATUS_CONTROL_C_EXIT` and the
+  run is `failed`, exit 1.
 
 ## 8) Runner layer
 
@@ -344,7 +390,10 @@ against the spec's own security rule.
 
 Process contract:
 
-- `child_process.spawn(command, args, { shell: false, ... })` — argv arrays, never a shell; **async on the Node event loop** (the process exit and the stream ends are awaited; no worker threads, no blocking calls), so the engine never blocks whoever hosts it — the CLI or the Electron main process
+- `child_process.spawn(command, args, { shell: false, ... })` uses argv arrays and never
+  an implicit shell. Process exit and stream completion are awaited on the Node event
+  loop without worker threads or synchronous process/stream I/O. Synchronous CPU work
+  in the Session lifecycle is described in §9.1.
 - Normal completion waits for stdout and stderr to reach EOF, including pipes inherited
   by descendants after the direct process exits. There is no implicit deadline for this
   wait. `timeoutSeconds` remains active until output has been delivered; cancellation also
@@ -361,14 +410,59 @@ Process contract:
   previews preserve these target spellings unchanged and cannot execute them.
 - env = one shallow-frozen parent-environment snapshot captured by the Executor immediately before `RunStarted`, after removing the `RUNE_INPUT_<ID>` control variable of every declared input (case-insensitively on Windows), then the interpolated `env:` overlay, then reserved `RUNE_RUN_ID` / `RUNE_STEP_ID`; all other parent variables remain inherited, and an explicit command `env:` entry may set a removed name again. The same internal snapshot is used for every step and termination helper in the run and is never added to the `ExecutionPlan`, events, results, or root public API
 - stdout/stderr are consumed as streams and line-split with a **64 KiB (65,536 UTF-8 byte) payload limit per logical line**, independently per stream. At the first byte over the limit, the runner clears that line's retained content, emits exactly one fixed value-free line (`[output line omitted: exceeds 64 KiB]`), discards through the next real `\n`, and then resumes normally; EOF while discarding emits nothing further. Lines at or below the limit retain their existing semantics, including CRLF stripping, empty lines, and an unterminated final line. The runner never emits raw fragments at artificial boundaries, so each callback is either one complete bounded logical line or that placeholder and the Executor can pass the whole callback through the secret masker **before anything else sees it**. Persistent per-stream state is bounded; output is never buffered whole. If the bounded child-close wait after termination expires, each reader stops accepting fresh pipe data after its current chunk plus one snapshot of its already-buffered readable content. Those accepted bytes still drain serially through complete logical lines and sink Promises; an incomplete line at this artificial cutoff is discarded rather than exposed as a raw fragment. Natural EOF behavior is unchanged.
-- process termination (cancellation, timeout, and output-stream failure, §7): POSIX children use `detached: true`. The guarantee covers the spawned process group as a unit, not descendants that deliberately leave that group. The runner sends `process.kill(-pid, 'SIGTERM')`; only `ESRCH` means the group is already absent, while `EPERM`, `EACCES`, and every other signal error are unconfirmed failures. After a sent SIGTERM it polls `process.kill(-pid, 0)` for up to 5 s; only `ESRCH` confirms group absence during this grace phase. It does not use a Linux `/proc` snapshot to finish the grace phase while a signal handler could still fork another group member. If the group remains, the runner sends SIGKILL; an absent group at SIGKILL is confirmed, a signal failure is not, and a sent SIGKILL gets a further bounded 5 s for confirmation. Each wait has a watchdog installed before its first probe, so a stuck probe cannot evade the deadline. Only after SIGKILL has been sent may Linux `/proc` probing distinguish live members from zombies; it ignores process-disappearance races (`ENOENT`/`ESRCH`), while restricted or otherwise unclear scans conservatively treat the group as live. Windows spawns `<SystemRoot>\System32\taskkill.exe /PID <pid> /T /F` from the run's parent-environment snapshot, looking up `SystemRoot` case-insensitively and requiring a non-empty normal fully qualified drive or UNC path (not a current-drive-relative root or device namespace), with argv and `shell: false` — never through `PATH`, `WINDIR`, discovery, or a default. Helper exit 0 confirms the Windows tree termination, and a direct child that has already ended before or while the helper runs counts as absent, like `ESRCH` on POSIX — Windows children stay attached to RUNE's console, so a console `Ctrl+C` reaches a console-attached child at the same moment it fires the CancelToken, and the child ends before the helper runs (a `close` processed before the SIGINT handler is the §7 case); descendants that outlive an ended child are outside the guarantee — a narrower guarantee than the POSIX group kill, since the helper cannot enumerate the tree of a process that is gone. On either platform, an unconfirmed operation makes one immediate best-effort direct-child SIGKILL when the child still has a PID and has not ended, then yields `terminationFailed`; waiting for child `close` is bounded to 5 s and cannot change that result. When that bounded wait expires, the runner releases its ends of the child's stdio and its handle on the child, so an orphaned descendant that inherited them cannot keep the host process alive. `terminationFailed` is fatal: the current step is `FAILED` with RUNE-401 and a null exit code, every later pending step is `NOT_RUN` regardless of `failFast`, and the run is failed. A confirmed operation preserves the original cause even if the bounded child-close wait expires.
 - success ⇔ exit code ∈ `successExitCodes` (default `[0]`)
 - startup failure classification is value-free: a missing, non-directory, or NUL-containing
   `cwd` is `invalidCwd` (RUNE-404); `ENOENT` retains the cwd check that distinguishes a
   missing command from an invalid cwd; other platform startup failures remain unclassified
   execution failures (RUNE-401)
-- Windows honesty rule: `.bat`/`.cmd` files require a shell; RUNE **refuses** them (RUNE-405). The check runs at plan time on the final interpolated `command` — so `--dry-run` surfaces it before anything executes — with a spawn-time backstop in the runner; the message tells authors to write `command: cmd, args: ["/c", ...]` explicitly — the no-implicit-shell invariant is kept honest, not quietly bypassed
+- Windows `.bat`/`.cmd` files require a shell and are refused (RUNE-405). The check runs
+  at plan time on the final interpolated `command`, including `--dry-run`, with a spawn-time
+  backstop in the runner. The diagnostic tells authors to invoke the interpreter explicitly:
+  `command: cmd, args: ["/c", ...]`.
 - secrets are revealed (unwrapped) only at spawn, inside the runner
+
+### Process termination
+
+Cancellation, timeout, and output-stream failure use the following platform rules.
+
+**POSIX process groups.** Children use `detached: true`. The guarantee covers the spawned
+process group, excluding descendants that deliberately leave it.
+
+1. Send `process.kill(-pid, 'SIGTERM')`. Only `ESRCH` confirms an already absent group;
+   `EPERM`, `EACCES`, and all other signal errors are unconfirmed failures.
+2. After a sent SIGTERM, poll `process.kill(-pid, 0)` for up to 5 s. Only `ESRCH` confirms
+   absence during this grace period. A Linux `/proc` snapshot cannot end the grace period:
+   a signal handler could still fork another group member.
+3. If the group remains, send SIGKILL. An already absent group is confirmed; a signal
+   failure is not. A sent SIGKILL allows a further 5 s for confirmation. Only in this phase
+   may Linux `/proc` probes distinguish live members from zombies. Ignore disappearance
+   races (`ENOENT`/`ESRCH`); treat restricted or otherwise unclear scans as a live group.
+
+Each wait installs its watchdog before the first probe, so a stuck probe cannot evade
+the deadline.
+
+**Windows process trees.** Spawn `<SystemRoot>\System32\taskkill.exe /PID <pid> /T /F`
+with argv and `shell: false`. Read `SystemRoot` case-insensitively from the run's frozen
+parent-environment snapshot. It must be a non-empty, normal fully qualified drive or UNC
+path, excluding current-drive-relative roots and device namespaces. Never locate the
+helper through `PATH`, `WINDIR`, discovery, or a default.
+
+Helper exit 0 confirms termination. A direct child that ends before or during the helper
+also counts as absent. Windows children remain attached to RUNE's console: `Ctrl+C` can
+end a child before the helper runs; §7 defines the outcome when `close` precedes RUNE's
+SIGINT handler. Descendants that outlive an ended direct child are outside this guarantee,
+because the helper cannot enumerate the tree of a process that is gone. This is narrower
+than the POSIX process-group guarantee.
+
+**Unconfirmed termination and handle release.** On either platform, an unconfirmed
+operation makes one immediate best-effort direct-child SIGKILL if the child still has a
+PID and has not ended, then returns `terminationFailed`. The subsequent child-`close`
+wait is bounded to 5 s and cannot change that outcome. On expiry, release the runner's
+stdio endpoints and child handle so inherited pipes cannot keep the host alive.
+
+`terminationFailed` is fatal: the current step is `FAILED` with RUNE-401 and a null exit
+code; every later pending step is `NOT_RUN` regardless of `failFast`; the run is failed.
+A confirmed operation preserves its original cause even if the child-`close` wait expires.
 
 ## 9) Frontend contract
 
@@ -461,14 +555,18 @@ unanswered or rejected value; `secret: false` carries only a masked
 hints, conditions, or option labels; frontends obtain all display text from `getStrings()`.
 Input ids, type discriminators, option values, provenance, and enabled/ignored state are machine
 identities and remain byte-exact even when their text collides with a secret. Rejection candidates,
-messages, and locations are masked copies. Every successful resolution publishes one deep-frozen
+messages, and locations are masked copies.
+
+Every successful resolution publishes one deep-frozen
 `allInputs` array and one `pendingInputs` array that share their frozen state objects, projected
 with the resolution's secret registry. The first successful plan for that resolution atomically
 publishes both the completed plan and a fresh pair projected with that plan's authenticated
 complete secret registry, including secret spellings derived during path anchoring. Repeated reads
 retain both array identities until the next successful edit, which publishes the next
 resolution-only pair and invalidates the plan, or until the first successful plan of that next
-resolution publishes its plan-masked pair. A failed plan or rejected edit publishes neither a plan
+resolution publishes its plan-masked pair.
+
+A failed plan or rejected edit publishes neither a plan
 nor input snapshots. Previously returned snapshots remain frozen and unchanged: a historical
 pre-plan snapshot can therefore retain a public value that collides only with a secret spelling
 derived later during planning. Its masking records what was knowable when that phase snapshot was
@@ -510,14 +608,50 @@ Custom runners must await each onOutput return before sending more output or set
 
 ### 9.2 Electron IPC bridge (main ↔ renderer)
 
-The IPC bridge is how the GUI shell's renderer drives the engine. The engine runs **inside the shell's Electron main process** (`gui-shell/src/main` imports `@rune/engine` and owns one `Session`); the renderer is a pure renderer in a sandboxed `BrowserWindow` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`) and sees the engine only through a preload script that exposes `window.rune` via `contextBridge.exposeInMainWorld`. The bridge's engine-facing API is a **1:1 projection of the `Session` facade and event stream**: every engine-facing method maps to the corresponding facade operation and every run event to one push message. The sole additional method is the shell-lifecycle-only `rune.done` signal described below; it adds no engine behavior. Adding engine behavior reachable only through the bridge would break mode parity by construction and is forbidden (invariant 11). There is no wire format, no stdio channel, no sidecar process, and no engine binary.
+The IPC bridge is how the GUI shell's renderer drives the engine. The engine runs **inside the shell's Electron main process** (`gui-shell/src/main` imports `@rune/engine` and owns one `Session`); the renderer is a pure renderer in a sandboxed `BrowserWindow` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`) and sees the engine only through a preload script that exposes `window.rune` via `contextBridge.exposeInMainWorld`. The bridge's engine-facing API is a **1:1 projection of the `Session` facade and event stream**: every engine-facing method maps to the corresponding facade operation and every run event to one push message. The sole additional method is the shell-lifecycle-only `rune.done` signal described below; it adds no engine behavior. Adding engine behavior reachable only through the bridge would break mode parity by construction and is forbidden (invariant 11). The bridge uses Electron IPC rather than a public wire protocol; it has no stdio
+channel, sidecar process, or engine binary.
 
-- **Transport:** Electron IPC — request/response via `ipcRenderer.invoke` ↔ `ipcMain.handle` (one channel per facade method), run events pushed main → renderer via `webContents.send` and subscribed through `rune.onEvent(listener)` in the preload. Preload and renderer are built and shipped together in the same artifact, so the bridge is an internal contract pinned by a unit test (§14), not a versioned wire format.
-- **Opening:** the renderer calls `rune.open()`; main opens the `Session` from the **invocation it was launched with** (manifest path, `--values`, `--set`, `--locale`, `--result`, `--log-file` — the CLI's layers 2–4 and flags, resolved by the engine exactly as for the CLI). The renderer never supplies a manifest path or any layer-1–4 value; `rune.open()` resolves to `{ runeVersion, inputTypes, product }` — the input-type names the manifest uses, checked against the renderer's field-renderer registry (§9.3), plus the exact product machine identity. `open.product` remains byte-exact even when it collides with a secret and is not a human display projection.
-- **Methods:** `rune.open`, `rune.pendingInputs`, `rune.allInputs`, `rune.warnings`, `rune.setValue`, `rune.plan`, `rune.describe`, `rune.execute`, `rune.cancel`, `rune.getStrings`, `rune.getThemeConfig` — every one returns a Promise and maps to the corresponding facade operation. `rune.getStrings` wraps the current facade table as `{ locale, entries, displayProduct: { name, version, welcome } }`, where `locale` is the engine-selected tag or `null` for built-in English defaults: main composes the human product name and version and, when no description exists, the complete name/version fallback with that exact authenticated table; an explicit product description, including an empty one, remains the authoritative accessor-projected welcome text. The renderer replaces this whole presentation snapshot after every accepted answer, after every successful plan, and before Back returns from Summary. After an actual rejected `rune.setValue` call for a current input, main decorates that input's next `allInputs` projection with human-only `editRejection: { candidate?, displayText }`: the candidate is retained only for public string edits on `text`, `file`, or `directory`, while every input type retains the safe error presentation. Main recomputes this metadata with the current authenticated string table on every read. `displayText` is the current remasked safe engine error, so a length, type, or pattern rejection retains its authoritative cause instead of being classified again by the shell; for a genuine pattern mismatch, that engine diagnostic already incorporates the localized `patternHint`, including its explicit-empty semantics and human-sink control escaping. Main terminal-projects any retained candidate separately. It keeps an authentic seed `rejection` separate and removes the edit rejection after a successful correction or when the input becomes disabled. This closure-local presentation state neither mutates engine input state nor validates a value. `rune.plan` projects the frozen `ExecutionPlan`; `rune.describe` projects the dry-run result. `rune.execute` is long-running: run events are pushed while it is in flight and its promise resolves with the `RunResult`; `rune.cancel` is the only call serviced concurrently with it. `rune.warnings` preserves each original warning message and adds its complete `displayText`. The shell-lifecycle-only `rune.done` signal lets the Result page release the window after result delivery; it adds no engine behavior.
-- **Events (main → renderer):** `runStarted`, `stepStarted`, `stepOutput`, `stepFinished`, `runFinished` — the run events only; the live enable/disable signal for §5's disabled inputs (`InputStateChanged`) is the resolved value of `rune.setValue`, not a pushed event. `allInputs()` and `pendingInputs()` already return their plain sink-safe snapshots from the facade. A successful `rune.plan` publishes the plan-masked input snapshot before its response resolves, so subsequent input reads use every secret spelling that plan derived; a renderer-held pre-plan response remains the immutable historical phase snapshot described in §9.1, and the renderer replaces it by reading the current inputs. Other payloads remain **bridge projections**: main runs the complete plan, result, and event values through the bridge serializer first (JSON-safe plain data; `SecretString` → `***`, `mask()` applied), preserving every machine field, and may then add complete human-only presentation metadata composed as §9.1 defines. `webContents.send` / the invoke return therefore gives Electron's structured clone only plain masked data, never an engine object (structured clone ignores `toJSON()`, so a raw `SecretString` must never reach it). The same facade methods, IPC channels, and run-event kinds remain in force; each engine event produces exactly one pushed bridge message, and presentation metadata adds no RPC. Ordering and bracketing rules of §9.1 hold across the bridge.
-- **Secrets:** values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
-- **Errors:** every invoke returns a JSON-safe tagged success or failure reply. Preload unwraps successful values and rejects failures with a plain `BridgeError` object tagged `kind: "rune-error"`, carrying the `RUNE-xxx` `code`, masked `message`, masked source `location` (or `null`), and the `exitCode` the CLI would have used. Main also supplies the complete masked `displayText`, including the code, exit code, and located diagnostics; the renderer assigns it verbatim without parsing Electron error messages or composing metadata. Machine codes stay exact. Native `Error` objects never cross either IPC or `contextBridge`: Electron does not preserve their custom properties. Stacks, causes, and arbitrary properties stay in main. Unknown thrown values, transport failures, and malformed replies become a fixed value-free RUNE-500 / exit 70 diagnostic. Two classes: rejections of `rune.setValue` and `rune.plan` are **recoverable** — the renderer shows the authoritative engine diagnostic inline (including `patternHint` when the engine reports a pattern mismatch), keeps Next disabled while inputs are incomplete or invalid (§9.3), and lets the session continue; only errors from `rune.open`, `rune.execute`, and failures outside any bridge call (e.g. window close during a run) are **fatal** — main, not the renderer, maps those through `exitCodeFor` and exits with that code (§9.4).
+#### Bridge transport
+
+Electron IPC — request/response via `ipcRenderer.invoke` ↔ `ipcMain.handle` (one channel per facade method), run events pushed main → renderer via `webContents.send` and subscribed through `rune.onEvent(listener)` in the preload. Preload and renderer are built and shipped together in the same artifact, so the bridge is an internal contract pinned by a unit test (§14), not a versioned wire format.
+
+#### Opening a session
+
+The renderer calls `rune.open()`; main opens the `Session` from the **invocation it was launched with** (manifest path, `--values`, `--set`, `--locale`, `--result`, `--log-file` — the CLI's layers 2–4 and flags, resolved by the engine exactly as for the CLI). The renderer never supplies a manifest path or any layer-1–4 value; `rune.open()` resolves to `{ runeVersion, inputTypes, product }` — the input-type names the manifest uses, checked against the renderer's field-renderer registry (§9.3), plus the exact product machine identity. `open.product` remains byte-exact even when it collides with a secret and is not a human display projection.
+
+#### Bridge methods
+
+`rune.open`, `rune.pendingInputs`, `rune.allInputs`, `rune.warnings`, `rune.setValue`, `rune.plan`, `rune.describe`, `rune.execute`, `rune.cancel`, `rune.getStrings`, `rune.getThemeConfig` — every one returns a Promise and maps to the corresponding facade operation.
+
+`rune.getStrings` wraps the current facade table as `{ locale, entries, displayProduct: { name, version, welcome } }`, where `locale` is the engine-selected tag or `null` for built-in English defaults: main composes the human product name and version and, when no description exists, the complete name/version fallback with that exact authenticated table; an explicit product description, including an empty one, remains the authoritative accessor-projected welcome text. The renderer replaces this whole presentation snapshot after every accepted answer, after every successful plan, and before Back returns from Summary.
+
+After an actual rejected `rune.setValue` call for a current input, main decorates that input's next `allInputs` projection with human-only `editRejection: { candidate?, displayText }`: the candidate is retained only for public string edits on `text`, `file`, or `directory`, while every input type retains the safe error presentation. Main recomputes this metadata with the current authenticated string table on every read. `displayText` is the current remasked safe engine error, so a length, type, or pattern rejection retains its authoritative cause instead of being classified again by the shell; for a genuine pattern mismatch, that engine diagnostic already incorporates the localized `patternHint`, including its explicit-empty semantics and human-sink control escaping. Main terminal-projects any retained candidate separately. It keeps an authentic seed `rejection` separate and removes the edit rejection after a successful correction or when the input becomes disabled. This closure-local presentation state neither mutates engine input state nor validates a value.
+
+`rune.plan` projects the frozen `ExecutionPlan`; `rune.describe` projects the dry-run result. `rune.execute` is long-running: run events are pushed while it is in flight and its promise resolves with the `RunResult`; `rune.cancel` remains callable during execution.
+
+`rune.warnings` preserves each original warning message and adds its complete `displayText`. The shell-lifecycle-only `rune.done` signal lets the Result page release the window after result delivery; it adds no engine behavior.
+
+#### Events and plain-data projection
+
+`runStarted`, `stepStarted`, `stepOutput`, `stepFinished`, `runFinished` — the run events only; the live enable/disable signal for §5's disabled inputs (`InputStateChanged`) is the resolved value of `rune.setValue`, not a pushed event.
+
+`allInputs()` and `pendingInputs()` already return their plain sink-safe snapshots from the facade. A successful `rune.plan` publishes the plan-masked input snapshot before its response resolves, so subsequent input reads use every secret spelling that plan derived; a renderer-held pre-plan response remains the immutable historical phase snapshot described in §9.1, and the renderer replaces it by reading the current inputs.
+
+Other payloads remain **bridge projections**: main runs the complete plan, result, and event values through the bridge serializer first (JSON-safe plain data; `SecretString` → `***`, `mask()` applied), preserving every machine field, and may then add complete human-only presentation metadata composed as §9.1 defines. `webContents.send` / the invoke return therefore gives Electron's structured clone only plain masked data, never an engine object (structured clone ignores `toJSON()`, so a raw `SecretString` must never reach it). The same facade methods, IPC channels, and run-event kinds remain in force; each engine event produces exactly one pushed bridge message, and presentation metadata adds no RPC. Ordering and bracketing rules of §9.1 hold across the bridge.
+
+#### Secret values across the bridge
+
+Values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
+
+#### Bridge errors
+
+Every invoke returns a JSON-safe tagged success or failure reply. Preload unwraps successful values and rejects failures with a plain `BridgeError` object tagged `kind: "rune-error"`, carrying the `RUNE-xxx` `code`, masked `message`, masked source `location` (or `null`), and the `exitCode` the CLI would have used. Main also supplies the complete masked `displayText`, including the code, exit code, and located diagnostics; the renderer assigns it verbatim without parsing Electron error messages or composing metadata. Machine codes stay exact.
+
+Native `Error` objects never cross either IPC or `contextBridge`: Electron does not preserve their custom properties. Stacks, causes, and arbitrary properties stay in main. Unknown thrown values, transport failures, and malformed replies become a fixed value-free RUNE-500 / exit 70 diagnostic.
+
+**Recoverable errors:** rejections of `rune.setValue` and `rune.plan` — the renderer shows the authoritative engine diagnostic inline (including `patternHint` when the engine reports a pattern mismatch), keeps Next disabled while inputs are incomplete or invalid (§9.3), and lets the session continue.
+
+**Fatal errors:** errors from `rune.open`, `rune.execute`, and failures outside any bridge call (e.g. window close during a run). Main maps those through `exitCodeFor` and exits with that code (§9.4).
 
 ### 9.3 Per-frontend behavior
 
@@ -529,23 +663,76 @@ Every frontend asserts at session open that it can render every input type the m
 
 ### 9.4 GUI shell (Electron)
 
-**Why Electron.** The end user of a RUNE-built installer must be able to run it out of the box on any supported machine — nothing to install first, no admin rights (portable, per-user), pixel-identical everywhere (a *bundled* rendering engine, never a system webview), and with a genuinely modern, polished, animated default look. A bundled Chromium is the one widely deployed rendering engine that meets all four; the installer *author* may install tooling (Node 24 LTS and the RUNE source checkout) — the end user never does. Because engine, CLI, and shell are one language, the shell needs no second runtime, no second bundler, and no sidecar process.
+#### Runtime and responsibilities
 
-**Shape.** The wizard UI is an Electron application ("GUI shell") written in TypeScript + HTML/CSS in `packages/gui-shell/`, three parts with three roles: **main** (`src/main/`) imports `@rune/engine` and **hosts the engine in-process** — it owns the `Session`, registers the IPC handlers, creates the window, and exits with the engine's exit code; because the engine is async, it never blocks the main process. **preload** (`src/preload/`) exposes the IPC bridge (§9.2) through `contextBridge`. **renderer** (`src/renderer/`) is a **pure renderer**: no execution, planning, interpolation, condition, or validation logic; it never reads the manifest, `locales/`, or values files and never imports the engine — it renders pages from what the bridge returns. The shell also accepts `--non-interactive`: main then runs the engine without opening a window — the headless path the packaged artifact reuses (§9.5).
+Electron bundles Chromium and a Node runtime, so the GUI uses a bundled renderer and
+does not require an end-user Node installation. The engine, CLI, and shell are written
+in TypeScript, and the shell hosts the engine in-process without a sidecar or engine
+binary. The existing shell archives provide this runtime; bundling an author's workflow
+and resources into a portable end-user artifact remains planned work (§9.5). Workflow
+commands may still depend on tools or permissions specified by the author.
 
-**Process model of `rune run --gui`.** The CLI locates the shell in the per-user cache (exit 2 with the `rune gui install` hint if absent), launches it with the invocation (manifest path, `--set`, `--values`, `--result path`, `--log-file`, `--locale`), and waits. The shell's main process opens the `Session` from that invocation, runs the engine itself, and drives the wizard; the engine writes the result file and the log exactly as the CLI would in any other mode. `--result -` is rejected by the CLI before the shell is launched (usage error, exit 2, §4.1): there is no stdout contract under a GUI. The shell exits with the engine's exit code; `rune run --gui` forwards it **only if the shell terminated normally with a code from §10's table** — signal death or any other code (a Chromium-level crash code, for instance) is mapped to 70 — so `--gui` has the same exit-code contract as every other mode. A first `Ctrl+C`/SIGTERM received by the CLI is forwarded to the shell as a cancel request (POSIX: SIGTERM to the shell pid, which main treats as `Session.cancel()`; Windows: `taskkill /PID <shell>` without `/F`, i.e. a close request → the close-window path of §7); the CLI keeps waiting and forwards the resulting exit code (6); a second `Ctrl+C` force-exits the CLI while the shell finishes its own cancel. An engine failure inside the shell is an ordinary `RuneError`: the shell shows it as a named error and exits with that error's exit code, result file written as always. Replacing the main-frame receiver through reload or cross-document navigation counts as renderer loss; the initial load, same-document navigation, and subframe navigation do not. Renderer loss before main claims result delivery is a shell failure: main requests cooperative cancellation of a live run, exits 70, and writes no result. Once main synchronously claims the sole memoized result-delivery attempt, that attempt owns the terminal outcome across later renderer loss; renderer loss then only records that the renderer is gone and requests guarded window close, while main waits for the same delivery and exits with its result or delivery-failure code (§10). A hard crash of the main process hosting the engine remains an abnormal shell termination surfaced by `rune run --gui` as exit 70. A crash before the atomic result-file commit leaves no result; a crash after that commit cannot undo the file, which stays untouched even though the shell termination maps to 70.
+The application in `packages/gui-shell/` has three responsibilities:
 
-**Theming model (three layers):**
+- **Main** (`src/main/`) imports `@rune/engine`, owns the `Session`, registers IPC handlers,
+  creates the window, and maps the engine outcome to an exit code. Session I/O is awaited;
+  parsing, validation, and other synchronous CPU work still run on the main event loop (§9.1).
+- **Preload** (`src/preload/`) exposes the IPC bridge through `contextBridge` (§9.2).
+- **Renderer** (`src/renderer/`) renders bridge data using HTML/CSS. It contains no
+  execution, planning, interpolation, condition, or validation logic; never reads the
+  manifest, locale overlays, or values files; and never imports the engine.
+
+The shell also implements `--non-interactive`: main runs the engine without a window.
+The planned workflow artifact will reuse that path (§9.5).
+
+#### GUI launch and terminal outcome
+
+The CLI locates the shell in the per-user cache, launches it with the invocation
+(manifest path, `--set`, `--values`, `--result path`, `--log-file`, `--locale`), and waits.
+A missing shell produces exit 2 with the `rune gui install` hint. Main opens the Session
+from that invocation and drives the wizard; log and result semantics are shared with
+the CLI. `--result -` is rejected before launch (exit 2, §4.1), because GUI mode has no
+stdout machine-output contract.
+
+**Exit forwarding.** The CLI forwards a normally terminated shell's code only when it
+belongs to §10's exit-code table. A signal death or any other code, including a native
+Chromium crash code, maps to 70. An engine `RuneError` is shown as a named error, uses
+its mapped exit code, and follows the ordinary result-file rules.
+
+**Cancellation.** The first `Ctrl+C` or SIGTERM received by the CLI forwards a cancel
+request: POSIX sends SIGTERM to the shell PID, which main handles as `Session.cancel()`;
+Windows uses `taskkill /PID <shell>` without `/F` to request window close (§7).
+The CLI waits and forwards the resulting code: 6 for cancellation, with the earlier-failure
+precedence in §7. A second `Ctrl+C` force-exits the CLI while the shell finishes cancelling.
+
+**Renderer loss.** Replacing the main-frame receiver through reload or cross-document
+navigation counts as renderer loss; the initial load, same-document navigation, and
+subframe navigation do not. Before main claims result delivery, renderer loss requests cooperative
+cancellation of a live run, produces exit 70, and writes no result. Main synchronously
+claims one memoized delivery attempt; from that point, the attempt owns the terminal
+outcome. Later renderer loss only marks the renderer gone and requests guarded window
+close. Main waits for the same delivery and exits with its result or delivery-failure
+code (§10).
+
+**Main-process crash.** A hard crash is abnormal shell termination and maps to exit 70.
+A crash before the atomic result-file commit leaves no result; a crash after that commit
+leaves the file untouched, even though the shell termination still maps to 70.
+
+#### Theming
 
 1. **RUNE default theme** — page transitions, progress and result states, and light/dark variants; built on CSS custom properties (`--rune-accent`, `--rune-radius`, `--rune-font`, …). This is what every installer looks like when the author does nothing.
 2. **Manifest `gui:` block** (schema v1, §4.2) — `gui.accentColor`, `gui.logo` (window/taskbar icon and header logo), `gui.banner`, `gui.theme` (path to a CSS file), optional `gui.windowTitle`. The engine returns each `getThemeConfig` call as a fresh frozen snapshot: the localized `windowTitle` is sink-masked against current secrets, while `accentColor` and the absolutized asset/CSS paths remain exact. The renderer applies it as variable overrides; presentation-only, ignored by CLI and non-interactive — no parity impact.
-3. **Author CSS** — the `gui.theme` file is loaded **after** the default theme and may override variables or any rule. Advanced tier, documented as *your CSS, your support*: RUNE guarantees the custom-property names, not the internal DOM.
+3. **Author CSS** — the `gui.theme` file is loaded **after** the default theme and may override variables or any rule. RUNE guarantees the custom-property names, not the internal DOM; authors maintain CSS that depends on that DOM.
 
-**Author-time delivery.** Authors and CI use Node 24 LTS and build the source checkout; `node packages/cli/dist/main.js` is its CLI entry point. The workspace name `@rune/cli` is not a public installation instruction: that npm name currently belongs to a different project. Public npm delivery requires an owner-controlled namespace decision and corresponding package/import updates before publication. The local CLI package contains no Electron; core/CLI development uses `npm ci --ignore-scripts` to skip the separate shell binary download. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are implemented, but no shell archives are currently published. Source checkouts therefore use the development override until archive delivery is implemented and verified. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
+#### Shell distribution and version coupling
 
-*Version coupling.* The shell bundles its own copy of `@rune/engine`; `@rune/cli` ships another. To keep mode parity real rather than nominal, **`rune gui install` fetches the shell release whose engine version equals the installed CLI's**; the per-user cache is keyed by that version; `rune run --gui` refuses a cached shell whose engine version differs from its own (exit 2, hint: re-run `rune gui install`). The result file's `runeVersion` under `--gui` is the shell engine's version — by construction equal to the CLI's.
+Authors and CI use Node 24 LTS and build the source checkout; `node packages/cli/dist/main.js` is its CLI entry point. The workspace name `@rune/cli` is not a public installation instruction: that npm name currently belongs to a different project. Public npm delivery requires an owner-controlled namespace decision and corresponding package/import updates before publication. The local CLI package contains no Electron; core/CLI development uses `npm ci --ignore-scripts` to skip the separate shell binary download. `rune gui install` downloads the prebuilt shell for the current OS from the project's GitHub Releases into the per-user cache — no admin rights, no system install. `rune run --gui` launches the cached shell or exits 2 with that hint; for shell development only, the `RUNE_GUI_SHELL` environment variable overrides the lookup with a packaged binary or a shell package directory (launched through that package's own electron). The command and cache protocol are implemented, but no shell archives are currently published. Source checkouts therefore use the development override until archive delivery is implemented and verified. Shell updates are explicit re-runs of `rune gui install` (auto-update is deferred, §16).
 
-*Cancellation readiness on Linux.* Workflow launches use a private duplex pipe on fd 3.
+**Version matching.** The shell bundles its own copy of `@rune/engine`; `@rune/cli` ships another. **`rune gui install` fetches the shell release whose engine version equals the installed CLI's**; the per-user cache is keyed by that version; `rune run --gui` refuses a cached shell whose engine version differs from its own (exit 2, hint: re-run `rune gui install`). The result file's `runeVersion` under `--gui` is the shell engine's version — by construction equal to the CLI's.
+
+#### Linux cancellation readiness
+
+Workflow launches use a private duplex pipe on fd 3.
 The CLI supplies `RUNE_GUI_STARTUP_TOKEN` as 32 lowercase hexadecimal characters; the
 shell removes that environment variable immediately and installs its outer SIGTERM latch
 before sending `READY <token>\n`. Before parsing the invocation or opening a Session,
@@ -565,7 +752,9 @@ startup process tree, and cancellation requested before the deadline retains exi
 The second Ctrl+C before transfer closes the pipe so the shell cannot start an orphaned
 workflow. No handshake bytes use stdout or stderr, and the token never enters step environments.
 
-*Cache publication and recovery.* Extracted shells are immutable generations beneath the
+#### Cache publication and recovery
+
+Extracted shells are immutable generations beneath the
 engine-version cache directory. Before publishing a `generation-v1-<uuid>` directory,
 installation flushes every extracted file and writes an exclusively created, flushed
 `.rune-complete.json` seal. It records the engine version and a SHA-256 digest covering
@@ -599,7 +788,9 @@ instead of launching a damaged sealed installation. Flushes cannot override stor
 does not honor them. Published generations are retained so located or running shells cannot
 lose their files; clearing an unused engine-version cache is an explicit user operation.
 
-*Native quit requests.* For a configured invocation, the shell intercepts Electron's
+#### Native quit requests
+
+For a configured invocation, the shell intercepts Electron's
 `before-quit` event, prevents immediate shutdown, and routes it through the same
 cancellation latch as SIGTERM. On Linux, Electron's native SIGTERM handler initiates
 application quit rather than reliably emitting a Node process signal. The listener
@@ -609,7 +800,9 @@ quit event. Version probes have no configured run and remain outside this lifecy
 Electron restores the native SIGTERM action after the first signal; a second SIGTERM
 can force termination without result delivery, like other hard process termination.
 
-*Startup deadline.* The shell version probe must finish within 10 seconds. On expiry,
+#### Shell probe deadline
+
+The shell version probe must finish within 10 seconds. On expiry,
 the CLI terminates the probe process tree (POSIX: SIGKILL to its dedicated group;
 Windows: `taskkill /T /F`) and waits at most another 5 seconds for its streams to close.
 It then releases its handles and reports a usage error (exit 2), without starting a
@@ -623,7 +816,9 @@ readiness after that flush so shutdown uses the initialized message loop; it cre
 no window and remains subject to the CLI's probe deadline. Linux retains the early
 exit path without waiting for display initialization.
 
-*Archive format.* Shell artifacts are `.tar.gz` on Linux and `.zip` on Windows; `rune gui install` fetches with Node's built-in `fetch` and unpacks by spawning the OS `tar` as argv (`tar -xf`; bsdtar ships with Windows 10+/11 and handles both formats) — no archive library, in line with §12's runtime dependency list.
+#### Archive format and launchers
+
+Shell artifacts are `.tar.gz` on Linux and `.zip` on Windows; `rune gui install` fetches with Node's built-in `fetch` and unpacks by spawning the OS `tar` as argv (`tar -xf`; bsdtar ships with Windows 10+/11 and handles both formats) — no archive library, in line with §12's runtime dependency list.
 
 The Linux archive exposes `rune-gui-shell` as a POSIX launcher and keeps the Electron
 executable beside it as `rune-gui-shell-bin`. The launcher preserves argv, cwd, inherited
@@ -643,7 +838,9 @@ collisions. As with other `/bin/sh` entry scripts, the operating system shell ca
 its reserved variables such as `IFS`, `OPTIND`, `PWD`, and `PPID`; workflows must not use those
 names as a portable application-input channel.
 
-*Runtime instrumentation.* The shell accepts Electron's explicit
+#### Runtime instrumentation
+
+The shell accepts Electron's explicit
 `--remote-debugging-port=<port>` before the literal `--` manifest marker, with a decimal
 port from 0 to 65535. Electron owns that switch; it is removed before parsing the RUNE
 invocation. This allows inspection of the unchanged distributed application. Without
@@ -652,7 +849,18 @@ for this form, and a switch after it is subject to normal RUNE argument validati
 
 ### 9.5 End-user artifact (`rune package`, planned packaging)
 
-`rune package installer.yaml` produces a **self-contained, portable, per-user-runnable** folder or archive — Windows: portable `.exe` + folder or a single zip; Linux: AppImage or tar.gz (the choice per platform is deferred, §16) — containing the Electron shell with the **engine as plain JavaScript inside the app bundle** (one language, one bundler: **electron-builder** — no second bundler, no engine binary), the manifest, `scripts/`, `payload/`, `assets/`, and `locales/`. No installation, no admin rights, identical look. The end user double-clicks and sees the same wizard the author saw with `rune run --gui`; the same packaged app supports the headless `--non-interactive` mode — Electron started with CLI arguments runs the engine in main without opening a window, exit codes and result file as in every other mode — so pipelines can use the artifact too.
+`rune package` is not implemented. Its intended output is a self-contained, portable,
+per-user workflow artifact containing the Electron shell, engine JavaScript, manifest,
+`scripts/`, `payload/`, `assets/`, and `locales/`. The proposed builder is `electron-builder`;
+there is no planned engine binary or second bundler. Builder configuration and archive
+formats still require an explicit decision (§16): candidates are a portable `.exe` plus
+folder or zip on Windows, and AppImage or tar.gz on Linux.
+
+The artifact must launch the same wizard as `rune run --gui` without installing RUNE or
+requiring admin rights for RUNE itself. Its bundled renderer supplies the GUI theme.
+It must also accept `--non-interactive`, running the engine in Electron main without a
+window and preserving the shared exit-code and result-file contract for pipelines.
+These requirements do not remove prerequisites or permission needs of authored commands.
 
 The portability basis is **`${manifestDir}` anchoring** (§6.1, invariant 13): inside the artifact the manifest sits in a folder with its relative resources exactly as in the author's project tree, so nothing in the manifest changes between `rune run` on the author's machine and the packaged run on the end user's. The artifact layout, builder configuration, and archive formats still need an explicit decision before implementation (§16).
 
@@ -696,11 +904,69 @@ Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 afte
 
 ### Result file (`--result`)
 
-Versioned independently of the manifest schema (`resultSchemaVersion: 2`; `rune schema --result` emits its JSON Schema), written **atomically** (a uniquely named, exclusively created sibling tmp file + `fs.rename`) on every configured-run outcome — success, step failure, manifest error, input error, resolution/condition error, cancellation, internal error. Usage and unsupported-host errors (both exit 2), a failed result-file delivery (RUNE-407, exit 1), and renderer loss before windowed main claims delivery (exit 70) skip it. A hard crash of the process hosting the engine before the atomic result-file commit likewise leaves no result; a later crash cannot undo an already committed file, although an abnormal GUI shell termination still maps to exit 70 (§9.4). Windowed main synchronously claims one memoized delivery attempt before invoking it. That claim is irreversible: close waits through both the pending write and the short promise-settlement-to-outcome-recording interval, and later renderer loss cannot start a competing failure path or replace the claimed result's classification. A fulfilled delivery keeps the successful, failed, or cancelled result and its matching exit code; a rejected delivery overrides it with RUNE-407 / exit 1 and leaves no result file. A file already committed by the claimed attempt is never rolled back, deleted, or retried. The public async `writeResult` function owns atomic filesystem delivery; a failed write removes only its own tmp file best-effort before rejecting and is never retried. A host that anchors or otherwise normalizes the destination itself passes the operator's own spelling as `announcement`: delivery uses the anchored path, while a failure diagnostic names that spelling, so no path normalization can rewrite the bytes a secret registry holds. The public `serializeResult` function returns exactly the text `writeResult` writes — the schema-validated copy in the schema's member order, two-space indented, newline-terminated — and `--result -` prints that same text, so both sinks fail closed on a result that does not match the version-2 contract and agree byte for byte. Failure to prepare its directory or to open, write, close, or finalize the result file is an operational `ExecutionError` (RUNE-407, exit 1), never an `InternalError`: its message names the destination path and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally; because delivery is never retried, the exit code and that stderr diagnostic are the only signals of the failure. With a completed plan, the CLI renders that diagnostic and the success line through the session's terminal projector, so a destination equal to a registered secret is masked. Before a completed plan, it names the path only for the pre-Session config-error case (no secret can exist); an opened Session prints one fixed path-free delivery failure and suppresses the success announcement as specified below, even though its resolution-era `StringTable` exists. Hosts call `writeResult` after the engine has produced a result, so result-file delivery completes before any terminal human summary is rendered.
+#### Delivery and ownership
 
-Result construction remains engine-owned. `Session.describe()` and `Session.execute()` produce normal results; the public `createFailureResult` factory builds failures around `Session.open()`, planning, or pre-execution setup while preserving every safely available manifest, session, input, locale, platform, and plan fact. With session or plan context, detailed error fields are accepted only from the exact engine-produced error bound to the current session generation. An authentic failed-plan error privately retains the masking snapshot of that exact planning attempt for its own public error and failure result without publishing a plan or Session snapshot. The current Session generation is also marked privately as having an incomplete planning phase: later no-plan failure results in that generation suppress non-secret string and string-array input values unless the exact error carries a complete attempt masker; rejected edits retain the mark, while a successful edit replaces the generation and clears it. If a derived secret transformation could not be registered completely, the exact planning failure result suppresses those values too. An external, cross-session, or stale error becomes one fixed generic internal-error projection; without an authenticated completed plan or matching planning attempt, its no-plan result likewise suppresses non-secret string and string-array input values. Every suppression preserves booleans, ids, provenance, enabled/ignored state, and the exact machine fields. The host-created dry-run cancellation uses one fixed canonical RUNE-601 projection. Plan-time RUNE-401/404/405 failures have no completed plan and therefore keep the zero-step form. A pre-execution log-file failure (RUNE-406) may project an already completed plan as unchanged `SKIPPED` steps plus `NOT_RUN` executable steps. If log writing or closing fails after execution, `Session` instead preserves the completed run's real step states, output tails, and counters and reclassifies only the run-level outcome. Consequently, this documented run-level `failed` form need not contain a `FAILED` step. Hosts capture the engine-produced terminal result and never duplicate these semantics. Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code from a normally terminating configured run implies exactly one status once `dryRun` is known — except the two overrides §10's table names, a failed result-file delivery (RUNE-407, exit 1, no result file) and requested stdout output lost to a stream error (exit 70, whose result file keeps the status of the run that produced it) — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other configured-run code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
+The result schema is versioned independently of the manifest (`resultSchemaVersion: 2`;
+`rune schema --result` emits its JSON Schema). A configured result file is written on
+success, step failure, manifest error, input error, resolution/condition error,
+cancellation, and internal error.
+
+**No-result outcomes:** usage or unsupported-host errors (exit 2), failed result delivery
+(RUNE-407, exit 1), renderer loss before windowed main claims delivery (exit 70), and a
+host-process crash before the atomic commit. A crash after commit leaves the file intact;
+abnormal GUI shell termination still maps to 70 (§9.4).
+
+**One delivery attempt.** Windowed main synchronously claims one memoized attempt before
+invoking it. The claim is irreversible. Close waits through both the pending write and
+the promise-settlement-to-outcome-recording interval. Later renderer loss cannot start
+a competing failure path or replace the classification. Fulfilment retains the result
+and its matching exit code; rejection overrides it with RUNE-407 / exit 1 and no result
+file. An already committed file is never rolled back, deleted, or retried.
+
+**Filesystem and serialization.** The public async `writeResult` creates a uniquely
+named sibling tmp file exclusively and commits it with `fs.rename`. A failed write
+removes only its own tmp file best-effort and is never retried. The public
+`serializeResult` returns exactly the text `writeResult` writes: a schema-validated copy
+in the schema's member order, indented with two spaces and terminated by a newline.
+`--result -` prints the same text. Both sinks reject data that does not match version 2.
+
+**Delivery errors.** Failure to prepare the directory or open, write, close, or finalize
+the file is an operational `ExecutionError` (RUNE-407, exit 1), never an `InternalError`.
+Its diagnostic names the destination and a fixed errno-derived reason, never the raw
+OS message; the underlying cause remains internal. There is no retry, so the exit code
+and stderr diagnostic are the only failure signals.
+
+**Path presentation.** A host that anchors or normalizes the destination passes the
+operator's original spelling as `announcement`: filesystem delivery uses the anchored
+path, while diagnostics use the supplied spelling. With a completed plan, the CLI
+terminal-projects both the error and success announcement through the Session masker.
+Before a completed plan, only the pre-Session config-error case may name the path because
+no secret can exist there. An opened Session instead uses a fixed path-free delivery
+failure and suppresses the success announcement, even with a resolution-era `StringTable`.
+The failed-planning presentation rules below apply.
+
+Hosts call `writeResult` after the engine produces a result. Delivery completes before
+any terminal human summary is rendered.
+
+#### Failure construction and provenance
+
+Result construction remains engine-owned. `Session.describe()` and `Session.execute()` produce normal results; the public `createFailureResult` factory builds failures around `Session.open()`, planning, or pre-execution setup while preserving every safely available manifest, session, input, locale, platform, and plan fact.
+
+With session or plan context, detailed error fields are accepted only from the exact engine-produced error bound to the current session generation. An authentic failed-plan error privately retains the masking snapshot of that exact planning attempt for its own public error and failure result without publishing a plan or Session snapshot. The current Session generation is also marked privately as having an incomplete planning phase: later no-plan failure results in that generation suppress non-secret string and string-array input values unless the exact error carries a complete attempt masker; rejected edits retain the mark, while a successful edit replaces the generation and clears it. If a derived secret transformation could not be registered completely, the exact planning failure result suppresses those values too.
+
+An external, cross-session, or stale error becomes one fixed generic internal-error projection; without an authenticated completed plan or matching planning attempt, its no-plan result likewise suppresses non-secret string and string-array input values. Every suppression preserves booleans, ids, provenance, enabled/ignored state, and the exact machine fields.
+
+The host-created dry-run cancellation uses one fixed canonical RUNE-601 projection. Plan-time RUNE-401/404/405 failures have no completed plan and therefore keep the zero-step form.
+
+A pre-execution log-file failure (RUNE-406) may project an already completed plan as unchanged `SKIPPED` steps plus `NOT_RUN` executable steps. If log writing or closing fails after execution, `Session` instead preserves the completed run's real step states, output tails, and counters and reclassifies only the run-level outcome. Consequently, this documented run-level `failed` form need not contain a `FAILED` step. Hosts capture the engine-produced terminal result and never duplicate these semantics.
+
+#### Human presentation after failed planning
 
 The CLI composes additional human fallback lines after a failed run pipeline only when a completed plan supplies its full authenticated masker, or for the existing pre-Session config-error case whose result has no product identity. When a Session opened but planning did not complete, the CLI retains the engine-projected diagnostic and the safe JSON/file result but suppresses locale outcome lines, warnings, and the result-file success announcement. A result-file delivery failure in that state uses the fixed path-free fallback even though the resolution-era `StringTable` exists. The GUI applies the same boundary to shell-owned fatal presentation: without proof of a completed plan it uses fixed RUNE branding and value-free fallback text; with that proof it retains localized captions and detailed plan-masked diagnostics. This rule prevents a locale string or supplied result path from reproducing a derived spelling known only to the failed planning attempt; completed-plan failures retain their localized outcomes and warnings.
+
+#### Status and exit-code correlation
+
+Run `status` maps to the exit code per the table below: every status implies exactly one exit code, and every exit code from a normally terminating configured run implies exactly one status once `dryRun` is known — except the two overrides §10's table names, a failed result-file delivery (RUNE-407, exit 1, no result file) and requested stdout output lost to a stream error (exit 70, whose result file keeps the status of the run that produced it) — exit 0 is `succeeded` for a real run and `planned` for `--dry-run`; every other configured-run code is unambiguous on its own. Consumers may branch on either, using `dryRun` to disambiguate exit 0.
 
 | `status` | Exit code | Produced by |
 |---|---|---|
@@ -713,7 +979,7 @@ The CLI composes additional human fallback lines after a failed run pipeline onl
 | `cancelled` | 6 | user/system abort (RUNE-601) — during execution (interrupted step `CANCELLED`, rest `NOT_RUN`) or before it (CLI edit-loop `Cancel`, GUI window closed or Cancel before Proceed: every still-`PENDING` step becomes `NOT_RUN` while plan-time `SKIPPED` steps remain `SKIPPED`; zero counters when no plan exists) |
 | `internal_error` | 70 | RUNE bug (RUNE-500) |
 
-Contents:
+#### Result fields
 
 - **run block** — `id`, `status`, `exitCode`, `mode` (`gui` / `interactive` / `non-interactive`), `dryRun`, `crossPlatformPreview` (true iff `--platform` named a foreign platform, §6.1), `platform`, `locale` (required `string | null`; `null` means the built-in defaults), timestamps, `durationMs`, `runeVersion`, and the counters `stepsTotal`, `stepsExecuted`, `stepsSucceeded`, `stepsFailed`, `stepsCancelled`, `stepsSkipped`, `stepsNotRun`, `nothingExecuted` (§7; `stepsTotal = stepsExecuted + stepsSkipped + stepsNotRun`, `stepsExecuted = stepsSucceeded + stepsFailed + stepsCancelled`)
 - **top-level error** — required and strict `{code, message, location}` (`location` is `null`
@@ -741,13 +1007,59 @@ step state. A successful dry-run uses `status: "planned"`, enabling plan diffing
 
 ### Logging and secret masking
 
-Two sinks off the one event stream (the same stream frontends render — GUI progress, CLI output, and logs tell one story): stderr console (plain-text progress, diagnostics, and warnings) and the log file (`--log-file` / `execution.logFile`; DEBUG-level, timestamped, step output prefixed `[stepId:stdout]`). A relative `logFile` resolves against `${manifestDir}`. A Windows drive-relative spelling (`C:run.log`) is rejected at validate time (RUNE-104), like a drive-relative command (§8): it cannot be anchored to `${manifestDir}` deterministically, and anchoring it as a literal component would address an NTFS alternate data stream. The field is deliberately non-interpolable in v1; when both are given, `--log-file` overrides `execution.logFile`. A dry-run plan preview names that path as the operator spelled it (`--log-file`, else `execution.logFile`) rather than in its anchored form, so no path anchoring or normalization can rewrite the bytes a secret registry holds. Failure to prepare its directory or to open, write, or close the configured log file is an operational `ExecutionError` (RUNE-406, exit 1), never an `InternalError`: its message names that same spelling and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally. Under the GUI shell the engine runs in the shell's main process: the console sink writes to the shell process's stderr, which `rune run --gui` passes through to the caller's terminal, and the warnings that are part of the automation contract (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) are additionally surfaced on the shell's Result page — warning state and provenance remain engine-owned and identical across modes, while human delivery follows the masking rules in §10, including the CLI's no-completed-plan exception; the log file is written by the engine as in every other mode. Structured JSONL event logs are not implemented. A future event format needs its own versioned contract.
+#### Log sinks and operational errors
 
-**Path spellings.** Wherever a line or a field can meet a secret registry, RUNE names a path only in the spelling its supplier wrote — the operator's manifest argument, `--log-file`, `--result` or `--values` value, the manifest's own `execution.logFile`, or, for a file RUNE discovered itself such as a locale overlay, the spelling RUNE discovered — and never in a spelling RUNE derived from that one by anchoring, resolving, normalizing, or escaping. RUNE derives such spellings constantly, because only they can address the filesystem; but a registry holds exactly the bytes the operator supplied, so a derived spelling reaching a sink meets masks that cannot match it and prints in the clear a value the same run masks everywhere else. A host that derives a spelling therefore keeps it internal and hands the sink the supplied one beside it: `writeResult`'s and the log sink's `announcement`, the plan preview's manifest and log paths, and the `file` a located diagnostic points at. Five consequences are deliberate. The rule moves the unmaskable spelling rather than removing it: a sink that names the supplied spelling cannot be masked by a registry that holds a derived one instead, so an operator who declares the anchored path as the secret and then spells the flag for that same file differently reads their flag spelling in the clear. Naming the supplied spelling is still the better trade, because a declared secret normally holds exactly the bytes the same operator passed to the flag. A RUNE-406 diagnostic and a plan preview name a manifest-relative `execution.logFile` exactly as the manifest spells it, so a reader whose working directory is not the manifest's anchors it themselves — naming a maskable spelling outranks saving that step, and the same trade already governs every values-file diagnostic. The structured `manifest.path` of a plan or a result stays RUNE's resolved spelling, because it is machine identity this section keeps exact by contract: a located diagnostic and the `manifest.path` of one result may therefore spell one file two ways, and a declared secret equal to the operator's spelling of the manifest is masked in every human line but not in that one field. A step's `command` and `cwd` likewise keep the resolved spelling the runner will use, because §3 makes the dry-run plan what `run` would execute; a preview naming the manifest's own spelling would no longer be that plan. Both spellings still meet the registry — the planner checks the manifest spelling before anchoring and the anchored one after — so a declared secret equal to either renders `***` in the preview and in the result while the runner receives the authentic bytes. The plan then shows a value it does not name, which is the price of masking a spelling RUNE derived. And the authoring commands (`validate`, `schema`) resolve their argument before reading it, so their located diagnostics name that resolved spelling; they open no session and register no secret, so nothing they print is maskable and nothing there can leak.
+Two sinks consume the shared event stream: stderr console (plain-text progress, diagnostics, and warnings) and the log file (`--log-file` / `execution.logFile`; DEBUG-level, timestamped, step output prefixed `[stepId:stdout]`). A relative `logFile` resolves against `${manifestDir}`. A Windows drive-relative spelling (`C:run.log`) is rejected at validate time (RUNE-104), like a drive-relative command (§8): it cannot be anchored to `${manifestDir}` deterministically, and anchoring it as a literal component would address an NTFS alternate data stream. The field is deliberately non-interpolable in v1; when both are given, `--log-file` overrides `execution.logFile`. A dry-run plan preview names that path as the operator spelled it (`--log-file`, else `execution.logFile`) rather than in its anchored form, so no path anchoring or normalization can rewrite the bytes a secret registry holds.
 
-**Value spellings.** The same rule binds every other supplied value a diagnostic names: RUNE names the text its supplier wrote, whole, and hands it to the sink raw so the mask meets the bytes a registry can hold — never a spelling RUNE derived from it by splitting, trimming, escaping, or quoting it first. A masker that runs after such a derivation matches nothing, which is the same failure the paragraph above describes for paths. Hence a multiselect membership failure names the supplied text once and lists the declared option values beside it, rather than naming the comma-split entries RUNE parsed out of it; only a native array, whose entries its caller really did supply one by one, is named entry by entry. A diagnostic that must quote or escape its value does so at presentation, after the mask, and never at composition.
+Failure to prepare its directory or to open, write, or close the configured log file is an operational `ExecutionError` (RUNE-406, exit 1), never an `InternalError`: its message names that same spelling and a fixed reason derived from the errno code — never the raw OS message — and it retains the underlying cause internally.
 
-Secret handling is belt-and-braces:
+Under the GUI shell the engine runs in the shell's main process: the console sink writes to the shell process's stderr, which `rune run --gui` passes through to the caller's terminal, and the warnings that are part of the automation contract (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) are additionally surfaced on the shell's Result page — warning state and provenance remain engine-owned and identical across modes, while human delivery follows the masking rules in §10, including the CLI's no-completed-plan exception; the log file is written by the engine as in every other mode.
+
+Structured JSONL event logs are not implemented. A future event format needs its own versioned contract.
+
+#### Path spellings
+
+**Supplied spelling at masked sinks.** A path in a maskable line or field uses the
+supplier's spelling: the manifest argument, `--log-file`, `--result`, `--values`, or
+`execution.logFile`. A discovered file, such as a locale overlay, uses its discovered
+spelling. Hosts keep anchored, resolved, normalized, or escaped variants internal and
+pass the supplied spelling separately to presentation. This applies to `writeResult`
+and log-sink `announcement`, preview manifest/log paths, and located diagnostics' `file`.
+Masking matches registered bytes; deriving another spelling before masking can defeat it.
+
+**Limits and exceptions:**
+
+- **Different declarations.** If an operator registers an anchored path as a secret
+  but spells the flag differently, the supplied flag spelling can remain visible.
+  RUNE does not equate arbitrary spellings of one filesystem path.
+- **Relative log paths.** RUNE-406 diagnostics and previews show `execution.logFile`
+  exactly as declared. Resolve that spelling against the manifest directory, including
+  when reading the diagnostic from another working directory. Values-file diagnostics
+  follow the same supplied-spelling rule.
+- **Manifest identity.** The structured `manifest.path` remains resolved and exact in
+  plans and results. It may name the same file differently from a located diagnostic.
+  A declared secret equal to the supplied manifest spelling is masked in human lines
+  but is not masked in this machine field.
+- **Executable paths.** A step's `command` and `cwd` retain the resolved spelling the
+  runner will use. The planner checks both the manifest spelling before anchoring and
+  the anchored spelling afterwards. A declared secret equal to either renders as `***`
+  in previews and results while the runner receives the authentic bytes.
+- **Authoring commands.** `validate` and `schema` resolve their arguments before reading
+  them, and located diagnostics use that resolved spelling. They open no Session and
+  register no runtime secrets, so their output has no runtime secret masking.
+
+#### Value spellings
+
+Diagnostics pass supplied values whole and raw to the masker, before splitting,
+trimming, escaping, or quoting can change the registered bytes. A multiselect membership
+failure therefore names the supplied text once and lists the declared option values,
+rather than reporting parsed comma-separated fragments. A native array may be named
+entry by entry because its caller supplied those entries separately. Quote or escape
+values only at presentation, after masking.
+
+#### Secret wrappers and sink projection
+
+Secret handling has two layers:
 
 1. **Opaque `SecretString` wrapper end-to-end** (in-process safety): values of `secret` inputs are wrapped at resolution; the public wrapper exposes only masking/stringification behavior, and the plan, `toString()`, `toJSON()`, and `util.inspect` render `***`. Plaintext resolvers remain module-private; an internal reveal capability is used only inside the runner at spawn.
 2. **`SecretRegistry` + `mask()`** (sink safety): every supplied secret value is registered at resolution time, and planning registers its RUNE-derived path spellings — all before any step can launch. `mask(text)` performs registration-order-independent substring replacement from a cached immutable matcher snapshot at every sink boundary: the logging filter, child stdout/stderr ingestion (a script that echoes a password still produces masked logs — and the output-tail ring buffer is fed from the already-masked stream), the result writer, the dry-run renderer, and the IPC-bridge serializer in the shell's main process. Overlapping matches are merged while immediately adjacent matches stay separate. Bounded remasking handles matches created by `***` replacement; if those passes do not converge, the whole input is masked. Resolution-era input snapshots necessarily precede discovery of derived spellings; the first successful plan atomically replaces the current facade snapshot with one projected through its complete registry. Already returned pre-plan snapshots remain immutable historical values and can retain a public spelling that only the later plan identified as secret-derived; no current post-plan snapshot or execution sink reuses that weaker projection.
@@ -773,9 +1085,31 @@ Secret handling is belt-and-braces:
    and location strings use the diagnostic projection contract rather than this structured-field
    helper.
 
+#### Registry bounds
+
 A registry snapshot is limited to **262,144 UTF-16 code units** (`2^18`) across its unique maskable parts, counting the complete value, the maskable content lines of a multiline secret, and the whitespace-trimmed spelling of every part that carries surrounding whitespace; registering the same part again consumes no additional budget. This is the smallest power-of-two limit above the 10,000-secret scale exercised by the masking suite (about 170,000 code units), while bounding the immutable matcher's trie to at most 262,145 nodes instead of allowing a values file to demand millions. Registration preflights every part before mutating the snapshot, and the transient active-plus-staged union used to redact resolution errors is subject to the same limit before it is copied or a matcher is built. Exceeding either limit fails closed as a generic RUNE-202 input error before execution; it publishes no partial registry and reports neither secret text nor candidate length.
 
-Documented limitations: the registry registers every maskable content line of a declared secret, including each CR/LF/CRLF-separated line. A part with surrounding spaces or tabs is registered in both its raw and its trimmed spelling, so a child that trims the value before printing it is masked as well. A secret without non-empty content, or with any content line shorter than 4 characters after trimming surrounding whitespace, cannot be masked completely reliably; `run` warns at resolution time — `validate` never sees values. A RUNE-generated secret path transformation that cannot be registered completely instead fails closed with a generic RUNE-202 error during planning, before any step launches. Masking replaces substrings, so a secret embedded in a longer path is masked in every spelling that reaches a masker; the fields this section keeps exact by contract reach none, so a secret embedded in one of those is masked in no spelling at all. The structured `manifest.path` of a plan or a result stays RUNE's resolved spelling ("Path spellings" above), so a declared secret that is, normalizes to, or is merely contained in the manifest path — a tenant id or a branch name that also names a checkout directory — reaches the result file in the clear in that one field while every human line of the same run masks it; the result file — and `--result -`, which prints that same text to stdout — is therefore a sink where one declared secret can appear. Other transformed secrets (for example, base64) can also defeat substring masking — best-effort by nature, stated openly rather than discovered as a CVE. Values pulled in via `${env.NAME}` are not registered either — only declared `secret` inputs are; sensitive values must therefore be modeled as `secret` inputs (fed by `RUNE_INPUT_*` in CI), never referenced through `${env.*}`.
+#### Masking limitations
+
+**Declared values and short parts.** The registry includes each maskable CR/LF/CRLF-separated
+content line of a secret. Parts with surrounding spaces or tabs are registered both
+raw and trimmed, so a child that trims such a value is also masked. A secret with no
+non-empty content, or any content line shorter than 4 characters after trimming, cannot
+be masked completely reliably. `run` warns during resolution; `validate` never sees
+values. If a RUNE-generated secret path transformation cannot be registered completely,
+planning instead fails closed with a generic RUNE-202 before any step launches.
+
+**Exact machine fields.** Substring masking covers a secret embedded in a longer path
+only at fields that pass through a masker. The machine fields listed above remain exact.
+In particular, resolved `manifest.path` can expose a secret that equals, normalizes to,
+or is contained in the manifest path, such as a tenant id or checkout directory name.
+Human lines mask that value, but the result file and identical `--result -` output can
+contain it in this field.
+
+**Other transformations and environment reads.** Transformations that RUNE does not
+register, such as base64, can defeat substring masking. `${env.NAME}` values are not
+registered either: only declared `secret` inputs are. Model sensitive values as `secret`
+inputs, supplied through `RUNE_INPUT_*` in CI, rather than `${env.*}` references.
 
 ## 11) Package layout
 

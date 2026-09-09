@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 
-/** The seven input types of the MVP (docs/architecture.md §4.2). */
+/** The seven schema-v1 input types (docs/architecture.md §4.2). */
 export const INPUT_TYPES = [
   'text',
   'secret',
