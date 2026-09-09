@@ -18,6 +18,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
+import { installWindowsLauncher } from './build-windows-launcher.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const outputRoot = join(root, 'output');
@@ -240,6 +241,7 @@ try {
         '!**/*.md',
       ],
       artifactName: archiveName,
+      afterPack: installWindowsLauncher,
       win: {
         executableName: 'rune-gui-shell',
         icon: join(shellDirectory, 'resources', 'icon.ico'),

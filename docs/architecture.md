@@ -4,6 +4,12 @@ This document is the canonical architectural contract for **RUNE** ("Runtime for
 
 It defines decisions, boundaries, and invariants. Engine, CLI, and GUI shell: **TypeScript 5.x in strict mode** (`"strict": true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) on **Node 24 LTS**; one **npm workspaces** monorepo (`packages/engine`, `packages/cli`, `packages/gui-shell`, cross-package `tests/`); vitest, eslint (+ `@typescript-eslint`), prettier. The GUI shell (§9.4) is an Electron application whose main process hosts the engine in-process — one language, one runtime. MIT license.
 
+Packaged OS entrypoints contain no workflow behavior. The Linux POSIX launcher selects
+Electron's headless backend. The Windows native launcher transports arguments, streams,
+exit status and close requests to Electron, removing only its documented initial CRLF
+before any application output. Application code and the engine remain TypeScript in
+the Electron main process; the launcher requires no separately installed runtime.
+
 Use this reference by topic:
 
 - **Author a workflow:** [manifest fields](#4-manifest-contract), [value precedence](#5-value-resolution),
@@ -897,14 +903,19 @@ Under `--non-interactive` — explicit or TTY-degraded (stdin not a TTY when a p
 
 stdout is reserved exclusively for requested machine output (`--result -`, the dry-run plan, the `rune validate` report including its audit section, `rune schema`). All progress, prompts, diagnostics, and warnings (secrets interpolated into `args`, ignored disabled-input values, `nothingExecuted`) go to stderr. `rune run ... --result - | jq .` works with zero contamination. With `--dry-run --result -` stdout carries only the result JSON and the human plan is not rendered; `--result <path>` keeps the plan on stdout. A consumer that closes stdout or stderr early (`| head -1`, a viewer quit mid-stream) ends RUNE's output on that stream but never changes the exit code: the CLI owns the stream's `error` event, writes nothing further to the closed pipe, and prints no stack trace. Only that early-closing consumer (EPIPE, ECONNRESET) is silent: any other write error on stdout (a full disk, an I/O error) has lost requested machine output, so the CLI prints one fixed line on stderr — never the stream error itself — and exits 70; stderr diagnostics are best-effort, and a write error there never changes the exit code.
 
-Windows Electron 44.2.0 currently adds a native CRLF before application stdout in subprocess
-and headless invocations, including before the JSON emitted by `--result -`; even an
-Electron-only app reproduces it. This is an unresolved deviation from the exact stdout
-requirement above. Archive smoke checks allow that known native CRLF but reject additional
-application bytes, so their success does not establish byte-exact Windows stdout compliance.
-Result-file delivery and Node CLI output are unaffected; use `--result PATH` for exact
-serialized bytes. The strict stdout release requirement remains open before publication.
-See the [historical upstream issue](https://github.com/electron/electron/issues/12578).
+Windows archives expose `rune-gui-shell.exe`, a native process launcher around the
+adjacent `rune-gui-shell-bin.exe` Electron runtime. Electron writes one CRLF before
+loading application code; the launcher removes exactly that initial pair and forwards
+all remaining bytes with backpressure. The public executable therefore has exact empty
+or serialized stdout, checked on the extracted archive. Direct development Electron
+invocations and the inner runtime retain the upstream prefix and are not the packaged
+entrypoint. See the [upstream startup code](https://github.com/electron/electron/blob/v44.2.0/shell/app/electron_main_delegate.cc#L174-L177).
+The invisible launcher forwards Windows close requests and engine exit status. Forced
+launcher termination closes its process job; normal completion preserves deliberately
+detached workflow services. No workflow behavior runs in the native launcher.
+After Electron exits, the launcher drains its queued stdout/stderr bytes and closes
+those transports even if a detached service retains an unused inherited handle. This
+does not change the engine's separate descendant-pipe EOF policy in §8.
 
 Each CLI-rendered human line visibly escapes C0, DEL/C1, U+2028, and U+2029 after masking and composition; formatter-owned aggregate line feeds remain physical, while JSON and JSON Schema output remain unchanged. Lines rendered from a session use its authenticated `StringTable` and `formatSessionTerminalLine`: raw mask → control escape → final live mask. The second mask prevents an actual control from becoming a registered literal such as `\u001b` only after presentation. Authoring commands with no runtime secret registry (`validate`, `schema`) and pre-session fallback text use ordinary control escaping; requested JSON output bypasses human rendering entirely.
 
