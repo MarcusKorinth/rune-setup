@@ -3,9 +3,67 @@
 A release candidate needs verified installation and execution workflows on Windows
 and Linux. This is a reusable acceptance checklist, not a live record of completed
 work: record results against the chosen commit and artifact checksums. Existing CI
-already exercises core behavior, installed packages, and GUI archives. Registry
-delivery and the first public GUI downloads remain outstanding. Portable workflow
-packages reuse the same shell; their acceptance check is part of the GUI release gate.
+already exercises core behavior, installed packages, and GUI archives. The GUI release
+workflow publishes verified archives from a version tag. Portable workflow packages
+reuse the same shell; their acceptance check is part of the GUI release gate. Registry
+delivery remains separate work. A configured workflow is not evidence that a version
+has passed acceptance or been published.
+
+## Publish GUI downloads
+
+The [GUI release workflow](../.github/workflows/release-gui.yml) runs on pushed `v*`
+tags. A tag must use SemVer without build metadata, match the engine, CLI, GUI shell,
+and lockfile versions, and point to a commit already contained in `main`. A matching,
+nonempty `## X.Y.Z` or `## X.Y.Z - YYYY-MM-DD` section in `CHANGELOG.md` supplies the
+release notes. Prerelease versions such as `X.Y.Z-rc.1` produce GitHub prereleases.
+
+Prepare version constants, package and lockfile versions, dependency pins, and the
+changelog in a reviewed PR first. After it is merged, select that exact commit and
+push its annotated version tag. Pushing the tag authorizes automatic publication
+after the gates succeed; it is not a way to request a verification-only run.
+
+For verification before tagging, run **GUI release** manually in GitHub Actions on
+the chosen branch. Manual runs accept the `Unreleased` changelog section, execute
+the same core, security, native shell, extracted-archive, and portable workflow checks, and retain the
+assembled downloads as the `gui-release-candidate` artifact. They never create or
+modify a GitHub release.
+
+Both paths reuse the normal Windows/Linux CI and security workflows against the
+triggering commit. Publication waits for all checks, verifies each archive against
+its build metadata and the candidate lockfile, and transfers those exact files to
+a draft release. Only the final publication job has repository write permission.
+It verifies GitHub's uploaded asset digests before making the release public.
+
+Each release contains:
+
+- `rune-gui-shell-windows.zip` and `rune-gui-shell-linux.tar.gz`, both x64
+- `build-metadata-windows-x64.json` and `build-metadata-linux-x64.json`
+- `release-manifest.json`, identifying the source commit, version, and archive hashes
+- `SHA256SUMS` and `release-notes.md`
+
+The archive names match `rune gui install`'s version-specific download URLs. The
+release manifest records provenance; it is not a new download protocol. These are
+runtime archives, so a workflow author still supplies the manifest and its resources
+and can bundle them using [`rune package`](packaging.md).
+The source CLI can install a published shell without a development override:
+
+```bash
+node packages/cli/dist/main.js gui install
+node packages/cli/dist/main.js run /path/to/installer.yaml --gui
+```
+
+Archives are currently unsigned. Checksums detect altered downloads but do not
+authenticate a publisher independently of GitHub. Windows may show an unknown-publisher
+warning. Do not describe these files as signed or as installed system applications.
+
+Publication never replaces an existing asset. A failed upload leaves a draft; rerun
+the failed publication job while the same candidate artifact is retained to upload
+missing files and verify existing ones. A fully published identical release is a
+no-op. Different files, notes, or unexpected assets make the job fail without
+overwriting them. Rebuilding a candidate may change archive bytes, so do not assume
+rerunning the whole workflow can resume an older draft. Inspect and explicitly remove
+an abandoned draft before retrying with different files. Never move a published tag;
+fix a published release through a new version.
 
 ## User workflows
 
@@ -115,8 +173,9 @@ Linux graphical checks run under a desktop display or `xvfb-run --auto-servernum
 require usable Chromium sandbox support. CI enables user namespaces for its temporary
 Linux runner; it does not add `--no-sandbox` to the artifact check. The build records
 the archive checksum and locked runtime dependencies in `build-metadata.json` beside
-the archive under `output/shell/`. CI retains tested archives as build artifacts;
-it does not publish a GitHub release or npm packages.
+the archive under `output/shell/`. Ordinary CI retains tested archives as build
+artifacts. The tag-triggered GUI release workflow publishes these archives after the
+complete candidate gate; it does not publish npm packages.
 
 The artifact check removes `DISPLAY` and `WAYLAND_DISPLAY` for Linux version probes
 and non-interactive runs. It also exercises real child processes, masked result/log output,
