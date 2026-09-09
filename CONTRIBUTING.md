@@ -235,6 +235,10 @@ the built GUI archive. Follow [the shell verification commands](docs/releasing.m
 for GUI or packaging changes. Security workflows also check source and dependency
 findings; review their results alongside the core and shell jobs.
 
+The coverage check covers all runtime TypeScript source and uses global and scoped
+floors; reports are written to `coverage/index.html` and
+`coverage/coverage-summary.json`. Thresholds are defined in `vitest.config.ts`.
+
 ## Versioning
 
 This project follows Semantic Versioning:

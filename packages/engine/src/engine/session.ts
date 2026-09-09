@@ -7,6 +7,7 @@
  */
 
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { types } from 'node:util';
 
 import { snapshotEnvironment, type Environment } from '../environment.js';
 import { formatDiagnostic } from '../diagnostics.js';
@@ -717,7 +718,7 @@ async function notifyObserver(
 ): Promise<void> {
   try {
     const returned = (observer as ((event: RunEvent) => unknown) | undefined)?.(event);
-    if (returned instanceof Promise) {
+    if (types.isPromise(returned)) {
       await returned;
     }
   } catch {

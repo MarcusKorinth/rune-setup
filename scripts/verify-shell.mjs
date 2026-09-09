@@ -16,6 +16,7 @@ assert(
   ['win32', 'linux'].includes(process.platform),
   'Shell verification supports Windows and Linux',
 );
+const knownNativeStdoutPrefix = process.platform === 'win32' ? '\r\n' : '';
 const archive = resolve(
   process.argv[2] ??
     join(
@@ -261,8 +262,16 @@ function checkedFailureResult(path, status, exitCode, mode = 'non-interactive') 
   return result;
 }
 
-function checkFailureOutput(run) {
-  assert.equal(run.stdout.trim(), '', 'Failures must not print human diagnostics to stdout');
+function checkFailureOutput(run, gui = false) {
+  if (gui) {
+    assert.equal(run.stdout.trim(), '', 'Failures must not print human diagnostics to stdout');
+  } else {
+    assert.equal(
+      run.stdout,
+      knownNativeStdoutPrefix,
+      'Failures must not print application bytes to stdout',
+    );
+  }
   assert(!run.stderr.includes(secret), 'Failure diagnostics must mask the declared secret');
 }
 
@@ -383,7 +392,7 @@ async function verifyCancellation(command, scriptPrefix, gui) {
     if (gui) await page.locator('#cancel').click();
     else assert(run.child.kill('SIGTERM'));
     const closed = await within(run.closed, 15_000, 'Cancellation did not complete');
-    checkFailureOutput({ stdout: run.stdout(), stderr: run.stderr() });
+    checkFailureOutput({ stdout: run.stdout(), stderr: run.stderr() }, gui);
     assert.deepEqual(
       closed,
       { code: 6, signal: null },
@@ -419,7 +428,12 @@ try {
     'The artifact must contain its real app.asar',
   );
   const probe = invoke(executable, ['--rune-version-probe'], headlessEnvironment);
-  assert.deepEqual(JSON.parse(probe.stdout), { protocolVersion: 1, runeVersion: version });
+  const probeResult = { protocolVersion: 1, runeVersion: version };
+  assert.equal(
+    probe.stdout,
+    `${knownNativeStdoutPrefix}${JSON.stringify(probeResult)}\n`,
+    'The version probe must print only its known native prefix and serialized protocol result',
+  );
   process.stdout.write('Packaged version probe passed from an extracted path with spaces.\n');
 
   const emptyManifest = join(workflow, 'empty.yaml');
@@ -432,12 +446,11 @@ try {
     ['--', emptyManifest, '--non-interactive'],
     headlessEnvironment,
   );
-  assert.equal(control.stdout.trim(), '', 'An empty workflow must not print diagnostics to stdout');
-  if (control.stdout !== '') {
-    process.stdout.write(
-      `Native empty-workflow stdout contains only whitespace: ${JSON.stringify(control.stdout)}.\n`,
-    );
-  }
+  assert.equal(
+    control.stdout,
+    knownNativeStdoutPrefix,
+    'An empty workflow must not print application bytes to stdout',
+  );
 
   const windows = process.platform === 'win32';
   const script = join(workflow, windows ? 'check.ps1' : 'check.sh');
@@ -493,6 +506,11 @@ try {
     headlessEnvironment,
   );
   const streamedResult = JSON.parse(streamed.stdout);
+  assert.equal(
+    streamed.stdout,
+    `${knownNativeStdoutPrefix}${JSON.stringify(streamedResult, null, 2)}\n`,
+    '--result - must print only its known native prefix and serialized result',
+  );
   assert.equal(streamedResult.status, 'succeeded');
   assert.equal(streamedResult.exitCode, 0);
   assert.equal(streamedResult.runeVersion, version);
