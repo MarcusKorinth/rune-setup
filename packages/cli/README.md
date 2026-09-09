@@ -16,7 +16,7 @@ node packages/cli/dist/main.js run examples/basic/installer.yaml
 node packages/cli/dist/main.js run examples/basic/installer.yaml --non-interactive --set profile=production --result examples/basic/output/result.json
 ```
 
-The [basic example](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/examples/basic/README.md) explains its inputs and output.
+The [basic example](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/examples/basic/README.md) explains its inputs and output.
 Interactive runs show the plan and allow input changes before execution. Without a
 TTY, the CLI does not prompt; missing required inputs cause an input error.
 
@@ -38,7 +38,7 @@ Pass it with `--values path/to/values.yaml`; later values files override earlier
 Use declared `secret` inputs for sensitive values, preferably supplied through the
 environment or values files. Arguments can be visible in process listings. Pass secrets
 to commands through explicit environment entries instead of argv. Direct `${env.NAME}`
-references are not registered as secrets. Read the [security boundaries](https://github.com/MarcusKorinth/rune-setup/blob/9b2fee13b6beaa3fda673c129375f5737cb54d6c/SECURITY.md)
+references are not registered as secrets. Read the [security boundaries](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/SECURITY.md)
 for masking limits, including exact machine fields that remain visible in results.
 
 ## Inspect results and schemas
@@ -64,10 +64,10 @@ node packages/cli/dist/main.js schema --result --output result.schema.json
 | 6 | Cancelled |
 | 70 | Internal or host failure |
 
-For GUI development, follow the [wizard instructions](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/README.md#try-the-wizard).
+For GUI development, follow the [wizard instructions](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/README.md#try-the-wizard).
 With `--gui`, the optional `--result` accepts a file path; `--result -` is unavailable.
 Local shell archives can be built from the repository. Published archives and portable
-workflow packaging remain unfinished. See the [release checklist](https://github.com/MarcusKorinth/rune-setup/blob/55b7b94a0328deb462672cacf3b0a0b592f98268/docs/releasing.md).
+workflow packaging remain unfinished. See the [release checklist](https://github.com/MarcusKorinth/rune-setup/blob/957862b27e6c79fa88f1a6bd03dd95c4bf68ac0e/docs/releasing.md).
 
 ## Process output and background services
 
