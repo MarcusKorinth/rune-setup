@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { constants, createContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -2363,6 +2364,46 @@ describe('planning and executing', () => {
       'stepFinished',
       'runFinished',
     ]);
+  });
+
+  it('awaits and contains a foreign-realm native terminal observer rejection', async () => {
+    const { Promise: ForeignPromise } = createContext(constants.DONT_CONTEXTIFY) as {
+      readonly Promise: PromiseConstructor;
+    };
+    let rejectObserver!: (reason?: unknown) => void;
+    const held = new ForeignPromise<never>((_resolve, reject) => {
+      rejectObserver = reject;
+    });
+    expect(held instanceof Promise).toBe(false);
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pending = session
+      .execute((event) => {
+        events.push(event);
+        return event.kind === 'runFinished' ? held : undefined;
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+
+    await vi.waitFor(() => expect(events.at(-1)?.kind).toBe('runFinished'));
+    expect(settled).toBe(false);
+    rejectObserver(new Error('foreign terminal observer rejection'));
+    expect((await pending).status).toBe('succeeded');
+  });
+
+  it('does not inspect an arbitrary terminal observer then method', async () => {
+    const then = vi.fn(() => {
+      throw new Error('untrusted then method');
+    });
+    const session = await openSessionWithRunner(fixture(BASE), { environment: {} }, okRunner);
+
+    await expect(
+      session.execute((event) => (event.kind === 'runFinished' ? { then } : undefined)),
+    ).resolves.toMatchObject({ status: 'succeeded' });
+    expect(then).not.toHaveBeenCalled();
   });
 
   it('publishes a runner contract failure only after finalization, then rejects', async () => {

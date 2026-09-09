@@ -9,6 +9,7 @@ import {
   sep,
 } from 'node:path';
 import { inspect } from 'node:util';
+import { constants, createContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -251,6 +252,39 @@ describe('a run that succeeds', () => {
     expect((await pending).status).toBe('succeeded');
     expect(observed.map((event) => event.kind)).toEqual(['runStarted', 'runFinished']);
   });
+
+  it.each(['fulfillment', 'rejection'] as const)(
+    'waits for a foreign-realm native observer Promise through %s',
+    async (outcome) => {
+      const { Promise: ForeignPromise } = createContext(constants.DONT_CONTEXTIFY) as {
+        readonly Promise: PromiseConstructor;
+      };
+      let settle!: () => void;
+      const held = new ForeignPromise<void>((resolve, reject) => {
+        settle = outcome === 'fulfillment' ? resolve : () => reject(new Error('foreign rejection'));
+      });
+      expect(held instanceof Promise).toBe(false);
+      const { plan } = setup(['steps: []']);
+      const observed: RunEvent[] = [];
+      let settled = false;
+      const pending = executeRun({
+        plan,
+        observer: (event) => {
+          observed.push(event);
+          return event.kind === 'runStarted' ? held : undefined;
+        },
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.waitFor(() => expect(observed.map((event) => event.kind)).toEqual(['runStarted']));
+      expect(settled).toBe(false);
+      settle();
+      expect((await pending).status).toBe('succeeded');
+      expect(observed.map((event) => event.kind)).toEqual(['runStarted', 'runFinished']);
+    },
+  );
 
   it('does not inspect a foreign then method returned by an observer', async () => {
     const { plan } = setup(['steps: []']);

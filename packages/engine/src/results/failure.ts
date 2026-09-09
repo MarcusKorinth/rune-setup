@@ -1,7 +1,8 @@
 /**
- * Constructs failures outside normal execution from authenticated Session/plan context.
- * The registries and their validation stay together so stale or foreign context cannot
- * weaken result masking or invent execution history (docs/architecture.md §§9.1, 10).
+ * Constructs failure results outside normal execution, using authenticated Session/plan
+ * context when available and covering failures before a manifest or plan exists. The registries
+ * and their validation stay together so stale or foreign context cannot weaken result masking
+ * or invent execution history (docs/architecture.md §§9.1, 10).
  */
 
 import { randomUUID } from 'node:crypto';

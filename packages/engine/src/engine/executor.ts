@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { types } from 'node:util';
 
 import { InternalError } from '../errors.js';
 import { environmentName } from '../manifest/v1/rules.js';
@@ -87,7 +88,7 @@ export async function executeRun(options: ExecuteOptions): Promise<RunResult> {
     delivery = delivery.then(async () => {
       try {
         const returned = observer(deepFreeze(event));
-        if (returned instanceof Promise) await returned;
+        if (types.isPromise(returned)) await returned;
       } catch {
         // A broken renderer must never corrupt a run (§9.1).
       }
