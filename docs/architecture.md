@@ -617,7 +617,7 @@ Electron IPC — request/response via `ipcRenderer.invoke` ↔ `ipcMain.handle` 
 
 #### Opening a session
 
-the renderer calls `rune.open()`; main opens the `Session` from the **invocation it was launched with** (manifest path, `--values`, `--set`, `--locale`, `--result`, `--log-file` — the CLI's layers 2–4 and flags, resolved by the engine exactly as for the CLI). The renderer never supplies a manifest path or any layer-1–4 value; `rune.open()` resolves to `{ runeVersion, inputTypes, product }` — the input-type names the manifest uses, checked against the renderer's field-renderer registry (§9.3), plus the exact product machine identity. `open.product` remains byte-exact even when it collides with a secret and is not a human display projection.
+The renderer calls `rune.open()`; main opens the `Session` from the **invocation it was launched with** (manifest path, `--values`, `--set`, `--locale`, `--result`, `--log-file` — the CLI's layers 2–4 and flags, resolved by the engine exactly as for the CLI). The renderer never supplies a manifest path or any layer-1–4 value; `rune.open()` resolves to `{ runeVersion, inputTypes, product }` — the input-type names the manifest uses, checked against the renderer's field-renderer registry (§9.3), plus the exact product machine identity. `open.product` remains byte-exact even when it collides with a secret and is not a human display projection.
 
 #### Bridge methods
 
@@ -641,11 +641,11 @@ Other payloads remain **bridge projections**: main runs the complete plan, resul
 
 #### Secret values across the bridge
 
-values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
+Values of `secret` inputs cross the bridge towards the renderer only masked — `secret: true` with `value: null` in `allInputs` and in the `RunResult` (the same representation the result file uses, §10), `"***"` in human-readable plan previews and events — never as plaintext. The one direction in which a secret crosses in clear is `rune.setValue` as the user types it; it is wrapped at the engine boundary like any other layer-5 answer, and main never logs incoming bridge calls.
 
 #### Bridge errors
 
-every invoke returns a JSON-safe tagged success or failure reply. Preload unwraps successful values and rejects failures with a plain `BridgeError` object tagged `kind: "rune-error"`, carrying the `RUNE-xxx` `code`, masked `message`, masked source `location` (or `null`), and the `exitCode` the CLI would have used. Main also supplies the complete masked `displayText`, including the code, exit code, and located diagnostics; the renderer assigns it verbatim without parsing Electron error messages or composing metadata. Machine codes stay exact.
+Every invoke returns a JSON-safe tagged success or failure reply. Preload unwraps successful values and rejects failures with a plain `BridgeError` object tagged `kind: "rune-error"`, carrying the `RUNE-xxx` `code`, masked `message`, masked source `location` (or `null`), and the `exitCode` the CLI would have used. Main also supplies the complete masked `displayText`, including the code, exit code, and located diagnostics; the renderer assigns it verbatim without parsing Electron error messages or composing metadata. Machine codes stay exact.
 
 Native `Error` objects never cross either IPC or `contextBridge`: Electron does not preserve their custom properties. Stacks, causes, and arbitrary properties stay in main. Unknown thrown values, transport failures, and malformed replies become a fixed value-free RUNE-500 / exit 70 diagnostic.
 
