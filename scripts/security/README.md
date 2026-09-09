@@ -17,7 +17,7 @@ applies `--scan-unknown-extensions` to explicit file targets only, so the GUI pr
 `.cts` file is also passed explicitly. Tests, generated output, and third-party sources
 are outside this scan.
 Findings and ordinary scan errors fail the job; its JSON report is retained as a CI
-artifact. Semgrep 1.176.0 can also report nonblocking internal taint-analysis limits
+artifact. The pinned Semgrep release can also report nonblocking internal taint-analysis limits
 in `time.fixpoint_timeouts` while returning no scan errors. Those limits can leave
 taint checks incomplete. When that list is nonempty, the workflow emits a warning
 that directs reviewers to the retained JSON report. Zero findings do not prove
