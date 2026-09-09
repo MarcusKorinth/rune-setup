@@ -720,6 +720,12 @@ leaves the file untouched, even though the shell termination still maps to 70.
 
 #### Theming
 
+The distributed executable carries the RUNE icon and product identity. The window
+uses the bundled RUNE icon by default; `gui.logo` still overrides the window and
+header artwork. Runtime theming does not modify the executable's file icon or
+publisher metadata. Shell archives are unsigned; branding is not a code-signing
+or operating-system trust guarantee.
+
 1. **RUNE default theme** — page transitions, progress and result states, and light/dark variants; built on CSS custom properties (`--rune-accent`, `--rune-radius`, `--rune-font`, …). This is what every installer looks like when the author does nothing.
 2. **Manifest `gui:` block** (schema v1, §4.2) — `gui.accentColor`, `gui.logo` (window/taskbar icon and header logo), `gui.banner`, `gui.theme` (path to a CSS file), optional `gui.windowTitle`. The engine returns each `getThemeConfig` call as a fresh frozen snapshot: the localized `windowTitle` is sink-masked against current secrets, while `accentColor` and the absolutized asset/CSS paths remain exact. The renderer applies it as variable overrides; presentation-only, ignored by CLI and non-interactive — no parity impact.
 3. **Author CSS** — the `gui.theme` file is loaded **after** the default theme and may override variables or any rule. RUNE guarantees the custom-property names, not the internal DOM; authors maintain CSS that depends on that DOM.

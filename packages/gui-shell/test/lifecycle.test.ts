@@ -1328,8 +1328,8 @@ describe('the GUI shell native window', () => {
     expect(windowOptions({ logo }).icon).toBe(logo);
   });
 
-  it('omits the native window icon when no logo is configured', () => {
-    expect(windowOptions({})).not.toHaveProperty('icon');
+  it('uses the bundled RUNE window icon when no logo is configured', () => {
+    expect(windowOptions({}).icon).toBe(join('C:\\rune-shell', 'resources', 'icon.png'));
   });
 
   it('uses the localized default title for native and bridge themes', async () => {

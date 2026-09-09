@@ -108,7 +108,7 @@ export function windowOptions(
     height: 640,
     show: false,
     autoHideMenuBar: true,
-    ...(theme.logo === undefined ? {} : { icon: theme.logo }),
+    icon: theme.logo ?? join(app.getAppPath(), 'resources', 'icon.png'),
     ...(theme.windowTitle === undefined ? {} : { title: theme.windowTitle }),
     webPreferences: {
       contextIsolation: true,

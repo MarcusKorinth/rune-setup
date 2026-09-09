@@ -8,6 +8,8 @@ import { clearTimeout, setTimeout } from 'node:timers';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, URL } from 'node:url';
 
+import { verifyShellBranding } from './verify-shell-branding.mjs';
+
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(join(root, 'packages/gui-shell/package.json'));
 const { chromium, expect } = require('@playwright/test');
@@ -427,6 +429,8 @@ try {
     existsSync(join(unpacked, 'resources/app.asar')),
     'The artifact must contain its real app.asar',
   );
+  verifyShellBranding(unpacked, version);
+  process.stdout.write('Packaged RUNE icon and native product metadata passed.\n');
   const probe = invoke(executable, ['--rune-version-probe'], headlessEnvironment);
   const probeResult = { protocolVersion: 1, runeVersion: version };
   assert.equal(
