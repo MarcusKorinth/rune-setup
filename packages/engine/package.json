@@ -27,7 +27,7 @@
     "prepack": "node ../../scripts/clean-package.mjs && npm run build"
   },
   "dependencies": {
-    "yaml": "^2.9.0",
-    "zod": "^4.5.4"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   }
 }
