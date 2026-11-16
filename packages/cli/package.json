@@ -18,10 +18,10 @@
   },
   "dependencies": {
     "@rune/engine": "0.1.0",
-    "commander": "^15.0.0"
+    "commander": "^15.1.0"
   },
   "devDependencies": {
-    "zod": "^4.5.4"
+    "zod": "^4.6.7"
   },
   "scripts": {
     "build": "tsc -b",
